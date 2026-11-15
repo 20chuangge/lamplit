@@ -796,7 +796,7 @@ export function createRegistry(deps) {
   add({
     name: 'phone',
     description:
-      'Work the human\'s Android phone plugged into this computer (USB debugging), like a person holding it. ' +
+      'Work the human\'s Android phone like a person holding it: the one with Lamplit\'s 「让机器人用这部手机」 turned on (no cable, from every machine it is paired with), or one plugged into this computer with USB debugging. ' +
       'Actions: status (connected phones, locked or not, the app in front), look (a screenshot saved in the workspace plus the list of texts, buttons and boxes on screen with where to tap), ' +
       'tap (target = the words on it, or index i from look, or x/y; long=true for a long press), swipe (direction up/down/left/right; "up" scrolls down the page), ' +
       'type (text into the box with the cursor, or the box given by target; Chinese works; submit=true presses enter), key (back, home, enter, recent, delete, search), open (an app by its everyday name like 小红书 or its package), apps (installed apps). ' +

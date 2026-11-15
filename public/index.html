@@ -733,6 +733,10 @@
         <div class="phone-box" id="phone-box">
           <div class="lbl">手机</div>
           <div class="row-note">安卓手机用数据线连这台机器，在手机的开发者选项里打开「USB 调试」，手机上弹出提示时点「允许」。给机器人勾上「操作手机」后，它就能看手机屏幕、点、输入、打开 App；付款、发送、发布、删除每次都会先问你，手机锁着时它会请你解锁。</div>
+          <div id="phone-agent-row" class="phone-agent-row" hidden>
+            <div class="row-note" id="phone-agent-state"></div>
+            <div class="btn-row"><button class="btn tiny primary" id="phone-agent-btn" type="button">打开「让机器人用这部手机」</button></div>
+          </div>
           <div class="machine-list" id="phone-list"></div>
           <img class="phone-shot" id="phone-shot" alt="手机屏幕" hidden />
           <div class="btn-row">

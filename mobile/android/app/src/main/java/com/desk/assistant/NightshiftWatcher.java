@@ -146,6 +146,11 @@ public class NightshiftWatcher extends Service {
         while (running) {
             java.util.List<String> hubs = hubsWithToken(prefs(this));
             for (String hub : hubs) ensureWorker(hub);
+            // Tell every machine whether the bots may use this phone (1.4.0).
+            for (String hub : hubs) {
+                if (!running) break;
+                reportPhoneAgent(hub);
+            }
             // Every five minutes, ask a hub we know for the machines it knows and
             // pair this phone with any that answer. That is what makes a machine
             // added later (or one that boots later) notify without anyone
@@ -373,11 +378,91 @@ public class NightshiftWatcher extends Service {
         }
     }
 
+    // ------------------------------------------------------------ the phone (1.4.0)
+    /** POST /api/phone/agent: may the bots on that machine use this phone now? */
+    private void reportPhoneAgent(String hub) {
+        String token = TokenBox.open(prefs(this).getString("desk.token:" + hub, null));
+        if (token == null) return;
+        try {
+            JSONObject body = new JSONObject();
+            body.put("enabled", PhoneAgentService.instance != null);
+            body.put("model", (Build.MANUFACTURER + " " + Build.MODEL).trim());
+            body.put("sdk", Build.VERSION.SDK_INT);
+            postJson(hub + "/api/phone/agent", token, body);
+        } catch (Exception err) {
+            Log.d(TAG, "phone agent report to " + hub + " failed: " + err.getClass().getSimpleName());
+        }
+    }
+
+    /** Do one step a machine sent and give it the answer (POST /api/phone/jobs/:id). */
+    private void runPhoneJob(String hub, JSONObject event) {
+        final String jobId = event.optString("jobId", "");
+        if (jobId.isEmpty() || !jobId.matches("[A-Za-z0-9_-]+")) return;
+        Thread t = new Thread(() -> {
+            JSONObject reply = new JSONObject();
+            try {
+                PhoneAgentService agent = PhoneAgentService.instance;
+                if (agent == null) {
+                    reply.put("ok", false);
+                    reply.put("code", "PHONE_AGENT_OFF");
+                    reply.put("message", "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)");
+                } else {
+                    JSONObject args = event.optJSONObject("args");
+                    JSONObject result = agent.run(event.optString("action", ""), args == null ? new JSONObject() : args);
+                    reply.put("ok", true);
+                    reply.put("result", result);
+                }
+            } catch (PhoneAgentService.StepError err) {
+                try {
+                    reply.put("ok", false);
+                    reply.put("code", err.code);
+                    reply.put("message", err.getMessage());
+                } catch (Exception ignored) {
+                    // nothing more to say
+                }
+            } catch (Exception err) {
+                try {
+                    reply.put("ok", false);
+                    reply.put("code", "PHONE_FAILED");
+                    reply.put("message", String.valueOf(err.getMessage()));
+                } catch (Exception ignored) {
+                    // nothing more to say
+                }
+            }
+            String token = TokenBox.open(prefs(this).getString("desk.token:" + hub, null));
+            if (token == null) return;
+            try {
+                postJson(hub + "/api/phone/jobs/" + jobId, token, reply);
+            } catch (Exception err) {
+                Log.d(TAG, "phone step answer to " + hub + " failed: " + err.getMessage());
+                // The answer did not get through (too large, a dropped network): say
+                // so in a few bytes, so the bot hears it now and not after a timeout.
+                try {
+                    JSONObject short_ = new JSONObject();
+                    short_.put("ok", false);
+                    short_.put("code", "PHONE_FAILED");
+                    short_.put("message", "the phone did the step but could not send the answer back (" + err.getMessage() + ")");
+                    postJson(hub + "/api/phone/jobs/" + jobId, token, short_);
+                } catch (Exception ignored) {
+                    // the machine will time out and say so
+                }
+            }
+        }, "phone-job");
+        t.setDaemon(true);
+        t.start();
+    }
+
     /** One SSE event: decide whether the human needs to be told. */
     private void handleEvent(String hub, String json) {
         try {
             JSONObject event = new JSONObject(json);
             String type = event.optString("type", "");
+            if ("phone.job".equals(type)) {
+                // A step for this phone from a paired machine (1.4.0); the machine
+                // sends it to this phone only and has already asked the human.
+                runPhoneJob(hub, event);
+                return;
+            }
             if ("approval.request".equals(type)) {
                 // Always worth a buzz: the turn is blocked on a decision.
                 notifyApproval(hub,

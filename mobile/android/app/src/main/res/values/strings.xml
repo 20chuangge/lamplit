@@ -4,4 +4,6 @@
     <string name="title_activity_main">Lamplit</string>
     <string name="package_name">com.desk.assistant</string>
     <string name="custom_url_scheme">com.desk.assistant</string>
+    <string name="phone_agent_label">Lamplit：让机器人用这部手机</string>
+    <string name="phone_agent_description">打开后，你在电脑或其他机器上的 Lamplit 机器人可以看这部手机的屏幕、点、滑、输入、打开 App，不用连数据线。付款、发送、发布、同意条款每次都会先问你；手机锁着时不会去解锁，也不会往密码框里输入。打开期间通知栏一直有提示，点「停止」随时关掉。</string>
 </resources>

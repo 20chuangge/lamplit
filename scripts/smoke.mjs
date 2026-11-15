@@ -164,6 +164,7 @@ async function main() {
     await stage('1.3.0: the phone as a machine - look, tap, type, open apps over adb', scenarioV130);
     await stage('1.3.1: Chinese reaches the app, consent always asks, a search is not a send, no adb in the shell', scenarioV131);
     await stage('1.3.2: a stopped routine\'s card can be closed or run again; 外观 and 语言 follow you between machines', scenarioV132);
+    await stage('1.4.0: the phone works without the cable, through the Lamplit app', scenarioV140);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4935,6 +4936,137 @@ async function scenarioV167() {
       Boolean(tool) && tool.risk === 'MEDIUM' && registry.isGranted({ tools: ['bot_message'] }, 'task_move') && !registry.isGranted({ tools: [] }, 'task_move')
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
+  }
+}
+
+/**
+ * 1.4.0: the phone works without the cable. The Lamplit app's accessibility
+ * service (turned on by the human, with a 停止 notice) does what adb did; the
+ * machine sends each step over the event stream the app already keeps open,
+ * to that one phone, and waits for its answer. Every machine the phone is
+ * paired with can use it. The rules stay the same.
+ */
+async function scenarioV140() {
+  const PH = await import('../src/phone.mjs');
+  const { createPhoneLink, makePhoneExec } = await import('../src/phonelink.mjs');
+  const workspaceDir = path.join(home, 'workspace');
+  const XML = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">`
+    + `<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" content-desc="" clickable="false" enabled="true" focused="false" scrollable="false" password="false" bounds="[0,0][1080,2400]">`
+    + `<node index="1" text="搜索" resource-id="com.xingin.xhs:id/search" class="android.widget.TextView" package="com.xingin.xhs" content-desc="" clickable="true" enabled="true" focused="false" scrollable="false" password="false" bounds="[100,200][300,260]" />`
+    + `<node index="2" text="" resource-id="com.xingin.xhs:id/search_input" class="android.widget.EditText" package="com.xingin.xhs" content-desc="搜索框" clickable="true" enabled="true" focused="true" scrollable="false" password="false" bounds="[0,300][1080,400]" />`
+    + `</node></hierarchy>`;
+  const listeners = new Set();
+  const bus = { emit: (ev) => { for (const l of listeners) l(ev); }, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const link = createPhoneLink({ bus, jobTimeoutMs: 400 });
+  let locked = false;
+  const jobs = [];
+  // The phone: answers the jobs sent to it, as the app does.
+  bus.subscribe((ev) => {
+    if (ev.type !== 'phone.job' || ev.to !== 'dev_phone') return;
+    jobs.push({ action: ev.action, args: ev.args });
+    const answer = {
+      window: { locked, app: 'com.xingin.xhs' },
+      ui: { xml: XML },
+      screenshot: { image: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).toString('base64') },
+      size: { w: 1080, h: 2400 },
+      installed: { installed: ev.args?.pkg === 'com.xingin.xhs' },
+      apps: { apps: ['com.xingin.xhs', 'com.tencent.mm'] },
+    }[ev.action] || {};
+    if (ev.action === 'type' && ev.args?.text === 'secret') { setTimeout(() => link.resolve(ev.jobId, 'dev_phone', { ok: false, code: 'PHONE_PASSWORD_FIELD', message: 'password box' }), 5); return; }
+    setTimeout(() => link.resolve(ev.jobId, 'dev_phone', { ok: true, result: answer }), 5);
+  });
+  link.register('dev_phone', { enabled: true, model: 'Pixel 8', name: '我的手机' });
+  link.register('dev_off', { enabled: false, model: 'Old', name: '旧手机' });
+  const exec = makePhoneExec({ adbPath: () => '', link });
+  const phone = PH.createPhone({ adb: () => 'lamplit', exec, workspaceDir });
+
+  // --- U1: the app's phone shows up and is driven like the cable one --------------------------
+  const st = await phone.act('status', {});
+  const look = await phone.act('look', {});
+  jobs.length = 0;
+  await phone.act('tap', { target: '搜索' });
+  const tap = jobs.find((j) => j.action === 'tap');
+  jobs.length = 0;
+  await phone.act('type', { text: '杭州咖啡', submit: true });
+  const typed = jobs.find((j) => j.action === 'type');
+  const enter = jobs.find((j) => j.action === 'key');
+  jobs.length = 0;
+  await phone.act('type', { text: 'abc def' });
+  const plain = jobs.find((j) => j.action === 'type');
+  jobs.length = 0;
+  await phone.act('open', { app: '小红书' });
+  const opened = jobs.find((j) => j.action === 'open');
+  check('U1 app phone: listed (only one turned on), looked at (screenshot + what is on screen), tapped by its words, Chinese and plain text typed straight into the box (no clipboard), enter, apps opened by name',
+    st.devices.length === 1 && st.devices[0].model === 'Pixel 8' && /^phone\/.*\.jpg$/.test(look.screenshot || '') && look.elements.some((e) => e.text === '搜索')
+    && tap?.args?.x === 200 && tap?.args?.y === 230 && typed?.args?.text === '杭州咖啡' && enter?.args?.code === 66 && plain?.args?.text === 'abc def'
+    && opened?.args?.pkg === 'com.xingin.xhs' && !jobs.some((j) => /clip/i.test(j.action)),
+    JSON.stringify({ st, tap, typed, enter, plain, opened }));
+
+  // --- U2: the same rules ----------------------------------------------------------------------
+  locked = true;
+  let lockedCode = '';
+  jobs.length = 0;
+  try { await phone.act('tap', { target: '搜索' }); } catch (err) { lockedCode = err.code; }
+  const touched = jobs.some((j) => j.action === 'tap');
+  locked = false;
+  let pw = '';
+  try { await phone.act('type', { text: 'secret' }); } catch (err) { pw = err.code; }
+  check('U2 rules: a locked phone is not touched; the app refuses password boxes and the bot hears why', lockedCode === 'PHONE_LOCKED' && !touched && pw === 'PHONE_PASSWORD_FIELD', JSON.stringify({ lockedCode, pw }));
+
+  // --- U3: a phone that does not answer, or went quiet --------------------------------------------
+  const quiet = createPhoneLink({ bus: { emit() {}, subscribe: () => () => {} }, jobTimeoutMs: 50 });
+  quiet.register('dev_q', { enabled: true, model: 'Q' });
+  let silent = '';
+  try { await quiet.request('dev_q', 'window', {}); } catch (err) { silent = err.code; }
+  const stale = createPhoneLink({ bus, jobTimeoutMs: 50, freshMs: 10 });
+  stale.register('dev_s', { enabled: true, model: 'S' });
+  await new Promise((r) => setTimeout(r, 30));
+  check('U3 link: a step the phone does not answer fails in time (PHONE_NOT_ANSWERING); a phone not heard from lately is not listed',
+    silent === 'PHONE_NOT_ANSWERING' && stale.list().length === 0, JSON.stringify({ silent }));
+
+  // --- U3b: the same phone on the cable and through the app is listed once ---------------------
+  {
+    const both = createPhoneLink({ bus, jobTimeoutMs: 400 });
+    both.register('dev_b', { enabled: true, model: 'OPPO PCX00' });
+    const execBoth = makePhoneExec({ adbPath: () => 'adb', link: both, adbExec: async (_f, a) => (a[0] === 'devices'
+      ? { stdout: 'List of devices attached\nSER1   device product:x model:PCX00 device:y transport_id:1\nSER2   device product:x model:Pixel_8 device:z transport_id:2\n' } : { stdout: '' }) });
+    const out = (await execBoth('adb', ['devices', '-l'])).stdout;
+    check('U3b both ways: the phone on the cable that is also on through the app is listed once (the app); another phone on the cable stays',
+      !out.includes('SER1') && out.includes('SER2') && out.includes('lamplit:dev_b'), out);
+  }
+
+  // --- U4: the machine side -----------------------------------------------------------------------
+  {
+    const serverSrc = await readText('../src/server.mjs');
+    const noDevice = await api('/api/phone/agent', { method: 'POST', body: { enabled: true } });
+    const noDevice2 = await api('/api/phone/jobs/job_x', { method: 'POST', body: { ok: true } });
+    check('U4 machine: each phone step goes only to that phone (event "to"); only a paired phone (device token) may say it is ready or answer a step',
+      serverSrc.includes('if (event.to && event.to !== streamDevice) return;') && noDevice.status === 403 && noDevice2.status === 403,
+      JSON.stringify({ a: noDevice.status, b: noDevice2.status }));
+  }
+
+  {
+    const big = await api('/api/phone/jobs/job_big', { method: 'POST', body: { ok: true, result: { png: 'A'.repeat(2 * 1024 * 1024) } } });
+    check('U4b answers: a phone\'s screenshot (over 1 MB) is not refused for its size (only for not being a paired phone)', big.status === 403, String(big.status));
+  }
+
+  // --- U5: the app ------------------------------------------------------------------------------
+  {
+    const base = '../mobile/android/app/src/main/';
+    const svc = await readText(`${base}java/com/desk/assistant/PhoneAgentService.java`).catch(() => '');
+    const manifest = await readText(`${base}AndroidManifest.xml`);
+    const cfg = await readText(`${base}res/xml/phone_agent.xml`).catch(() => '');
+    const watcher = await readText(`${base}java/com/desk/assistant/NightshiftWatcher.java`);
+    const bridge = await readText(`${base}java/com/desk/assistant/ShellBridge.java`);
+    const page = await readText('../public/app/main/11-machines.js');
+    check('U5 app: an accessibility service the human turns on (gestures, screenshots, typing straight into the box, never a password box) with a notice to stop it',
+      svc.includes('extends AccessibilityService') && svc.includes('dispatchGesture') && svc.includes('takeScreenshot') && svc.includes('ACTION_SET_TEXT') && svc.includes('isPassword()') && svc.includes('disableSelf()')
+      && /android\.permission\.BIND_ACCESSIBILITY_SERVICE/.test(manifest) && /@xml\/phone_agent/.test(manifest) && /canPerformGestures="true"/.test(cfg) && /canTakeScreenshot="true"/.test(cfg));
+    check('U5 app: the watcher takes steps from every paired machine and answers them, and tells each machine whether the phone can be used; the page turns it on',
+      watcher.includes('"phone.job".equals(type)') && watcher.includes('/api/phone/jobs/') && watcher.includes('/api/phone/agent')
+      && bridge.includes('openAccessibilitySettings') && bridge.includes('phoneAgentEnabled') && page.includes('phone-agent-btn'));
+    check('U5 app: when the system starts the service (a restart, an update) it brings the connection to the machines up too, without opening Lamplit',
+      /onServiceConnected[\s\S]{0,800}NightshiftWatcher\.hasPairing[\s\S]{0,300}startForegroundService/.test(svc));
   }
 }
 

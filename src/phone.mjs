@@ -56,6 +56,11 @@ function fail(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
+/** ".jpg" for JPEG bytes, else ".png" (adb's screencap is PNG). */
+export function imageExt(bytes) {
+  return bytes && bytes[0] === 0xff && bytes[1] === 0xd8 ? '.jpg' : '.png';
+}
+
 // ---- reading what adb says --------------------------------------------------
 
 export function parseDevices(text) {
@@ -156,7 +161,8 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     try {
       return await exec(adbPath(), args, opts);
     } catch (err) {
-      if (err.code === 'ADB_NOT_FOUND') throw err;
+      // The app's own answers (locked, a password box, no answer) keep their meaning (1.4.0).
+      if (err.code === 'ADB_NOT_FOUND' || /^PHONE_/.test(String(err.code || ''))) throw err;
       if (err.code === 'ENOENT') throw fail('ADB_NOT_FOUND', `adb was not found at ${adbPath()}`);
       throw fail('PHONE_ADB_FAILED', `adb ${args.slice(0, 3).join(' ')} failed: ${String(err.stderr || err.message).trim().slice(0, 300)}`);
     }
@@ -183,7 +189,7 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     }
     if (!ready.length) {
       const odd = list[0];
-      throw fail(odd ? 'PHONE_NOT_READY' : 'PHONE_NOT_CONNECTED', odd ? stateHelp(odd) : 'no phone is connected to this computer. Ask the human to plug the phone in with USB debugging on (开发者选项 → USB 调试) and allow this computer on the phone.');
+      throw fail(odd ? 'PHONE_NOT_READY' : 'PHONE_NOT_CONNECTED', odd ? stateHelp(odd) : 'no phone can be used from here. Ask the human to turn on 「让机器人用这部手机」 in the Lamplit app on the phone (Settings → 机器 → 手机), or to plug it into this computer with USB debugging on.');
     }
     if (ready.length > 1 && !ready.some((d) => d.serial === lastSerial)) {
       throw fail('PHONE_WHICH', `more than one phone is connected (${ready.map((d) => d.model || d.serial).join(', ')}); say which with device`);
@@ -246,12 +252,16 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     const serial = await pick(device);
     const w = await ensureOpen(serial);
     const day = new Date().toISOString().slice(0, 10);
-    const rel = want ? String(want).replace(/\\/g, '/') : `phone/${day}/screen-${Date.now()}.png`;
+    const { stdout } = await run(['-s', serial, 'exec-out', 'screencap', '-p'], { timeout: 45000, binary: true });
+    const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '');
+    // The app sends JPEG (a full-size PNG took ~37 s over the network, 1.4.0); name it for what it is.
+    const ext = imageExt(bytes);
+    let rel = want ? String(want).replace(/\\/g, '/') : `phone/${day}/screen-${Date.now()}${ext}`;
+    if (want && !rel.toLowerCase().endsWith(ext)) rel = rel.replace(/\.(png|jpe?g)$/i, '') + ext;
     if (rel.startsWith('/') || rel.split('/').includes('..')) throw fail('PHONE_BAD_ARGS', 'path must stay inside the workspace');
     const abs = path.join(workspaceDir, rel);
-    const { stdout } = await run(['-s', serial, 'exec-out', 'screencap', '-p'], { timeout: 20000, binary: true });
     await fsp.mkdir(path.dirname(abs), { recursive: true });
-    await fsp.writeFile(abs, Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || ''));
+    await fsp.writeFile(abs, bytes);
     const ui = await readUi(serial).catch(() => ({ app: w.app, nodes: [] }));
     const app = w.app || ui.app;
     return {

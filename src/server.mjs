@@ -84,7 +84,8 @@ import * as mediaModule from './media.mjs';
 import { createVideoJobs } from './videojobs.mjs';
 import { createFeishu, loadFeishu } from './feishu.mjs';
 import { createPeers, friendlyHostname } from './peers.mjs';
-import { createPhone, findAdb } from './phone.mjs';
+import { createPhone, findAdb, imageExt } from './phone.mjs';
+import { createPhoneLink, makePhoneExec } from './phonelink.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
@@ -285,7 +286,10 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   refs.pages = createPages({ workspaceDir });
 
   // The human's phone on this computer (1.3.0): adb where they said, else found.
-  refs.phone = createPhone({ adb: () => findAdb({ configured: phoneConfig().adbPath }), workspaceDir });
+  // ...and, without the cable, the phone whose Lamplit app has 「让机器人用这部手机」 on (1.4.0).
+  refs.phoneLink = createPhoneLink({ bus });
+  const adbHere = () => findAdb({ configured: phoneConfig().adbPath });
+  refs.phone = createPhone({ adb: () => adbHere() || 'lamplit', exec: makePhoneExec({ adbPath: adbHere, link: refs.phoneLink }), workspaceDir });
   const registry = createRegistry({
     workspaceDir,
     config,
@@ -592,6 +596,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   await refs.peers.load();
   state.peers = refs.peers;
   state.phone = refs.phone;
+  state.phoneLink = refs.phoneLink;
   state.pages = refs.pages;
 
   // Badges of bots and groups deleted by an older version (which kept them).
@@ -883,7 +888,8 @@ async function dispatchApi(req, res, state, pathname, url) {
         return errorResponse(res, 415, 'JSON_REQUIRED', 'send the body as application/json');
       }
       try {
-        body = await readJsonBody(req);
+        // `maxBody` lets a route take more than 1 MB (a phone's screenshot, 1.4.0).
+        body = await readJsonBody(req, entry.maxBody || MAX_BODY_BYTES);
       } catch (err) {
         return errorResponse(res, err.status || 400, err.code || 'BAD_BODY', err.message);
       }
@@ -2040,19 +2046,46 @@ route('PUT', /^\/api\/phone$/, async (req, _res, { body, state }) => {
 route('GET', /^\/api\/phone\/screen$/, async (_req, res, { state, query }) => {
   let bytes;
   try { bytes = await state.phone.screenshotBytes({ device: query.get('device') || '' }); } catch (err) { throw httpError(409, err.code || 'PHONE_FAILED', err.message); }
-  res.writeHead(200, { 'content-type': 'image/png', 'content-length': bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+  res.writeHead(200, { 'content-type': imageExt(bytes) === '.jpg' ? 'image/jpeg' : 'image/png', 'content-length': bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
   res.end(bytes);
   return undefined;
 });
 
 async function phoneView(state) {
   const configured = phoneConfig().adbPath || '';
-  const found = state.phone.adbPath();
-  const out = { adb: { found: Boolean(found), path: found, configured }, devices: [] };
-  if (!found) return out;
-  try { out.devices = (await state.phone.status()).devices; } catch (err) { out.error = err.message; }
+  const found = findAdb({ configured });
+  const out = { adb: { found: Boolean(found), path: found, configured }, devices: [], app: state.phoneLink.list().map((p) => ({ model: p.model, name: p.name })) };
+  if (!found && !out.app.length) return out;
+  try {
+    out.devices = (await state.phone.status()).devices.map((d) => ({ ...d, via: String(d.serial || '').startsWith('lamplit:') ? 'app' : 'adb' }));
+  } catch (err) { out.error = err.message; }
   return out;
 }
+
+// --- the phone without the cable (1.4.0) -------------------------------------------
+//   POST /api/phone/agent {enabled, model, sdk}        the Lamplit app on a paired phone: may it be used?
+//   POST /api/phone/jobs/:id {ok, result|code,message} that phone's answer to a step sent to it
+// Only a paired phone (its device token) may call these; a step is answered only
+// by the phone it went to (phonelink.mjs).
+function phoneDevice(req, state) {
+  const deviceId = req.auth?.deviceId || '';
+  if (!deviceId) throw httpError(403, 'NOT_A_PHONE', 'only the Lamplit app on a paired phone can do this');
+  const device = state.devices.list().find((d) => d.id === deviceId);
+  if (!device) throw httpError(403, 'NOT_A_PHONE', 'this phone is not paired here');
+  return device;
+}
+
+route('POST', /^\/api\/phone\/agent$/, async (req, _res, { body, state }) => {
+  const device = phoneDevice(req, state);
+  state.phoneLink.register(device.id, { enabled: Boolean(body?.enabled), model: String(body?.model || ''), name: device.name || '', sdk: body?.sdk });
+  return { ok: true };
+});
+
+route('POST', /^\/api\/phone\/jobs\/(?<id>[\w-]+)$/, async (req, _res, { params, body, state }) => {
+  const device = phoneDevice(req, state);
+  const taken = state.phoneLink.resolve(params.id, device.id, body || {});
+  return { ok: taken };
+}, { maxBody: 16 * 1024 * 1024 });
 
 /**
  * This machine's name in the owner's lists: the one given when it was added
@@ -3558,11 +3591,14 @@ route('GET', /^\/api\/stream$/, async (req, res, { query, state }) => {
   res.write(`retry: 2000\n: connected ${nowIso()}\n\n`);
 
   let closed = false;
+  // A phone step (1.4.0) goes to the one phone it is for, nowhere else.
+  const streamDevice = req.auth?.deviceId || '';
   // Roster edits are global: every window needs them regardless of which bot
   // or group it happens to be looking at.
   const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed', 'feishu.changed']);
   const send = (event) => {
     if (closed) return;
+    if (event.to && event.to !== streamDevice) return;
     if (!GLOBAL_EVENTS.has(event.type)) {
       if (botId && event.botId && event.botId !== botId) return;
       if (groupId && event.groupId !== groupId) return;

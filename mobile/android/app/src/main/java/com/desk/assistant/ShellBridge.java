@@ -179,6 +179,28 @@ public class ShellBridge {
         }
     }
 
+    /** 「让机器人用这部手机」 is on (the accessibility service is running) - 1.4.0. */
+    @JavascriptInterface
+    public boolean phoneAgentEnabled() {
+        return PhoneAgentService.instance != null;
+    }
+
+    /**
+     * Opens the system's accessibility settings, where the human turns
+     * 「Lamplit：让机器人用这部手机」 on or off. Lamplit cannot turn it on itself.
+     */
+    @JavascriptInterface
+    public boolean openAccessibilitySettings() {
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity.startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** This app's own version (1.2.166: the page compares it with the latest release). */
     @JavascriptInterface
     public String appVersion() {

@@ -33,6 +33,25 @@
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
 
+        <!-- 1.4.0: 「让机器人用这部手机」 - the human turns it on in the system's accessibility settings. -->
+        <service
+            android:name=".PhoneAgentService"
+            android:exported="true"
+            android:label="@string/phone_agent_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/phone_agent" />
+        </service>
+
+        <!-- 「停止」 on its notice. -->
+        <receiver
+            android:name=".PhoneAgentStopReceiver"
+            android:exported="false" />
+
         <!-- 通知里的批准/拒绝: explicit only, never exported. -->
         <receiver
             android:name=".ApprovalActionReceiver"
@@ -69,6 +88,8 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 1.4.0: open an app by name and check it is installed, for the bots working this phone. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <!-- Background watching: a foreground service keeps one SSE connection open
          so a finished task or a pending approval can reach the phone. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

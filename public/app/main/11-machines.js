@@ -186,23 +186,49 @@ async function renderPhoneBox() {
   if ($('phone-adb') && document.activeElement !== $('phone-adb')) $('phone-adb').value = data.adb?.configured || data.adb?.path || '';
   const ready = (data.devices || []).filter((d) => d.state === 'device');
   $('phone-look').hidden = !ready.length;
-  if (!data.adb?.found) {
-    list.innerHTML = `<div class="machine-empty">${escapeHtml(local ? '这台电脑上还没找到 adb。装好 Android platform-tools，或在下面填 adb.exe 的位置。' : '这台机器上没有 adb，手机要连在装了 adb 的电脑上。')}</div>`;
-    return;
-  }
+  renderPhoneAgentRow();
   if (!(data.devices || []).length) {
-    list.innerHTML = `<div class="machine-empty">${escapeHtml(data.error || '没有连着的手机。插上数据线，打开 USB 调试，在手机上点「允许」。')}</div>`;
+    const how = '在手机上的 Lamplit 里打开「让机器人用这部手机」（不用数据线），或者用数据线连这台电脑、打开 USB 调试。';
+    list.innerHTML = `<div class="machine-empty">${escapeHtml(data.error || (data.adb?.found ? `没有能用的手机。${how}` : `没有能用的手机。${how}${local ? '用数据线的话，这台电脑要装好 adb（Android platform-tools），或在下面填 adb.exe 的位置。' : ''}`))}</div>`;
     return;
   }
   list.innerHTML = data.devices.map((d) => {
+    const via = d.via === 'app' ? '通过 Lamplit App（不用数据线）' : '数据线';
     const sub = d.state === 'unauthorized' ? '还没允许这台电脑：解锁手机，在弹窗里点「允许」'
       : d.state !== 'device' ? `状态：${d.state}`
-      : d.locked ? '已连接 · 锁着屏（机器人会请你解锁）' : `已连接${d.appName || d.app ? ` · 前台：${d.appName || d.app}` : ''}`;
+      : d.locked ? `${via} · 锁着屏（机器人会请你解锁）` : `${via}${d.appName || d.app ? ` · 前台：${d.appName || d.app}` : ''}`;
     return `<div class="machine-row"><div class="machine-avatar">${escapeHtml((d.model || '手').slice(0, 1))}</div><div class="machine-meta"><div class="machine-name">${escapeHtml(d.model || d.serial)}</div><div class="machine-sub">${escapeHtml(sub)}</div></div></div>`;
   }).join('');
 }
 
+/**
+ * On the phone itself (1.4.0): 「让机器人用这部手机」. Lamplit only opens the
+ * system's accessibility settings; the human turns it on there.
+ */
+function renderPhoneAgentRow() {
+  const row = $('phone-agent-row');
+  const shell = window.NightshiftShell;
+  if (!row) return;
+  if (!shell || typeof shell.phoneAgentEnabled !== 'function') { row.hidden = true; return; }
+  row.hidden = false;
+  let on = false;
+  try { on = Boolean(shell.phoneAgentEnabled()); } catch { /* old app */ }
+  $('phone-agent-state').textContent = on
+    ? '已打开：你各台机器上的机器人可以用这部手机（不用数据线）。通知栏里有提示，点「停止」随时关掉。'
+    : '还没打开。打开后，你各台机器上的机器人不用数据线也能用这部手机：看屏幕、点、输入、打开 App。付款、发送、发布、同意条款每次都会先问你；锁屏时不会解锁，也不会输入密码。';
+  $('phone-agent-btn').textContent = on ? '去系统设置里关掉' : '打开「让机器人用这部手机」';
+}
+
 function bindPhoneBox() {
+  if ($('phone-agent-btn') && !$('phone-agent-btn').dataset.bound) {
+    $('phone-agent-btn').dataset.bound = '1';
+    $('phone-agent-btn').addEventListener('click', () => {
+      try { window.NightshiftShell.openAccessibilitySettings(); } catch { /* old app */ }
+      toast('在系统设置里找到「Lamplit：让机器人用这部手机」，打开它，再回来');
+    });
+    // Back from the system settings: show what is on now.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) renderPhoneAgentRow(); });
+  }
   if (!$('phone-refresh') || $('phone-refresh').dataset.bound) return;
   $('phone-refresh').dataset.bound = '1';
   $('phone-refresh').addEventListener('click', () => { $('phone-shot').hidden = true; renderPhoneBox(); });

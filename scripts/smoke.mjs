@@ -159,6 +159,7 @@ async function main() {
     await stage('1.2.164: a machine given to the bots stops asking; remembered yes; the group does the work', scenarioV164);
     await stage('1.2.165: routines can be changed and deleted; the screen and tasks follow the chat; 需要你拍板 says what', scenarioV165);
     await stage('1.2.166: run once, a new version is announced, the working face is right', scenarioV166);
+    await stage('1.2.167: a task moves to another machine with its checklist and files', scenarioV167);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4834,6 +4835,102 @@ async function scenarioTeamFixes() {
     const src = await readText('../src/agent.mjs');
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
+  }
+}
+
+/**
+ * 1.2.167: "这件事换到 Ubuntu 上做" - a task moves to another machine with its
+ * checklist, progress and files (same paths there); this machine stops it.
+ * Logins and running programs do not move: the bot says so.
+ */
+async function scenarioV167() {
+  const CM = await import('../src/crossmachine.mjs');
+  const fsx = await import('node:fs');
+  const workspaceDir = path.join(home, 'workspace');
+  const dir = path.join(workspaceDir, 'mv167', '成稿');
+  fsx.mkdirSync(path.join(dir, 'img'), { recursive: true });
+  fsx.writeFileSync(path.join(dir, 'D8.md'), '# D8');
+  fsx.writeFileSync(path.join(dir, 'img', '01.png'), 'png');
+  fsx.writeFileSync(path.join(workspaceDir, 'mv167', 'notes.txt'), 'n');
+
+  // --- M1: which files go ------------------------------------------------------------
+  {
+    const picked = await CM.filesForMove(workspaceDir, { paths: ['mv167/成稿', 'mv167/notes.txt', '../outside.txt', 'mv167/none.md'], text: '' });
+    check('M1 move files: a folder goes with everything in it, files keep their paths, nothing outside the workspace or missing',
+      picked.files.includes('mv167/成稿/D8.md') && picked.files.includes('mv167/成稿/img/01.png') && picked.files.includes('mv167/notes.txt')
+      && !picked.files.some((f) => f.includes('..') || f.includes('none.md')) && picked.missing.includes('mv167/none.md'), JSON.stringify(picked));
+  }
+
+  // --- M2: the other machine takes the files and the task -----------------------------
+  {
+    const put = await apiRaw('/api/workspace/file?path=' + encodeURIComponent('moved167/a/b.md'), { method: 'PUT', body: Buffer.from('hello'), contentType: 'application/octet-stream' });
+    const again = await apiRaw('/api/workspace/file?path=' + encodeURIComponent('moved167/a/b.md') + '&from=' + encodeURIComponent('MY-LAPTOP'), { method: 'PUT', body: Buffer.from('other'), contentType: 'application/octet-stream' });
+    const same = await apiRaw('/api/workspace/file?path=' + encodeURIComponent('moved167/a/b.md'), { method: 'PUT', body: Buffer.from('hello'), contentType: 'application/octet-stream' });
+    const out = await apiRaw('/api/workspace/file?path=' + encodeURIComponent('../x.md'), { method: 'PUT', body: Buffer.from('x'), contentType: 'application/octet-stream' });
+    check('M2 receive files: a moved file lands at the same path; a different file already there is kept and the new one gets "(来自 …)"; the same file is left as is; outside the workspace is refused',
+      put.status === 200 && put.json?.path === 'moved167/a/b.md' && fsx.readFileSync(path.join(workspaceDir, 'moved167', 'a', 'b.md'), 'utf8') === 'hello'
+      && again.status === 200 && /b（来自 MY-LAPTOP）\.md$/.test(again.json?.path || '') && same.json?.same === true && out.status === 400,
+      JSON.stringify({ put: put.json, again: again.json, same: same.json, out: out.status }));
+    const bots = (await api('/api/bots')).json;
+    const who = (bots.bots || bots)[0];
+    const imp = await api('/api/tasks/import', { method: 'POST', body: { botId: who.id, goal: '做 D8 的图', request: '把 D8 做完', steps: [{ title: '写文案', status: 'done', result: 'mv167/成稿/D8.md' }, { title: '配图', status: 'doing' }, { title: '发布', status: 'todo' }], from: { machine: 'MY-LAPTOP', bot: '文案' }, files: ['mv167/成稿/D8.md'], start: false } });
+    const plan = imp.json?.task;
+    check('M2 receive task: the bot over there gets the task with the same checklist (done steps stay done) and goes on from the first open step',
+      imp.status === 200 && plan?.goal === '做 D8 的图' && plan.tasks.length === 3 && plan.tasks[0].status === 'done' && plan.tasks[1].status === 'doing' && plan.status === 'running' && plan.movedFrom?.machine === 'MY-LAPTOP',
+      JSON.stringify(imp.json));
+  }
+
+  // --- M3: this machine hands it over and stops ---------------------------------------
+  {
+    const { AgentRuntime } = await import('../src/agent.mjs');
+    const events = [];
+    const recorded = [];
+    const calls = [];
+    const peer = { name: 'Ubuntu', url: 'http://192.0.2.10:4390' };
+    const fakePeers = {
+      find: (ref) => (/ubuntu/i.test(ref) ? peer : null),
+      json: async (_p, method, url, opts = {}) => {
+        calls.push({ method, url, body: opts.body });
+        if (url === '/api/bots') return [{ id: 'bot-x', name: '文案' }, { id: 'chief', name: '助理', primary: true }];
+        if (url.startsWith('/api/workspace/file')) return { path: decodeURIComponent(url.split('path=')[1].split('&')[0]) };
+        if (url === '/api/tasks/import') return { task: { id: 'task_there', botId: opts.body.botId } };
+        return {};
+      },
+    };
+    const writer = { id: 'writer', name: '文案' };
+    const rt = new AgentRuntime({ config: { workspaceDir }, registry: { schemasFor: () => [] }, model: { complete: async () => ({ content: 'ok' }) },
+      bots: { getBot: async (id) => (id === 'writer' || id === '文案' ? writer : null), listBots: async () => [writer] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit: (e) => events.push(e) },
+      getPeers: () => fakePeers });
+    rt.record = async (botId, rec) => { recorded.push({ botId, ...rec }); };
+    rt.tasks = new Map([['writer', { id: 'task_here', kind: 'task', botId: 'writer', goal: '做 D8', request: '把 D8 做完', status: 'running', tasks: [{ id: 't1', title: '写文案', status: 'done', result: '见 mv167/成稿/D8.md' }, { id: 't2', title: '配图', status: 'doing', result: '' }] }]]);
+    rt.taskChanged = async () => {};
+    const out = await rt.moveTask({ bot: writer, machine: 'ubuntu', paths: ['mv167/成稿'], turnId: 't1' });
+    const here = rt.tasks.get('writer');
+    const imp = calls.find((c) => c.url === '/api/tasks/import');
+    check('M3 move: the files (the folder and the ones the task names) go over first, then the task to the bot of the same name there; this machine marks it moved and stops',
+      out?.moved === true && out.machine === 'Ubuntu' && out.bot === '文案' && imp?.body?.botId === 'bot-x' && imp.body.steps.length === 2 && imp.body.steps[0].status === 'done'
+      && calls.filter((c) => c.method === 'PUT').length >= 2 && here.status === 'moved' && /Ubuntu/.test(here.endNote || '')
+      && recorded.some((r) => r.botId === 'writer' && /Ubuntu/.test(r.text || '') && r.notice), JSON.stringify({ out, calls: calls.map((c) => [c.method, c.url]) }));
+    check('M3 move: the bot is told what does not move (logins, running programs) so it can tell the human',
+      /登录|login/i.test(out?.note || '') && /程序|program/i.test(out?.note || ''));
+    let none = null;
+    try { await rt.moveTask({ bot: { id: 'nobody', name: '某某' }, machine: 'ubuntu', turnId: 't2' }); } catch (err) { none = err.code; }
+    let nowhere = null;
+    try { await rt.moveTask({ bot: writer, machine: 'mars', turnId: 't3' }); } catch (err) { nowhere = err.code; }
+    check('M3 move: no open task, or no such machine, says so (nothing is half-moved)', none === 'NO_TASK' && nowhere === 'PEER_NOT_FOUND', JSON.stringify({ none, nowhere }));
+  }
+
+  // --- M4: who may move, and what the page shows -----------------------------------------
+  {
+    const toolsMod = await import('../src/tools.mjs');
+    const registry = toolsMod.createRegistry({ workspaceDir, config: {}, getRuntime: () => ({}), getRoutines: () => null });
+    const tool = registry.get('task_move');
+    const serverSrc = await readText('../src/server.mjs');
+    const plans = await readText('../src/plans.mjs');
+    check('M4 task_move: a bot that can hand work to other machines (bot_message) can move its task; it asks first unless the bot is trusted, since files leave this machine; only another Lamplit machine may write files or tasks here',
+      Boolean(tool) && tool.risk === 'MEDIUM' && registry.isGranted({ tools: ['bot_message'] }, 'task_move') && !registry.isGranted({ tools: [] }, 'task_move')
+      && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
+      && plans.includes("moved: '已搬走'"));
   }
 }
 

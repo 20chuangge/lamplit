@@ -1777,4 +1777,8 @@ window.DESK_I18N_EN = {
   "正在安装，马上重新打开…": "Installing, reopening shortly…",
   "这个版本先不更新": "Skip this version",
   "发布页": "Release page",
+  "已搬到别的机器": "Moved to another machine",
+  "把任务搬到另一台机器": "Move the task to another machine",
+  "想把这件事换到另一台机器上接着做": "Wants to carry on with this on another machine",
+  "任务清单、进度和相关文件会传到那台机器；网站登录不会跟过去。": "The checklist, progress and files go to that machine; website logins do not.",
 };

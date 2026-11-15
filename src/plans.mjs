@@ -24,7 +24,7 @@ const DIR = () => path.join(P.dataDir, 'groups', 'plans');
 const file = (planId) => path.join(DIR(), `${String(planId).replace(/[^\w-]/g, '')}.json`);
 
 export const TASK_STATUS_TEXT = {
-  todo: '待开始', doing: '进行中', waiting_human: '等你回复', done: '完成', failed: '没做成', skipped: '跳过', stopped: '已停止',
+  todo: '待开始', doing: '进行中', waiting_human: '等你回复', done: '完成', failed: '没做成', skipped: '跳过', stopped: '已停止', moved: '已搬走',
 };
 
 /** The member a name or id means (exact id, exact name, then a unique partial name). */

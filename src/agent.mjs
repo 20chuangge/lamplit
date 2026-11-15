@@ -16,6 +16,7 @@
  */
 
 import path from 'node:path';
+import os from 'node:os';
 import fsp from 'node:fs/promises';
 import fsSync from 'node:fs';
 import {
@@ -271,7 +272,7 @@ function peersLine(peers, canHandOff) {
   return [`Teammates also work on the human's other machines: ${peers.map((p) => p.name).join(', ')}. bot_list shows who is there; hand them work with bot_message and its machine argument. Their files are separate: file_send what they need first, file_fetch what they made.`];
 }
 
-import { askPeerBot, fetchedNote } from './crossmachine.mjs';
+import { askPeerBot, fetchedNote, filesForMove, sendFilesKeepingPaths } from './crossmachine.mjs';
 import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember, listPlans, makeTask, updateStep, openSteps, doneSteps, taskText } from './plans.mjs';
 
 /** A 1:1 task keeps going by itself at most this many turns before it asks the human. */
@@ -877,6 +878,7 @@ export class AgentRuntime {
         : 'You are a specialist bot. Do your part of the work and report back concisely. When part of a job belongs to a teammate (see the team below), hand it to them with bot_message - give them the inputs and file paths they need - and put their results together; you get each reply back. Never hand work back to the bot that gave it to you.',
       teamLine,
       ...peersLine(this.getPeers()?.list?.() || [], this.registry.isGranted(bot, 'bot_message')),
+      ...(this.registry.isGranted(bot, 'task_move') && (this.getPeers()?.list?.() || []).length ? ['When the human asks to move the work to another machine ("换到 Ubuntu 上做"), use task_move - it carries the checklist, progress and files and stops it here. Do not re-explain the task to a bot over there with bot_message.'] : []),
       ...(this.registry.isGranted(bot, 'bot_message') ? ['In a pipeline (write → review → fix …): when your part is done and the next step is a teammate\'s, use bot_pass to hand it on now and finish - do not leave it for a later scheduled round. Use bot_message only when you need their result to finish your own work.'] : []),
       'When something needs the human\'s decision (publish or not, pick an option, a blocker only they can clear), say it with tell_human - also when a teammate or a routine asked you, because your reply may only reach them.',
       ...(this.registry.isGranted(bot, 'group_handover') ? ['When you have set up a team in a group for a job, hand the whole job over with group_handover and finish: its coordinator runs it in the group and the result is posted there. Do not relay between the bots yourself, and do not pass their results on to the human - the group shows them.'] : []),
@@ -1791,6 +1793,118 @@ export class AgentRuntime {
       text = `（任务继续，系统自动发起，用户没有发新消息）目标：${plan.goal}\n进度：\n${taskText(plan)}\n接着做下一个没完成的步骤，不用开场白，不要重做已经完成的步骤；每做完一步马上用 task_step 标记。全部做完后给用户最终结果（结果本身和文件路径）。`;
     }
     await this.runTurn({ botId, text, source: 'task', recordUser: false });
+  }
+
+  /**
+   * task_move (1.2.167): "这件事换到 Ubuntu 上做". The files go first (same
+   * paths there), then the task with its checklist to the bot of the same name
+   * on that machine (or the one asked for, else its primary). This machine
+   * marks the task moved and stops it. Logins and running programs stay here.
+   */
+  async moveTask({ bot, fromBot = '', machine, target = '', paths = [], note = '', turnId = null }) {
+    const fail = (code, message) => Object.assign(new Error(message), { code });
+    let owner = bot;
+    if (fromBot) {
+      const want = String(fromBot).trim();
+      owner = (await this.bots.getBot(want)) || (await this.bots.listBots()).find((b) => b.name === want) || null;
+      if (!owner) throw fail('BOT_NOT_FOUND', `no bot "${want}" on this machine`);
+    }
+    const peers = this.getPeers?.();
+    const peer = peers?.find?.(machine);
+    if (!peer) throw fail('PEER_NOT_FOUND', `no machine called "${machine}"; bot_list shows the machines this one can reach`);
+    this.tasks = this.tasks || new Map();
+    const task = this.activeTask(owner.id);
+    if (!task) throw fail('NO_TASK', `「${owner.name}」 has no open task to move. For a job without a checklist, start one with task_plan first (or hand the work over with bot_message and machine).`);
+
+    let roster;
+    try { roster = await peers.json(peer, 'GET', '/api/bots', { timeoutMs: 15000 }); } catch (err) { throw fail(err.code || 'PEER_ERROR', `「${peer.name}」 did not answer: ${err.message}`); }
+    const list = roster?.bots || roster || [];
+    const lower = (x) => String(x || '').trim().toLowerCase();
+    const there = (target && (list.find((b) => lower(b.id) === lower(target)) || list.find((b) => lower(b.name) === lower(target))))
+      || list.find((b) => b.name === owner.name) || list.find((b) => b.primary) || list[0];
+    if (!there) throw fail('BOT_NOT_FOUND', `「${peer.name}」 has no bots`);
+
+    // The files: the paths asked for, and the ones the task's text names.
+    const said = [task.goal, task.request, note, ...task.tasks.map((t) => `${t.title} ${t.result || ''}`)].join('\n');
+    const picked = await filesForMove(this.config.workspaceDir, { paths, text: said });
+    const here = os.hostname();
+    const sent = await sendFilesKeepingPaths(peers, peer, picked.files, this.config.workspaceDir, { from: here });
+    const renamed = sent.filter((f) => f.to !== f.from);
+    try {
+      await peers.json(peer, 'POST', '/api/tasks/import', {
+        body: {
+          botId: there.id,
+          goal: task.goal,
+          request: task.request,
+          steps: task.tasks.map((t) => ({ title: t.title, status: t.status, result: t.result || '' })),
+          from: { machine: here, bot: owner.name },
+          files: sent.map((f) => f.to),
+          note: [String(note || '').slice(0, 1000), renamed.length ? `这些文件那边已有不同的版本，带过来的另存为：${renamed.map((f) => `${f.from} → ${f.to}`).join('；')}` : ''].filter(Boolean).join('\n'),
+        },
+        timeoutMs: 30000,
+      });
+    } catch (err) {
+      throw fail(err.code || 'PEER_ERROR', `the files went over but 「${peer.name}」 did not take the task (${err.message}); the task stays here`);
+    }
+
+    task.status = 'moved';
+    task.endNote = `搬到「${peer.name}」的「${there.name}」接着做`;
+    await this.taskChanged(task);
+    const line = `这件事搬到「${peer.name}」的「${there.name}」接着做了（带过去 ${sent.length} 个文件${picked.missing.length ? `，${picked.missing.length} 个没找到` : ''}${picked.skipped.length ? `，${picked.skipped.length} 个太大没带` : ''}）。网站和 App 的登录、正在运行的程序不会跟过去。`;
+    await this.record(owner.id, { kind: 'assistant', text: line, turnId, notice: true, final: true });
+    this.bus.emit({ type: 'message', botId: owner.id, botName: owner.name, turnId, text: line, final: true, ts: nowIso() });
+    // Moving another bot's task: its running turn on it stops here.
+    if (owner.id !== bot.id) {
+      for (const info of this.active.values()) if (info.botId === owner.id && !info.group) info.controller?.abort();
+    }
+    return {
+      moved: true,
+      machine: peer.name,
+      bot: there.name,
+      filesSent: sent.length,
+      ...(picked.missing.length ? { filesMissing: picked.missing } : {}),
+      ...(picked.skipped.length ? { filesSkipped: picked.skipped } : {}),
+      note: `Moved. 「${there.name}」 on 「${peer.name}」 goes on from the first open step; this machine stopped the task. Logins (websites, apps) and running programs do not move: say in one line that the human may need to sign in there again. Finish your turn now in one or two lines - do not keep working on this task here.`,
+    };
+  }
+
+  /** A task moved here from another machine: the bot takes it up where it was. */
+  async importTask({ botId, goal, request = '', steps = [], from = {}, files = [], note = '', start = true }) {
+    const fail = (code, message) => Object.assign(new Error(message), { code, status: 400 });
+    const bot = (await this.bots.getBot(String(botId || ''))) || (await this.bots.listBots()).find((b) => b.primary) || null;
+    if (!bot) throw fail('BOT_NOT_FOUND', `no bot "${botId}" here`);
+    const list = (Array.isArray(steps) ? steps : []).filter((s) => s && String(s.title || '').trim()).slice(0, 15);
+    const machineName = String(from?.machine || '另一台机器').slice(0, 60);
+    const fromBot = String(from?.bot || '').slice(0, 60);
+    const movedNote = `（这件事是从「${machineName}」${fromBot ? `的「${fromBot}」` : ''}搬过来的。文件已放在这台机器工作区的同样路径下；网站和 App 的登录、正在运行的程序没有跟过来，需要的话请用户在这台机器上重新登录。${note ? `\n${String(note).slice(0, 1200)}` : ''}）`;
+    const made = makeTask({ botId: bot.id, request: `${String(request || goal || '').slice(0, 3500)}\n\n${movedNote}`, goal, steps: list.length >= 2 ? list.map((s) => s.title) : [...list.map((s) => s.title), '接着做完并给出结果'].slice(0, Math.max(2, list.length + 1)) });
+    if (made.error) throw fail('BAD_TASK', made.error);
+    const plan = made.plan;
+    const KEEP = new Set(['todo', 'doing', 'done', 'skipped', 'failed', 'waiting_human']);
+    plan.tasks.forEach((t, i) => {
+      const s = list[i];
+      if (!s) return;
+      t.status = KEEP.has(s.status) ? (s.status === 'waiting_human' ? 'todo' : s.status) : 'todo';
+      t.result = String(s.result || '').slice(0, 500);
+    });
+    if (!plan.tasks.some((t) => t.status === 'doing')) {
+      const next = plan.tasks.find((t) => t.status === 'todo');
+      if (next) next.status = 'doing';
+    }
+    plan.movedFrom = { machine: machineName, bot: fromBot };
+    this.tasks = this.tasks || new Map();
+    const cur = this.activeTask(bot.id);
+    if (cur) { cur.status = 'replaced'; await this.taskChanged(cur); }
+    this.tasks.set(bot.id, plan);
+    const fileLine = Array.isArray(files) && files.length ? `带过来的文件：${files.slice(0, 12).join('、')}${files.length > 12 ? ` 等 ${files.length} 个` : ''}。` : '';
+    await this.record(bot.id, { kind: 'plan', planId: plan.id, text: `任务：${plan.goal}` });
+    await this.record(bot.id, { kind: 'assistant', text: `从「${machineName}」${fromBot ? `的「${fromBot}」` : ''}接过来的任务：${plan.goal}。${fileLine}接着从没做完的那一步做。`, notice: true, final: true });
+    await this.taskChanged(plan);
+    if (start !== false) {
+      const timer = setTimeout(() => this.continueTask(bot.id).catch((err) => this.bus.emit({ type: 'error', botId: bot.id, message: err.message })), 1500);
+      timer.unref?.();
+    }
+    return { task: plan, bot: { id: bot.id, name: bot.name } };
   }
 
   /** After a restart: open tasks from the last day are picked up again. */

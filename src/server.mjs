@@ -2393,6 +2393,53 @@ route('GET', /^\/api\/workspace\/file$/, async (_req, res, { state, query }) => 
   return undefined;
 });
 
+/**
+ * Another Lamplit machine (or this computer's desktop app, or the master
+ * token) - never a phone, a browser or a web page. Moving a task writes files
+ * and starts work here, like a push-update does (1.2.167).
+ */
+function fromAnotherMachine(req, state) {
+  const auth = req.auth || {};
+  const device = auth.deviceId ? state.devices.list().find((d) => d.id === auth.deviceId) : null;
+  return auth.mode === 'local' ? !req.headers.origin : auth.deviceId ? mayPushUpdate(device) : auth.mode === 'token';
+}
+
+// --- a task moved here from another machine (1.2.167) ---------------------------
+//   PUT  /api/workspace/file?path=rel[&from=machine]  raw bytes -> {path, same?}
+//        Same path as on the other machine. A different file already there is
+//        kept: the new one is saved as "name（来自 machine）.ext".
+//   POST /api/tasks/import {botId, goal, request, steps:[{title,status,result}], from:{machine,bot}, files, note, start?}
+route(
+  'PUT',
+  /^\/api\/workspace\/file$/,
+  async (req, _res, { state, query }) => {
+    if (!fromAnotherMachine(req, state)) throw httpError(403, 'NOT_A_MACHINE', 'only another computer running Lamplit can put files here');
+    const rel = String(query.get('path') || '').replace(/\\/g, '/');
+    if (!rel || rel.startsWith('/') || rel.split('/').includes('..')) throw httpError(400, 'PATH_OUTSIDE_WORKSPACE', 'path must stay inside the workspace');
+    const abs = workspaceFile(state, rel);
+    const bytes = await readRawBody(req, UPLOAD_MAX_BYTES, { code: 'UPLOAD_TOO_LARGE', message: `a file must be ${UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller` });
+    await fsp.mkdir(path.dirname(abs), { recursive: true });
+    const old = await fsp.readFile(abs).catch(() => null);
+    if (old && old.equals(bytes)) return { path: rel, same: true };
+    let target = abs;
+    if (old) {
+      const from = safeUploadName(String(query.get('from') || '另一台机器')).slice(0, 40);
+      const ext = path.extname(abs);
+      const stem = abs.slice(0, abs.length - ext.length);
+      target = `${stem}（来自 ${from}）${ext}`;
+      for (let i = 2; fs.existsSync(target); i += 1) target = `${stem}（来自 ${from}-${i}）${ext}`;
+    }
+    await fsp.writeFile(target, bytes);
+    return { path: path.relative(path.resolve(state.workspaceDir), target).replace(/\\/g, '/') };
+  },
+  { rawBody: true },
+);
+
+route('POST', /^\/api\/tasks\/import$/, async (req, _res, { state, body }) => {
+  if (!fromAnotherMachine(req, state)) throw httpError(403, 'NOT_A_MACHINE', 'only another computer running Lamplit can hand a task here');
+  return state.runtime.importTask(body || {});
+});
+
 /** Attachments named in a message must be files we stored. */
 async function checkAttachments(state, list) {
   if (!Array.isArray(list) || !list.length) return [];

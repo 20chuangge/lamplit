@@ -1582,6 +1582,7 @@ const TOOL_TEXT = {
   bot_pass: { label: '交给下一位同事', title: '想把下一步交给另一位助手', impact: '对方接着做，这一位不等回复就结束。' },
   routine_update: { label: '改定时任务', title: '想修改一条定时任务', impact: '改的是别的机器人名下的任务，所以先问你。' },
   routine_delete: { label: '删定时任务', title: '想删除一条定时任务', impact: '删的是别的机器人名下的任务，所以先问你；删了就不会再跑。' },
+  task_move: { label: '把任务搬到另一台机器', title: '想把这件事换到另一台机器上接着做', impact: '任务清单、进度和相关文件会传到那台机器；网站登录不会跟过去。' },
   group_handover: { label: '交给群里做', title: '想把整件事交给一个群', impact: '群里的协调者接手安排，结果发在群里。' },
   tell_human: { label: '请你拍板', title: '有件事需要你决定', impact: '在对话、手机和飞书里告诉你。' },
   tool_request: { label: '申请工具', title: '想申请加上一些工具', impact: '同意后这个机器人一直能用这些工具，可以在机器人设置里关掉；有风险的操作照样会先问你。' },

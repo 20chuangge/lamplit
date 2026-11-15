@@ -416,7 +416,8 @@ function fillPlanCard(card, plan) {
   const head = el('div', 'plan-head');
   head.appendChild(el('span', 'plan-title', solo ? `任务：${plan.goal || ''}` : '任务板'));
   const overall = plan.status === 'done' ? '已完成' : plan.status === 'waiting' ? '等你回复' : plan.status === 'stopped' ? '已停止'
-    : plan.status === 'stalled' ? '停下了，等你说继续' : plan.status === 'replaced' ? '已换成新计划' : '进行中';
+    : plan.status === 'stalled' ? '停下了，等你说继续' : plan.status === 'replaced' ? '已换成新计划'
+    : plan.status === 'moved' ? (plan.endNote || '已搬到别的机器') : '进行中';
   head.appendChild(el('span', `plan-progress${plan.status === 'running' ? ' live' : ''}`, `${done}/${plan.tasks.length} · ${overall}`));
   card.appendChild(head);
   const bar = el('div', 'plan-bar');

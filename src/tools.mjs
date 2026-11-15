@@ -1525,6 +1525,29 @@ export function createRegistry(deps) {
     },
   });
 
+  // 1.2.167: "这件事换到 Ubuntu 上做" - the task, its checklist and its files
+  // move to another machine; this one stops it. MEDIUM: files leave this machine.
+  add({
+    name: 'task_move',
+    description: 'Move the open task (its goal, checklist with progress, and files) to another of the human\'s machines, where a bot goes on from the first open step; this machine stops the task. Use it when the human asks to move or continue the work on another machine ("换到 Ubuntu 上做", "让 Linux 那台接着做"). Files the task names go along at the same paths; add folders or files with files. Logins (websites, apps) and running programs do not move. For a quick question to a bot over there use bot_message with machine instead.',
+    risk: RISK.MEDIUM,
+    parameters: {
+      type: 'object',
+      properties: {
+        machine: { type: 'string', description: 'The other machine\'s name (bot_list otherMachines).' },
+        bot: { type: 'string', description: 'Which bot there takes it (id or name). Default: the bot of the same name, else that machine\'s main bot.' },
+        fromBot: { type: 'string', description: 'Move another bot\'s task on this machine (id or name) instead of your own - for the main bot.' },
+        files: { type: 'array', items: { type: 'string' }, description: 'Workspace files or folders to take along, besides the ones the task names.' },
+        note: { type: 'string', description: 'Anything the bot there should know (what is in progress, what to watch out for).' },
+      },
+      required: ['machine'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      return deps.getRuntime().moveTask({ bot: ctx.bot, fromBot: args?.fromBot || '', machine: String(args?.machine || ''), target: String(args?.bot || ''), paths: Array.isArray(args?.files) ? args.files.map(String) : [], note: String(args?.note || ''), turnId: ctx.turnId });
+    },
+  });
+
   // 1.2.162: a pipeline moves when a step is done. On 11-15 质检's "须改" waited
   // two hours for the next round of a routine; with bot_pass the writer's
   // finished draft goes to review at once, and the review back to the writer.
@@ -2345,7 +2368,7 @@ export function createRegistry(deps) {
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;
       // Handing work to another machine needs moving its inputs and results.
-      if ((name === 'file_send' || name === 'file_fetch' || name === 'bot_pass') && grants.has('bot_message')) return true;
+      if ((name === 'file_send' || name === 'file_fetch' || name === 'bot_pass' || name === 'task_move') && grants.has('bot_message')) return true;
       // Who may set up a group may give it a job.
       if (name === 'group_handover' && grants.has('group_create')) return true;
       // Who may make routines may change and delete them.

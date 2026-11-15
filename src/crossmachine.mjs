@@ -51,6 +51,60 @@ export async function carryFilesOut(peers, peer, text, workspaceDir, { max = 8 }
   return sent;
 }
 
+/**
+ * The files a moved task takes along (1.2.167): the paths named (a folder
+ * brings everything in it) and the workspace files its text names. Paths stay
+ * workspace-relative so they mean the same thing on the other machine.
+ * -> {files: [rel], missing: [rel], skipped: [rel]} (skipped: too big or over the cap)
+ */
+export async function filesForMove(workspaceDir, { paths = [], text = '', maxFiles = 300, maxBytes = 300 * 1024 * 1024 } = {}) {
+  const files = [];
+  const missing = [];
+  const skipped = [];
+  let total = 0;
+  const add = async (rel, abs, st) => {
+    if (files.includes(rel)) return;
+    if (st.size > MAX_FILE_BYTES || files.length >= maxFiles || total + st.size > maxBytes) { skipped.push(rel); return; }
+    total += st.size;
+    files.push(rel);
+  };
+  const walk = async (rel, abs) => {
+    const entries = await fsp.readdir(abs, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      const childRel = `${rel}/${e.name}`;
+      const childAbs = path.join(abs, e.name);
+      if (e.isDirectory()) await walk(childRel, childAbs);
+      else if (e.isFile()) await add(childRel, childAbs, await fsp.stat(childAbs));
+    }
+  };
+  const wanted = [...(Array.isArray(paths) ? paths : []), ...pathsIn(text)].map((p) => String(p || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')).filter(Boolean);
+  for (const rel of [...new Set(wanted)]) {
+    const abs = insideWorkspace(workspaceDir, rel);
+    if (!abs) continue;
+    const st = await fsp.stat(abs).catch(() => null);
+    if (!st) { missing.push(rel); continue; }
+    if (st.isDirectory()) await walk(rel, abs);
+    else if (st.isFile()) await add(rel, abs, st);
+  }
+  return { files, missing, skipped };
+}
+
+/** Send files to the same paths on the other machine. -> [{from, to, same?}] */
+export async function sendFilesKeepingPaths(peers, peer, files, workspaceDir, { from = '' } = {}) {
+  const sent = [];
+  for (const rel of files) {
+    const abs = insideWorkspace(workspaceDir, rel);
+    if (!abs) continue;
+    try {
+      const bytes = await fsp.readFile(abs);
+      const out = await peers.json(peer, 'PUT', `/api/workspace/file?path=${encodeURIComponent(rel)}${from ? `&from=${encodeURIComponent(from)}` : ''}`, { raw: bytes, headers: { 'content-type': 'application/octet-stream' }, timeoutMs: 120000 });
+      if (out?.path) sent.push({ from: rel, to: out.path, ...(out.same ? { same: true } : {}) });
+    } catch { /* that one stays here; the task text still names it */ }
+  }
+  return sent;
+}
+
 /** What the bot over there is told about the files that came along. */
 export function carriedNote(sent) {
   if (!sent.length) return '';

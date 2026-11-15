@@ -409,16 +409,58 @@ function planCard(planId, fallbackText = '') {
   return card;
 }
 
-function fillPlanCard(card, plan) {
+/** A moved task's progress on the machine it went to: planId -> {at, plan?, failed?} (1.2.168). */
+const movedLive = new Map();
+
+function planOverall(plan) {
+  return plan.status === 'done' ? '已完成' : plan.status === 'waiting' ? '等你回复' : plan.status === 'stopped' ? '已停止'
+    : plan.status === 'stalled' ? '停下了，等你说继续' : plan.status === 'replaced' ? '已换成新计划'
+    : plan.status === 'moved' ? (plan.endNote || '已搬到别的机器') : '进行中';
+}
+
+/**
+ * A task moved to another machine stops here, so its own steps freeze at the
+ * moment it left. The card shows the task as it is over there instead,
+ * asking that machine (through this one) at most every 30 seconds.
+ */
+function fillMovedPlanCard(card, plan) {
+  const m = plan.movedTo;
+  const hit = movedLive.get(plan.id);
+  const doneHere = plan.tasks.filter((t) => t.status === 'done').length;
+  const foot = el('div', 'plan-moved-foot');
+  if (window.desk) {
+    const go = el('button', 'btn tiny', `去「${m.machine}」看`);
+    go.type = 'button';
+    go.addEventListener('click', () => switchMachineFor({ target: m.machine }));
+    foot.appendChild(go);
+  }
+  if (hit?.plan) {
+    const there = hit.plan;
+    const done = there.tasks.filter((t) => t.status === 'done').length;
+    const now = there.tasks.find((t) => t.status === 'doing');
+    const at = now ? `，正在做第 ${there.tasks.indexOf(now) + 1} 步` : '';
+    fillPlanCard(card, there, { label: `在「${m.machine}」那边：${done}/${there.tasks.length} · ${planOverall(there)}${at}`, live: there.status === 'running', foot });
+  } else {
+    const label = hit?.failed ? `搬走时 ${doneHere}/${plan.tasks.length} · 现在连不上「${m.machine}」` : `搬走时 ${doneHere}/${plan.tasks.length} · 正在问「${m.machine}」…`;
+    fillPlanCard(card, plan, { label, foot });
+  }
+  if (hit && Date.now() - hit.at < 30000) return;
+  movedLive.set(plan.id, { ...hit, at: Date.now() });
+  api(`/api/peers/${encodeURIComponent(plan.movedTo.machine)}/bots/${encodeURIComponent(plan.movedTo.botId)}/plans/${encodeURIComponent(plan.movedTo.planId)}`)
+    .then((r) => movedLive.set(plan.id, { at: Date.now(), plan: r?.plan || null, failed: !r?.plan }))
+    .catch(() => movedLive.set(plan.id, { at: Date.now(), plan: hit?.plan || null, failed: !hit?.plan }))
+    .then(() => { if (card.isConnected) fillMovedPlanCard(card, plan); });
+}
+
+function fillPlanCard(card, plan, view = null) {
+  if (!view && plan.status === 'moved' && plan.movedTo?.planId && plan.movedTo?.machine) { fillMovedPlanCard(card, plan); return; }
   card.innerHTML = '';
   const solo = plan.kind === 'task';
   const done = plan.tasks.filter((t) => t.status === 'done').length;
   const head = el('div', 'plan-head');
   head.appendChild(el('span', 'plan-title', solo ? `任务：${plan.goal || ''}` : '任务板'));
-  const overall = plan.status === 'done' ? '已完成' : plan.status === 'waiting' ? '等你回复' : plan.status === 'stopped' ? '已停止'
-    : plan.status === 'stalled' ? '停下了，等你说继续' : plan.status === 'replaced' ? '已换成新计划'
-    : plan.status === 'moved' ? (plan.endNote || '已搬到别的机器') : '进行中';
-  head.appendChild(el('span', `plan-progress${plan.status === 'running' ? ' live' : ''}`, `${done}/${plan.tasks.length} · ${overall}`));
+  const live = view ? view.live : plan.status === 'running';
+  head.appendChild(el('span', `plan-progress${live ? ' live' : ''}`, view?.label || `${done}/${plan.tasks.length} · ${planOverall(plan)}`));
   card.appendChild(head);
   const bar = el('div', 'plan-bar');
   const fill = el('i');
@@ -444,6 +486,7 @@ function fillPlanCard(card, plan) {
     if (body.childNodes.length) row.appendChild(body);
     card.appendChild(row);
   });
+  if (view?.foot?.childNodes.length) card.appendChild(view.foot);
 }
 
 /** Group members by id (local bots and the far ones), for avatars and names on the card. */
@@ -532,6 +575,8 @@ function openGroupModal(groupId = null) {
       coordinatorId: groupCoordinator(group)?.id || null,
     }
     : { name: '', members: [], coordinatorId: null };
+  state.groupDraft.machineFilter = 'all';
+  state.groupDraft.pinned = [...state.groupDraft.members];
   $('group-title').textContent = group ? '群组详情' : '新建群组';
   $('group-create').textContent = group ? '保存' : '创建群组';
   $('group-delete').hidden = !group;
@@ -550,28 +595,41 @@ function closeGroupModal() {
   $('group-scrim').classList.remove('show');
 }
 
+/** Machines the member list can be narrowed to: this one, and each with bots on offer (1.2.168). */
+function renderGroupMachineFilter(farBots) {
+  const row = $('group-machine-filter');
+  if (!row) return;
+  const draft = state.groupDraft;
+  const machines = [...new Set(farBots.map((b) => b.machine).filter(Boolean))];
+  row.innerHTML = '';
+  row.hidden = !machines.length;
+  if (!machines.length) { draft.machineFilter = 'all'; return; }
+  if (draft.machineFilter !== 'all' && draft.machineFilter !== 'here' && !machines.includes(draft.machineFilter)) draft.machineFilter = 'all';
+  const here = onLocalMachine() ? '本机' : machineDisplayName();
+  for (const [key, label] of [['all', '全部'], ['here', here], ...machines.map((m) => [m, m])]) {
+    const chip = el('button', `coord-chip${(draft.machineFilter || 'all') === key ? ' on' : ''}`, label);
+    chip.type = 'button';
+    chip.addEventListener('click', () => { state.groupDraft.machineFilter = key; renderGroupModal(); });
+    row.appendChild(chip);
+  }
+}
+
 function renderGroupModal() {
   const draft = state.groupDraft;
   const grid = $('group-member-grid');
   grid.innerHTML = '';
-  for (const bot of state.bots) {
-    const on = draft.members.includes(bot.id);
-    const card = el('button', `member-card${on ? ' on' : ''}`);
-    card.type = 'button';
-    card.disabled = !on && draft.members.length >= 6;
-    card.setAttribute('aria-pressed', on ? 'true' : 'false');
-    card.appendChild(avatarNode(bot, 36));
-    const text = el('div', 'mc-text');
-    text.appendChild(el('div', 'mc-name', bot.name));
-    text.appendChild(el('div', 'mc-role', bot.role || '—'));
-    card.appendChild(text);
-    card.addEventListener('click', () => toggleGroupMember(bot.id));
-    grid.appendChild(card);
-  }
   // Members on other machines: already in this group, or offered by the machines reachable now.
   const farKnown = new Map((state.remoteBots || []).map((b) => [b.id, b]));
   for (const m of (groupById(draft.id)?.members || [])) if (m?.machine && !farKnown.has(m.id)) farKnown.set(m.id, m);
-  for (const bot of farKnown.values()) {
+  renderGroupMachineFilter([...farKnown.values()]);
+  const filter = draft.machineFilter || 'all';
+  // Chosen members always show, first (as chosen when the dialog opened, so a
+  // card does not jump while you click); the others by the machine picked.
+  const shown = (bot) => draft.members.includes(bot.id) || filter === 'all' || (filter === 'here' ? !bot.machine : bot.machine === filter);
+  const pinned = new Set(draft.pinned || []);
+  const all = [...state.bots.map((b) => ({ ...b, machine: '' })), ...farKnown.values()];
+  const list = [...all.filter((b) => pinned.has(b.id)), ...all.filter((b) => !pinned.has(b.id))].filter(shown);
+  for (const bot of list) {
     const on = draft.members.includes(bot.id);
     const card = el('button', `member-card${on ? ' on' : ''}`);
     card.type = 'button';
@@ -580,7 +638,7 @@ function renderGroupModal() {
     card.appendChild(avatarNode(bot, 36));
     const text = el('div', 'mc-text');
     text.appendChild(el('div', 'mc-name', bot.name));
-    text.appendChild(el('div', 'mc-role', `在「${bot.machine}」上${bot.role ? ` · ${bot.role}` : ''}`));
+    text.appendChild(el('div', 'mc-role', bot.machine ? `在「${bot.machine}」上${bot.role ? ` · ${bot.role}` : ''}` : (bot.role || '—')));
     card.appendChild(text);
     card.addEventListener('click', () => toggleGroupMember(bot.id));
     grid.appendChild(card);

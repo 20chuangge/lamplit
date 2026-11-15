@@ -83,7 +83,7 @@ import * as visionModule from './vision.mjs';
 import * as mediaModule from './media.mjs';
 import { createVideoJobs } from './videojobs.mjs';
 import { createFeishu, loadFeishu } from './feishu.mjs';
-import { createPeers } from './peers.mjs';
+import { createPeers, friendlyHostname } from './peers.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
@@ -368,6 +368,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     bus,
     getApp: () => refs.app,
     getPeers: () => refs.peers || null,
+    machineName: () => selfMachineName(),
   });
   refs.runtime = runtime;
   // tell_human also reaches Feishu when it is connected (push returns 0 when it is not).
@@ -2016,8 +2017,7 @@ function selfMachineName() {
     try { selfNameCache = String(JSON.parse(fs.readFileSync(path.join(P.dataDir, 'machine.json'), 'utf8')).name || '').trim(); } catch { /* not named */ }
   }
   if (selfNameCache) return selfNameCache;
-  const hostname = os.hostname();
-  return /^(.*?)-(vmware|virtualbox|virtual|platform)/i.exec(hostname)?.[1] || hostname;
+  return friendlyHostname(os.hostname());
 }
 function setSelfMachineName(name) {
   const clean = String(name).trim().slice(0, 40);
@@ -2689,6 +2689,18 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/plans\/(?<planId>[\w-]+)$/, async (_re
   const plan = live?.id === params.planId ? live : await loadPlan(params.planId);
   if (!plan || plan.kind !== 'task' || plan.botId !== params.id) throw httpError(404, 'PLAN_NOT_FOUND', 'no such task');
   return { plan };
+});
+
+//   GET /api/peers/:machine/bots/:id/plans/:planId -> {plan}   a task moved to that
+//   machine, as it is there now (the "已搬走" card here shows its live progress, 1.2.168)
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/plans\/(?<planId>[\w-]+)$/, async (_req, _res, { params, state }) => {
+  const peer = state.peers.find(params.machine);
+  if (!peer) throw httpError(404, 'PEER_NOT_FOUND', `no machine called "${params.machine}"`);
+  try {
+    return await state.peers.json(peer, 'GET', `/api/bots/${encodeURIComponent(params.id)}/plans/${encodeURIComponent(params.planId)}`, { timeoutMs: 10000 });
+  } catch (err) {
+    throw httpError(502, err.code || 'PEER_ERROR', err.message);
+  }
 });
 
 route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { params, body, state }) => {

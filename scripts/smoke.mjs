@@ -160,6 +160,7 @@ async function main() {
     await stage('1.2.165: routines can be changed and deleted; the screen and tasks follow the chat; 需要你拍板 says what', scenarioV165);
     await stage('1.2.166: run once, a new version is announced, the working face is right', scenarioV166);
     await stage('1.2.167: a task moves to another machine with its checklist and files', scenarioV167);
+    await stage('1.2.168: a moved task shows live progress; machines by their given names; members by machine', scenarioV168);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4931,6 +4932,81 @@ async function scenarioV167() {
       Boolean(tool) && tool.risk === 'MEDIUM' && registry.isGranted({ tools: ['bot_message'] }, 'task_move') && !registry.isGranted({ tools: [] }, 'task_move')
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
+  }
+}
+
+/**
+ * 1.2.168: after the Ubuntu -> Rocky move the card on Ubuntu stayed at 0/8
+ * while Rocky was at 4/8; Rocky called the PC "LAPTOP-…" and Ubuntu
+ * "ubuntu-VMware-…"; __pycache__ went along; the group member list mixed
+ * every machine's bots; and with no checklist the bot made one about moving.
+ */
+async function scenarioV168() {
+  const CM = await import('../src/crossmachine.mjs');
+  const fsx = await import('node:fs');
+  const workspaceDir = path.join(home, 'workspace');
+  const dir = path.join(workspaceDir, 'mv168');
+  fsx.mkdirSync(path.join(dir, '__pycache__'), { recursive: true });
+  fsx.writeFileSync(path.join(dir, 'analyze.py'), 'print(1)');
+  fsx.writeFileSync(path.join(dir, '__pycache__', 'analyze.cpython-312.pyc'), 'x');
+  fsx.writeFileSync(path.join(dir, 'old.pyc'), 'x');
+
+  // --- N1: caches stay behind ------------------------------------------------------------
+  {
+    const picked = await CM.filesForMove(workspaceDir, { paths: ['mv168'] });
+    check('N1 move files: Python caches (__pycache__, .pyc) stay behind, the real files go',
+      picked.files.includes('mv168/analyze.py') && !picked.files.some((f) => f.includes('__pycache__') || f.endsWith('.pyc')), JSON.stringify(picked));
+  }
+
+  // --- N2: names people gave, and where the task went --------------------------------------
+  {
+    const { friendlyHostname } = await import('../src/peers.mjs');
+    check('N2 machine name: a VM hostname is cut down and a Windows default name ("DESKTOP-…", "LAPTOP-…") reads as "Windows 电脑"',
+      friendlyHostname('ubuntu-VMware-Virtual-Platform') === 'ubuntu' && friendlyHostname('DESKTOP-ABC1234') === 'Windows 电脑'
+      && friendlyHostname('LAPTOP-QWERTY12') === 'Windows 电脑' && friendlyHostname('studio-mac') === 'studio-mac');
+
+    const { AgentRuntime } = await import('../src/agent.mjs');
+    const calls = [];
+    const peer = { name: 'Rocky', url: 'http://192.0.2.11:4390' };
+    const fakePeers = {
+      find: (ref) => (/rocky/i.test(ref) ? peer : null),
+      json: async (_p, method, url, opts = {}) => {
+        calls.push({ method, url, body: opts.body });
+        if (url === '/api/bots') return [{ id: 'chief-r', name: '助理', primary: true }];
+        if (url.startsWith('/api/workspace/file')) return { path: decodeURIComponent(url.split('path=')[1].split('&')[0]) };
+        if (url === '/api/tasks/import') return { task: { id: 'task_rocky', botId: opts.body.botId }, bot: { id: 'chief-r', name: '助理' } };
+        return {};
+      },
+    };
+    const chief = { id: 'chief', name: '助理' };
+    const rt = new AgentRuntime({ config: { workspaceDir }, registry: { schemasFor: () => [] }, model: { complete: async () => ({ content: 'ok' }) },
+      bots: { getBot: async (id) => (id === 'chief' ? chief : null), listBots: async () => [chief] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit() {} },
+      getPeers: () => fakePeers, machineName: () => 'Ubuntu' });
+    rt.record = async () => {};
+    rt.taskChanged = async () => {};
+    rt.tasks = new Map([['chief', { id: 'task_u', kind: 'task', botId: 'chief', goal: '邮箱十年史', request: '做完', status: 'running', tasks: [{ id: 't1', title: '核对', status: 'doing', result: '' }, { id: 't2', title: '出图', status: 'todo', result: '' }] }]]);
+    await rt.moveTask({ bot: chief, machine: 'rocky', paths: ['mv168'], turnId: 'n2' });
+    const imp = calls.find((c) => c.url === '/api/tasks/import');
+    const here = rt.tasks.get('chief');
+    check('N2 move: the other machine hears this machine by its given name (not the hostname), and the moved task remembers where it went (machine, bot, task) so its card can show live progress',
+      imp?.body?.from?.machine === 'Ubuntu' && here.movedTo?.machine === 'Rocky' && here.movedTo?.botId === 'chief-r' && here.movedTo?.planId === 'task_rocky',
+      JSON.stringify({ from: imp?.body?.from, movedTo: here.movedTo }));
+
+    let msg = '';
+    try { await rt.moveTask({ bot: { id: 'nobody', name: '某某' }, machine: 'rocky', turnId: 'n2b' }); } catch (err) { msg = err.message; }
+    check('N2 move without a checklist: the bot is told to list the work itself as it stands (done and left), not steps about moving or setting up there',
+      /as it stands/.test(msg) && /not steps about moving/.test(msg), msg);
+  }
+
+  // --- N3: the card asks the other machine; the member list filters by machine ---------------
+  {
+    const far = await api('/api/peers/nowhere/bots/x/plans/plan_1');
+    const groupsSrc = await readText('../public/app/main/03-groups.js');
+    const pageSrc = await readText('../public/index.html');
+    check('N3 live progress: this machine relays the moved task\'s card from the other machine (an unknown machine is a 404), and the card asks for it',
+      far.status === 404 && groupsSrc.includes('plan.movedTo') && groupsSrc.includes('/api/peers/${encodeURIComponent(plan.movedTo.machine)}/bots/'));
+    check('N3 group members: the member list has a machine filter (all / this machine / each other machine); chosen members always show',
+      pageSrc.includes('id="group-machine-filter"') && groupsSrc.includes('draft.machineFilter') && groupsSrc.includes('function renderGroupMachineFilter('));
   }
 }
 

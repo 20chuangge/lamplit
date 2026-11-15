@@ -273,6 +273,7 @@ function peersLine(peers, canHandOff) {
 }
 
 import { askPeerBot, fetchedNote, filesForMove, sendFilesKeepingPaths } from './crossmachine.mjs';
+import { friendlyHostname } from './peers.mjs';
 import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember, listPlans, makeTask, updateStep, openSteps, doneSteps, taskText } from './plans.mjs';
 
 /** A 1:1 task keeps going by itself at most this many turns before it asks the human. */
@@ -466,7 +467,7 @@ export function isStopWords(text) {
 }
 
 export class AgentRuntime {
-  constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers }) {
+  constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers, machineName }) {
     this.config = config;
     this.registry = registry;
     this.model = model;
@@ -475,6 +476,8 @@ export class AgentRuntime {
     // settings/ui tools read it; a runtime without it still runs every turn.
     this.getApp = typeof getApp === 'function' ? getApp : () => null;
     this.getPeers = typeof getPeers === 'function' ? getPeers : () => null;
+    // This machine's name in the human's lists (the one given in 添加机器), for the other machines.
+    this.machineName = typeof machineName === 'function' ? machineName : () => friendlyHostname(os.hostname());
     // Group chats are optional: a runtime without them still runs 1:1 turns, and
     // the group tools answer GROUPS_UNAVAILABLE instead of pretending.
     this.groups = groups || null;
@@ -1814,7 +1817,7 @@ export class AgentRuntime {
     if (!peer) throw fail('PEER_NOT_FOUND', `no machine called "${machine}"; bot_list shows the machines this one can reach`);
     this.tasks = this.tasks || new Map();
     const task = this.activeTask(owner.id);
-    if (!task) throw fail('NO_TASK', `「${owner.name}」 has no open task to move. For a job without a checklist, start one with task_plan first (or hand the work over with bot_message and machine).`);
+    if (!task) throw fail('NO_TASK', `「${owner.name}」 has no open task to move. For a job without a checklist, first make one with task_plan that lists the work itself as it stands - the steps already done (say so in their titles) and the ones left - not steps about moving or setting up on the other machine (its bots of the same name are already there); then call task_move. Or hand the work over with bot_message and machine.`);
 
     let roster;
     try { roster = await peers.json(peer, 'GET', '/api/bots', { timeoutMs: 15000 }); } catch (err) { throw fail(err.code || 'PEER_ERROR', `「${peer.name}」 did not answer: ${err.message}`); }
@@ -1827,11 +1830,12 @@ export class AgentRuntime {
     // The files: the paths asked for, and the ones the task's text names.
     const said = [task.goal, task.request, note, ...task.tasks.map((t) => `${t.title} ${t.result || ''}`)].join('\n');
     const picked = await filesForMove(this.config.workspaceDir, { paths, text: said });
-    const here = os.hostname();
+    const here = this.machineName() || friendlyHostname(os.hostname());
     const sent = await sendFilesKeepingPaths(peers, peer, picked.files, this.config.workspaceDir, { from: here });
     const renamed = sent.filter((f) => f.to !== f.from);
+    let taken = null;
     try {
-      await peers.json(peer, 'POST', '/api/tasks/import', {
+      taken = await peers.json(peer, 'POST', '/api/tasks/import', {
         body: {
           botId: there.id,
           goal: task.goal,
@@ -1849,6 +1853,8 @@ export class AgentRuntime {
 
     task.status = 'moved';
     task.endNote = `搬到「${peer.name}」的「${there.name}」接着做`;
+    // Where it went, so its card here can show the live progress there (1.2.168).
+    task.movedTo = { machine: peer.name, botId: taken?.bot?.id || there.id, planId: taken?.task?.id || '' };
     await this.taskChanged(task);
     const line = `这件事搬到「${peer.name}」的「${there.name}」接着做了（带过去 ${sent.length} 个文件${picked.missing.length ? `，${picked.missing.length} 个没找到` : ''}${picked.skipped.length ? `，${picked.skipped.length} 个太大没带` : ''}）。网站和 App 的登录、正在运行的程序不会跟过去。`;
     await this.record(owner.id, { kind: 'assistant', text: line, turnId, notice: true, final: true });

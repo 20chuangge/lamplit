@@ -13,6 +13,17 @@ import { readJson, writeJsonAtomic } from './store.mjs';
 
 const clean = (u) => String(u || '').trim().replace(/\/+$/, '');
 
+/**
+ * A machine nobody named, by its hostname: a VM's "ubuntu-VMware-Virtual-
+ * Platform" becomes "ubuntu", and Windows' made-up "DESKTOP-…" / "LAPTOP-…"
+ * becomes "Windows 电脑" (1.2.168: Rocky listed the computer as "LAPTOP-…").
+ */
+export function friendlyHostname(hostname) {
+  const h = String(hostname || '').trim();
+  if (/^(DESKTOP|LAPTOP)-[A-Z0-9]{4,}$/i.test(h)) return 'Windows 电脑';
+  return /^(.*?)-(vmware|virtualbox|virtual|platform)/i.exec(h)?.[1] || h;
+}
+
 export function createPeers({ file, fetchImpl = fetch } = {}) {
   let peers = [];
   const rosters = new Map(); // name -> {at, bots}

@@ -51,6 +51,8 @@ export async function carryFilesOut(peers, peer, text, workspaceDir, { max = 8 }
   return sent;
 }
 
+const CACHE_NAMES = new Set(['node_modules', '__pycache__', 'venv', '.venv', '.pytest_cache', '.mypy_cache']);
+
 /**
  * The files a moved task takes along (1.2.167): the paths named (a folder
  * brings everything in it) and the workspace files its text names. Paths stay
@@ -71,7 +73,8 @@ export async function filesForMove(workspaceDir, { paths = [], text = '', maxFil
   const walk = async (rel, abs) => {
     const entries = await fsp.readdir(abs, { withFileTypes: true }).catch(() => []);
     for (const e of entries) {
-      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      // Caches and installed packages are rebuilt there, not carried (1.2.168).
+      if (e.name.startsWith('.') || CACHE_NAMES.has(e.name) || /\.py[co]$/i.test(e.name)) continue;
       const childRel = `${rel}/${e.name}`;
       const childAbs = path.join(abs, e.name);
       if (e.isDirectory()) await walk(childRel, childAbs);

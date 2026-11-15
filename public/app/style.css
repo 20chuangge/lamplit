@@ -1439,6 +1439,8 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .coord-row { display: flex; flex-wrap: wrap; gap: var(--s2); }
+  #group-machine-filter { margin-bottom: var(--s2); }
+  .plan-moved-foot { display: flex; justify-content: flex-end; margin-top: var(--s2); }
   .coord-chip {
     display: inline-flex; align-items: center; gap: 7px;
     padding: 5px 10px 5px 6px; border-radius: 999px;

@@ -1781,4 +1781,10 @@ window.DESK_I18N_EN = {
   "把任务搬到另一台机器": "Move the task to another machine",
   "想把这件事换到另一台机器上接着做": "Wants to carry on with this on another machine",
   "任务清单、进度和相关文件会传到那台机器；网站登录不会跟过去。": "The checklist, progress and files go to that machine; website logins do not.",
+  "Windows 电脑": "Windows PC",
+  "去「{0}」看": "Open on {0}",
+  "，正在做第 {0} 步": ", on step {0}",
+  "在「{0}」那边：{1}/{2} · {3}{4}": "On {0}: {1}/{2} · {3}{4}",
+  "搬走时 {0}/{1} · 现在连不上「{2}」": "{0}/{1} when moved · can't reach {2} now",
+  "搬走时 {0}/{1} · 正在问「{2}」…": "{0}/{1} when moved · asking {2}…",
 };

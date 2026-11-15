@@ -533,12 +533,17 @@ function appendApprovalCard(ev, sender) {
 function buildApprovalCard(data) {
   const card = el('div', 'approval');
   card.dataset.approval = data.approvalId || '';
-  const resolved = Boolean(data.decision);
+  // A scheduled run that stopped at this step (1.3.2): not an answered card,
+  // and not one anything waits on. While it is still open it offers
+  // 现在跑一次（我看着） and 不用了; it was drawn as 已处理 with no buttons.
+  const parked = data.decision === 'needs_approval';
+  const parkedOpen = parked && (data.live || (state.approvals || []).some((a) => a.id === data.approvalId));
+  const resolved = Boolean(data.decision) && !parked;
   const info = describeTool(data.tool, data.args);
 
   const top = el('div', 'approval-top');
-  top.appendChild(el('span', 'approval-kicker', resolved ? '已处理' : '需要你确认'));
-  if (!resolved) {
+  top.appendChild(el('span', 'approval-kicker', parked ? '定时任务停在了这一步' : resolved ? '已处理' : '需要你确认'));
+  if (!resolved && !parked) {
     const wait = el('span', 'approval-wait');
     wait.appendChild(el('span', 'dot'));
     wait.appendChild(el('span', null, '在等你'));
@@ -574,6 +579,29 @@ function buildApprovalCard(data) {
 
   const why = reasonLabel(data.reason);
   card.appendChild(el('div', 'approval-why', why ? `为什么停下来问你：${why}` : '这个操作会改动文件或对外发东西，所以先停下来问你。'));
+
+  if (parked) {
+    card.classList.add(parkedOpen ? 'parked-open' : 'resolved');
+    const actions = el('div', 'approval-actions');
+    if (parkedOpen) {
+      actions.appendChild(el('div', 'muted tiny', '当时没人在，它没有等你，先停了。想让它接着做就再跑一次：这一步会再问你，你点了才会做。卡片一天后会自己收起。'));
+      const choose = el('div', 'approval-buttons');
+      const rerun = el('button', 'btn primary', '现在跑一次（我看着）');
+      rerun.type = 'button';
+      const drop = el('button', 'btn', '不用了');
+      drop.type = 'button';
+      rerun.addEventListener('click', () => decideParked(data.approvalId, 'rerun', card, [rerun, drop]));
+      drop.addEventListener('click', () => decideParked(data.approvalId, 'dismiss', card, [rerun, drop]));
+      choose.appendChild(rerun);
+      choose.appendChild(drop);
+      actions.appendChild(choose);
+    } else {
+      actions.appendChild(el('div', 'muted tiny', '已收起。'));
+    }
+    card.appendChild(actions);
+    appendTechnicalDetails(card, data);
+    return card;
+  }
 
   if (resolved) {
     card.classList.add('resolved');
@@ -669,6 +697,30 @@ function settleApprovalCard(card, decision, note) {
   }
 }
 
+/** A routine's card: run it again now (attended), or put it away. */
+async function decideParked(approvalId, decision, card, buttons) {
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const res = await api(`/api/approvals/${encodeURIComponent(approvalId)}`, { method: 'POST', body: { decision } });
+    const actions = card.querySelector('.approval-actions');
+    card.classList.remove('parked-open');
+    card.classList.add('resolved');
+    if (actions) {
+      actions.innerHTML = '';
+      actions.appendChild(el('div', 'muted tiny', decision === 'rerun'
+        ? (res?.rerun ? '已经重新开始跑了：需要你点头的那一步会在这里弹出来。' : (res?.message || '找不到这个定时任务了。'))
+        : '已收起。'));
+    }
+    if (decision === 'rerun' && res?.rerun) toast('定时任务重新开始跑了，你在这里看着');
+    state.approvals = (state.approvals || []).filter((a) => a.id !== approvalId);
+    refreshPendingApprovals();
+  } catch (err) {
+    buttons.forEach((b) => { b.disabled = false; });
+    toast(err.message, true);
+    refreshPendingApprovals();
+  }
+}
+
 async function decide(approvalId, decision, note, card, approve, deny, remember = null) {
   if (approve) approve.disabled = true;
   if (deny) deny.disabled = true;
@@ -714,14 +766,20 @@ async function refreshPendingApprovals() {
   }
   for (const approval of state.approvals) {
     if (approval.botId && approval.botId !== state.botId) continue;
-    if (messagesEl.querySelector(`[data-approval="${CSS.escape(approval.id)}"]`)) continue;
-    appendApprovalCard({
+    const parked = approval.status === 'awaiting_human';
+    const data = {
       approvalId: approval.id,
       tool: approval.toolName,
       risk: approval.risk,
       reason: approval.reason,
       args: safeParse(approval.args),
-    });
+      ...(parked ? { decision: 'needs_approval', live: true } : {}),
+    };
+    const existing = messagesEl.querySelector(`[data-approval="${CSS.escape(approval.id)}"]`);
+    // The transcript drew a routine's card before the list arrived: give it its buttons.
+    if (existing && parked && !existing.classList.contains('parked-open')) { existing.replaceWith(buildApprovalCard(data)); continue; }
+    if (existing) continue;
+    appendApprovalCard(data);
   }
 }
 
@@ -771,7 +829,7 @@ async function focusApprovalCard(approvalId, botId) {
   if (!card && approvalId) {
     const a = (state.approvals || []).find((x) => x.id === approvalId);
     if (a) {
-      appendApprovalCard({ approvalId: a.id, tool: a.toolName, risk: a.risk, reason: a.reason, args: safeParse(a.args) });
+      appendApprovalCard({ approvalId: a.id, tool: a.toolName, risk: a.risk, reason: a.reason, args: safeParse(a.args), ...(a.status === 'awaiting_human' ? { decision: 'needs_approval', live: true } : {}) });
       card = messagesEl.querySelector(`[data-approval="${CSS.escape(approvalId)}"]`);
     }
   }

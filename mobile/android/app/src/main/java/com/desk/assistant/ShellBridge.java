@@ -155,6 +155,30 @@ public class ShellBridge {
      * app's page comes back to the machine's address, which the browser reaches
      * the same way this app does.
      */
+    /**
+     * 外观 and 语言 for every machine's page (1.3.2): each machine's address has
+     * its own storage, so the app keeps them once. JSON {theme, lang}.
+     */
+    @JavascriptInterface
+    public String viewPrefs() {
+        return activity.getSharedPreferences("lamplit_view", Context.MODE_PRIVATE).getString("prefs", "{}");
+    }
+
+    @JavascriptInterface
+    public void setViewPrefs(final String json) {
+        try {
+            org.json.JSONObject in = new org.json.JSONObject(json == null ? "{}" : json);
+            org.json.JSONObject out = new org.json.JSONObject();
+            String theme = in.optString("theme", "");
+            String lang = in.optString("lang", "");
+            if (theme.matches("dark|light|system")) out.put("theme", theme);
+            if (lang.matches("zh|en|system")) out.put("lang", lang);
+            activity.getSharedPreferences("lamplit_view", Context.MODE_PRIVATE).edit().putString("prefs", out.toString()).apply();
+        } catch (Exception ignored) {
+            // a malformed value is simply not saved
+        }
+    }
+
     /** This app's own version (1.2.166: the page compares it with the latest release). */
     @JavascriptInterface
     public String appVersion() {

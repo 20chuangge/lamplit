@@ -316,7 +316,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   const routines = new RoutineStore({
     config,
     tickMs: 20000,
-    runner: async (routine) => {
+    runner: async (routine, { attended = false } = {}) => {
       const NO_CHANGE = /^[「"]?(没有变化|无变化|NO_CHANGE)[」"]?[。.!！]?$/i;
       const changeNote = (strict) => (routine.onlyChanges
         ? `（只在有变化时提醒我。${strict ? '你上一轮没有真的去查就说了没有变化。' : ''}先用工具把这件事重新查一遍，不要凭聊天记录判断；再和上次的结果比较。上次的结果：「${routine.lastReport ? routine.lastReport.slice(0, 1500) : '（第一次运行，没有上次）'}」。如果和上次相比没有值得告诉我的新变化，只回复「没有变化」四个字，别的都不要写。）`
@@ -338,7 +338,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
             text: routine.instruction,
             hiddenNote: changeNote(strict),
             source: 'routine',
-            unattended: true,
+            unattended: !attended,
             turnId,
           });
           return { result, tools, report: texts.join('\n\n').trim() || String(result?.summary || '').trim() };
@@ -3104,6 +3104,18 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
   const record = state.approvals.decide(params.id, decision, body?.note || '', by);
   if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', `no approval with id "${params.id}"`);
   if (record.error) throw httpError(409, 'APPROVAL_CONFLICT', record.error);
+  // A routine's card (1.3.2): "现在跑一次（我看着）" runs that routine now, attended,
+  // so the same step asks again and waits for the human; "不用了" just puts it away.
+  if (record.status === 'dismissed') {
+    state.bus.emit({ type: 'approval.decided', approvalId: record.id, botId: record.botId, turnId: record.turnId, status: record.status, note: record.note, late: true });
+    if (decision === 'rerun') {
+      const routine = state.routines?.findByTurn?.(record.turnId) || null;
+      if (!routine) return { approval: record, rerun: null, message: '找不到这个定时任务了（可能已删除）' };
+      state.routines.runNow(routine.id, { trigger: 'watched' }).catch((err) => console.error('[routines] watched run failed:', err.message));
+      return { approval: record, rerun: { routineId: routine.id, botId: routine.botId } };
+    }
+    return { approval: record };
+  }
   // "以后都允许" (1.2.164): the same kind of step runs unasked for this bot from now on.
   let remembered = null;
   if (body?.always === true && record.status === 'approved' && record.remember) {

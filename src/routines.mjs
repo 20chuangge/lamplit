@@ -454,6 +454,12 @@ export class RoutineStore {
     return this.fire(routine, trigger);
   }
 
+  /** The routine whose run was this turn (a card it left behind points at it). */
+  findByTurn(turnId) {
+    if (!turnId) return null;
+    return this.routines.find((r) => (r.runs || []).some((run) => run.turnId === turnId)) || null;
+  }
+
   /** Execute one routine and record the outcome. Never throws at the caller. */
   async fire(routine, trigger = 'schedule') {
     const run = {
@@ -473,7 +479,8 @@ export class RoutineStore {
     routine.nextRun = routine.enabled ? isoOrNull(nextRunFor(parsed, Date.now(), routine.timezone)) : null;
 
     try {
-      const result = await this.runner(routine);
+      // "现在跑一次（我看着）" (1.3.2): the human is there, so its asks wait for them.
+      const result = await this.runner(routine, { attended: trigger === 'watched' });
       run.status = result?.status === 'success' ? 'success' : result?.status === 'needs_approval' ? 'needs_approval' : 'failed';
       run.summary = String(result?.summary || '');
       run.turnId = result?.turnId || null;

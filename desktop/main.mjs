@@ -150,6 +150,19 @@ async function sharePeers() {
  * removable in Settings like a phone). Null while it only listens on 127.0.0.1.
  */
 const PEER_TOKEN_FILE = path.join(app.getPath('userData'), 'peer-token.json');
+// 外观 and 语言 for every machine's page (1.3.2): {theme, lang}.
+const VIEW_PREFS_FILE = path.join(app.getPath('userData'), 'view-prefs.json');
+function readViewPrefs() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(VIEW_PREFS_FILE, 'utf8')) || {};
+    return {
+      ...(/^(dark|light|system)$/.test(raw.theme || '') ? { theme: raw.theme } : {}),
+      ...(/^(zh|en|system)$/.test(raw.lang || '') ? { lang: raw.lang } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
 async function thisComputerAsPeer() {
   const local = localUrl().replace(/\/+$/, '');
   const health = await (await net.fetch(`${local}/api/health`, { signal: AbortSignal.timeout(5000) })).json();
@@ -994,6 +1007,18 @@ handle('desk:machines-attention', async () => {
 // brings the window back and tells the page what it was about.
 const liveNotes = new Set();
 handle('desk:clipboard-read', () => clipboard.readText());
+// 外观 and 语言: read before a page draws (sync), written when changed on any machine.
+ipcMain.on('desk:view-prefs-sync', (event) => {
+  const from = event?.senderFrame?.url || '';
+  event.returnValue = mayUse('desk:view-prefs-sync', pageKind(from)) ? readViewPrefs() : {};
+});
+handle('desk:set-view-prefs', (_event, patch) => {
+  const next = { ...readViewPrefs() };
+  if (/^(dark|light|system)$/.test(patch?.theme || '')) next.theme = patch.theme;
+  if (/^(zh|en|system)$/.test(patch?.lang || '')) next.lang = patch.lang;
+  try { fs.writeFileSync(VIEW_PREFS_FILE, `${JSON.stringify(next)}\n`); } catch { /* read-only profile */ }
+  return { ok: true, prefs: next };
+});
 handle('desk:open-external', async (_event, url) => {
   if (!/^https?:\/\//i.test(String(url))) return false;
   await shell.openExternal(String(url));

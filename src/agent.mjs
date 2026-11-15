@@ -1142,6 +1142,7 @@ export class AgentRuntime {
 
     let status = 'success';
     let summary = '';
+    let pausedTool = '';
     let steps = 0;
     let toolsRun = 0;
     let finished = false;
@@ -1433,6 +1434,7 @@ export class AgentRuntime {
           if (outcome.termination) {
             status = outcome.termination;
             summary = outcome.summary || summary;
+            if (outcome.pausedTool) pausedTool = outcome.pausedTool;
             finished = true;
             break;
           }
@@ -1501,9 +1503,8 @@ export class AgentRuntime {
       if (status === 'needs_approval') {
         // An unattended run must not hang and must not silently swallow the need
         // for a human: say it out loud in the chat.
-        const note =
-          `${summary} Nobody was watching, so this routine stopped instead of waiting. ` +
-          'Approve it in the Activity tab, then run the routine again.';
+        // Plain words, and what to do: the card offers 现在跑一次（我看着） and 不用了 (1.3.2).
+        const note = `定时任务停在了这一步：要用「${toolLabel(pausedTool || 'tool')}」，这一步需要你点头，当时没人在，它就先停了，没有在等你。想让它接着做，点卡片上的「现在跑一次（我看着）」；不需要就点「不用了」。卡片一天后会自己收起。`;
         await this.record(bot.id, { kind: 'assistant', text: note, turnId, source, system: true });
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
       }
@@ -2433,7 +2434,8 @@ export class AgentRuntime {
         });
         return {
           termination: 'needs_approval',
-          summary: `Paused: ${name} needs a human (${verdict.risk} risk).`,
+          summary: `已暂停：「${toolLabel(name)}」这一步需要你点头（${verdict.risk === 'HIGH' ? '高' : '中'}风险）。`,
+          pausedTool: name,
         };
       }
 
@@ -2573,7 +2575,7 @@ function statusText(status) {
     case 'success':
       return 'Done.';
     case 'needs_approval':
-      return 'Paused: waiting for a human approval.';
+      return '已暂停：有一步需要你点头。';
     case 'timeout':
       return 'Stopped: ran out of time.';
     case 'cancelled':

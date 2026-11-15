@@ -1806,4 +1806,12 @@ window.DESK_I18N_EN = {
   "已连接{0}": "Connected{0}",
   "· 前台：{0}": "· in front: {0}",
   "手": "P",
+  "定时任务停在了这一步": "A routine stopped at this step",
+  "当时没人在，它没有等你，先停了。想让它接着做就再跑一次：这一步会再问你，你点了才会做。卡片一天后会自己收起。": "Nobody was around, so it stopped instead of waiting. To carry on, run it again: this step will ask you, and only runs if you allow it. The card puts itself away after a day.",
+  "现在跑一次（我看着）": "Run it now (I'm here)",
+  "不用了": "Not needed",
+  "已收起。": "Put away.",
+  "已经重新开始跑了：需要你点头的那一步会在这里弹出来。": "Running again: the step that needs your OK will pop up here.",
+  "找不到这个定时任务了。": "That routine is gone.",
+  "定时任务重新开始跑了，你在这里看着": "The routine is running again while you watch",
 };

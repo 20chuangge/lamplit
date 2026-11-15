@@ -163,6 +163,7 @@ async function main() {
     await stage('1.2.168: a moved task shows live progress; machines by their given names; members by machine', scenarioV168);
     await stage('1.3.0: the phone as a machine - look, tap, type, open apps over adb', scenarioV130);
     await stage('1.3.1: Chinese reaches the app, consent always asks, a search is not a send, no adb in the shell', scenarioV131);
+    await stage('1.3.2: a stopped routine\'s card can be closed or run again; 外观 and 语言 follow you between machines', scenarioV132);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -1600,7 +1601,7 @@ async function scenarioRoutineNeedsApproval() {
   const opsMessages = await api('/api/bots/ops/messages');
   check(
     'chat explains that the routine is paused for approval',
-    opsMessages.json.some((m) => String(m.text || '').toLowerCase().includes('paused')),
+    opsMessages.json.some((m) => String(m.text || '').includes('定时任务停在了这一步') && String(m.text || '').includes('现在跑一次')),
   );
 
   const list = await api('/api/routines');
@@ -4934,6 +4935,75 @@ async function scenarioV167() {
       Boolean(tool) && tool.risk === 'MEDIUM' && registry.isGranted({ tools: ['bot_message'] }, 'task_move') && !registry.isGranted({ tools: [] }, 'task_move')
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
+  }
+}
+
+/**
+ * 1.3.2: a scheduled run stopped at a step that needed the human; its card
+ * said 「已处理」 with no buttons, never expired and kept "1 个操作等你确认"
+ * up across restarts. And 外观 / 语言 stayed behind when switching machines
+ * (each machine's page keeps them under its own address).
+ */
+async function scenarioV132() {
+  const { ApprovalQueue } = await import('../src/approvals.mjs');
+  const { RoutineStore } = await import('../src/routines.mjs');
+
+  // --- S1: a parked card can be put away, and goes away by itself -----------------------------
+  {
+    const q = new ApprovalQueue({ timeoutMs: 60000 });
+    const a = q.request({ turnId: 't1', botId: 'b1', toolName: 'shell', args: { command: 'x' }, risk: 'HIGH', reason: 'r', unattended: true });
+    const id = a.record.id;
+    const before = q.list({ status: 'pending' }).length;
+    const done = q.decide(id, 'dismiss');
+    const after = q.list({ status: 'pending' }).length;
+    const b = q.request({ turnId: 't2', botId: 'b1', toolName: 'shell', args: {}, risk: 'HIGH', reason: 'r', unattended: true });
+    b.record.createdAt = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+    const stale = q.list({ status: 'pending' }).length;
+    const old = q.restore([{ id: 'ap_old', toolName: 'shell', botId: 'b1', status: 'awaiting_human', unattended: true, createdAt: new Date(Date.now() - 30 * 3600 * 1000).toISOString() }]);
+    check('S1 parked card: "不用了" puts it away; one older than a day expires; an old one from before a restart is not brought back',
+      before === 1 && done?.status === 'dismissed' && after === 0 && stale === 0 && b.record.status === 'expired' && old === 0 && !q.list({ status: 'pending' }).length,
+      JSON.stringify({ before, done: done?.status, after, stale, b: b.record.status, old }));
+  }
+
+  // --- S2: "现在跑一次（我看着）" runs the routine with the human there ---------------------------
+  {
+    const calls = [];
+    const store = new RoutineStore({ config: { dataDir: path.join(home, 'routines-v132') }, runner: async (routine, opts = {}) => { calls.push(opts); return { status: 'success', turnId: 'tx' }; } });
+    store.routines = [{ id: 'rt_1', botId: 'b1', name: 'x', instruction: 'y', schedule: '5 18 * * *', enabled: true, runs: [{ id: 'run_1', turnId: 't1', status: 'needs_approval' }] }];
+    store.persist = async () => {};
+    await store.runNow('rt_1', { trigger: 'watched' });
+    await store.runNow('rt_1', { trigger: 'test' });
+    const serverSrc = await readText('../src/server.mjs');
+    check('S2 run again: a watched run is attended (its asks wait for the human like a chat); a test run stays unattended; the card finds its routine by the run that asked',
+      calls[0]?.attended === true && !calls[1]?.attended && store.findByTurn?.('t1')?.id === 'rt_1'
+      && serverSrc.includes("decision === 'rerun'") && serverSrc.includes("trigger: 'watched'") && /unattended: !attended/.test(serverSrc),
+      JSON.stringify(calls));
+  }
+
+  // --- S3: what the human sees --------------------------------------------------------------
+  {
+    const live = await readText('../public/app/main/06-live.js');
+    const agentSrc = await readText('../src/agent.mjs');
+    check('S3 card: a parked card says the routine stopped and is not waiting, with 现在跑一次（我看着） and 不用了; it is never drawn as 已处理 while still open',
+      live.includes('现在跑一次（我看着）') && live.includes('不用了') && live.includes("data.decision === 'needs_approval'") && live.includes('定时任务停在了这一步'));
+    check('S3 chat: the pause note is plain Chinese, not "Approve it in the Activity tab"',
+      !agentSrc.includes('Approve it in the Activity tab') && agentSrc.includes('定时任务停在了这一步'));
+  }
+
+  // --- S4: 外观 and 语言 follow you from machine to machine ------------------------------------------
+  {
+    const preload = await readText('../desktop/shell-preload.cjs');
+    const mainSrc = await readText('../desktop/main.mjs');
+    const guardSrc = await readText('../desktop/guard.mjs');
+    const theme = await readText('../public/app/theme.js');
+    const lang = await readText('../public/app/lang.js');
+    const core = await readText('../public/app/main/01-core.js');
+    const bridge = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ShellBridge.java');
+    check('S4 view prefs: the desktop and Android apps keep 外观 and 语言 once for every machine; each machine\'s page reads them before it draws and writes them when changed',
+      preload.includes("sendSync('desk:view-prefs-sync')") && preload.includes('setViewPrefs') && mainSrc.includes("'desk:view-prefs-sync'") && mainSrc.includes('view-prefs.json')
+      && bridge.includes('public String viewPrefs()') && bridge.includes('public void setViewPrefs(')
+      && theme.includes('deskViewPrefs') && lang.includes('deskViewPrefs') && core.includes('deskViewPrefs.set(') && lang.includes('deskViewPrefs.set(')
+      && !guardSrc.includes("'desk:set-view-prefs'"));
   }
 }
 

@@ -12,7 +12,14 @@ contextBridge.exposeInMainWorld('deskShell', {
 // Machine switching lives in the main window, which uses THIS preload (not
 // preload.mjs). Without it window.desk is undefined and every machine button
 // silently does nothing.
+// 外观 and 语言, kept once for every machine (1.3.2). Read synchronously: the
+// page applies them before its first paint.
+let viewPrefs = {};
+try { viewPrefs = ipcRenderer.sendSync('desk:view-prefs-sync') || {}; } catch { /* first run */ }
+
 contextBridge.exposeInMainWorld('desk', {
+  viewPrefs,
+  setViewPrefs: (prefs) => ipcRenderer.invoke('desk:set-view-prefs', prefs),
   listMachines: () => ipcRenderer.invoke('desk:list-machines'),
   machinesAttention: () => ipcRenderer.invoke('desk:machines-attention'),
   notify: (note) => ipcRenderer.invoke('desk:notify', note),

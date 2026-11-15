@@ -10,6 +10,9 @@
     const KEY = 'desk.lang';
     let pref = 'system';
     try { pref = localStorage.getItem(KEY) || 'system'; } catch { /* private mode */ }
+    // The app's own copy wins: it follows you from machine to machine (theme.js, 1.3.2).
+    const sharedLang = window.deskViewPrefs && window.deskViewPrefs.get().lang;
+    if (sharedLang === 'zh' || sharedLang === 'en' || sharedLang === 'system') pref = sharedLang;
     const lang = pref === 'zh' || pref === 'en' ? pref : (/^zh/i.test(navigator.language || '') ? 'zh' : 'en');
     document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
 
@@ -94,6 +97,7 @@
       t,
       setPref(next) {
         try { localStorage.setItem(KEY, next); } catch { /* private mode */ }
+        if (window.deskViewPrefs) window.deskViewPrefs.set({ lang: next });
         location.reload();
       },
     };

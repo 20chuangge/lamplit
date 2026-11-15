@@ -1,4 +1,33 @@
 
+  // 外观 and 语言 belong to the person, not to a machine (1.3.2). Each machine's
+  // page has its own address, so its own localStorage: switching machines left
+  // them behind. The desktop and Android apps keep them once (desk.viewPrefs /
+  // NightshiftShell.viewPrefs()); every page copies them in before it draws and
+  // writes them back when they change. In a plain browser nothing changes.
+  (() => {
+    const read = () => {
+      try { if (window.desk && window.desk.viewPrefs) return { ...window.desk.viewPrefs }; } catch { /* no desktop app */ }
+      try { if (window.NightshiftShell && window.NightshiftShell.viewPrefs) return JSON.parse(window.NightshiftShell.viewPrefs() || '{}') || {}; } catch { /* no phone app */ }
+      return {};
+    };
+    const shared = read();
+    window.deskViewPrefs = {
+      get: () => ({ ...shared }),
+      set(patch) {
+        const clean = {};
+        if (patch && /^(dark|light|system)$/.test(patch.theme || '')) clean.theme = patch.theme;
+        if (patch && /^(zh|en|system)$/.test(patch.lang || '')) clean.lang = patch.lang;
+        Object.assign(shared, clean);
+        try { if (window.desk && window.desk.setViewPrefs) window.desk.setViewPrefs(clean); } catch { /* best effort */ }
+        try { if (window.NightshiftShell && window.NightshiftShell.setViewPrefs) window.NightshiftShell.setViewPrefs(JSON.stringify(shared)); } catch { /* best effort */ }
+      },
+    };
+    try {
+      if (/^(dark|light|system)$/.test(shared.theme || '')) localStorage.setItem('desk.theme', shared.theme);
+      if (/^(zh|en|system)$/.test(shared.lang || '')) localStorage.setItem('desk.lang', shared.lang);
+    } catch { /* private mode */ }
+  })();
+
   // Apply the saved theme before the first paint so a light-theme user never
   // sees a dark flash while the module script at the bottom is still loading.
   (() => {

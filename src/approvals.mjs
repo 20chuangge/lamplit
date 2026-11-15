@@ -325,6 +325,14 @@ export function classify(toolName, args, policy = {}) {
  */
 const MAX_FINISHED_RECORDS = 500;
 
+/**
+ * A card a scheduled run left behind (it stopped instead of waiting) is kept
+ * for a day: long enough to see it and run the routine again, not so long that
+ * "1 个操作等你确认" stays up for good (1.3.2).
+ */
+export const PARKED_TTL_MS = 24 * 60 * 60 * 1000;
+const parkedTooOld = (r, now = Date.now()) => r.status === 'awaiting_human' && now - Date.parse(r.createdAt || 0) > PARKED_TTL_MS;
+
 export class ApprovalQueue {
   constructor({ timeoutMs = 10 * 60 * 1000, onAudit = async () => {}, onPersist = () => {} } = {}) {
     this.timeoutMs = timeoutMs;
@@ -367,6 +375,8 @@ export class ApprovalQueue {
       if (!saved?.id || !saved.toolName) continue;
       if (saved.status !== 'pending' && saved.status !== 'awaiting_human') continue;
       if (this.records.has(saved.id)) continue;
+      // A routine's card from more than a day ago is not brought back.
+      if (parkedTooOld(saved)) continue;
 
       const record = {
         ...saved,
@@ -375,6 +385,8 @@ export class ApprovalQueue {
       };
       this.records.set(record.id, record);
       restored += 1;
+      // A routine's card has no turn to time out; it expires after a day (list()).
+      if (record.status === 'awaiting_human') continue;
 
       // Give a restored card the same appeal window as a fresh one.
       const timer = setTimeout(() => {
@@ -450,6 +462,18 @@ export class ApprovalQueue {
   decide(id, decision, note = '', by = 'human') {
     const record = this.records.get(id);
     if (!record) return null;
+    // A routine's card: "不用了", or "现在跑一次" (the server starts the run).
+    if (record.status === 'awaiting_human' && ['dismiss', 'rerun'].includes(String(decision || '').toLowerCase())) {
+      record.status = 'dismissed';
+      record.decidedAt = nowIso();
+      record.note = String(note || (String(decision).toLowerCase() === 'rerun' ? '现在跑一次' : '不用了'));
+      record.by = by;
+      record.late = true;
+      this.records.set(id, record);
+      void this.onAudit({ kind: 'approval.resolved', ...record });
+      this.persist();
+      return { ...record };
+    }
     const normalized = normalizeDecision(decision);
     if (!normalized) return { ...record, error: `unknown decision "${decision}"` };
 
@@ -512,7 +536,22 @@ export class ApprovalQueue {
     for (const r of finished.slice(0, finished.length - keep)) this.records.delete(r.id);
   }
 
+  /** Routine cards older than a day: expired, off the "waiting for you" list. */
+  expireParked(now = Date.now()) {
+    let changed = false;
+    for (const r of this.records.values()) {
+      if (!parkedTooOld(r, now)) continue;
+      r.status = 'expired';
+      r.decidedAt = nowIso();
+      r.note = '定时任务的这一步过了一天没人处理，已收起';
+      changed = true;
+      void this.onAudit({ kind: 'approval.expired', ...r });
+    }
+    if (changed) this.persist();
+  }
+
   list({ status, botId, limit = 100 } = {}) {
+    this.expireParked();
     let out = [...this.records.values()];
     // "pending" means "a human still has something to do", which includes the
     // cards an unattended routine parked instead of waiting for.

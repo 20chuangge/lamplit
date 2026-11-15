@@ -82,6 +82,8 @@ function applyTheme(pref, { persist = false } = {}) {
   if (meta) meta.setAttribute('content', resolved === 'light' ? '#ffffff' : '#0a0a0a');
   if (persist) {
     try { localStorage.setItem(THEME_KEY, next); } catch { /* private mode */ }
+    // Every machine's page shows the same 外观 (theme.js, 1.3.2).
+    if (window.deskViewPrefs) window.deskViewPrefs.set({ theme: next });
     if (typeof reportUiState === 'function') reportUiState();
   }
   if ($('theme-btn-glyph')) $('theme-btn-glyph').textContent = THEME_GLYPHS[next];

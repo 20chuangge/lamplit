@@ -28,17 +28,24 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 90000 } =
 
   return {
     /** The app says whether this phone may be used (every 30 s and on connecting). */
-    register(deviceId, { enabled = false, model = '', name = '', sdk = 0 } = {}) {
+    register(deviceId, { enabled = false, model = '', name = '', sdk = 0, phoneId = '' } = {}) {
       if (!deviceId) return;
-      phones.set(String(deviceId), { enabled: Boolean(enabled), model: String(model || '').slice(0, 60), name: String(name || '').slice(0, 60), sdk: Number(sdk) || 0, at: Date.now() });
+      phones.set(String(deviceId), { enabled: Boolean(enabled), model: String(model || '').slice(0, 60), name: String(name || '').slice(0, 60), sdk: Number(sdk) || 0, phoneId: String(phoneId || '').slice(0, 64), at: Date.now() });
     },
 
     /** Phones that can be used now: turned on and heard from lately. */
     list() {
       const now = Date.now();
-      return [...phones.entries()]
-        .filter(([, p]) => p.enabled && now - p.at <= freshMs)
-        .map(([deviceId, p]) => ({ deviceId, serial: `${PREFIX}${deviceId}`, model: p.model || p.name || '手机', name: p.name }));
+      // One phone paired here through two addresses (LAN and Tailscale) has two
+      // device tokens: it is still one phone - the one heard from last (1.4.1).
+      const byPhone = new Map();
+      for (const [deviceId, p] of phones) {
+        if (!p.enabled || now - p.at > freshMs) continue;
+        const key = p.phoneId || deviceId;
+        const seen = byPhone.get(key);
+        if (!seen || p.at >= seen.p.at) byPhone.set(key, { deviceId, p });
+      }
+      return [...byPhone.values()].map(({ deviceId, p }) => ({ deviceId, serial: `${PREFIX}${deviceId}`, model: p.model || p.name || '手机', name: p.name }));
     },
 
     /** Send one step to one phone and wait for its answer. */

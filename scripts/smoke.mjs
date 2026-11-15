@@ -165,6 +165,7 @@ async function main() {
     await stage('1.3.1: Chinese reaches the app, consent always asks, a search is not a send, no adb in the shell', scenarioV131);
     await stage('1.3.2: a stopped routine\'s card can be closed or run again; 外观 and 语言 follow you between machines', scenarioV132);
     await stage('1.4.0: the phone works without the cable, through the Lamplit app', scenarioV140);
+    await stage('1.4.1: one phone is listed once; it is back quickly after the computer restarts', scenarioV141);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4937,6 +4938,32 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.4.1: Rocky listed the one phone twice (it was paired there through two
+ * addresses, LAN and Tailscale: two device tokens), so the bot asked which;
+ * and after the computer's Lamplit restarted, the phone took about a minute
+ * to be usable again.
+ */
+async function scenarioV141() {
+  const { createPhoneLink } = await import('../src/phonelink.mjs');
+  const bus = { emit() {}, subscribe: () => () => {} };
+  const link = createPhoneLink({ bus });
+  link.register('dev_lan', { enabled: true, model: 'OPPO X', phoneId: 'ph_1' });
+  await new Promise((r) => setTimeout(r, 5));
+  link.register('dev_tail', { enabled: true, model: 'OPPO X', phoneId: 'ph_1' });
+  link.register('dev_other', { enabled: true, model: 'OPPO X', phoneId: 'ph_2' });
+  const listed = link.list();
+  check('V1 one phone once: paired through two addresses, it is listed once (the one heard from last); a second phone of the same model stays',
+    listed.length === 2 && listed.some((p) => p.deviceId === 'dev_tail') && !listed.some((p) => p.deviceId === 'dev_lan') && listed.some((p) => p.deviceId === 'dev_other'),
+    JSON.stringify(listed));
+
+  const watcher = await readText('../mobile/android/app/src/main/java/com/desk/assistant/NightshiftWatcher.java');
+  const serverSrc = await readText('../src/server.mjs');
+  check('V2 reconnect: the phone says it is ready as soon as its stream to a machine is up (not up to 30 s later), retries come quicker, and it sends its own id',
+    /Log\.i\(TAG, "watching " \+ hub\);[\s\S]{0,400}reportPhoneAgent\(hub\)/.test(watcher) && watcher.includes('body.put("phoneId", phoneId(this))')
+    && /Math\.min\(10000L, 1500L \* attempt\)/.test(watcher) && serverSrc.includes('phoneId: String(body?.phoneId'));
 }
 
 /**

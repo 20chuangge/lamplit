@@ -327,7 +327,8 @@ public class NightshiftWatcher extends Service {
             }
             if (!running) return;
             attempt = established ? 1 : Math.min(attempt + 1, 6);
-            sleep(Math.min(30000L, 1500L * attempt));
+            // Quicker back after a machine restarts (an install takes ~20 s), 1.4.1.
+            sleep(Math.min(10000L, 1500L * attempt));
         }
     }
 
@@ -354,6 +355,9 @@ public class NightshiftWatcher extends Service {
             }
             if (status != 200) throw new IllegalStateException("HTTP " + status);
             Log.i(TAG, "watching " + hub);
+            // Say at once whether the bots may use this phone (1.4.1): after the
+            // machine restarted it knew nothing until the next 30 s round.
+            new Thread(() -> reportPhoneAgent(hub), "phone-agent-hello").start();
             BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
             String line;
             while (running && (line = reader.readLine()) != null) {
@@ -388,10 +392,23 @@ public class NightshiftWatcher extends Service {
             body.put("enabled", PhoneAgentService.instance != null);
             body.put("model", (Build.MANUFACTURER + " " + Build.MODEL).trim());
             body.put("sdk", Build.VERSION.SDK_INT);
+            // The same phone paired through two addresses is one phone (1.4.1).
+            body.put("phoneId", phoneId(this));
             postJson(hub + "/api/phone/agent", token, body);
         } catch (Exception err) {
             Log.d(TAG, "phone agent report to " + hub + " failed: " + err.getClass().getSimpleName());
         }
+    }
+
+    /** This phone's own id for the machines (made once, kept in the app's storage). */
+    static String phoneId(Context context) {
+        SharedPreferences p = context.getSharedPreferences("lamplit_phone", Context.MODE_PRIVATE);
+        String id = p.getString("id", null);
+        if (id == null || id.isEmpty()) {
+            id = "ph_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+            p.edit().putString("id", id).apply();
+        }
+        return id;
     }
 
     /** Do one step a machine sent and give it the answer (POST /api/phone/jobs/:id). */

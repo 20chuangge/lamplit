@@ -3159,3 +3159,11 @@
 .decision-strip b { flex: none; color: var(--warn, #d79b3a); }
 .decision-strip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .rt-head-actions { display: inline-flex; gap: 8px; align-items: center; }
+
+/* 有新版本 (1.2.166) */
+.update-banner { margin: 8px 16px 0; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel-2); font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+.update-banner[hidden] { display: none; }
+.update-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.update-notes summary { cursor: pointer; color: var(--muted); }
+.update-notes ul { margin: 6px 0 0; padding-left: 18px; }
+.update-actions { display: flex; gap: 8px; flex-wrap: wrap; }

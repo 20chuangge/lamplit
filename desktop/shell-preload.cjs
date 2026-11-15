@@ -37,4 +37,6 @@ contextBridge.exposeInMainWorld('desk', {
   clipboardWrite: (text) => ipcRenderer.invoke('desk:clipboard-write', String(text ?? '')),
   // A sign-in page (a connected app's OAuth) in the system browser, never in this window.
   openExternal: (url) => ipcRenderer.invoke('desk:open-external', String(url ?? '')),
+  // 有新版本 → 立即更新: download the Lamplit installer, install it, start again.
+  installUpdate: (url) => ipcRenderer.invoke('desk:install-update', String(url ?? '')),
 });

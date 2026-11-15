@@ -158,6 +158,7 @@ async function main() {
     await stage('1.2.163: the page script split by feature (ENG-04 step 2)', scenarioV163);
     await stage('1.2.164: a machine given to the bots stops asking; remembered yes; the group does the work', scenarioV164);
     await stage('1.2.165: routines can be changed and deleted; the screen and tasks follow the chat; 需要你拍板 says what', scenarioV165);
+    await stage('1.2.166: run once, a new version is announced, the working face is right', scenarioV166);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4837,6 +4838,80 @@ async function scenarioTeamFixes() {
 }
 
 /**
+ * 1.2.166: the group's working line showed 助理's face (the last 1:1 bot)
+ * while 选题 worked; 选题's 11-17 reminder had to be a yearly cron (no "run
+ * once"); and nothing told the human a new version was out.
+ */
+async function scenarioV166() {
+  const R = await import('../src/routines.mjs');
+
+  // --- V1: run once -----------------------------------------------------------------
+  {
+    const once = R.parseSchedule('once 2026-11-17 18:05');
+    const before = R.nextRunFor(once, Date.parse('2026-11-15T08:00:00Z'), 'Asia/Shanghai');
+    const after = R.nextRunFor(once, Date.parse('2026-11-17T11:00:00Z'), 'Asia/Shanghai');
+    let bad = null;
+    try { R.parseSchedule('once 2026-13-40 25:99'); } catch (err) { bad = err.message; }
+    check('V1 once: "once 2026-11-17 18:05" runs at that time in the routine\'s timezone, and never again',
+      once.kind === 'once' && once.expression === 'once 2026-11-17 18:05' && new Date(before).toISOString() === '2026-11-17T10:05:00.000Z' && after === null && Boolean(bad),
+      JSON.stringify({ once, before, after, bad }));
+    const store = new R.RoutineStore({ config: { timezone: 'Asia/Shanghai' }, runner: async () => ({ status: 'success', summary: 'ok' }) });
+    store.persist = async () => {};
+    store.routines = [];
+    const rt = await store.create({ botId: 'topic', name: 'D7 置顶提醒', instruction: 'x', schedule: 'once 2026-11-17 18:05' });
+    const manual = await store.runNow(rt.id);
+    const stillOn = store.get(rt.id).enabled;
+    await store.fire(store.get(rt.id), 'schedule');
+    const after2 = store.get(rt.id);
+    check('V1 once: after its run it switches itself off (no yearly repeat to delete); running it by hand first does not',
+      stillOn === true && after2.enabled === false && after2.nextRun === null && after2.runs.length === 2 && Boolean(manual),
+      JSON.stringify({ stillOn, enabled: after2.enabled, nextRun: after2.nextRun }));
+    const toolsSrc = await readText('../src/tools.mjs');
+    check('V1 once: bots are told they can schedule one run ("once YYYY-MM-DD HH:MM"), so a reminder is not a yearly cron',
+      toolsSrc.includes('"once 2026-11-17 18:05" for a single run'));
+  }
+
+  // --- V2: a new version is out ----------------------------------------------------------
+  {
+    const U = await import('../src/updates.mjs');
+    let calls = 0;
+    const fakeFetch = async (url) => {
+      calls += 1;
+      return { ok: true, status: 200, json: async () => ({ tag_name: 'v1.2.170', html_url: 'https://github.com/20chuangge/lamplit/releases/tag/v1.2.170', body: '## Lamplit 1.2.170\n\n- 新功能',
+        assets: [
+          { name: 'Lamplit-Setup-1.2.170.exe', browser_download_url: 'https://github.com/20chuangge/lamplit/releases/download/v1.2.170/Lamplit-Setup-1.2.170.exe' },
+          { name: 'Lamplit-Android-1.2.170.apk', browser_download_url: 'https://github.com/20chuangge/lamplit/releases/download/v1.2.170/Lamplit-Android-1.2.170.apk' },
+        ] }), url };
+    };
+    const checker = U.createUpdateChecker({ current: '1.2.166', fetchImpl: fakeFetch });
+    const a = await checker.check();
+    const b = await checker.check();
+    const phone = await checker.check({ have: '1.2.171' });
+    const down = await U.createUpdateChecker({ current: '1.2.166', fetchImpl: async () => { throw new Error('offline'); } }).check();
+    check('V2 update: the app asks GitHub for the latest release (at most every few hours), says whether it is newer, and gives the installer and the phone APK',
+      a.newer === true && a.latest === '1.2.170' && a.current === '1.2.166' && /Setup-1\.2\.170\.exe$/.test(a.setupUrl) && /\.apk$/.test(a.apkUrl) && calls === 1 && b.latest === '1.2.170'
+      && phone.newer === false && down.newer === false && Boolean(down.error)
+      && U.compareVersions('1.2.10', '1.2.9') > 0 && U.compareVersions('1.2.166', '1.2.166') === 0, JSON.stringify({ a, phone, down }));
+    const serverSrc = await readText('../src/server.mjs');
+    const page = await readText('../public/index.html');
+    const main = await readText('../desktop/main.mjs');
+    const preload = await readText('../desktop/shell-preload.cjs');
+    const bridge = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ShellBridge.java');
+    check('V2 update: the desktop app and the phone app show "有新版本" with what changed; the desktop installs it in one click (only a Lamplit release file, then it starts again); the phone opens the APK download',
+      serverSrc.includes("route('GET', /^\\/api\\/update$/") && page.includes('function renderUpdateBanner(') && page.includes("'有新版本'")
+      && preload.includes("installUpdate: (url) => ipcRenderer.invoke('desk:install-update'") && main.includes("handle('desk:install-update'")
+      && main.includes('RELEASE_PREFIX') && main.includes("'--force-run'") && bridge.includes('public String appVersion()'));
+  }
+
+  // --- V3: the group's working line shows who works -------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    check('V3 group: "正在执行命令…" shows the face of the member at work (or the coordinator), never the last 1:1 bot',
+      page.includes('function typingBotId()') && page.includes('state.liveTurn = { turnId: ev.turnId, botId: ev.botId') && !page.includes("showTyping(state.liveTurn?.botId || state.botId,"));
+  }
+}
+
+/**
  * 1.2.165: from 11-15 - 选题 took over coordinating but could not delete the
  * assistant's old routines (no tool); the 任务 panel listed every routine for
  * every bot; the screen panel kept showing 图表师's screen while the human
@@ -5417,7 +5492,7 @@ async function scenarioV158() {
       && render.includes("if (last && last.status !== 'success' && !newer && !working) messagesEl.appendChild(statusLine(last));"));
     check('X3 chat: after a reload, a bot that is still working shows "正在处理…" again (also when the sidebar learns it is working)',
       render.includes("const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);")
-      && render.includes("if (working) showTyping(state.botId, '正在处理…');")
+      && render.includes("if (working) showTyping(typingBotId(), '正在处理…');")
       && page.includes('function syncTypingWithAttention()') && /state\.attention = await api\('\/api\/attention'\);[\s\S]{0,400}syncTypingWithAttention\(\);/.test(page));
   }
 }

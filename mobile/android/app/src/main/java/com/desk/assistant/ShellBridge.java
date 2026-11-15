@@ -155,6 +155,17 @@ public class ShellBridge {
      * app's page comes back to the machine's address, which the browser reaches
      * the same way this app does.
      */
+    /** This app's own version (1.2.166: the page compares it with the latest release). */
+    @JavascriptInterface
+    public String appVersion() {
+        try {
+            String v = activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionName;
+            return v == null ? "" : v;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     @JavascriptInterface
     public boolean openExternal(final String url) {
         if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return false;

@@ -622,6 +622,9 @@ async function boot() {
   reportUiState();
   setInterval(whenVisible(reportUiState), 30000);
   deliverPendingTask();
+  // 有新版本: a few seconds after start, then every 6 hours (the machine caches GitHub's answer).
+  setTimeout(() => checkForUpdate().catch(() => {}), 8000);
+  setInterval(whenVisible(() => checkForUpdate().catch(() => {})), 6 * 60 * 60 * 1000);
 }
 
 /** Wrap a polling function so a hidden tab (phone screen off) does not poll. */

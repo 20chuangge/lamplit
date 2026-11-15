@@ -75,7 +75,7 @@ function renderMessages() {
     const newer = items.some((it) => it.ts && last?.ts && it.ts > last.ts);
     if (last && last.status !== 'success' && !newer && !working) messagesEl.appendChild(statusLine(last));
     // A reload wiped the "working…" line; the bot is still at it.
-    if (working) showTyping(state.botId, '正在处理…');
+    if (working) showTyping(typingBotId(), '正在处理…');
   }
 
   updateComposerMode();

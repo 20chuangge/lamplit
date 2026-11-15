@@ -1124,14 +1124,14 @@ export function createRegistry(deps) {
   add({
     name: 'routine_create',
     description:
-      'Schedule a recurring instruction for a bot. schedule is a 5-field cron expression or "every N minutes"/"every N hours". For "check X and tell me when it changes" set onlyChanges: runs with nothing new stay quiet. pushFeishu also sends each result to the human\'s Feishu.',
+      'Schedule an instruction for a bot. schedule is a 5-field cron expression, "every N minutes"/"every N hours", or "once 2026-11-17 18:05" for a single run (it switches itself off after that run - use it for a one-day reminder instead of a yearly cron). For "check X and tell me when it changes" set onlyChanges: runs with nothing new stay quiet. pushFeishu also sends each result to the human\'s Feishu.',
     risk: RISK.MEDIUM,
     parameters: {
       type: 'object',
       properties: {
         name: { type: 'string' },
         instruction: { type: 'string', description: 'The prompt to run each time.' },
-        schedule: { type: 'string', description: 'e.g. "0 9 * * 1-5" or "every 30 minutes".' },
+        schedule: { type: 'string', description: 'e.g. "0 9 * * 1-5", "every 30 minutes" or "once 2026-11-17 18:05".' },
         botId: { type: 'string', description: 'Defaults to the calling bot.' },
         timezone: { type: 'string', description: 'IANA timezone, defaults to the assistant timezone.' },
         enabled: { type: 'boolean' },

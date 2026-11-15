@@ -715,6 +715,88 @@ function loadAttention() {
 }
 
 /**
+ * 有新版本 (1.2.166): the desktop app on this computer and the phone app ask
+ * this machine whether GitHub has a newer Lamplit (the machine caches it for
+ * hours). Machines given to the bots are updated from this computer instead.
+ */
+async function checkForUpdate() {
+  const phone = typeof window.NightshiftShell?.appVersion === 'function';
+  const desktop = typeof window.desk?.installUpdate === 'function' && onLocalMachine();
+  if (!phone && !desktop) return;
+  let have = '';
+  try { have = phone ? String(window.NightshiftShell.appVersion() || '') : ''; } catch { /* older app */ }
+  let info;
+  try { info = await api(`/api/update${have ? `?have=${encodeURIComponent(have)}` : ''}`); } catch { return; }
+  state.update = { ...info, phone };
+  renderUpdateBanner(state.update);
+}
+
+function renderUpdateBanner(info) {
+  const box = $('update-banner');
+  if (!box) return;
+  let skipped = '';
+  try { skipped = localStorage.getItem('desk.updateSkip') || ''; } catch { /* private mode */ }
+  const link = info?.phone ? info?.apkUrl : info?.setupUrl;
+  if (!info?.newer || !link || skipped === info.latest) { box.hidden = true; return; }
+  box.innerHTML = '';
+  const head = el('div', 'update-head');
+  head.appendChild(el('b', null, '有新版本'));
+  head.appendChild(el('span', null, `${info.latest}（现在是 ${info.current}）`));
+  box.appendChild(head);
+  if (Array.isArray(info.notes) && info.notes.length) {
+    const more = el('details', 'update-notes');
+    more.appendChild(el('summary', null, '改了什么'));
+    const list = el('ul');
+    for (const n of info.notes) list.appendChild(el('li', null, n));
+    more.appendChild(list);
+    box.appendChild(more);
+  }
+  const actions = el('div', 'update-actions');
+  const go = el('button', 'btn primary tiny', info.phone ? '下载新版' : '立即更新');
+  go.type = 'button';
+  go.addEventListener('click', async () => {
+    if (info.phone) {
+      try { window.NightshiftShell.openExternal(link); } catch { window.open(link, '_blank', 'noopener'); }
+      toast('下载好后点开安装包，按提示更新');
+      return;
+    }
+    const busy = Object.values(state.attention?.items || {}).some((i) => i && i.working);
+    const ok = await askConfirm({
+      title: `更新到 ${info.latest}`,
+      text: busy ? '有机器人正在干活：更新时 Lamplit 会关掉再打开，正在做的这一轮会中断（任务清单会接着做）。要现在更新吗？' : 'Lamplit 会下载新版、自动安装，然后关掉再打开，大约一两分钟。',
+      confirmLabel: '更新',
+    });
+    if (!ok) return;
+    go.disabled = true;
+    go.textContent = '正在下载…';
+    const res = await window.desk.installUpdate(link).catch((err) => ({ ok: false, error: err.message }));
+    if (!res?.ok) {
+      go.disabled = false;
+      go.textContent = '立即更新';
+      toast(`没能更新：${res?.error || '未知原因'}`, true);
+      return;
+    }
+    go.textContent = '正在安装，马上重新打开…';
+  });
+  const later = el('button', 'btn tiny', '这个版本先不更新');
+  later.type = 'button';
+  later.addEventListener('click', () => {
+    try { localStorage.setItem('desk.updateSkip', info.latest); } catch { /* private mode */ }
+    box.hidden = true;
+  });
+  actions.appendChild(go);
+  if (info.page) {
+    const page = el('button', 'btn tiny', '发布页');
+    page.type = 'button';
+    page.addEventListener('click', () => openSignInPage(info.page));
+    actions.appendChild(page);
+  }
+  actions.appendChild(later);
+  box.appendChild(actions);
+  box.hidden = false;
+}
+
+/**
  * 需要你拍板, said on top of the chat (1.2.165): on 11-15 the group's "!"
  * explained itself only on hover. Clicking goes to the bot's last words; the
  * strip goes once you answer (a new turn starts there).
@@ -752,7 +834,7 @@ function syncTypingWithAttention() {
   if (isGroupMode() || !state.botId || !messagesEl) return;
   const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);
   const row = messagesEl.querySelector('.typing-row');
-  if (working && !row && !state.liveTurn?.bubble) showTyping(state.botId, '正在处理…');
+  if (working && !row && !state.liveTurn?.bubble) showTyping(typingBotId(), '正在处理…');
   else if (!working && row && !state.liveTurn) hideTyping();
 }
 

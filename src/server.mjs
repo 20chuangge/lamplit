@@ -116,6 +116,7 @@ import {
 } from './auth.mjs';
 import { loadDeviceStore, describeAgent, deviceKind, mayPushUpdate } from './devices.mjs';
 import { realPathOf } from './realpath.mjs';
+import { createUpdateChecker } from './updates.mjs';
 
 // One version for the hub and the app: package.json (shipped with every hub).
 const VERSION = (() => {
@@ -1461,6 +1462,15 @@ route('DELETE', /^\/api\/models\/(?<id>[^/]+)$/, async (_req, _res, { params, st
   state.bus.emit({ type: 'roster.changed' });
   state.bus.emit({ type: 'settings.changed', section: 'model' });
   return result;
+});
+
+// --- a newer Lamplit? (1.2.166) ----------------------------------------------
+//   GET /api/update[?have=1.2.160] -> {current, latest, newer, page, setupUrl, apkUrl, notes}
+//   `have`: the phone app's own version (its page is served by this machine).
+let updateChecker = null;
+route('GET', /^\/api\/update$/, async (_req, _res, { query }) => {
+  updateChecker = updateChecker || createUpdateChecker({ current: VERSION });
+  return updateChecker.check({ have: query.get('have') || '' });
 });
 
 // --- attention (sidebar status) ----------------------------------------------

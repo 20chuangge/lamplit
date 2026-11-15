@@ -999,6 +999,33 @@ handle('desk:open-external', async (_event, url) => {
   await shell.openExternal(String(url));
   return true;
 });
+// 1.2.166: "有新版本 → 立即更新". Only a Lamplit release installer from the
+// public repository; downloaded to a temp folder, run silently into the folder
+// this app is installed in, and the app starts again when it is done.
+const RELEASE_PREFIX = 'https://github.com/20chuangge/lamplit/releases/download/';
+handle('desk:install-update', async (_event, url) => {
+  const link = String(url || '');
+  if (!link.startsWith(RELEASE_PREFIX) || !/\/Lamplit-Setup-\d+\.\d+\.\d+\.exe$/.test(link)) return { ok: false, error: '不是 Lamplit 的安装包地址' };
+  if (process.platform !== 'win32' || !app.isPackaged) return { ok: false, error: '只有装好的 Windows 版能这样更新' };
+  try {
+    const res = await net.fetch(link, { redirect: 'follow' });
+    if (!res.ok) return { ok: false, error: `下载失败（${res.status}）` };
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length < 20 * 1024 * 1024 || bytes.subarray(0, 2).toString('latin1') !== 'MZ') return { ok: false, error: '下载的文件不像安装包，没有安装' };
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lamplit-update-'));
+    const file = path.join(dir, path.basename(new URL(link).pathname));
+    await fsp.writeFile(file, bytes);
+    const installDir = path.dirname(process.execPath);
+    bootLog(`installing update ${path.basename(file)} into ${installDir}`);
+    // /D must come last and unquoted (NSIS); --force-run starts the app again.
+    const installer = spawn(file, ['/S', '--force-run', `/D=${installDir}`], { detached: true, stdio: 'ignore', windowsHide: true });
+    installer.unref();
+    setTimeout(quitNow, 800);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
 handle('desk:clipboard-write', (_event, text) => { clipboard.writeText(String(text ?? '').slice(0, 100000)); return true; });
 
 handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {

@@ -121,11 +121,29 @@ export function parseInterval(spec) {
   return { kind: 'interval', intervalMs, expression: `every ${n} ${unit.startsWith('s') ? 'seconds' : unit.startsWith('h') ? 'hours' : 'minutes'}` };
 }
 
+/**
+ * "once 2026-11-17 18:05" (1.2.166): one run at that wall-clock time in the
+ * routine's timezone, then the routine switches itself off. Before this a
+ * reminder for one day had to be a yearly cron (选题, 11-15).
+ */
+export function parseOnce(spec) {
+  const m = String(spec || '').trim().match(/^(?:once|at)\s+(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})$/i);
+  if (!m) throw cronError('a single run looks like "once 2026-11-17 18:05"');
+  const [year, month, day, hour, minute] = m.slice(1).map(Number);
+  const probe = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
+    throw cronError(`"${spec}" is not a real date and time`);
+  }
+  const pad = (n) => String(n).padStart(2, '0');
+  return { kind: 'once', year, month, day, hour, minute, expression: `once ${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}` };
+}
+
 /** Accepts either shape and returns a normalized schedule descriptor. */
 export function parseSchedule(spec) {
   const text = String(spec || '').trim();
   if (!text) throw cronError('schedule is required');
   if (/^every\b/i.test(text)) return parseInterval(text);
+  if (/^(once|at)\b/i.test(text)) return parseOnce(text);
   return parseCron(text);
 }
 
@@ -211,6 +229,10 @@ export function nextRunFor(schedule, fromTs, timeZone = 'UTC') {
   if (schedule.kind === 'interval') {
     return from + schedule.intervalMs;
   }
+  if (schedule.kind === 'once') {
+    const at = localToUtc(Date.UTC(schedule.year, schedule.month - 1, schedule.day, schedule.hour, schedule.minute), tz);
+    return at > from ? at : null;
+  }
 
   // Start at the next wall-clock minute in the target timezone.
   const p = tzParts(from, tz);
@@ -266,7 +288,7 @@ function dayMatches(schedule, day, weekday) {
 }
 
 export function describeSchedule(schedule) {
-  if (schedule.kind === 'interval') return schedule.expression;
+  if (schedule.kind === 'interval' || schedule.kind === 'once') return schedule.expression;
   return `cron ${schedule.expression}`;
 }
 
@@ -464,6 +486,11 @@ export class RoutineStore {
     } finally {
       run.endedAt = nowIso();
       routine.lastStatus = run.status;
+      // A single run is done once its time came: off, nothing left to delete.
+      if (routine.kind === 'once' && trigger === 'schedule') {
+        routine.enabled = false;
+        routine.nextRun = null;
+      }
       routine.runs.push(run);
       if (routine.runs.length > 20) routine.runs = routine.runs.slice(-20);
       routine.updatedAt = nowIso();
@@ -500,6 +527,8 @@ export class RoutineStore {
         if (!Number.isFinite(due)) {
           const parsed = parseSchedule(routine.schedule);
           routine.nextRun = isoOrNull(nextRunFor(parsed, now, routine.timezone));
+          // A single run whose time has passed has nothing left to do.
+          if (!routine.nextRun && parsed.kind === 'once') routine.enabled = false;
           continue;
         }
         if (due <= now) {

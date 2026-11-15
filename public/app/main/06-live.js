@@ -242,7 +242,7 @@ function handleEvent(ev) {
   }
   if (ev.type === 'tool.progress') {
     // "Video queued, waited 2 min": shown in the working line, not the activity feed.
-    if (chatKeyOf(ev) === currentChatKey()) showTyping(ev.botId || state.botId, ev.text || '正在处理…');
+    if (chatKeyOf(ev) === currentChatKey()) showTyping(ev.botId || typingBotId(), ev.text || '正在处理…');
     return;
   }
   if (ev.type === 'tool.result' && isActionCard(ev.name) && ev.ok !== false) onActionRequest(ev);
@@ -295,12 +295,12 @@ function handleEvent(ev) {
         state.pcFollow = ev.botId;
         if (!state.pcPinned && $('pane-computer')?.classList.contains('active')) loadComputer();
       }
-      state.liveTurn = { turnId: ev.turnId, bubble: null, text: '', sender };
+      state.liveTurn = { turnId: ev.turnId, botId: ev.botId || null, bubble: null, text: '', sender };
       // A colleague handed this bot work: show what it asked, with its face, as it arrives.
       if (ev.fromBotId && ev.text && !isGroupMode() && ev.botId === state.botId) {
         messagesEl.appendChild(botMessageRow({ fromBot: ev.fromBotId, text: ev.text, ts: ev.ts }));
       }
-      showTyping(ev.botId || state.botId, '正在处理…');
+      showTyping(ev.botId || typingBotId(), '正在处理…');
       break;
 
     case 'tool.call':
@@ -330,7 +330,7 @@ function handleEvent(ev) {
         state.liveTurn.bubble = null;
         state.liveTurn.text = '';
       }
-      showTyping(ev.botId || state.botId, '正在处理…');
+      showTyping(ev.botId || typingBotId(), '正在处理…');
       break;
 
     case 'message.delta':
@@ -371,6 +371,17 @@ function handleEvent(ev) {
    "working…" indicator: with tool chips hidden, a turn that is doing five
    tool calls looks exactly like a dead UI. This is the missing feedback.
    --------------------------------------------------------------------- */
+/**
+ * Whose face the working line shows: the bot of the running turn; in a group
+ * with none known yet, the coordinator - never the last 1:1 bot (1.2.166: 助理's
+ * face showed while 选题 worked in 小红书运营组).
+ */
+function typingBotId() {
+  if (state.liveTurn?.botId) return state.liveTurn.botId;
+  if (isGroupMode()) return groupById(state.groupId)?.coordinatorId || null;
+  return state.botId;
+}
+
 function showTyping(botId, label = '正在处理…') {
   let row = messagesEl.querySelector('.typing-row');
   if (!row) {
@@ -416,7 +427,7 @@ function appendLiveChip(chip) {
   const card = chip && isActionCard(chip.name);
   if (card && chip.pending) return;
   if (!state.showProcess && !card) {
-    if (chip && chip.name) showTyping(state.liveTurn?.botId || state.botId, `正在${toolNameLabel(chip.name)}…`);
+    if (chip && chip.name) showTyping(typingBotId(), `正在${toolNameLabel(chip.name)}…`);
     return;
   }
   if (messagesEl.querySelector('.empty')) messagesEl.innerHTML = '';

@@ -892,6 +892,10 @@ async function selectBot(id, { keepHome = false } = {}) {
   state.liveTurn = null;
   updateComposerMode();
   connectStream();
+  // Its own screen and its own routines, not the last chat's.
+  followScreen();
+  if (state.tab === 'activity') renderRoutines();
+  renderDecisionStrip();
 
   await Promise.allSettled([loadMessages(), loadMemory()]);
   loadSkills();

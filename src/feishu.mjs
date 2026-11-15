@@ -361,8 +361,10 @@ export function createFeishu(o) {
     const id = target.botId;
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`;
     // Busy with an earlier message: answer now, and pass this one to that work.
-    if (o.runtime.busyTurn?.(id) && typeof o.runtime.aside === 'function') {
-      const r = await o.runtime.aside({ botId: id, text: full, source: 'feishu' }).catch((err) => ({ text: `没能回答：${err.message}` }));
+    // Also a teammate's hand-off or a routine: no second turn on the same browser (1.2.165).
+    const busy = o.runtime.busyTurn?.(id, { any: true });
+    if (busy && typeof o.runtime.aside === 'function') {
+      const r = await o.runtime.aside({ botId: id, text: full, source: 'feishu', busy }).catch((err) => ({ text: `没能回答：${err.message}` }));
       await sendText(to, label ? `${label}\n${r.text}` : r.text).catch(() => {});
       return;
     }

@@ -131,6 +131,7 @@
         </div>
       </div>
 
+      <button class="decision-strip" id="decision-strip" type="button" hidden></button>
       <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions text"></div>
 
       <div class="notice slim" id="mock-banner" hidden>
@@ -181,7 +182,7 @@
             <div class="tiny muted" id="brief-note" style="margin-top:6px">助理会汇总过去 24 小时所有机器上的情况：要你处理的事、每个机器人做完了什么、新做的页面。</div>
             <div class="approval-actions"><button class="btn tiny" id="brief-try" type="button">现在试一次</button></div>
           </div>
-          <div class="section-head"><span>定时任务</span><button class="btn tiny" id="new-routine-btn">+ 新建</button></div>
+          <div class="section-head"><span>定时任务</span><span class="rt-head-actions"><label class="switch-row tiny" title="显示这台机器上所有机器人的定时任务"><input type="checkbox" id="rt-scope" /> 全部</label><button class="btn tiny" id="new-routine-btn">+ 新建</button></span></div>
           <div class="card" id="routine-form-card" style="display:none">
             <div class="form-grid">
               <input class="field" id="rt-name" placeholder="名字（例如：早间简报）" autocomplete="off" />

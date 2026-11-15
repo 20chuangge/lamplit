@@ -464,6 +464,8 @@ function wireChrome() {
   });
 
   // routines
+  // 全部: every routine on the machine instead of the chat's own.
+  $('rt-scope')?.addEventListener('change', () => renderRoutines());
   $('new-routine-btn').addEventListener('click', () => {
     const card = $('routine-form-card');
     const hidden = card.style.display === 'none' || !card.style.display;

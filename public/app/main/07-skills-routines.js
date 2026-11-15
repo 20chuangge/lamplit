@@ -96,12 +96,23 @@ function renderRoutineBotOptions() {
   else if (state.botId && values.includes(state.botId)) select.value = state.botId;
 }
 
+/**
+ * The routines of the chat on screen (a group: its members'), or every one on
+ * the machine with 全部 (11-15: every bot seemed to have the same six).
+ */
+function routinesInView() {
+  const all = state.routines || [];
+  if ($('rt-scope')?.checked) return all;
+  const ids = isGroupMode() ? groupMembers(groupById(state.groupId)).map((b) => b.id) : [state.botId];
+  return all.filter((rt) => ids.includes(rt.botId));
+}
+
 function renderRoutines() {
   const list = $('routines-list');
   list.innerHTML = '';
   renderRoutineBotOptions();
 
-  for (const rt of state.routines) {
+  for (const rt of routinesInView()) {
     const bot = state.bots.find((b) => b.id === rt.botId);
     const card = el('div', 'card');
     const title = el('div', 'card-title');
@@ -177,6 +188,10 @@ function renderRoutines() {
     list.appendChild(card);
   }
   if (!state.routines.length) list.appendChild(el('div', 'muted tiny', '还没有定时任务。'));
+  else if (!routinesInView().length) {
+    const who = isGroupMode() ? (groupById(state.groupId)?.name || '这个群') : (botById(state.botId)?.name || '它');
+    list.appendChild(el('div', 'muted tiny', `${who}名下没有定时任务（这台机器上一共 ${state.routines.length} 条，勾选「全部」查看）。`));
+  }
 }
 
 async function createRoutine() {

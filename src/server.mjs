@@ -2289,8 +2289,10 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   const fromNote = h ? `（另一台机器上的「${String(h.from?.bot || '队友').slice(0, 40)}」派给你的活；你的最终回答会传回给它。需要的文件可能在那台机器上，让它用 file_send 发过来，或在回答里写明你产出的文件路径。）\n\n` : '';
   // The bot is busy with something the human asked: answer now (no second
   // turn racing the first), and hand the message to the running turn.
-  if (!h && state.runtime.busyTurn?.(bot.id)) {
-    state.runtime.aside({ botId: bot.id, text, turnId, source: 'chat' })
+  // Also when the work is a teammate's hand-off or a routine (1.2.165).
+  const busyNow = !h && state.runtime.busyTurn?.(bot.id, { any: true });
+  if (busyNow) {
+    state.runtime.aside({ botId: bot.id, text, turnId, source: 'chat', busy: busyNow })
       .catch((err) => state.bus.emit({ type: 'error', botId: bot.id, turnId, message: err.message }));
     return { turnId, botId: bot.id, aside: true };
   }

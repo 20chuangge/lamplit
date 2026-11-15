@@ -277,6 +277,10 @@ async function openGroup(id) {
   renderGroups();
   renderGroupHead(group);
   updateComposerMode();
+  // The group's screen, its members' routines, what it waits on you for.
+  followScreen();
+  if (state.tab === 'activity') renderRoutines();
+  renderDecisionStrip();
   await loadGroupMessages();
   connectStream();
   markSeen();

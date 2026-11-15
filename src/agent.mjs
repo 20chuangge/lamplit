@@ -420,6 +420,21 @@ const HUB_MODULES = (() => {
 const HUB_ROOTS = ['desk-hub', ...(HUB_SRC_DIR ? [path.dirname(HUB_SRC_DIR), path.dirname(HUB_SRC_DIR).replace(/\\/g, '/')] : [])].map(escRe);
 const HUB_MODULE = new RegExp(String.raw`\b(import|require)\b[\s\S]{0,400}?(${HUB_ROOTS.join('|')}|[\\/]src[\\/](${HUB_MODULES.join('|')})\.mjs)`, 'i');
 
+/**
+ * How replies read (1.2.165): like a colleague in a chat, not a report. On
+ * 11-15 every bot answered in long bolded sections (steps, checks, tools) -
+ * hard to read and costly. The point first; what the human needs to act
+ * stays; the rest goes into a file. Hand-offs to teammates: facts only.
+ */
+export const REPLY_STYLE = [
+  '## How to reply',
+  '- Write like a capable colleague in a chat, not a report: plain sentences, the point first. Most replies are 1-4 sentences. Finished work is the result in a sentence or two, where it is (file path or page), and anything the human must do or decide.',
+  '- Keep what matters, drop the rest. Always keep numbers and facts the human relies on, decisions, risks, what is not done or not verified, and what they must do - one line each. Leave out how you got there (your steps, the checks you ran, which tools), what they already know, restating their question, openers ("好的，", "以下是…") and closing offers.',
+  '- Long material (a full report, logs, tables, a step-by-step account, verification details) goes into a workspace file; name the path in one line instead of pasting it.',
+  '- No headings in a chat reply. A list only when the items are really separate (at most about 5 short lines). Bold at most a word or two.',
+  '- To a teammate (a bot_message reply, bot_pass, a group task report): what is done, the files (paths), what is next, any problem - facts only, no prose.',
+];
+
 export function reachesSecrets(name, args = {}, { workspaceDir = '' } = {}) {
   const SECRET_FILES = /(vault\.(key|json|mjs)|secrets\.json|\brevealVault\b|\bputVault\b)/i;
   let text = name === 'shell' ? String(args.command || '')
@@ -568,6 +583,8 @@ export class AgentRuntime {
     const said = String(text || '').trim().slice(0, 2000);
     const live = this.active.get(turnId);
     if (live) live.waitingFor = 'decision';
+    // What to decide, for the strip on top of the chat (1.2.165).
+    if (live) live.waitingText = said;
     const note = `【需要你拍板】${said}`;
     const ev = { botId: bot.id, botName: bot.name, turnId, ts: nowIso() };
     await this.record(bot.id, { kind: 'assistant', text: note, turnId, notice: true, final: true });
@@ -652,10 +669,17 @@ export class AgentRuntime {
     await this.recordGroupMessage(target.id, { kind: 'handoff', from: fromId, to: toId, text: flat.length > 1500 ? `${flat.slice(0, 1500)}…` : flat });
   }
 
-  /** The turn this bot is working on for the human right now (not a hand-off or a group turn), or null. */
-  busyTurn(botId) {
+  /**
+   * The turn this bot is working on for the human right now (not a hand-off or
+   * a group turn), or null. With `any`, also a teammate's hand-off or a
+   * routine (not a group turn): a message from the human then goes to that
+   * turn instead of starting a second one on the same browser (1.2.165; 11-15
+   * 质检 ran two at once on D7 and answered both "done" and "not submitted").
+   */
+  busyTurn(botId, { any = false } = {}) {
     for (const [turnId, info] of this.active) {
-      if (info.botId === botId && !info.depth && !info.group && !info.unattended) return { turnId, ...info };
+      if (info.botId !== botId || info.group) continue;
+      if (any || (!info.depth && !info.unattended)) return { turnId, ...info };
     }
     return null;
   }
@@ -741,7 +765,7 @@ export class AgentRuntime {
       `群里的「${busy.memberName}」正在另一台机器「${busy.machine}」上回答：「${String(busy.task || '').slice(0, 200)}」，已经 ${secs(now - busy.startedAt)}，还没回来。`,
       '你是这个群的协调者，替它说一下进度；用户这条消息会在它答完后交给群里接着处理。',
     ].join('\n') : busy ? [
-      `用户交给你的事（他的原话，不代表你已经在照做）：「${String(busy.task || '').slice(0, 300)}」。从开始到现在 ${secs(now - busy.startedAt)}，已经做完 ${busy.steps || 0} 步。`,
+      `${busy.from ? `同事「${(await this.bots.getBot(busy.from).catch(() => null))?.name || busy.from}」交给你的事（它的原话，不代表你已经在照做）` : busy.unattended ? '定时任务交给你的事（原话，不代表你已经在照做）' : '用户交给你的事（他的原话，不代表你已经在照做）'}：「${String(busy.task || '').slice(0, 300)}」。从开始到现在 ${secs(now - busy.startedAt)}，已经做完 ${busy.steps || 0} 步。`,
       step ? `你此刻实际在做的（唯一可信）：调用工具 ${step.name}，参数 ${JSON.stringify(step.args || {}).slice(0, 300)}，这一步已经 ${secs(now - step.startedAt)}，还没结束。` : '你此刻实际在做的（唯一可信）：没有在跑工具，在想下一步怎么做（模型在思考）。',
       busy.last ? `上一步的结果（节选）：${busy.last}` : '',
       !group?.id && this.activeTask(bot.id) ? `任务「${this.activeTask(bot.id).goal}」的进度：\n${taskText(this.activeTask(bot.id))}` : '',
@@ -914,7 +938,7 @@ export class AgentRuntime {
       ...(direct
         ? [
           '- The human sees only your messages, not your tool calls. When the request needs more than a quick step or two (research, several commands, making files), put ONE short sentence in your first reply, next to the tool calls: what you are about to do and roughly how long (e.g. "好，我先查一下 X 的资料，大概一两分钟。"). It reaches them at once, so they are not left waiting. Skip it for quick things. Apart from that one line, never narrate your steps ("next I will", "接着我来"): work, then give the result.',
-          '- The result: put the answer or conclusion first, in 1-3 sentences of its own. Details, steps and lists come after. A long answer is shown as several messages, cut at your paragraphs and headings, so give each section a short heading and keep it self-contained. Leave nothing important out. If you must ask something, ask it and stop.',
+          '- The result: the answer or conclusion first, in a sentence or two. Add detail only when the human needs it to act or decide; long material goes into a file (see How to reply). If you must ask something, ask it and stop.',
         ]
         : [
           '- The human sees only your messages, not your tool calls. Never narrate your steps, never say "let me check", "next I will", "先看一下", "接着我来". Work silently and speak once.',
@@ -930,6 +954,8 @@ export class AgentRuntime {
         : '',
       '- When the task is done, call task_finish. Your last message (or the summary, if you wrote nothing else) must give the human the result itself: what was made, the key content when it is short, and where it is (file paths, page). Never only "done" or a list of steps.',
       '- If you are blocked, say exactly what you need. Do not invent tool output.',
+      '',
+      ...REPLY_STYLE,
     ]
       .filter((line) => line !== undefined && line !== null)
       .join('\n');
@@ -1050,7 +1076,7 @@ export class AgentRuntime {
     // task, the step in progress, the latest result, and the human's new words.
     if (coordinatorTurn) this.groupTurns.add(turnId);
     this.releaseClaim(bot.id);
-    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), groupId: group?.id || null, kickoff, unattended });
+    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), groupId: group?.id || null, kickoff, unattended, from: fromBotId || null });
     const live = this.active.get(turnId);
 
     // Work until done, like comparable agents: a step is one tool call, and
@@ -1528,6 +1554,7 @@ export class AgentRuntime {
         startedAt,
         endedAt,
         ...(waitFor ? { waitingFor: waitFor } : {}),
+        ...(live.waitingText ? { waitingText: live.waitingText } : {}),
       });
       this.groupTurns.delete(turnId);
       if (direct) this.afterTaskTurn(bot.id, status, waitingFor, { fromHuman: source !== 'task', toolsRun }).catch(() => {});

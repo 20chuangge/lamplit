@@ -710,7 +710,37 @@ function loadAttention() {
     renderGroups();
     syncDoneButton();
     syncTypingWithAttention();
+    renderDecisionStrip();
   }, 120);
+}
+
+/**
+ * 需要你拍板, said on top of the chat (1.2.165): on 11-15 the group's "!"
+ * explained itself only on hover. Clicking goes to the bot's last words; the
+ * strip goes once you answer (a new turn starts there).
+ */
+function renderDecisionStrip() {
+  const strip = $('decision-strip');
+  if (!strip) return;
+  const item = state.attention?.items?.[currentChatKey()];
+  const wait = item?.waiting;
+  if (!wait || wait.kind !== 'decision') { strip.hidden = true; return; }
+  const text = String(wait.text || '').replace(/[*`#>]/g, '').replace(/\s+/g, ' ').trim();
+  strip.textContent = '';
+  strip.appendChild(el('b', null, '需要你拍板'));
+  strip.appendChild(el('span', null, text ? truncate(text, 140) : '它在等你的决定，回它一句就行'));
+  strip.title = '点一下看它的原话；回一句，这条提示就会消失';
+  strip.hidden = false;
+  strip.onclick = () => {
+    const rows = messagesEl.querySelectorAll('.row.assistant, .row.group-row, .g-row');
+    const last = rows[rows.length - 1] || messagesEl.lastElementChild;
+    if (last) {
+      last.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      last.classList.add('flash');
+      setTimeout(() => last.classList.remove('flash'), 1600);
+    }
+    $('composer')?.focus?.();
+  };
 }
 
 /**

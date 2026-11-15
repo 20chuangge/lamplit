@@ -1193,6 +1193,66 @@ export function createRegistry(deps) {
     },
   });
 
+  // 1.2.165: 选题 took over coordinating on 11-15 but could not remove the
+  // assistant's old routines - there was no tool to change or delete one.
+  // A bot's own routine it changes at once; another bot's asks the human.
+  const routineRisk = (verb) => (args, ctx) => {
+    const routine = deps.getRoutines()?.get?.(String(args?.id || ''));
+    if (!routine || !ctx?.bot || routine.botId === ctx.bot.id) return { risk: RISK.LOW };
+    const owner = routine.botId;
+    return { risk: RISK.HIGH, reason: `要${verb}别的机器人（${owner}）名下的定时任务「${routine.name || routine.id}」` };
+  };
+
+  add({
+    name: 'routine_update',
+    description: 'Change a routine: its name, instruction, schedule, timezone, on/off (enabled), onlyChanges or pushFeishu. Fields you leave out stay as they are. Your own routines change at once; another bot\'s asks the human.',
+    risk: routineRisk('改'),
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Routine id (see routine_list).' },
+        name: { type: 'string' },
+        instruction: { type: 'string' },
+        schedule: { type: 'string', description: 'e.g. "0 9 * * 1-5" or "every 30 minutes".' },
+        timezone: { type: 'string' },
+        enabled: { type: 'boolean', description: 'false pauses it without deleting it.' },
+        onlyChanges: { type: 'boolean' },
+        pushFeishu: { type: 'boolean' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const routines = deps.getRoutines();
+      const id = String(args?.id || '');
+      if (!routines.get(id)) throw toolError('ROUTINE_NOT_FOUND', `no routine with id "${id}"`);
+      const patch = {};
+      for (const k of ['name', 'instruction', 'schedule', 'timezone', 'enabled', 'onlyChanges', 'pushFeishu']) if (args?.[k] !== undefined) patch[k] = args[k];
+      const routine = await routines.update(id, patch);
+      return { updated: true, routine: publicRoutine(routine) };
+    },
+  });
+
+  add({
+    name: 'routine_delete',
+    description: 'Delete a routine for good (to only pause it, use routine_update with enabled:false). Your own routines go at once; another bot\'s asks the human.',
+    risk: routineRisk('删除'),
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string', description: 'Routine id (see routine_list).' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const routines = deps.getRoutines();
+      const id = String(args?.id || '');
+      const routine = routines.get(id);
+      if (!routine) throw toolError('ROUTINE_NOT_FOUND', `no routine with id "${id}"`);
+      await routines.remove(id);
+      return { deleted: true, id, name: routine.name };
+    },
+  });
+
   // --- bots ---------------------------------------------------------------
 
   add({
@@ -1516,7 +1576,7 @@ export function createRegistry(deps) {
   add({
     name: 'tell_human',
     description:
-      'Tell the human, right away, about something only they can decide or clear: publish or not, choose between options, a blocker (login, money, a missing file). Works even when a teammate or a routine asked you: your other replies may only reach that teammate. The human sees it in your chat, as a phone notification and in Feishu. Say what is ready, what you need from them, and your recommendation. Not for progress reports.',
+      'Tell the human, right away, about something only they can decide or clear: publish or not, choose between options, a blocker (login, money, a missing file). Works even when a teammate or a routine asked you: your other replies may only reach that teammate. The human sees it in your chat, as a phone notification and in Feishu. In a few short lines: what is ready, what you need from them, and your recommendation. Not for progress reports.',
     risk: RISK.LOW,
     parameters: {
       type: 'object',
@@ -2288,6 +2348,8 @@ export function createRegistry(deps) {
       if ((name === 'file_send' || name === 'file_fetch' || name === 'bot_pass') && grants.has('bot_message')) return true;
       // Who may set up a group may give it a job.
       if (name === 'group_handover' && grants.has('group_create')) return true;
+      // Who may make routines may change and delete them.
+      if ((name === 'routine_update' || name === 'routine_delete') && grants.has('routine_create')) return true;
       return false;
     },
     /** OpenAI function-tool schemas for the model call. */
@@ -2337,7 +2399,7 @@ function publicRoutine(routine) {
     lastRun: routine.lastRun,
     nextRun: routine.nextRun,
     lastStatus: routine.lastStatus,
-    runs: routine.runs.slice(-5),
+    runs: (routine.runs || []).slice(-5),
     onlyChanges: Boolean(routine.onlyChanges),
     pushFeishu: Boolean(routine.pushFeishu),
   };

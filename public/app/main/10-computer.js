@@ -66,8 +66,12 @@ function renderPcWho() {
   if (!box) return;
   const group = isGroupMode() ? groupById(state.groupId) : null;
   box.hidden = !group;
-  if (!group) return;
   const current = pcTargetBotId();
+  // The title names the bot whose screen this is, in a 1:1 chat too (11-15:
+  // it still said 图表师 while the human looked at 主笔).
+  const bot = botById(current);
+  if ($('pc-title') && bot) $('pc-title').textContent = `${bot.name}的屏幕`;
+  if (!group) return;
   box.innerHTML = '';
   for (const bot of groupMembers(group)) {
     const b = el('button', bot.id === current ? 'on' : '');
@@ -77,8 +81,14 @@ function renderPcWho() {
     b.addEventListener('click', () => { state.pcPinned = bot.id; loadComputer(); });
     box.appendChild(b);
   }
-  const bot = botById(current);
-  if ($('pc-title') && bot) $('pc-title').textContent = `${bot.name}的屏幕`;
+}
+
+/** The chat changed (another bot or group): the screen panel shows its screen. */
+function followScreen() {
+  renderPcWho();
+  if (state.tab === 'computer' && $('pane-computer')?.classList.contains('active')) {
+    loadComputer().then(() => refreshScreen()).catch(() => {});
+  }
 }
 
 async function loadComputer() {
@@ -110,6 +120,8 @@ async function loadComputer() {
     if ($('pc-screen-note')) $('pc-screen-note').style.display = 'none';
     return;
   }
+  // No screen of its own for this bot: take the previous bot's live view down.
+  syncViewer();
   const rows = [
     ['主机', `${data.host.platform === 'win32' ? 'Windows' : data.host.platform} · ${data.host.release}`],
     ['主机名', data.host.hostname],

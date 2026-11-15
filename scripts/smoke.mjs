@@ -157,6 +157,7 @@ async function main() {
     await stage('1.2.162: pass on when done, decisions reach the human, badge to the card', scenarioV162);
     await stage('1.2.163: the page script split by feature (ENG-04 step 2)', scenarioV163);
     await stage('1.2.164: a machine given to the bots stops asking; remembered yes; the group does the work', scenarioV164);
+    await stage('1.2.165: routines can be changed and deleted; the screen and tasks follow the chat; 需要你拍板 says what', scenarioV165);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4482,7 +4483,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
       check('M12 group talk stays in the group: a turn speaking in a group writes nothing to the bot\'s own chat', agentSrc2.includes('if (record?.turnId && this.groupTurns.has(record.turnId)) return;') && agentSrc2.includes('if (coordinatorTurn) this.groupTurns.add(turnId);') && agentSrc2.includes('this.groupTurns.delete(turnId);'));
       check('M12 busy bot: the running turn reads the human\'s new words before its next step; the chat route and Feishu answer instead of starting a second turn; the page shows it without disturbing the running one',
         agentSrc2.includes('while (live.inbox.length) {') && agentSrc2.indexOf('while (live.inbox.length) {') < agentSrc2.indexOf('response = await turnModel.complete(messages, {')
-        && srvSrc.includes('if (!h && state.runtime.busyTurn?.(bot.id)) {') && (await readText('../src/feishu.mjs')).includes('if (o.runtime.busyTurn?.(id) && typeof o.runtime.aside === \'function\') {')
+        && srvSrc.includes('const busyNow = !h && state.runtime.busyTurn?.(bot.id, { any: true });') && (await readText('../src/feishu.mjs')).includes('const busy = o.runtime.busyTurn?.(id, { any: true });') && (await readText('../src/feishu.mjs')).includes("if (busy && typeof o.runtime.aside === 'function') {")
         && pageSrc.includes('if (ev.aside) {') && pageSrc.indexOf('if (ev.aside) {') < pageSrc.indexOf("    case 'turn.start':\n      if (isGroupMode()"));
     }
     check('M13 phone home page: the bot list is a page of its own (main bot big on top, last message and time per row, search and settings at the bottom); a bot opens the chat, a back arrow returns; the phone starts there',
@@ -4832,6 +4833,119 @@ async function scenarioTeamFixes() {
     const src = await readText('../src/agent.mjs');
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
+  }
+}
+
+/**
+ * 1.2.165: from 11-15 - 选题 took over coordinating but could not delete the
+ * assistant's old routines (no tool); the 任务 panel listed every routine for
+ * every bot; the screen panel kept showing 图表师's screen while the human
+ * looked at 主笔; the group's "!" (需要你拍板) said nothing unless hovered.
+ */
+async function scenarioV165() {
+  const toolsMod = await import('../src/tools.mjs');
+  const workspaceDir = path.join(home, 'workspace');
+  const store = new Map([
+    ['rt_a', { id: 'rt_a', botId: 'topic', name: '协调巡检', instruction: 'x', schedule: 'every 2 hours', enabled: true }],
+    ['rt_b', { id: 'rt_b', botId: 'chief', name: '流水线接力', instruction: 'y', schedule: 'every 2 hours', enabled: true }],
+  ]);
+  const removed = [];
+  const fakeRoutines = {
+    list: () => [...store.values()],
+    get: (id) => store.get(id) || null,
+    update: async (id, patch) => { const r = { ...store.get(id), ...patch }; store.set(id, r); return r; },
+    remove: async (id) => { removed.push(id); return store.delete(id); },
+  };
+  const registry = toolsMod.createRegistry({ workspaceDir, config: {}, getRuntime: () => ({}), getRoutines: () => fakeRoutines });
+  const topic = { id: 'topic', name: '选题', tools: ['routine_create'] };
+  const ctx = { bot: topic, workspaceDir, turnId: 't1' };
+
+  // --- T1: bots can change and delete routines --------------------------------------
+  {
+    const upd = registry.get('routine_update');
+    const del = registry.get('routine_delete');
+    const changed = upd ? await upd.run({ id: 'rt_a', schedule: 'every 3 hours', enabled: false }, ctx) : null;
+    const gone = del ? await del.run({ id: 'rt_b' }, ctx) : null;
+    let missing = null;
+    try { await del.run({ id: 'rt_none' }, ctx); } catch (err) { missing = err.code; }
+    check('T1 routines: a bot can change (schedule, instruction, on/off) and delete a routine; an unknown id says so',
+      changed?.updated === true && store.get('rt_a').schedule === 'every 3 hours' && store.get('rt_a').enabled === false
+      && gone?.deleted === true && removed.includes('rt_b') && missing === 'ROUTINE_NOT_FOUND', JSON.stringify({ changed, gone, missing }));
+    const own = upd.risk({ id: 'rt_a' }, ctx);
+    const other = del.risk({ id: 'rt_b' }, ctx);
+    store.set('rt_b', { id: 'rt_b', botId: 'chief', name: '流水线接力', schedule: 'x', enabled: true });
+    const other2 = del.risk({ id: 'rt_b' }, ctx);
+    check('T1 routines: its own routine it changes at once; one under another bot\'s name asks the human (the card names whose)',
+      own?.risk === 'LOW' && other2?.risk === 'HIGH' && /助理|chief/.test(other2?.reason || '') && Boolean(other),
+      JSON.stringify({ own, other2 }));
+    check('T1 routines: whoever may create routines may change and delete them',
+      registry.isGranted(topic, 'routine_update') && registry.isGranted(topic, 'routine_delete') && !registry.isGranted({ tools: [] }, 'routine_delete'));
+  }
+
+  // --- T2: the screen follows the chat --------------------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    check('T2 screen: switching to another bot (or group) reloads the screen panel for it, and its title names that bot',
+      page.includes('function followScreen()') && /async function selectBot[\s\S]{0,1600}followScreen\(\);/.test(page)
+      && page.includes("if ($('pc-title') && bot) $('pc-title').textContent = `${bot.name}的屏幕`;\n  if (!group) return;"));
+  }
+
+  // --- T3: the task panel shows this chat's routines ------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    check('T3 tasks: the 任务 panel shows the routines of the bot on screen (a group: its members), with a 全部 switch for every routine on the machine',
+      page.includes('function routinesInView()') && page.includes("id=\"rt-scope\"") && page.includes('for (const rt of routinesInView())'));
+  }
+
+  // --- T4: 需要你拍板 says what -----------------------------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    const att = await readText('../src/attention.mjs');
+    const agentSrc = await readText('../src/agent.mjs');
+    check('T4 decision: a chat waiting for your decision shows a strip on top with the question; clicking it goes to the message; the strip goes once you answer',
+      page.includes('id="decision-strip"') && page.includes('function renderDecisionStrip()') && /loadAttention[\s\S]{0,700}renderDecisionStrip\(\);/.test(page)
+      && att.includes('text: String(ev.waitingText || ev.summary') && agentSrc.includes('live.waitingText = said;') && agentSrc.includes('...(live.waitingText ? { waitingText: live.waitingText } : {})'));
+  }
+  // --- T5: one bot, one turn at a time for the human --------------------------------
+  // 11-15 16:20: 质检 was doing 选题's hand-off (D7 sentence); "现在有什么问题吗"
+  // started a second turn on the same browser, and the two answered differently.
+  {
+    const { AgentRuntime } = await import('../src/agent.mjs');
+    const events = [];
+    const recorded = [];
+    const qa = { id: 'qa', name: '质检', role: '审核' };
+    const topicBot = { id: 'topic', name: '选题' };
+    const rt = new AgentRuntime({ config: { workspaceDir }, registry: { schemasFor: () => [] }, model: { complete: async () => ({ content: '我在做选题交来的 D7 修改，快好了。' }) },
+      bots: { getBot: async (id) => (id === 'qa' ? qa : id === 'topic' ? topicBot : null), listBots: async () => [qa, topicBot] }, memory: {}, skills: {},
+      approvals: { cancelForTurn() {} }, bus: { emit: (e) => events.push(e) } });
+    rt.record = async (botId, rec) => { recorded.push({ botId, ...rec }); };
+    rt.loadHistory = async () => [];
+    const live = { botId: 'qa', task: '请再走一次 /publish/update（D7 正文）', startedAt: Date.now() - 60000, steps: 12, step: null, last: '', inbox: [], depth: 1, group: false, from: 'topic' };
+    rt.active.set('turn_handoff', live);
+    const seen = rt.busyTurn('qa', { any: true });
+    const old = rt.busyTurn('qa');
+    const out = await rt.aside({ botId: 'qa', text: '现在有什么问题吗', turnId: 'turn_ask', source: 'chat', busy: seen });
+    rt.active.delete('turn_handoff');
+    const serverSrc = await readText('../src/server.mjs');
+    const agentSrc = await readText('../src/agent.mjs');
+    check('T5 one turn: a message to a bot busy with a teammate\'s hand-off is answered in passing and reaches that running turn - no second turn on the same browser',
+      seen?.turnId === 'turn_handoff' && old === null && live.inbox.includes('现在有什么问题吗') && /D7/.test(out?.text || '')
+      && serverSrc.includes('state.runtime.busyTurn?.(bot.id, { any: true })') && !events.some((e) => e.type === 'turn.start' && !e.aside),
+      JSON.stringify({ seen: seen?.turnId, old, inbox: live.inbox, out }));
+    check('T5 one turn: the answer says whose work it is (选题 handed it over), not "the job you gave me"',
+      agentSrc.includes("busy.from ? `同事「${") && agentSrc.includes('from: fromBotId || null'));
+  }
+  // --- T6: replies read like a colleague, not a report ----------------------------------
+  {
+    const { REPLY_STYLE } = await import('../src/agent.mjs');
+    const agentSrc = await readText('../src/agent.mjs');
+    const text = (REPLY_STYLE || []).join('\n');
+    check('T6 replies: every bot is told to answer like a colleague in a chat - the point first, most replies 1-4 sentences, long material in a file',
+      /capable colleague in a chat/.test(text) && /1-4 sentences/.test(text) && /goes into a workspace file/.test(text)
+      && agentSrc.includes('      ...REPLY_STYLE,\n') && !agentSrc.includes('Details, steps and lists come after'), text.slice(0, 200));
+    check('T6 replies: nothing important is dropped - numbers, decisions, risks, what is not done and what the human must do stay; steps, tool talk and openers go; hand-offs to teammates stay factual',
+      /numbers and facts the human relies on, decisions, risks, what is not done or not verified, and what they must do/.test(text)
+      && /Leave out how you got there/.test(text) && /To a teammate .*facts only/.test(text));
   }
 }
 
@@ -7161,7 +7275,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       && agentSrc.includes('prev.turnId === r.turnId) prev.text =')
       && agentSrc.includes('streamText(baseEvent, bot, turnId, finalSummary, { split: !ctx?.group && !ctx?.depth && !ctx?.unattended })'));
     check('M19 prompt: in a direct chat, longer work starts with one short line of what and how long, and the answer comes first; elsewhere it stays one quiet message',
-      agentSrc.includes('const direct = !unattended && !group && !depth;') && agentSrc.includes('put ONE short sentence in your first reply') && agentSrc.includes('put the answer or conclusion first') && agentSrc.includes('Work silently and speak once.'));
+      agentSrc.includes('const direct = !unattended && !group && !depth;') && agentSrc.includes('put ONE short sentence in your first reply') && agentSrc.includes('The result: the answer or conclusion first') && agentSrc.includes('Work silently and speak once.'));
     const page = await readText('../public/index.html');
     check('M19 phone desktop: full screen on the phone app turns sideways; the exit button is solid and says 退出全屏 on a phone',
       page.includes('if (next && isMobile() && canNativeRotate() && window.innerHeight > window.innerWidth) enterLandscape();') && page.includes('@media (pointer: coarse) {\n    .pc-exit {') && page.includes("$('pc-exit').textContent = '退出全屏'"));

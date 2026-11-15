@@ -69,7 +69,7 @@ export function createAttention({ file, bus }) {
         // A turn a teammate handed to another bot is still that bot's result.
         prevResult.set(key, saved.result[key] || 0);
         saved.result[key] = Date.parse(ev.ts) || Date.now();
-        if (ev.waitingFor) saved.waiting[key] = { kind: ev.waitingFor, text: String(ev.summary || '').slice(0, 120) };
+        if (ev.waitingFor) saved.waiting[key] = { kind: ev.waitingFor, text: String(ev.waitingText || ev.summary || '').slice(0, 300) };
         persist();
         changed();
         break;

@@ -1890,6 +1890,9 @@
   .machine-tag { font-size: 11px; color: var(--dim); }
   .machine-actions { display: flex; gap: 4px; flex: none; }
   .machine-empty { font-size: 12px; color: var(--dim); padding: 6px 2px; }
+  .phone-box { margin-top: var(--s4); display: grid; gap: var(--s2); }
+  .phone-shot { max-width: 220px; max-height: 420px; border-radius: 12px; border: 1px solid var(--border); }
+  #phone-adb-row .btn-row .field { flex: 1; min-width: 0; }
   .brand-mark {
     width: 24px; height: 24px; border-radius: 7px;
     background: linear-gradient(145deg, #ffffff, #9d9da6);

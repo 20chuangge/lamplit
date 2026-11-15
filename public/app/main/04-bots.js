@@ -10,6 +10,7 @@ const ABILITIES = [
   { id: 'delete', label: '删除文件', note: '', tools: ['fs_delete'] },
   { id: 'web', label: '上网和浏览器', note: '打开网页、抓取内容', tools: ['browser_open', 'http_fetch'] },
   { id: 'desktop', label: '操作桌面程序', note: 'Windows：在后台按按钮、填文字，不动鼠标', tools: ['desktop_ui'] },
+  { id: 'phone', label: '操作手机', note: '连在这台电脑上的安卓手机：看屏幕、点、输入、打开 App', tools: ['phone'] },
   { id: 'memory', label: '记忆和技能', note: '记住你的习惯、保存做法', tools: ['memory_write', 'memory_read', 'skill_list', 'skill_read', 'skill_save'] },
   { id: 'routines', label: '定时任务', note: '', tools: ['routine_create', 'routine_list', 'routine_run'] },
   { id: 'team', label: '建机器人和群、派活', note: '', tools: ['bot_list', 'bot_message', 'bot_create', 'bot_update', 'bot_delete', 'group_create', 'group_post', 'group_list', 'group_update', 'group_delete'] },

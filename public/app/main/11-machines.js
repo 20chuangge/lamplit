@@ -175,7 +175,59 @@ function renderMachineMenu() {
 }
 
 /** Settings → 机器: one row each, switch / rename / remove. */
+/** Settings → 机器 → 手机: the phones on this machine's adb (1.3.0). */
+async function renderPhoneBox() {
+  const list = $('phone-list');
+  if (!list) return;
+  const local = onLocalMachine();
+  let data;
+  try { data = await api('/api/phone'); } catch (err) { list.innerHTML = `<div class="machine-empty">${escapeHtml(err.message)}</div>`; return; }
+  $('phone-adb-row').hidden = !local;
+  if ($('phone-adb') && document.activeElement !== $('phone-adb')) $('phone-adb').value = data.adb?.configured || data.adb?.path || '';
+  const ready = (data.devices || []).filter((d) => d.state === 'device');
+  $('phone-look').hidden = !ready.length;
+  if (!data.adb?.found) {
+    list.innerHTML = `<div class="machine-empty">${escapeHtml(local ? '这台电脑上还没找到 adb。装好 Android platform-tools，或在下面填 adb.exe 的位置。' : '这台机器上没有 adb，手机要连在装了 adb 的电脑上。')}</div>`;
+    return;
+  }
+  if (!(data.devices || []).length) {
+    list.innerHTML = `<div class="machine-empty">${escapeHtml(data.error || '没有连着的手机。插上数据线，打开 USB 调试，在手机上点「允许」。')}</div>`;
+    return;
+  }
+  list.innerHTML = data.devices.map((d) => {
+    const sub = d.state === 'unauthorized' ? '还没允许这台电脑：解锁手机，在弹窗里点「允许」'
+      : d.state !== 'device' ? `状态：${d.state}`
+      : d.locked ? '已连接 · 锁着屏（机器人会请你解锁）' : `已连接${d.appName || d.app ? ` · 前台：${d.appName || d.app}` : ''}`;
+    return `<div class="machine-row"><div class="machine-avatar">${escapeHtml((d.model || '手').slice(0, 1))}</div><div class="machine-meta"><div class="machine-name">${escapeHtml(d.model || d.serial)}</div><div class="machine-sub">${escapeHtml(sub)}</div></div></div>`;
+  }).join('');
+}
+
+function bindPhoneBox() {
+  if (!$('phone-refresh') || $('phone-refresh').dataset.bound) return;
+  $('phone-refresh').dataset.bound = '1';
+  $('phone-refresh').addEventListener('click', () => { $('phone-shot').hidden = true; renderPhoneBox(); });
+  $('phone-look').addEventListener('click', async () => {
+    const img = $('phone-shot');
+    try {
+      const res = await fetch(`/api/phone/screen?t=${Date.now()}`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message || `HTTP ${res.status}`);
+      if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+      img.src = URL.createObjectURL(await res.blob());
+      img.hidden = false;
+    } catch (err) { toast(err.message, true); }
+  });
+  $('phone-adb-save').addEventListener('click', async () => {
+    try {
+      await api('/api/phone', { method: 'PUT', body: { adbPath: $('phone-adb').value.trim() } });
+      toast('已保存');
+      renderPhoneBox();
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
 function renderMachinesList() {
+  bindPhoneBox();
+  renderPhoneBox();
   const box = $('set-machines-list');
   if (!box) return;
   if (!machineBridge) {

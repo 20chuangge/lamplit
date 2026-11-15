@@ -84,6 +84,7 @@ import * as mediaModule from './media.mjs';
 import { createVideoJobs } from './videojobs.mjs';
 import { createFeishu, loadFeishu } from './feishu.mjs';
 import { createPeers, friendlyHostname } from './peers.mjs';
+import { createPhone, findAdb } from './phone.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
@@ -283,9 +284,12 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // Reports and dashboards bots make as web pages (the page library).
   refs.pages = createPages({ workspaceDir });
 
+  // The human's phone on this computer (1.3.0): adb where they said, else found.
+  refs.phone = createPhone({ adb: () => findAdb({ configured: phoneConfig().adbPath }), workspaceDir });
   const registry = createRegistry({
     workspaceDir,
     config,
+    getPhone: () => refs.phone,
     getRuntime: () => {
       if (!refs.runtime) throw new Error('agent runtime is not ready yet');
       return refs.runtime;
@@ -587,6 +591,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   refs.peers = createPeers({ file: path.join(P.dataDir, 'peers.json') });
   await refs.peers.load();
   state.peers = refs.peers;
+  state.phone = refs.phone;
   state.pages = refs.pages;
 
   // Badges of bots and groups deleted by an older version (which kept them).
@@ -2003,6 +2008,51 @@ const MACHINE_PROBE_TIMEOUT_MS = 900;
 //
 //   GET  /api/machines                  [{name, url, online, self}]
 //   POST /api/machines/:name/handoff    {url} - a one-time link into that machine
+
+/** Where adb is, when the human said (Settings → 机器 → 手机). data/phone.json {adbPath} */
+let phoneConfigCache;
+function phoneConfig() {
+  if (phoneConfigCache === undefined) {
+    phoneConfigCache = {};
+    try { phoneConfigCache = JSON.parse(fs.readFileSync(path.join(P.dataDir, 'phone.json'), 'utf8')) || {}; } catch { /* not set */ }
+  }
+  return phoneConfigCache;
+}
+
+// --- the human's phone on this computer (1.3.0) ----------------------------------
+//   GET /api/phone                 -> {adb:{found, path, configured}, devices:[{serial, model, state, locked, app, appName}], error?}
+//   PUT /api/phone {adbPath}       -> same; the desktop app on this computer only (it names a program to run)
+//   GET /api/phone/screen?device=  -> PNG of the phone's screen now
+route('GET', /^\/api\/phone$/, async (_req, _res, { state }) => phoneView(state));
+
+route('PUT', /^\/api\/phone$/, async (req, _res, { body, state }) => {
+  if (req.viaPublic || !isLoopbackHost(clientIp(req)) || req.headers.origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(req.headers.origin)) {
+    throw httpError(403, 'LOCAL_ONLY', 'where adb is can only be set in Lamplit on this computer');
+  }
+  const want = String(body?.adbPath || '').trim().replace(/^"|"$/g, '');
+  if (want && !/^adb(\.exe)?$/i.test(path.basename(want))) throw httpError(400, 'NOT_ADB', 'that is not adb (adb.exe in Android platform-tools)');
+  if (want && !fs.existsSync(want)) throw httpError(400, 'NOT_FOUND', `no file at ${want}`);
+  phoneConfigCache = { ...phoneConfig(), adbPath: want };
+  writeJsonSyncAtomic(path.join(P.dataDir, 'phone.json'), phoneConfigCache);
+  return phoneView(state);
+});
+
+route('GET', /^\/api\/phone\/screen$/, async (_req, res, { state, query }) => {
+  let bytes;
+  try { bytes = await state.phone.screenshotBytes({ device: query.get('device') || '' }); } catch (err) { throw httpError(409, err.code || 'PHONE_FAILED', err.message); }
+  res.writeHead(200, { 'content-type': 'image/png', 'content-length': bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+  res.end(bytes);
+  return undefined;
+});
+
+async function phoneView(state) {
+  const configured = phoneConfig().adbPath || '';
+  const found = state.phone.adbPath();
+  const out = { adb: { found: Boolean(found), path: found, configured }, devices: [] };
+  if (!found) return out;
+  try { out.devices = (await state.phone.status()).devices; } catch (err) { out.error = err.message; }
+  return out;
+}
 
 /**
  * This machine's name in the owner's lists: the one given when it was added

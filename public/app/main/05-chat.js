@@ -1555,6 +1555,7 @@ const TOOL_TEXT = {
   image_generate: { label: '生成图片', title: '想生成图片', impact: '会调用生图服务，按张计费（通常几分钱）；图片存进工作区。' },
   video_generate: { label: '生成视频', title: '想生成一段视频', impact: '会调用生视频服务，按条计费，比图片贵；要等几分钟。' },
   shell: { label: '执行命令', title: '想在这台电脑上运行一条命令', impact: '命令会以你当前的用户身份运行，可能出现你没预料到的改动。' },
+  phone: { label: '操作手机', title: '想在你的手机上做一步', impact: '会在手机上点、滑或输入；付款、发送、发布、删除每次都会先问你。手机锁着时不会去解锁。' },
   desktop_ui: { label: '操作桌面程序', title: '想在后台操作一个桌面程序', impact: '会在那个窗口里按按钮或填文字，不动你的鼠标。' },
   fs_write: { label: '写入文件', title: '想写入一个文件', impact: '如果同名文件已经存在，里面的内容会被覆盖。' },
   machine_switch: { label: '把任务交给另一台机器', title: '想切到另一台机器，把任务交给那里的助理', impact: '窗口会切到那台机器，那里的助理接着做。' },

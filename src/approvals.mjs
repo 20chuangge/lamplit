@@ -171,12 +171,17 @@ export function mediumRunsUnasked({ careful = false, autonomous = false, trusted
  * -> {key, label} or null (nothing to remember).
  */
 const FILE_VERBS = { fs_write: '写文件', fs_mkdir: '建文件夹', fs_delete: '删文件', fs_read: '读文件', fs_list: '查看文件', fs_move: '移动文件', fs_copy: '复制文件' };
-export function permissionKey(toolName, args = {}, { workspaceDir = '' } = {}) {
+export function permissionKey(toolName, args = {}, { workspaceDir = '', phoneApp = null } = {}) {
   const name = String(toolName || '');
   if (!name) return null;
   if (name === 'shell') {
     const program = mainProgram(String(args?.command || ''));
     return program ? { key: `shell:${program}`, label: `用 ${program} 运行命令` } : null;
+  }
+  // The phone (1.3.0): allowed for good per app ("在手机的小红书里点、滑、输入").
+  if (name === 'phone') {
+    const pkg = String(phoneApp?.pkg || '').trim();
+    return pkg ? { key: `phone:${pkg}`, label: `在手机的「${phoneApp.label || pkg}」里点、滑、输入、打开` } : { key: 'phone', label: '在手机上点、滑、输入' };
   }
   if (FILE_VERBS[name]) {
     const raw = args?.path ?? args?.from ?? args?.src;

@@ -23,6 +23,8 @@ const ROLE_RULES = [
   [/代码|开发|程序|编程|工程师|运维|部署|测试|脚本|服务器|数据库|数据分析|统计|爬虫|自动化|命令行|终端|运行命令|执行命令|跑一下命令|shell|terminal|\b(code|coder|coding|dev|developer|engineer|ops|devops|test|qa|script|data)\b/i, ['shell']],
   [/调研|研究|搜索|搜集|收集|资料|浏览|网页|网站|新闻|竞品|采集|查询|检索|\b(research|browse|search|web|news)\b/i, ['browser_open']],
   [/下载|上传|表单|填写|登录|后台|\b(download|upload|form|login)\b/i, ['browser_open']],
+  // 1.3.0: work on the human's phone (a 小红书 account lives in the app).
+  [/手机|安卓|App\s*里|小红书|抖音|微信里|快手|\b(android|phone|mobile app)\b/i, ['phone']],
 ];
 
 export function toolsForText(text) {
@@ -52,7 +54,7 @@ const LABELS = {
   routine_create: '建定时任务', routine_list: '查看定时任务', routine_run: '运行定时任务',
   bot_list: '查看成员', bot_message: '找其他机器人帮忙', file_send: '发文件到别的机器', file_fetch: '从别的机器取文件',
   group_post: '在群里发言', group_list: '查看群', settings_get: '查看设置', ui_get: '查看界面', machine_list: '查看机器',
-  desktop_ui: '操作桌面', browser_fill_secret: '填写保存的登录信息',
+  desktop_ui: '操作桌面', browser_fill_secret: '填写保存的登录信息', phone: '操作手机',
 };
 export const toolLabel = (name) => (LABELS[name] ? `${LABELS[name]}（${name}）` : name);
 

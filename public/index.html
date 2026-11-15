@@ -730,6 +730,20 @@
           <div class="btn-row" id="desktop-full-row" hidden><button class="btn tiny primary" id="desktop-full-install" type="button">安装 XFCE</button></div>
         </div>
         <div class="row-note" id="desktop-mode-none" hidden></div>
+        <div class="phone-box" id="phone-box">
+          <div class="lbl">手机</div>
+          <div class="row-note">安卓手机用数据线连这台机器，在手机的开发者选项里打开「USB 调试」，手机上弹出提示时点「允许」。给机器人勾上「操作手机」后，它就能看手机屏幕、点、输入、打开 App；付款、发送、发布、删除每次都会先问你，手机锁着时它会请你解锁。</div>
+          <div class="machine-list" id="phone-list"></div>
+          <img class="phone-shot" id="phone-shot" alt="手机屏幕" hidden />
+          <div class="btn-row">
+            <button class="btn tiny" id="phone-refresh" type="button">刷新</button>
+            <button class="btn tiny" id="phone-look" type="button" hidden>看一眼屏幕</button>
+          </div>
+          <div id="phone-adb-row" hidden>
+            <label class="lbl" for="phone-adb">adb 在哪（Android platform-tools 里的 adb.exe）</label>
+            <div class="btn-row"><input class="field" id="phone-adb" autocomplete="off" spellcheck="false" placeholder="例如 C:\Android\platform-tools\adb.exe" /><button class="btn tiny" id="phone-adb-save" type="button">保存</button></div>
+          </div>
+        </div>
       </section>
 
       <section class="dsec" id="sec-skills">

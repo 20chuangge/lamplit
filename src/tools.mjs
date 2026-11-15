@@ -35,6 +35,7 @@ const SELF_TAG = os.hostname();
 import { listVault, revealVault } from './vault.mjs';
 import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
 import { runWinUi, WINUI_ACTIONS } from './winui.mjs';
+import { createPhone, findAdb, appLabel, PHONE_ACTIONS, PHONE_LOOK_ACTIONS, SENSITIVE_TAP } from './phone.mjs';
 import { CLI_AGENTS, CLI_AGENT_IDS, newTaskDir, runCliAgent } from './cliagents.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -786,6 +787,73 @@ export function createRegistry(deps) {
       },
     });
   }
+
+  // --- the human's Android phone, through this computer's adb (1.3.0) ---------
+
+  let ownPhone = null;
+  const phoneOf = (ctx) => (typeof deps.getPhone === 'function' && deps.getPhone())
+    || (ownPhone ||= createPhone({ adb: () => findAdb(), workspaceDir: ctx?.workspaceDir || deps.workspaceDir || process.cwd() }));
+  add({
+    name: 'phone',
+    description:
+      'Work the human\'s Android phone plugged into this computer (USB debugging), like a person holding it. ' +
+      'Actions: status (connected phones, locked or not, the app in front), look (a screenshot saved in the workspace plus the list of texts, buttons and boxes on screen with where to tap), ' +
+      'tap (target = the words on it, or index i from look, or x/y; long=true for a long press), swipe (direction up/down/left/right; "up" scrolls down the page), ' +
+      'type (text into the box with the cursor, or the box given by target; Chinese works; submit=true presses enter), key (back, home, enter, recent, delete, search), open (an app by its everyday name like 小红书 or its package), apps (installed apps). ' +
+      'Work in small steps: look, do one thing, look again. Looking never asks the human; tapping, typing and opening apps ask unless they allowed it for that app; anything that pays, sends, publishes or deletes asks every time. ' +
+      'If the phone is locked, ask the human to unlock it - never try yourself. Never type passwords or payment codes: the human does that.',
+    risk: (args) => (PHONE_LOOK_ACTIONS.has(String(args?.action || '')) ? { risk: RISK.LOW } : { risk: RISK.MEDIUM }),
+    // What the tap would press, known before the approval: paying, sending,
+    // publishing or deleting always asks; "以后都允许" is kept per app.
+    async escalate(args, ctx) {
+      const action = String(args?.action || '');
+      if (PHONE_LOOK_ACTIONS.has(action)) return null;
+      const seen = phoneOf(ctx).labelFor(args || {});
+      // Enter after typing: looking something up in a search box is ordinary;
+      // in any other box (a comment, a message) it may send.
+      let sends = false;
+      if (action === 'type' && args?.submit) {
+        const box = await phoneOf(ctx).focusedBox(args || {});
+        if (!seen.app && box.app) seen.app = box.app;
+        sends = !box.search;
+      }
+      const app = seen.app ? { pkg: seen.app, label: appLabel(seen.app) } : null;
+      const words = [seen.label, args?.what, sends ? '发送' : ''].filter(Boolean).join(' ');
+      if ((action === 'tap' || action === 'type') && SENSITIVE_TAP.test(words) && !(action === 'tap' && seen.clearsBox)) {
+        return { risk: RISK.HIGH, alwaysAsk: true, app, reason: `在手机${app ? `的「${app.label}」` : ''}上${action === 'type' ? '输入并提交' : `点「${String(seen.label || args?.what || '').slice(0, 30)}」`}：可能付款、发送、发布或删除，每次都先问你` };
+      }
+      const what = action === 'tap' ? `点「${String(seen.label || `${args?.x},${args?.y}`).slice(0, 30)}」` : action === 'type' ? `输入「${String(args?.text || '').slice(0, 30)}」`
+        : action === 'open' ? `打开「${args?.app || ''}」` : action === 'swipe' ? '滑动屏幕' : action === 'key' ? `按${args?.key || ''}键` : action;
+      return { risk: RISK.MEDIUM, app: action === 'open' ? { pkg: String(args?.app || ''), label: String(args?.app || '') } : app, reason: `在手机${app && action !== 'open' ? `的「${app.label}」` : ''}上${what}` };
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: PHONE_ACTIONS },
+        device: { type: 'string', description: 'Which phone (serial or model) when more than one is connected.' },
+        target: { type: 'string', description: 'tap/type: the words shown on the button or box (text, description or id from look).' },
+        index: { type: 'integer', description: 'tap/type: the element number i from the last look.' },
+        x: { type: 'number' },
+        y: { type: 'number' },
+        long: { type: 'boolean', description: 'tap: long press.' },
+        what: { type: 'string', description: 'tap by x/y: what you are pressing, in the words on screen.' },
+        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
+        text: { type: 'string', description: 'type: the text.' },
+        submit: { type: 'boolean', description: 'type: press enter afterwards.' },
+        key: { type: 'string', enum: ['back', 'home', 'enter', 'recent', 'delete', 'search', 'menu'] },
+        app: { type: 'string', description: 'open: 小红书, 微信, 抖音 … or a package name.' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      try {
+        return await phoneOf(ctx).act(String(args?.action || ''), { ...args });
+      } catch (err) {
+        throw toolError(err.code || 'PHONE_FAILED', err.message);
+      }
+    },
+  });
 
   // --- network ------------------------------------------------------------
 

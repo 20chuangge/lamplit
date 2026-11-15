@@ -274,6 +274,7 @@ function peersLine(peers, canHandOff) {
 
 import { askPeerBot, fetchedNote, filesForMove, sendFilesKeepingPaths } from './crossmachine.mjs';
 import { friendlyHostname } from './peers.mjs';
+import { adbInShell } from './phone.mjs';
 import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember, listPlans, makeTask, updateStep, openSteps, doneSteps, taskText } from './plans.mjs';
 
 /** A 1:1 task keeps going by itself at most this many turns before it asks the human. */
@@ -881,6 +882,7 @@ export class AgentRuntime {
         : 'You are a specialist bot. Do your part of the work and report back concisely. When part of a job belongs to a teammate (see the team below), hand it to them with bot_message - give them the inputs and file paths they need - and put their results together; you get each reply back. Never hand work back to the bot that gave it to you.',
       teamLine,
       ...peersLine(this.getPeers()?.list?.() || [], this.registry.isGranted(bot, 'bot_message')),
+      ...(this.registry.isGranted(bot, 'phone') ? ['On the phone: use the phone tool in small steps (look, one action, look again) and say what you saw - never adb in the shell. Install apps through the phone\'s app store with it. If it is locked, or a screen wants a password, payment code or verification code, stop and ask the human; never guess or type those.'] : []),
       ...(this.registry.isGranted(bot, 'task_move') && (this.getPeers()?.list?.() || []).length ? ['When the human asks to move the work to another machine ("换到 Ubuntu 上做"), use task_move - it carries the checklist, progress and files and stops it here. Do not re-explain the task to a bot over there with bot_message.'] : []),
       ...(this.registry.isGranted(bot, 'bot_message') ? ['In a pipeline (write → review → fix …): when your part is done and the next step is a teammate\'s, use bot_pass to hand it on now and finish - do not leave it for a later scheduled round. Use bot_message only when you need their result to finish your own work.'] : []),
       'When something needs the human\'s decision (publish or not, pick an option, a blocker only they can clear), say it with tell_human - also when a teammate or a routine asked you, because your reply may only reach them.',
@@ -2308,6 +2310,13 @@ export class AgentRuntime {
     const secretReason = reachesSecrets(name, args, { workspaceDir: this.config.workspaceDir });
     if (secretReason && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason }; sticky = true; }
     if (name === 'cli_agent_run' && verdict.decision !== DECISION.DENY) sticky = true;
+    // adb in the shell works the phone around the phone tool's rules (1.3.1): ask every time.
+    if (name === 'shell' && adbInShell(args?.command) && verdict.decision !== DECISION.DENY) {
+      verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: '直接用 adb 操作手机，会绕过「操作手机」的规矩（付款、发布、同意每次问你，不解锁，不输密码），每次都先问你。机器人应该改用「操作手机」。' };
+      sticky = true;
+    }
+    // A tool that knows this one step always needs the human (a phone tap that pays or posts).
+    if (riskInfo.alwaysAsk && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: riskInfo.reason || verdict.reason }; sticky = true; }
     if (name === 'cli_agent_run' && verdict.decision === DECISION.AUTO) {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `交给 ${args?.agent === 'codex' ? 'Codex' : 'Claude Code'}（用你的订阅额度，会在工作区里写文件${args?.allowShell ? '、运行命令' : ''}），每次都先问你` };
     }
@@ -2323,7 +2332,7 @@ export class AgentRuntime {
     }
 
     // "以后都允许": the human said yes to this kind of step for this bot for good.
-    const remember = sticky ? null : permissionKey(name, args, { workspaceDir: this.config.workspaceDir });
+    const remember = sticky ? null : permissionKey(name, args, { workspaceDir: this.config.workspaceDir, phoneApp: riskInfo.app });
     if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key)) {
       verdict = { ...verdict, decision: DECISION.AUTO, reason: `你之前选了「以后都允许」：${remember.label}` };
     }

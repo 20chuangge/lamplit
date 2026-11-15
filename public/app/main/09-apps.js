@@ -794,6 +794,7 @@ const PERM_CAPS = [
   { label: '切机器', tools: ['machine_switch'], risk: 'medium' },
   { label: '浏览器', tools: ['browser_open', 'browser_click', 'browser_type'], risk: 'medium' },
   { label: '桌面程序', tools: ['desktop_ui'], risk: 'medium' },
+  { label: '手机', tools: ['phone'], risk: 'medium' },
 ];
 const PERM_LEVEL = { careful: '谨慎', standard: '标准', auto: '放手' };
 

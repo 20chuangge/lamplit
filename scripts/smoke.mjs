@@ -161,6 +161,8 @@ async function main() {
     await stage('1.2.166: run once, a new version is announced, the working face is right', scenarioV166);
     await stage('1.2.167: a task moves to another machine with its checklist and files', scenarioV167);
     await stage('1.2.168: a moved task shows live progress; machines by their given names; members by machine', scenarioV168);
+    await stage('1.3.0: the phone as a machine - look, tap, type, open apps over adb', scenarioV130);
+    await stage('1.3.1: Chinese reaches the app, consent always asks, a search is not a send, no adb in the shell', scenarioV131);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4932,6 +4934,278 @@ async function scenarioV167() {
       Boolean(tool) && tool.risk === 'MEDIUM' && registry.isGranted({ tools: ['bot_message'] }, 'task_move') && !registry.isGranted({ tools: [] }, 'task_move')
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
+  }
+}
+
+/**
+ * 1.3.1: on the real phone (OPPO, ColorOS) a broadcast to the Lamplit app
+ * never arrived, so Chinese fell back to pinyin; the bot tapped 小红书's
+ * "同意" on the privacy policy unasked; a search with enter was carded as
+ * "may pay, send or publish"; and the bot reached for adb in the shell, where
+ * none of the phone's rules apply.
+ */
+async function scenarioV131() {
+  const PH = await import('../src/phone.mjs');
+  const workspaceDir = path.join(home, 'workspace');
+  const node = (attrs) => `<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" content-desc="" clickable="false" enabled="true" focused="false" scrollable="false" password="false" ${attrs} />`;
+  const searchUi = `<hierarchy>${node('bounds="[0,0][1080,2400]"').replace(' />', '>')}`
+    + `<node index="1" text="杭州" resource-id="com.xingin.xhs:id/search_input" class="android.widget.EditText" package="com.xingin.xhs" content-desc="搜索框" clickable="true" enabled="true" focused="true" scrollable="false" password="false" bounds="[0,100][1080,200]" /></node></hierarchy>`;
+  const commentUi = `<hierarchy>${node('bounds="[0,0][1080,2400]"').replace(' />', '>')}`
+    + `<node index="1" text="" resource-id="com.xingin.xhs:id/comment_input" class="android.widget.EditText" package="com.xingin.xhs" content-desc="说点什么" clickable="true" enabled="true" focused="true" scrollable="false" password="false" bounds="[0,2200][1080,2300]" /></node></hierarchy>`;
+  let ui = searchUi;
+  const ran = [];
+  const exec = async (_file, args) => {
+    const cmd = args.join(' ');
+    ran.push(cmd);
+    if (cmd === 'devices -l') return { stdout: 'List of devices attached\nABC123   device product:x model:Pixel_8 device:y transport_id:1\n' };
+    if (cmd.includes('dumpsys window')) return { stdout: '  mCurrentFocus=Window{1 u0 com.android.launcher/com.android.launcher.Launcher}\n isKeyguardShowing=false\n' };
+    if (cmd.includes('uiautomator dump')) return { stdout: ui };
+    if (cmd.includes('content call')) return { stdout: 'Result: Bundle[{ok=true}]\n' };
+    return { stdout: '' };
+  };
+  const phone = PH.createPhone({ adb: () => 'adb', exec, workspaceDir });
+
+  // --- Q1: Chinese through a content provider (a broadcast was dropped on ColorOS) ------------
+  await phone.act('type', { text: '杭州咖啡' });
+  const call = ran.find((c) => c.includes('content call'));
+  const b64 = Buffer.from('杭州咖啡', 'utf8').toString('base64');
+  const manifest = await readText('../mobile/android/app/src/main/AndroidManifest.xml');
+  const javaSrc = await readText('../mobile/android/app/src/main/java/com/desk/assistant/PhoneTypeProvider.java').catch(() => '');
+  check('Q1 Chinese: the text goes to the Lamplit app through a content provider call (reaches the app even when the system holds back its broadcasts), then paste',
+    Boolean(call) && call.includes('content://com.desk.assistant.phonetype') && call.includes('--method type') && call.includes(b64) && ran.some((c) => c.includes('keyevent 279')),
+    JSON.stringify(ran));
+  check('Q1 app: the provider is adb-only (checks the DUMP permission itself - call() is not covered by the manifest permission) and only sets the clipboard',
+    /android:name="\.PhoneTypeProvider"[\s\S]{0,300}android:authorities="\$\{applicationId\}\.phonetype"/.test(manifest)
+    && javaSrc.includes('checkCallingPermission') && javaSrc.includes('android.permission.DUMP') && javaSrc.includes('setPrimaryClip') && !/getPrimaryClip/.test(javaSrc));
+
+  // --- Q1b: Lamplit not running: woken by an invisible screen, then typed ---------------------
+  {
+    let calls = 0;
+    let woke = false;
+    let probes = 0;
+    const seen = [];
+    const exec2 = async (_file, args) => {
+      const cmd = args.join(' ');
+      seen.push(cmd);
+      if (cmd === 'devices -l') return { stdout: 'List of devices attached\nABC123   device product:x model:Pixel_8 device:y transport_id:1\n' };
+      if (cmd.includes('dumpsys window')) return { stdout: '  mCurrentFocus=Window{1 u0 com.xingin.xhs/x.Main}\n isKeyguardShowing=false\n' };
+      if (cmd.includes('uiautomator dump')) return { stdout: searchUi };
+      if (cmd.includes('am start -W -n com.desk.assistant/.WakeActivity')) { woke = true; return { stdout: 'Status: ok\n' }; }
+      if (cmd.includes('content call')) {
+        calls += 1;
+        // Not found until woken, nor on the first probe after (a cold start).
+        if (!woke || (cmd.includes('--method probe') && (probes += 1) === 1)) return { stdout: 'Error while accessing provider:com.desk.assistant.phonetype\njava.lang.IllegalStateException: Could not find provider: com.desk.assistant.phonetype\n' };
+        return { stdout: 'Result: Bundle[{ok=true}]\n' };
+      }
+      return { stdout: '' };
+    };
+    const p2 = PH.createPhone({ adb: () => 'adb', exec: exec2, workspaceDir });
+    await p2.act('type', { text: '咖啡' });
+    check('Q1b Chinese while Lamplit is not running: an invisible Lamplit screen wakes it (nothing covers the app being typed into, no back key), the computer waits until it answers, then the text goes in',
+      woke && probes >= 2 && seen.some((c) => c.includes('keyevent 279')) && !seen.some((c) => c.includes('keyevent 4')) && !seen.some((c) => c.includes('monkey -p com.desk.assistant')),
+      JSON.stringify(seen));
+    const manifest2 = await readText('../mobile/android/app/src/main/AndroidManifest.xml');
+    const wakeSrc = await readText('../mobile/android/app/src/main/java/com/desk/assistant/WakeActivity.java').catch(() => '');
+    check('Q1b app: the invisible screen shows nothing, closes at once and stays out of recents',
+      /android:name="\.WakeActivity"[\s\S]{0,300}Theme\.NoDisplay/.test(manifest2) && /excludeFromRecents="true"/.test(manifest2) && wakeSrc.includes('finish()'));
+  }
+
+  // --- Q2: what always asks ---------------------------------------------------------------
+  const toolsMod = await import('../src/tools.mjs');
+  const registry = toolsMod.createRegistry({ workspaceDir, config: {}, getRuntime: () => ({}), getRoutines: () => null, getPhone: () => phone });
+  const tool = registry.get('phone');
+  const agree = await tool.escalate({ action: 'tap', target: '同意' }, {});
+  const allow = await tool.escalate({ action: 'tap', target: '允许' }, {});
+  check('Q2 consent: tapping 同意 / 允许 / 授权 (privacy policies, permissions) always asks', agree?.alwaysAsk === true && allow?.alwaysAsk === true, JSON.stringify({ agree, allow }));
+  ui = searchUi;
+  const search = await tool.escalate({ action: 'type', text: '杭州咖啡', submit: true }, {});
+  ui = commentUi;
+  const comment = await tool.escalate({ action: 'type', text: '好看', submit: true }, {});
+  check('Q2 enter: typing into a search box and pressing enter is an ordinary step; pressing enter in any other box (a comment) always asks',
+    !search?.alwaysAsk && comment?.alwaysAsk === true, JSON.stringify({ search, comment }));
+
+  // --- Q4: a box's clear button is not "delete"; a failed type is woken and retried ---------------
+  {
+    const clearUi = `<hierarchy><node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" content-desc="" clickable="false" enabled="true" focused="false" scrollable="false" password="false" bounds="[0,0][1080,2400]">`
+      + `<node index="1" text="杭州咖啡" resource-id="com.xingin.xhs:id/search_input" class="android.widget.EditText" package="com.xingin.xhs" content-desc="" clickable="true" enabled="true" focused="true" scrollable="false" password="false" bounds="[100,150][800,230]" />`
+      + `<node index="2" text="" resource-id="" class="android.widget.ImageView" package="com.xingin.xhs" content-desc="全部删除" clickable="true" enabled="true" focused="false" scrollable="false" password="false" bounds="[740,160][790,220]" />`
+      + `<node index="3" text="" resource-id="" class="android.widget.Button" package="com.xingin.xhs" content-desc="全部删除" clickable="true" enabled="true" focused="false" scrollable="false" password="false" bounds="[800,2200][1080,2300]" />`
+      + `</node></hierarchy>`;
+    ui = clearUi;
+    const p3 = PH.createPhone({ adb: () => 'adb', exec, workspaceDir });
+    await p3.act('look', {}).catch(() => {});
+    const reg3 = toolsMod.createRegistry({ workspaceDir, config: {}, getRuntime: () => ({}), getRoutines: () => null, getPhone: () => p3 });
+    const inBox = await reg3.get('phone').escalate({ action: 'tap', index: 1 }, {});
+    const elsewhere = await reg3.get('phone').escalate({ action: 'tap', index: 2 }, {});
+    check('Q4 clear button: the "全部删除" × inside a search box only clears the box (ordinary); a "全部删除" button anywhere else still always asks',
+      !inBox?.alwaysAsk && elsewhere?.alwaysAsk === true, JSON.stringify({ inBox, elsewhere }));
+
+    let tries = 0;
+    let woke = false;
+    const seen4 = [];
+    const exec4 = async (_file, args) => {
+      const cmd = args.join(' ');
+      seen4.push(cmd);
+      if (cmd === 'devices -l') return { stdout: 'List of devices attached\nABC123   device product:x model:Pixel_8 device:y transport_id:1\n' };
+      if (cmd.includes('dumpsys window')) return { stdout: '  mCurrentFocus=Window{1 u0 com.xingin.xhs/x.Main}\n isKeyguardShowing=false\n' };
+      if (cmd.includes('uiautomator dump')) return { stdout: searchUi };
+      if (cmd.includes('WakeActivity')) { woke = true; return { stdout: 'Status: ok\n' }; }
+      if (cmd.includes('--method probe')) return { stdout: 'Result: Bundle[{ok=true}]\n' };
+      if (cmd.includes('--method type')) { tries += 1; return { stdout: tries === 1 ? 'Result: Bundle[{ok=false, error=the clipboard did not take it}]\n' : 'Result: Bundle[{ok=true}]\n' }; }
+      return { stdout: '' };
+    };
+    const p4 = PH.createPhone({ adb: () => 'adb', exec: exec4, workspaceDir });
+    await p4.act('type', { text: '咖啡' });
+    let msg = '';
+    const p5 = PH.createPhone({ adb: () => 'adb', exec: async (f, a) => (a.join(' ').includes('--method type') ? { stdout: 'Result: Bundle[{ok=false, error=the clipboard did not take it}]\n' } : exec4(f, a)), workspaceDir });
+    try { await p5.act('type', { text: '咖啡' }); } catch (err) { msg = err.message; }
+    check('Q4 retry: a type the app could not take is retried once after waking it; if it still fails the bot hears the app\'s own reason',
+      tries === 2 && woke && seen4.some((c) => c.includes('keyevent 279')) && /clipboard did not take it/.test(msg), JSON.stringify({ tries, woke, msg }));
+  }
+
+  // --- Q3: adb in the shell, and the home screen's name ----------------------------------------
+  const { adbInShell } = await import('../src/phone.mjs');
+  check('Q3 shell: a command that runs adb is spotted (it would skip the phone\'s rules); other commands are not',
+    Boolean(adbInShell('adb shell input tap 1 2')) && Boolean(adbInShell('"D:\\sdk\\platform-tools\\adb.exe" install x.apk')) && Boolean(adbInShell('cd /tmp && adb -s X shell am start')) && !adbInShell('ls -la') && !adbInShell('echo badb'));
+  const agentSrc = await readText('../src/agent.mjs');
+  check('Q3 shell: such a command asks every time and the bot is told to use the phone tool', agentSrc.includes('adbInShell(') && /use the phone tool/.test(agentSrc));
+  check('Q3 names: the home screen reads as 手机桌面, not its package', PH.appLabel('com.android.launcher') === '手机桌面' && PH.appLabel('com.miui.home') === '手机桌面');
+}
+
+/**
+ * 1.3.0: the phone as a machine, step one - a bot works the human's Android
+ * phone through this computer's adb (USB debugging): look (screenshot + what
+ * is on screen), tap, swipe, type (Chinese too, through the Lamplit app),
+ * keys, open an app. Looking is free; doing asks, "以后都允许" per app; paying,
+ * sending, publishing and deleting always ask; a locked phone is never
+ * unlocked; password boxes are never typed into.
+ */
+async function scenarioV130() {
+  const PH = await import('../src/phone.mjs');
+  const fsx = await import('node:fs');
+  const workspaceDir = path.join(home, 'workspace');
+  const UI = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">`
+    + `<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.xingin.xhs" content-desc="" clickable="false" enabled="true" focused="false" scrollable="false" password="false" bounds="[0,0][1080,2400]">`
+    + `<node index="1" text="搜索" resource-id="com.xingin.xhs:id/search" class="android.widget.TextView" package="com.xingin.xhs" content-desc="" clickable="true" enabled="true" focused="false" scrollable="false" password="false" bounds="[100,200][300,260]" />`
+    + `<node index="2" text="" resource-id="com.xingin.xhs:id/input" class="android.widget.EditText" package="com.xingin.xhs" content-desc="输入关键词" clickable="true" enabled="true" focused="true" scrollable="false" password="false" bounds="[0,300][1080,400]" />`
+    + `<node index="3" text="发布" resource-id="" class="android.widget.Button" package="com.xingin.xhs" content-desc="" clickable="true" enabled="true" focused="false" scrollable="false" password="false" bounds="[900,2200][1080,2300]" />`
+    + `<node index="4" text="" resource-id="" class="android.widget.EditText" package="com.xingin.xhs" content-desc="密码" clickable="true" enabled="true" focused="false" scrollable="false" password="true" bounds="[0,500][1080,600]" />`
+    + `</node></hierarchy>UI hierchary dumped to: /dev/tty`;
+  const WIN_OPEN = '  mCurrentFocus=Window{1 u0 com.xingin.xhs/com.xingin.xhs.index.IndexActivity}\n    mShowingDream=false mDreamingLockscreen=false\n    isKeyguardShowing=false\n';
+  const WIN_LOCKED = '  mCurrentFocus=Window{1 u0 NotificationShade}\n    mShowingDream=false mDreamingLockscreen=true\n    isKeyguardShowing=true\n';
+
+  // --- P1: reading what adb says ------------------------------------------------------------
+  {
+    const devs = PH.parseDevices('List of devices attached\nABC123   device product:x model:Pixel_8 device:y transport_id:1\nDEF456   unauthorized usb:1-1 transport_id:2\n\n');
+    const ui = PH.parseUi(UI);
+    const search = ui.nodes.find((n) => n.text === '搜索');
+    const box = ui.nodes.find((n) => n.desc === '输入关键词');
+    const win = PH.parseWindow(WIN_OPEN);
+    const locked = PH.parseWindow(WIN_LOCKED);
+    check('P1 adb: devices with their model and state; the screen as a list of things with their middle point (taps), which box has the cursor, which is a password box; locked or not, and the app in front',
+      devs.length === 2 && devs[0].serial === 'ABC123' && devs[0].model === 'Pixel 8' && devs[0].state === 'device' && devs[1].state === 'unauthorized'
+      && ui.app === 'com.xingin.xhs' && search?.x === 200 && search?.y === 230 && search.clickable && box?.editable && box.focused
+      && ui.nodes.some((n) => n.password) && !ui.nodes.some((n) => /hierchary/.test(n.text || ''))
+      && win.locked === false && win.app === 'com.xingin.xhs' && locked.locked === true,
+      JSON.stringify({ devs, ui: ui.nodes.slice(0, 3), win, locked }));
+  }
+
+  // --- P2: doing things, with a fake adb ---------------------------------------------------------
+  {
+    let window = WIN_OPEN;
+    const ran = [];
+    const exec = async (_file, args) => {
+      ran.push(args.join(' '));
+      const cmd = args.join(' ');
+      if (cmd === 'devices -l') return { stdout: 'List of devices attached\nABC123   device product:x model:Pixel_8 device:y transport_id:1\n' };
+      if (cmd.includes('dumpsys window')) return { stdout: window };
+      if (cmd.includes('uiautomator dump')) return { stdout: UI };
+      if (cmd.includes('screencap')) return { stdout: Buffer.from('\x89PNG\r\n\x1a\nfake') };
+      if (cmd.includes('pm path com.xingin.xhs')) return { stdout: 'package:/data/app/x/base.apk\n' };
+      if (cmd.includes('pm path')) return { stdout: '' };
+      if (cmd.includes('content call')) return { stdout: 'Result: Bundle[{ok=true}]\n' };
+      if (cmd.includes('wm size')) return { stdout: 'Physical size: 1080x2400\n' };
+      return { stdout: '' };
+    };
+    const phone = PH.createPhone({ adb: () => 'adb', exec, workspaceDir });
+    const look = await phone.act('look', {});
+    check('P2 look: a screenshot saved in the workspace plus what is on the screen (text, buttons, boxes) and the app in front',
+      /^phone\//.test(look.screenshot || '') && fsx.existsSync(path.join(workspaceDir, look.screenshot)) && look.app === 'com.xingin.xhs' && look.elements.some((e) => e.text === '搜索'),
+      JSON.stringify(look).slice(0, 400));
+
+    ran.length = 0;
+    await phone.act('tap', { target: '搜索' });
+    const tapped = ran.find((c) => c.includes('input tap'));
+    ran.length = 0;
+    await phone.act('type', { text: 'hello world' });
+    const ascii = ran.find((c) => c.includes('input text'));
+    ran.length = 0;
+    await phone.act('type', { text: '杭州 咖啡' });
+    const cast = ran.find((c) => c.includes('content call'));
+    const paste = ran.find((c) => c.includes('keyevent 279'));
+    const b64 = Buffer.from('杭州 咖啡', 'utf8').toString('base64');
+    check('P2 tap and type: tap by the words on screen hits their middle; plain text goes in with adb, Chinese through the Lamplit app (clipboard + paste)',
+      tapped?.endsWith('shell input tap 200 230') && ascii?.endsWith('shell input text hello%sworld')
+      && Boolean(cast) && cast.includes('content://com.desk.assistant.phonetype') && cast.includes(b64) && Boolean(paste),
+      JSON.stringify({ tapped, ascii, cast, paste }));
+
+    ran.length = 0;
+    await phone.act('open', { app: '小红书' });
+    const opened = ran.find((c) => c.includes('monkey'));
+    let notThere = '';
+    try { await phone.act('open', { app: 'com.example.none' }); } catch (err) { notThere = err.code; }
+    check('P2 open: an app by its everyday name (小红书) or package; one that is not installed says so',
+      Boolean(opened) && opened.includes('-p com.xingin.xhs') && notThere === 'PHONE_APP_NOT_FOUND', JSON.stringify({ opened, notThere }));
+
+    let pw = '';
+    await phone.act('tap', { target: '密码' }).catch(() => {});
+    try { await phone.act('type', { text: 'secret1', target: '密码' }); } catch (err) { pw = err.code; }
+    window = WIN_LOCKED;
+    ran.length = 0;
+    let lockedCode = '';
+    let lockedMsg = '';
+    try { await phone.act('tap', { target: '搜索' }); } catch (err) { lockedCode = err.code; lockedMsg = err.message; }
+    check('P2 never: no typing into a password box; a locked phone is not touched - the bot asks the human to unlock it and never tries itself',
+      pw === 'PHONE_PASSWORD_FIELD' && lockedCode === 'PHONE_LOCKED' && !ran.some((c) => c.includes('input ')) && /unlock/i.test(lockedMsg) && /never|do not/i.test(lockedMsg),
+      JSON.stringify({ pw, lockedCode, ran }));
+    window = WIN_OPEN;
+
+    const label = phone.labelFor({ action: 'tap', target: '发布' });
+    check('P2 label: what a tap is about to press is known before the approval (from the last screen read)', label?.label === '发布' && label?.app === 'com.xingin.xhs', JSON.stringify(label));
+  }
+
+  // --- P3: the tool, approvals and grants --------------------------------------------------------
+  {
+    const toolsMod = await import('../src/tools.mjs');
+    const { permissionKey } = await import('../src/approvals.mjs');
+    const AB = await import('../src/abilities.mjs');
+    const registry = toolsMod.createRegistry({ workspaceDir, config: {}, getRuntime: () => ({}), getRoutines: () => null });
+    const tool = registry.get('phone');
+    const r = (args) => (typeof tool.risk === 'function' ? tool.risk(args, {}) : { risk: tool.risk });
+    check('P3 phone tool: looking is free (LOW), doing asks (MEDIUM)',
+      Boolean(tool) && r({ action: 'look' }).risk === 'LOW' && r({ action: 'status' }).risk === 'LOW' && r({ action: 'tap', target: '搜索' }).risk === 'MEDIUM' && r({ action: 'type', text: 'x' }).risk === 'MEDIUM');
+    const send = await tool.escalate({ action: 'tap', target: '发布' }, {});
+    const plain = await tool.escalate({ action: 'tap', target: '搜索' }, {});
+    check('P3 phone: a tap on 发布/发送/支付/删除 always asks (HIGH, "以后都允许" does not cover it); an ordinary tap does not',
+      send?.alwaysAsk === true && send.risk === 'HIGH' && /发布/.test(send.reason || '') && !plain?.alwaysAsk, JSON.stringify({ send, plain }));
+    const key = permissionKey('phone', { action: 'tap', target: '搜索' }, { phoneApp: { pkg: 'com.xingin.xhs', label: '小红书' } });
+    check('P3 以后都允许: remembered per app on the phone ("在手机的小红书里…")', key?.key === 'phone:com.xingin.xhs' && /小红书/.test(key.label), JSON.stringify(key));
+    const agentSrc = await readText('../src/agent.mjs');
+    check('P3 approvals: the tool\'s alwaysAsk turns into an ask nothing switches off', agentSrc.includes('riskInfo.alwaysAsk') && agentSrc.includes('phoneApp: riskInfo.app'));
+    check('P3 grants: a bot whose job is on the phone (小红书, 手机, App) gets the phone tool; others can ask for it',
+      AB.toolsForText('小红书运营，在手机上发笔记').includes('phone') && !AB.toolsForText('写周报').includes('phone') && AB.isRequestable('phone') && /手机/.test(AB.toolLabel('phone')));
+  }
+
+  // --- P4: the page and the app ----------------------------------------------------------------
+  {
+    const st = await api('/api/phone');
+    const pageSrc = await readText('../public/index.html');
+    const manifest = await readText('../mobile/android/app/src/main/AndroidManifest.xml');
+    const javaSrc = await readText('../mobile/android/app/src/main/java/com/desk/assistant/PhoneTypeProvider.java').catch(() => '');
+    check('P4 settings: the phones on this computer (adb found or not, devices) and a place to say where adb is',
+      st.status === 200 && st.json && 'adb' in st.json && Array.isArray(st.json.devices) && pageSrc.includes('id="phone-box"'), JSON.stringify(st.json));
+    check('P4 app: the Lamplit app takes Chinese text for the phone tool only from adb (the receiver needs the DUMP permission no other app has)',
+      /android:name="\.PhoneTypeProvider"[\s\S]{0,300}android:permission="android\.permission\.DUMP"/.test(manifest) && javaSrc.includes('setPrimaryClip'));
   }
 }
 

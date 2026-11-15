@@ -1270,7 +1270,7 @@ route('GET', /^\/api\/peers\/locate$/, async (_req, _res, { state, query }) => {
 
 route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/file$/, async (_req, res, { params, state, query }) => {
   const p = peerPath(query.get('path'));
-  const peer = state.peers.find(decodeURIComponent(params.machine));
+  const peer = state.peers.find(params.machine);
   if (!peer) throw httpError(404, 'PEER_NOT_FOUND', 'no such machine');
   let r;
   try { r = await remoteFetch(state, peer, p); } catch (err) { throw httpError(502, err.code || 'PEER_UNREACHABLE', err.message); }
@@ -2121,10 +2121,16 @@ route(
   { rawBody: true },
 );
 
-route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body }) => {
+route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state }) => {
   if (req.viaPublic || !isLoopbackHost(clientIp(req))) throw httpError(403, 'LOCAL_ONLY', 'only the desktop app on this computer can push updates');
   const url = String(body?.url || '').replace(/\/+$/, '');
   if (!/^https?:\/\/[^/]+$/.test(url)) throw httpError(400, 'BAD_URL', 'url must be a machine address like http://host:4390');
+  // ENG-08: the whole package goes only to a machine in the list (its address
+  // or its Tailscale address), never to whatever address a request names.
+  const originOf = (u) => { try { return new URL(u).origin.toLowerCase(); } catch { return ''; } };
+  const target = originOf(url);
+  const listed = state.peers.list().some((p) => [p.url, p.tailnetUrl].some((u) => u && originOf(u) === target));
+  if (!listed) throw httpError(403, 'NOT_A_MACHINE', 'updates go only to machines in the list');
   const headers = body?.cookie ? { cookie: String(body.cookie) } : {};
   const health = async () => {
     const res = await fetch(`${url}/api/health`, { headers, signal: AbortSignal.timeout(30000) });
@@ -3611,34 +3617,46 @@ async function serveStatic(req, res, pathname) {
     return errorResponse(res, 403, 'FORBIDDEN', 'path escapes the public directory');
   }
 
-  let data;
+  // ENG-06: look at the file first; a browser that already has it costs no read.
+  let info;
   try {
-    data = await fsp.readFile(target);
+    info = await fsp.stat(target);
   } catch (err) {
-    if (err.code === 'ENOENT' || err.code === 'EISDIR') {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
       return errorResponse(res, 404, 'NOT_FOUND', `no file at ${pathname}`);
     }
     throw err;
   }
+  if (!info.isFile()) return errorResponse(res, 404, 'NOT_FOUND', `no file at ${pathname}`);
 
   const ext = path.extname(target).toLowerCase();
   const type = MIME[ext] || 'application/octet-stream';
-  const stamp = await fsp.stat(target).then((s) => `${s.size.toString(16)}-${Math.floor(s.mtimeMs).toString(16)}`).catch(() => '');
-  const etag = stamp ? `W/"${stamp}"` : '';
+  const stamp = `${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}`;
+  const etag = `W/"${stamp}"`;
 
   // Revalidation is the cheap path over a relayed phone link: no body at all.
-  if (etag && String(req.headers['if-none-match'] || '') === etag) {
+  if (String(req.headers['if-none-match'] || '') === etag) {
     res.writeHead(304, { etag, 'cache-control': 'no-cache' });
     return res.end();
   }
 
-  const compressible = COMPRESSIBLE_TYPES.has(ext) && data.length > 1024 && acceptsGzip(req);
-  let payload = data;
-  if (compressible) {
-    const cached = gzipCache.get(target);
-    if (cached && cached.stamp === stamp) {
-      payload = cached.buffer;
-    } else {
+  const compressible = COMPRESSIBLE_TYPES.has(ext) && info.size > 1024 && acceptsGzip(req);
+  const cached = compressible ? gzipCache.get(target) : null;
+  let payload;
+  if (cached && cached.stamp === stamp) {
+    payload = cached.buffer; // already compressed for this version of the file
+  } else {
+    let data;
+    try {
+      data = await fsp.readFile(target);
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'EISDIR') {
+        return errorResponse(res, 404, 'NOT_FOUND', `no file at ${pathname}`);
+      }
+      throw err;
+    }
+    payload = data;
+    if (compressible) {
       payload = zlib.gzipSync(data);
       gzipCache.set(target, { stamp, buffer: payload });
       if (gzipCache.size > 40) gzipCache.delete(gzipCache.keys().next().value);

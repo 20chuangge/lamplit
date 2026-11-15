@@ -149,6 +149,7 @@ async function main() {
     await stage('1.2.156: settings page, sealed keys, phone hardening, Chinese demo', scenarioV156);
     await stage('1.2.157: phone tokens sealed at start, Electron, lock file', scenarioV157);
     await stage('1.2.158: electron-builder 26', scenarioV158);
+    await stage('1.2.159: decode once, cheap 304, tidy docs, updates only to listed machines', scenarioV159);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4825,6 +4826,45 @@ async function scenarioTeamFixes() {
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
   }
+}
+
+/**
+ * 1.2.159: the rest of the review's engineering list - a path is decoded once
+ * (ENG-05), a file the browser already has costs no read (ENG-06), old
+ * screenshots live in docs/archive (ENG-07), and a full update package goes
+ * only to a machine in the list (ENG-08).
+ */
+async function scenarioV159() {
+  const srv = await readText('../src/server.mjs');
+  check('ENG-05 routes: a path is decoded once on the way in; no route decodes its part again',
+    !/decodeURIComponent\(params\./.test(srv) && srv.includes('const peer = state.peers.find(params.machine);'));
+
+  const fn = (srv.match(/async function serveStatic\(req, res, pathname\) \{[\s\S]*?\n\}\n/) || [''])[0];
+  const first = await apiRaw('/manifest.json');
+  const tag = first.headers.get('etag') || '';
+  const again = await fetch(`${base}/manifest.json`, { headers: { 'if-none-match': tag } });
+  const changedTag = await fetch(`${base}/manifest.json`, { headers: { 'if-none-match': 'W/"0-0"' } });
+  check('ENG-06 static files: the file is looked at (stat) before it is read; a browser that has it gets 304 with no body, a stale copy gets the file',
+    fn.indexOf('fsp.stat(target)') > -1 && fn.indexOf('fsp.stat(target)') < fn.indexOf('fsp.readFile(target)') && fn.indexOf("'if-none-match'") < fn.indexOf('fsp.readFile(target)')
+    && first.status === 200 && tag && again.status === 304 && (await again.text()) === '' && changedTag.status === 200,
+    `${first.status} ${tag} ${again.status} ${changedTag.status}`);
+
+  const fsx = await import('node:fs');
+  const docsDir = new URL('../docs/', import.meta.url);
+  const loose = fsx.readdirSync(docsDir).filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f));
+  const archived = fsx.readdirSync(new URL('archive/', docsDir)).filter((f) => /\.png$/i.test(f));
+  check('ENG-07 repo: old screenshots and drafts live in docs/archive, none left loose in docs/ or a design/ folder',
+    loose.length === 0 && archived.length >= 30 && !fsx.existsSync(new URL('../design/', import.meta.url)), `loose ${loose.length}, archived ${archived.length}`);
+
+  const put = await api('/api/peers', { method: 'PUT', body: { peers: [{ name: 'SelfTest', url: base, token: 'selftest-token-12345' }] } });
+  const stranger = await api('/api/remote/push-update', { method: 'POST', body: { url: 'http://203.0.113.9:4390' } });
+  const listed = await api('/api/remote/push-update', { method: 'POST', body: { url: base } });
+  const main = await readText('../desktop/main.mjs');
+  check('ENG-08 updates: the full package is pushed only to a machine in the list (address or Tailscale address); any other address is refused before anything is sent',
+    put.status === 200 && stranger.status === 403 && stranger.json?.error?.code === 'NOT_A_MACHINE'
+    && listed.status === 200 && listed.json?.ok === true && listed.json?.updated === false
+    && main.includes("out.error?.code === 'NOT_A_MACHINE'"), JSON.stringify({ put: put.status, stranger: stranger.json, listed: listed.json }));
+  await api('/api/peers', { method: 'PUT', body: { peers: [] } });
 }
 
 /**

@@ -1244,12 +1244,21 @@ async function autoUpdateMachine(machine) {
     }
     bootLog(`update ${url}: ${health.version} -> ${mine}`);
     notifyPage(L(`正在把「${name}」更新到 ${mine}…`, `Updating "${name}" to ${mine}…`));
-    const r = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/push-update`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: base, cookie: await cookieHeaderFor(base) }),
-    });
-    const out = await r.json().catch(() => ({}));
+    const push = async () => {
+      const r = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/push-update`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: base, cookie: await cookieHeaderFor(base) }),
+      });
+      return r.json().catch(() => ({}));
+    };
+    let out = await push();
+    // ENG-08: the hub sends packages only to machines in its list. A machine
+    // added a moment ago may not be there yet: share the list, then try once more.
+    if (out.error?.code === 'NOT_A_MACHINE') {
+      await sharePeers().catch(() => {});
+      out = await push();
+    }
     if (out.ok && out.updated) {
       updateAttempts.delete(url);
       bootLog(`update ${url}: now ${out.to}`);

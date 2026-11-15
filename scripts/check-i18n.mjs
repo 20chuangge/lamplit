@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { pageSource } from './page-source.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // The desktop app's tools bring typescript along; CI installs it at the root instead.
@@ -58,7 +59,8 @@ function scanSource(text, where) {
   visit(sf);
 }
 
-const html = fs.readFileSync(`${root}/public/index.html`, 'utf8');
+// The page is split into files (ENG-04); read it as the one text it used to be.
+const html = pageSource(path.join(root, 'public'));
 const noStyle = html.replace(/<style>[\s\S]*?<\/style>/g, '');
 const scripts = [...noStyle.matchAll(/<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 const markup = noStyle.replace(/<script(?![^>]*src)[^>]*>[\s\S]*?<\/script>/g, '');

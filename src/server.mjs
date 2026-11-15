@@ -3679,8 +3679,8 @@ async function serveStatic(req, res, pathname) {
 
 /**
  * The app page itself (SEC-13): no other site may frame it (click-jacking),
- * and the page may only run its own scripts. Inline scripts stay allowed
- * until the page is split into files. Pictures, sounds, other machines'
+ * and the page may only run its own scripts: the page is split into files
+ * (ENG-04), so no inline script is allowed at all. Pictures, sounds, other machines'
  * desktops and the reachability probe may come from any http(s) address.
  * Bot-made pages and the desktop viewer keep their own rules: other machines
  * show them in a frame.
@@ -3691,7 +3691,7 @@ const SHELL_PAGE_HEADERS = {
   'cross-origin-opener-policy': 'same-origin',
   'content-security-policy': [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: http: https:",
     "media-src 'self' data: blob: http: https:",

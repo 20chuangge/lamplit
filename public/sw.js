@@ -8,9 +8,12 @@
  * Only registered on https or localhost: LAN http:// is not a secure context.
  */
 // A new name drops every older cache once (activate below).
-const VERSION = 'lamplit-v1';
+const VERSION = 'lamplit-v2';
 const SHELL = [
   '/', '/index.html', '/manifest.json', '/offline.html',
+  // The page's parts (ENG-04): without them the cached page is a blank shell.
+  // (Only paths that load before pairing: one refused file and addAll keeps nothing.)
+  '/app/theme.js', '/app/lang.js', '/app/style.css', '/app/main.js', '/app/diag.js',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png',
 ];
 

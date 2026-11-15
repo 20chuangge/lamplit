@@ -25,6 +25,8 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
  * checkout (core.autocrlf=true) writes CRLF - the product is the same file.
  */
 async function readText(rel) {
+  // The app page is split into files (ENG-04): checks read it as one text.
+  if (rel === '../public/index.html') return (await import('./page-source.mjs')).pageSource(path.join(REPO, 'public'));
   return (await fsp.readFile(new URL(rel, import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
 }
 
@@ -150,6 +152,7 @@ async function main() {
     await stage('1.2.157: phone tokens sealed at start, Electron, lock file', scenarioV157);
     await stage('1.2.158: electron-builder 26', scenarioV158);
     await stage('1.2.159: decode once, cheap 304, tidy docs, updates only to listed machines', scenarioV159);
+    await stage('1.2.160: the page split into files (ENG-04)', scenarioV160);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -3848,7 +3851,7 @@ async function scenarioMcp({ home, toolsMod }) {
       check('M40 dialogs: no window.prompt in the page (it does nothing in the desktop app); changing the workspace and renaming a machine use the page own dialog',
         !pgD.includes('window.prompt(') && pgD.includes('async function askText(') && pgD.includes("const answer = await askText({") && pgD.includes("const name = await askText({ title: '给这台机器改名'"));
       check('M39 offline cache: pictures and other files come from the network first (cache only offline), and the renamed cache drops the old one - an update shows the new icon on the first load',
-        swSrc.includes("const VERSION = 'lamplit-v1';") && swSrc.includes('.catch(async () => (await caches.match(req)) || Response.error()),') && !swSrc.includes('return hit || network;'));
+        /const VERSION = 'lamplit-v\d+';/.test(swSrc) && swSrc.includes('.catch(async () => (await caches.match(req)) || Response.error()),') && !swSrc.includes('return hit || network;'));
       const pg2 = await readText('../public/index.html');
       check('M38 start: the chosen folder (data/workspace.json) is used at start, the test env still wins; settings has 更改位置 on the workspace row and the hub restarts after a change',
         storeSrc.includes("export const WORKSPACE_FILE = path.join(DATA_DIR, 'workspace.json');") && storeSrc.includes('(chosenWorkspace() || DEFAULT_WORKSPACE_DIR)')
@@ -4826,6 +4829,53 @@ async function scenarioTeamFixes() {
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
   }
+}
+
+/**
+ * 1.2.160 (ENG-04): the page is no longer one 680 KB file. index.html holds the
+ * markup; the style and the scripts are files of their own under public/app/,
+ * cached by the browser and phone between versions. With no inline script
+ * left, the page's security policy no longer allows inline scripts at all.
+ */
+async function scenarioV160() {
+  const raw = (await fsp.readFile(path.join(REPO, 'public', 'index.html'), 'utf8')).replace(/\r\n/g, '\n');
+  const head = raw.slice(0, raw.indexOf('</head>'));
+  const inline = [...raw.matchAll(/<script(?![^>]*\ssrc=)[^>]*>/g)].length;
+  check('ENG-04 page: index.html holds only the markup (under 120 KB, no <style>, no inline <script>); style and scripts are files under app/',
+    Buffer.byteLength(raw) < 120 * 1024 && !/<style[\s>]/.test(raw) && inline === 0
+    && head.includes('<script src="app/theme.js"></script>') && head.includes('<link rel="stylesheet" href="app/style.css" />')
+    && raw.includes('<script type="module" src="app/main.js"></script>') && raw.includes('<script src="app/diag.js"></script>') && raw.includes('<script src="app/lang.js"></script>'),
+    `${Buffer.byteLength(raw)} bytes, ${inline} inline scripts`);
+
+  const PS = await import('./page-source.mjs');
+  const whole = PS.pageSource(path.join(REPO, 'public'));
+  const i18n = await readText('../scripts/check-i18n.mjs');
+  check('ENG-04 checks: the self-tests and the English check read the split page as one text (every part present, in page order)',
+    PS.PAGE_PARTS.length === 5 && whole.includes('<style>') && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
+    && i18n.includes("import { pageSource } from './page-source.mjs';") && (await readText('../public/index.html')) === whole);
+
+  const auth = await import('../src/auth.mjs');
+  const js = await fetch(`${base}/app/main.js`);
+  const css = await fetch(`${base}/app/style.css`);
+  check('ENG-04 serving: the parts load before pairing (the sign-in screen needs them) with the right types',
+    PS.PAGE_PARTS.every((p) => auth.isPublicShellPath(`/${p}`)) && !auth.isPublicShellPath('/api/app/x')
+    && js.status === 200 && /javascript/.test(js.headers.get('content-type') || '') && css.status === 200 && /text\/css/.test(css.headers.get('content-type') || ''),
+    `${js.status} ${js.headers.get('content-type')} ${css.status} ${css.headers.get('content-type')}`);
+
+  const page = await fetch(`${base}/`);
+  const scriptSrc = ((page.headers.get('content-security-policy') || '').match(/script-src [^;]+/) || [''])[0];
+  check('ENG-04 security: with no inline script left, the page policy allows scripts only from the hub itself (no \'unsafe-inline\')',
+    scriptSrc === "script-src 'self'", scriptSrc);
+
+  const sheet = await readText('../public/app/style.css');
+  const bare = [...sheet.matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/g)].map((m) => m[1]).filter((u) => !/^(data:|\.\.\/|\/|https?:|#)/.test(u));
+  const icon = await fetch(`${base}/icons/icon-64.png`);
+  check('ENG-04 style: pictures the stylesheet names are found from app/ (../icons/..., not icons/... which now means app/icons/)',
+    bare.length === 0 && sheet.includes('url("../icons/icon-64.png")') && icon.status === 200, `${bare.join(', ')} ${icon.status}`);
+
+  const sw = await readText('../public/sw.js');
+  check('ENG-04 offline: the service worker keeps every part of the page, under a new cache name so old single-file copies are dropped',
+    PS.PAGE_PARTS.every((p) => sw.includes(`'/${p}'`)) && sw.includes("const VERSION = 'lamplit-v2';"));
 }
 
 /**

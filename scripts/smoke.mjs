@@ -154,6 +154,7 @@ async function main() {
     await stage('1.2.159: decode once, cheap 304, tidy docs, updates only to listed machines', scenarioV159);
     await stage('1.2.160: the page split into files (ENG-04)', scenarioV160);
     await stage('1.2.161: bots take turns, stop reaches colleagues, cd paths, who wrote to whom', scenarioV161);
+    await stage('1.2.162: pass on when done, decisions reach the human, badge to the card', scenarioV162);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4829,6 +4830,85 @@ async function scenarioTeamFixes() {
     const src = await readText('../src/agent.mjs');
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
+  }
+}
+
+/**
+ * 1.2.162: a pipeline moves when a step is done, not on the next 2-hour round
+ * (bot_pass), and a decision only the human can make reaches the human at once
+ * (tell_human) - on 11-15 质检's "可以发布，等老板" went only to 文案. The
+ * "N 个操作等你确认" badge now scrolls to the card.
+ */
+async function scenarioV162() {
+  const toolsMod = await import('../src/tools.mjs');
+  const workspaceDir = path.join(home, 'workspace');
+  const started = [];
+  const fakeRuntime = {
+    botBusy: (id) => id === 'qa',
+    runTurn: (o) => { started.push(o); return new Promise(() => {}); }, // never ends: bot_pass must not wait
+    tellHuman: async (o) => { fakeRuntime.told = o; return { told: true }; },
+  };
+  const registry = toolsMod.createRegistry({ workspaceDir, config: {}, getRuntime: () => fakeRuntime, getRoutines: () => null });
+  const team = { writer: { id: 'writer', name: '文案', tools: ['bot_message'] }, qa: { id: 'qa', name: '质检', tools: [] } };
+  const ctx = { bot: team.writer, workspaceDir, turnId: 'turn_p1', depth: 0, unattended: true, passHops: 0, bots: { getBot: async (id) => team[id] || Object.values(team).find((b) => b.name === id) || null }, progress() {} };
+
+  // --- P1: hand on without waiting ------------------------------------------------
+  {
+    const pass = registry.get('bot_pass');
+    const out = await Promise.race([pass.run({ botId: 'qa', text: 'D7 返工完了，请复核' }, ctx), sleep(500).then(() => 'blocked')]);
+    const turn = started[0] || {};
+    let self = null;
+    try { await pass.run({ botId: 'writer', text: 'x' }, ctx); } catch (err) { self = err.code; }
+    let tooMany = null;
+    try { await pass.run({ botId: 'qa', text: 'x' }, { ...ctx, passHops: 8 }); } catch (err) { tooMany = err.code; }
+    check('P1 bot_pass: hands the next step to a teammate and returns at once (no waiting for the reply); the teammate\'s turn knows who sent it and may pass it on again',
+      out !== 'blocked' && out?.passed === true && out?.queued === true && turn.botId === 'qa' && turn.fromBotId === 'writer' && turn.source === 'bot' && turn.passHops === 1
+      && /bot_pass/.test(turn.hiddenNote || '') && /tell_human/.test(turn.hiddenNote || ''), JSON.stringify({ out, turn: { ...turn, text: undefined } }));
+    check('P1 bot_pass: not to itself, and a chain stops after 8 passes (a 须改 ↔ 返工 loop cannot run forever)',
+      self === 'BOT_SELF_MESSAGE' && tooMany === 'BOT_PASS_LIMIT', JSON.stringify({ self, tooMany }));
+    check('P1 bot_pass: every bot that may hand work over (bot_message) may pass it on too; it is low risk like bot_message',
+      registry.isGranted(team.writer, 'bot_pass') && !registry.isGranted(team.qa, 'bot_pass') && pass.risk === 'LOW');
+  }
+
+  // --- P2: a decision reaches the human ---------------------------------------------
+  {
+    const tell = registry.get('tell_human');
+    const out = await tell.run({ text: 'D7 已复核通过，可以发布吗？' }, { ...ctx, bot: team.qa, depth: 1 });
+    check('P2 tell_human: any bot (even one a teammate or a routine asked) can tell the human a decision is needed; it is always available and low risk',
+      out?.told === true && fakeRuntime.told?.text === 'D7 已复核通过，可以发布吗？' && fakeRuntime.told?.bot?.id === 'qa'
+      && registry.isGranted(team.qa, 'tell_human') && tell.risk === 'LOW');
+
+    const { AgentRuntime } = await import('../src/agent.mjs');
+    const events = [];
+    const recorded = [];
+    let pushed = '';
+    const rt = new AgentRuntime({ config: { workspaceDir }, registry: { schemasFor: () => [] }, model: { complete: async () => ({ content: 'ok' }) }, bots: { getBot: async () => null, listBots: async () => [] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit: (e) => events.push(e) } });
+    rt.record = async (botId, rec) => { recorded.push({ botId, ...rec }); };
+    rt.pushOut = async (text) => { pushed = text; };
+    const live = { botId: 'qa', inbox: [] };
+    rt.active.set('turn_p2', live);
+    await rt.tellHuman({ bot: team.qa, turnId: 'turn_p2', text: 'D7 可以发布吗？' });
+    rt.active.delete('turn_p2');
+    const agentSrc = await readText('../src/agent.mjs');
+    const page = await readText('../public/index.html');
+    const watcher = await readText('../mobile/android/app/src/main/java/com/desk/assistant/NightshiftWatcher.java');
+    check('P2 tell_human: the bot\'s chat gets the question, the phone and Feishu are told, and the sidebar marks the bot "需要你拍板" until it works again',
+      recorded.some((r) => r.botId === 'qa' && r.kind === 'assistant' && /需要你拍板/.test(r.text) && r.notice === true)
+      && events.some((e) => e.type === 'human.notice' && e.botId === 'qa' && e.text === 'D7 可以发布吗？') && /质检/.test(pushed) && /D7 可以发布吗/.test(pushed)
+      && live.waitingFor === 'decision' && agentSrc.includes('const waitFor = waitingFor || live.waitingFor || null;')
+      && page.includes("item.waiting?.kind === 'decision' ? '需要你拍板'") && watcher.includes('"human.notice".equals(type)')
+      && (await readText('../src/server.mjs')).includes('runtime.pushOut = (text) =>'), JSON.stringify({ recorded, pushed, waiting: live.waitingFor }));
+    check('P2 prompts: a bot is told to pass the next step on when its part is done, and to use tell_human for decisions only the human can make',
+      agentSrc.includes('use bot_pass to hand it on now') && agentSrc.includes('say it with tell_human'));
+  }
+
+  // --- P3: the approvals badge goes to the card -------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    check('P3 badge: "N 个操作等你确认" opens that bot and scrolls to the waiting card, which lights up (the card is put at the bottom if it is not loaded)',
+      page.includes('async function focusApprovalCard(approvalId, botId)') && page.includes("card.classList.add('flash');")
+      && page.includes("focusApprovalCard(pill.dataset.approvalId, pill.dataset.bot)") && page.includes('pill.dataset.approvalId = ')
+      && page.includes('@keyframes card-flash'));
   }
 }
 

@@ -396,6 +396,14 @@ public class NightshiftWatcher extends Service {
                 if (!resolvedId.isEmpty()) cancelApprovalNotification(resolvedId);
                 return;
             }
+            if ("human.notice".equals(type)) {
+                // A bot needs the human's decision (tell_human): always worth a buzz,
+                // even when a teammate or a routine was the one asking.
+                String bot = event.optString("botName", "");
+                notify((bot.isEmpty() ? "" : bot + " · ") + "需要你拍板", event.optString("text", "打开 Lamplit 看看。"), hub,
+                        "", event.optString("botId", ""), bot);
+                return;
+            }
             if ("turn.end".equals(type)) {
                 // Quiet while the user is already watching that screen.
                 if (appVisible) return;

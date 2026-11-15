@@ -369,6 +369,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getPeers: () => refs.peers || null,
   });
   refs.runtime = runtime;
+  // tell_human also reaches Feishu when it is connected (push returns 0 when it is not).
+  runtime.pushOut = (text) => refs.feishu?.push?.(text);
   // Tasks a bot was working through before the app stopped go on by themselves.
   runtime.resumeTasks().then((n) => { if (n) console.log(`[tasks] picking up ${n} open task(s) in a moment`); }).catch((err) => console.error('[tasks] resume:', err.message));
   // Which coding assistants on the human's subscription are ready here: bots

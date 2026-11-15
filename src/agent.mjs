@@ -554,6 +554,27 @@ export class AgentRuntime {
     return { waited: waited() };
   }
 
+  /**
+   * tell_human (1.2.162): a decision only the human can make, from any bot at
+   * any depth. In the bot's chat, on the phone (human.notice), in Feishu, and
+   * the sidebar shows "需要你拍板" once the turn ends.
+   */
+  async tellHuman({ bot, turnId, text }) {
+    const said = String(text || '').trim().slice(0, 2000);
+    const live = this.active.get(turnId);
+    if (live) live.waitingFor = 'decision';
+    const note = `【需要你拍板】${said}`;
+    const ev = { botId: bot.id, botName: bot.name, turnId, ts: nowIso() };
+    await this.record(bot.id, { kind: 'assistant', text: note, turnId, notice: true, final: true });
+    this.bus.emit({ type: 'message', ...ev, text: note, final: true });
+    this.bus.emit({ type: 'human.notice', ...ev, text: said });
+    let feishu = false;
+    try {
+      if (typeof this.pushOut === 'function') feishu = Number(await this.pushOut(`【${bot.name}·需要你拍板】\n${said}`)) > 0;
+    } catch { /* Feishu not connected or down: the chat and the phone still have it */ }
+    return { told: true, feishu, note: 'The human has been told (chat, phone, Feishu if connected). Finish your turn; do not wait for the answer here.' };
+  }
+
   /** The turn this bot is working on for the human right now (not a hand-off or a group turn), or null. */
   busyTurn(botId) {
     for (const [turnId, info] of this.active) {
@@ -755,6 +776,8 @@ export class AgentRuntime {
         : 'You are a specialist bot. Do your part of the work and report back concisely. When part of a job belongs to a teammate (see the team below), hand it to them with bot_message - give them the inputs and file paths they need - and put their results together; you get each reply back. Never hand work back to the bot that gave it to you.',
       teamLine,
       ...peersLine(this.getPeers()?.list?.() || [], this.registry.isGranted(bot, 'bot_message')),
+      ...(this.registry.isGranted(bot, 'bot_message') ? ['In a pipeline (write → review → fix …): when your part is done and the next step is a teammate\'s, use bot_pass to hand it on now and finish - do not leave it for a later scheduled round. Use bot_message only when you need their result to finish your own work.'] : []),
+      'When something needs the human\'s decision (publish or not, pick an option, a blocker only they can clear), say it with tell_human - also when a teammate or a routine asked you, because your reply may only reach them.',
       '',
       ...(group ? [renderGroupSection(bot, group, groupRole), ''] : []),
       ...(!direct ? [] : task ? [
@@ -915,6 +938,8 @@ export class AgentRuntime {
     groupContinuation = 0,
     // A hand-off: the bot that sent this (the chat shows its face and name).
     fromBotId = null,
+    // bot_pass: how many times this piece of work was already passed on.
+    passHops = 0,
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -1056,6 +1081,7 @@ export class AgentRuntime {
         depth,
         chain: chain || [bot.id],
         handoffBudget: handoffBudget || null,
+        passHops,
         signal: controller.signal,
         // Long tools (video) report what they are waiting for; the chat shows it.
         progress: (text) => this.bus.emit({ type: 'tool.progress', ...baseEvent, text: String(text || '').slice(0, 120) }),
@@ -1413,6 +1439,8 @@ export class AgentRuntime {
         steps,
         endedAt,
       });
+      // tell_human during the turn: the sidebar says the human must decide.
+      const waitFor = waitingFor || live.waitingFor || null;
       this.bus.emit({
         type: 'turn.end',
         ...baseEvent,
@@ -1421,7 +1449,7 @@ export class AgentRuntime {
         steps,
         startedAt,
         endedAt,
-        ...(waitingFor ? { waitingFor } : {}),
+        ...(waitFor ? { waitingFor: waitFor } : {}),
       });
       this.groupTurns.delete(turnId);
       if (direct) this.afterTaskTurn(bot.id, status, waitingFor, { fromHuman: source !== 'task', toolsRun }).catch(() => {});

@@ -505,6 +505,13 @@
     border-color: rgba(240, 167, 44, 0.9);
     box-shadow: 0 0 0 3px rgba(240, 167, 44, 0.16), 0 8px 28px rgba(0, 0, 0, 0.35);
   }
+  /* Reached from "N 个操作等你确认": the card lights up twice. */
+  .flash { border-color: rgba(240, 167, 44, 0.9); animation: card-flash 0.9s ease-in-out 2; }
+  @keyframes card-flash {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(240, 167, 44, 0); }
+    50% { box-shadow: 0 0 0 5px rgba(240, 167, 44, 0.32); }
+  }
+  @media (prefers-reduced-motion: reduce) { .flash { animation: none; box-shadow: 0 0 0 3px rgba(240, 167, 44, 0.3); } }
   .approval-head { display: flex; align-items: center; gap: var(--s2); margin-bottom: 6px; flex-wrap: wrap; }
   .approval-title { font-weight: 650; font-size: 13px; }
   .approval-wait {

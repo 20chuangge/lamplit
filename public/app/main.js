@@ -3702,6 +3702,8 @@ const TOOL_TEXT = {
   browser_status: { label: '查看浏览器', title: '想看看浏览器是否打开着', impact: '只读取状态。' },
   browser_close: { label: '关闭浏览器', title: '想关上浏览器', impact: '会关闭当前打开的浏览器窗口。' },
   bot_message: { label: '转交给同事', title: '想把任务交给另一位助手', impact: '对方会用自己的工具和记忆独立完成，再回来汇报。' },
+  bot_pass: { label: '交给下一位同事', title: '想把下一步交给另一位助手', impact: '对方接着做，这一位不等回复就结束。' },
+  tell_human: { label: '请你拍板', title: '有件事需要你决定', impact: '在对话、手机和飞书里告诉你。' },
   tool_request: { label: '申请工具', title: '想申请加上一些工具', impact: '同意后这个机器人一直能用这些工具，可以在机器人设置里关掉；有风险的操作照样会先问你。' },
   bot_create: { label: '新建助手', title: '想新建一个助手', impact: '列表里会多一个成员，拥有你授予的工具。' },
   bot_update: { label: '修改助手', title: '想改一个助手的设置', impact: '会改名字、职责或它可用的工具。' },
@@ -4703,7 +4705,9 @@ async function refreshPendingApprovals() {
     const count = state.approvals.length;
     pill.hidden = count === 0;
     pill.textContent = count === 1 ? '1 个操作等你确认' : `${count} 个操作等你确认`;
-    pill.dataset.bot = foreign[0]?.botId || state.approvals[0]?.botId || '';
+    const first = foreign[0] || state.approvals[0];
+    pill.dataset.bot = first?.botId || '';
+    pill.dataset.approvalId = first?.id || '';
   }
   for (const approval of state.approvals) {
     if (approval.botId && approval.botId !== state.botId) continue;
@@ -4751,6 +4755,30 @@ async function focusApprovalFromLink(target) {
   card.scrollIntoView({ block: 'center', behavior: 'smooth' });
   card.classList.add('is-focus');
   setTimeout(() => card.classList.remove('is-focus'), 3000);
+}
+
+/**
+ * "N 个操作等你确认": open that bot and bring its waiting card into view. The
+ * card can sit far up a long chat (on 11-15 it was dozens of messages up and
+ * looked missing), or not be loaded at all: then it is put at the bottom.
+ */
+async function focusApprovalCard(approvalId, botId) {
+  if (botId && (isGroupMode() || state.botId !== botId)) await selectBot(botId);
+  let card = approvalId ? await waitForApprovalCard(approvalId, 2500) : null;
+  if (!card && approvalId) {
+    const a = (state.approvals || []).find((x) => x.id === approvalId);
+    if (a) {
+      appendApprovalCard({ approvalId: a.id, tool: a.toolName, risk: a.risk, reason: a.reason, args: safeParse(a.args) });
+      card = messagesEl.querySelector(`[data-approval="${CSS.escape(approvalId)}"]`);
+    }
+  }
+  if (!card) {
+    toast('这条审批不在了，可能已经处理过。');
+    return;
+  }
+  card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  card.classList.add('flash');
+  setTimeout(() => card.classList.remove('flash'), 3600);
 }
 
 async function waitForApprovalCard(approvalId, timeoutMs) {
@@ -5998,7 +6026,8 @@ function attentionBadge(key) {
   let label = '';
   if (item.needsYou) {
     kind = 'needs';
-    label = item.waiting?.kind === 'login' ? '需要你填写登录信息'
+    label = item.waiting?.kind === 'decision' ? '需要你拍板'
+      : item.waiting?.kind === 'login' ? '需要你填写登录信息'
       : item.waiting?.kind === 'takeover' ? '需要你接管屏幕'
         : '需要你处理：有操作等你批准';
   } else if (item.working) {
@@ -9384,10 +9413,9 @@ function wireChrome() {
   $('confirm-close')?.addEventListener('click', () => settleConfirm(false));
   $('confirm-scrim')?.addEventListener('click', () => settleConfirm(false));
   $('approvals-pill').addEventListener('click', () => {
-    const botId = $('approvals-pill').dataset.bot;
-    if (botId) {
-      selectBot(botId);
-      toast('这个助手在等你批准', false);
+    const pill = $('approvals-pill');
+    if (pill.dataset.bot || pill.dataset.approvalId) {
+      focusApprovalCard(pill.dataset.approvalId, pill.dataset.bot);
     } else {
       state.panelOpen = true;
       applyLayoutPrefs();

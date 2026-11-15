@@ -28,6 +28,8 @@ import { generateImages, generateVideo, submitVideo } from './media.mjs';
 // -> writer -> ...), and how many hand-offs one task may make in total.
 export const MAX_HANDOFF_DEPTH = 3;
 export const MAX_HANDOFFS = 12;
+// bot_pass: how many times one piece of work may be passed on (a 须改 ↔ 返工 loop must end).
+export const MAX_PASS_HOPS = 8;
 // How this machine marks its own bots in a hand-off chain that crosses machines.
 const SELF_TAG = os.hostname();
 import { listVault, revealVault } from './vault.mjs';
@@ -1460,6 +1462,71 @@ export function createRegistry(deps) {
     },
   });
 
+  // 1.2.162: a pipeline moves when a step is done. On 11-15 质检's "须改" waited
+  // two hours for the next round of a routine; with bot_pass the writer's
+  // finished draft goes to review at once, and the review back to the writer.
+  add({
+    name: 'bot_pass',
+    description:
+      'Hand the next step to a teammate and finish your turn - you do not wait for (or get) their reply. Use it in a pipeline (write → review → fix → …) when your part is done and the next part is theirs: they start as soon as they are free. Give them everything they need (what was done, file paths, what to do next). They can pass it on again, or back to you (e.g. "须改"). Use bot_message instead when you need their result to finish your own work.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        botId: { type: 'string', description: 'Teammate bot id (or name).' },
+        text: { type: 'string', description: 'What was done and what they should do next.' },
+      },
+      required: ['botId', 'text'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const targetId = String(args?.botId || '');
+      if (targetId === ctx.bot.id) throw toolError('BOT_SELF_MESSAGE', 'a bot cannot pass work to itself; just do the work');
+      const hops = Number(ctx.passHops || 0);
+      if (hops >= MAX_PASS_HOPS) {
+        throw toolError('BOT_PASS_LIMIT', `this piece of work was already passed on ${MAX_PASS_HOPS} times: stop and tell the human where it stands (tell_human)`);
+      }
+      const target = await ctx.bots.getBot(targetId);
+      if (!target) throw toolError('BOT_NOT_FOUND', `no bot with id "${targetId}"`);
+      const runtime = deps.getRuntime();
+      const queued = Boolean(runtime.botBusy?.(target.id));
+      // Not awaited: the teammate's turn runs on its own (after its current one).
+      Promise.resolve(runtime.runTurn({
+        botId: target.id,
+        text: String(args?.text || ''),
+        source: 'bot',
+        depth: 1,
+        chain: [target.id],
+        unattended: ctx.unattended,
+        parentTurnId: ctx.turnId,
+        fromBotId: ctx.bot.id,
+        passHops: hops + 1,
+        hiddenNote: `${ctx.bot.name} passed this to you and is not waiting for your reply. When your part is done: if the next step is a teammate's, use bot_pass to hand it on; if it needs the human's decision (publish or not, choose an option), use tell_human. Your final answer otherwise only stays in your own chat.`,
+      })).catch(() => {});
+      return { passed: true, to: target.name, queued, note: queued ? `${target.name} is busy; it starts this as soon as it is free.` : `${target.name} has started on it.` };
+    },
+  });
+
+  // 1.2.162: a decision only the human can make reaches the human, wherever the
+  // bot is in a chain. On 11-15 "D7 可以发布，等老板" went only to 文案.
+  add({
+    name: 'tell_human',
+    description:
+      'Tell the human, right away, about something only they can decide or clear: publish or not, choose between options, a blocker (login, money, a missing file). Works even when a teammate or a routine asked you: your other replies may only reach that teammate. The human sees it in your chat, as a phone notification and in Feishu. Say what is ready, what you need from them, and your recommendation. Not for progress reports.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: { text: { type: 'string', description: 'What they need to decide, with the facts and your recommendation.' } },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const text = String(args?.text || '').trim();
+      if (!text) throw toolError('TEXT_REQUIRED', 'say what the human needs to decide');
+      return deps.getRuntime().tellHuman({ bot: ctx.bot, turnId: ctx.turnId, text });
+    },
+  });
+
   // --- asking for a tool ------------------------------------------------------
   //
   // A bot that finds it lacks a tool asks the human here instead of answering
@@ -2181,7 +2248,7 @@ export function createRegistry(deps) {
     },
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
-      if (name === 'task_finish' || name === 'tool_request' || name === 'page_save' || name === 'briefing_collect' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
+      if (name === 'task_finish' || name === 'tell_human' || name === 'tool_request' || name === 'page_save' || name === 'briefing_collect' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
       // Tools of connected MCP servers: Settings → 连接应用 says which bots get them.
       if (name.startsWith('mcp__')) return Boolean(api.mcpGate?.(bot, name));
       if (name === 'mcp_find_tools' || name === 'mcp_call') return [...tools.keys()].some((n) => n.startsWith('mcp__') && api.mcpGate?.(bot, n));
@@ -2189,7 +2256,7 @@ export function createRegistry(deps) {
       if (grants.has(name)) return true;
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;
       // Handing work to another machine needs moving its inputs and results.
-      if ((name === 'file_send' || name === 'file_fetch') && grants.has('bot_message')) return true;
+      if ((name === 'file_send' || name === 'file_fetch' || name === 'bot_pass') && grants.has('bot_message')) return true;
       return false;
     },
     /** OpenAI function-tool schemas for the model call. */

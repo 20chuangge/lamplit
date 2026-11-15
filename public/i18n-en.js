@@ -1734,4 +1734,11 @@ window.DESK_I18N_EN = {
   "通用": "General",
   "机器人做事前要不要先问你：审批级别、接管桌面、生成图片视频、你写的规则和禁止的命令。": "Whether the bots ask you first: the approval level, taking over the desktop, making pictures and videos, your own rules and the blocked commands.",
   "机器人能碰到这台电脑的哪些地方：工作区以外的文件夹、管理员权限。不管审批级别是什么，越过这里都要先问你。": "Which parts of this computer the bots can reach: folders outside the workspace and administrator rights. Whatever the approval level, going past this asks you first.",
+  "需要你拍板": "Needs your decision",
+  "交给下一位同事": "Pass to the next teammate",
+  "想把下一步交给另一位助手": "Wants to hand the next step to another assistant",
+  "对方接着做，这一位不等回复就结束。": "The teammate carries on; this one finishes without waiting for a reply.",
+  "请你拍板": "Your decision",
+  "有件事需要你决定": "Something needs your decision",
+  "在对话、手机和飞书里告诉你。": "Tells you in the chat, on your phone and in Feishu.",
 };

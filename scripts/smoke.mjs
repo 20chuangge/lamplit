@@ -155,6 +155,7 @@ async function main() {
     await stage('1.2.160: the page split into files (ENG-04)', scenarioV160);
     await stage('1.2.161: bots take turns, stop reaches colleagues, cd paths, who wrote to whom', scenarioV161);
     await stage('1.2.162: pass on when done, decisions reach the human, badge to the card', scenarioV162);
+    await stage('1.2.163: the page script split by feature (ENG-04 step 2)', scenarioV163);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4834,6 +4835,33 @@ async function scenarioTeamFixes() {
 }
 
 /**
+ * 1.2.163 (ENG-04 step 2): the page's 10 000-line script is split by feature
+ * into public/app/main/ - plain scripts sharing one scope, loaded in order.
+ * A self-check keeps the split safe (load-time code never needs a later part).
+ */
+async function scenarioV163() {
+  const PS = await import('./page-source.mjs');
+  const fsx = await import('node:fs');
+  const pub = path.join(REPO, 'public');
+  const raw = (await fsp.readFile(path.join(pub, 'index.html'), 'utf8')).replace(/\r\n/g, '\n');
+  const tags = [...raw.matchAll(/<script defer src="(app\/main\/[\w-]+\.js)"><\/script>/g)].map((m) => m[1]);
+  const sizes = PS.MAIN_PARTS.map((rel) => fsx.readFileSync(path.join(pub, rel), 'utf8').split('\n').length);
+  check('ENG-04b split: the page script is 12 files by feature (core, avatars, groups, bots, chat, live, skills, settings, apps, computer, machines, wiring), none over 2 000 lines; the old main.js is gone',
+    PS.MAIN_PARTS.length === 12 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
+    && !fsx.existsSync(path.join(pub, 'app', 'main.js')) && !raw.includes('type="module"'), JSON.stringify(sizes));
+  const order = (await import('./check-page-parts.mjs')).checkPageParts(pub);
+  check('ENG-04b split: load-time code never needs a later part, no name is declared twice, nothing clashes with the browser (scripts/check-page-parts.mjs)',
+    !order.skipped && order.problems.length === 0 && order.parts === 12, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
+  const auth = await import('../src/auth.mjs');
+  const part = await fetch(`${base}/app/main/05-chat.js`);
+  const body = await part.text();
+  check('ENG-04b split: each part loads before pairing with the right type, starts with \'use strict\', and the offline cache keeps every part under a new name',
+    PS.MAIN_PARTS.every((p) => auth.isPublicShellPath(`/${p}`)) && !auth.isPublicShellPath('/app/main/../../data/x.js') && !auth.isPublicShellPath('/app/other/x.js')
+    && part.status === 200 && /javascript/.test(part.headers.get('content-type') || '') && body.startsWith("'use strict';")
+    && PS.MAIN_PARTS.every((p) => (fsx.readFileSync(path.join(pub, 'sw.js'), 'utf8')).includes(`'/${p}'`)) && fsx.readFileSync(path.join(pub, 'sw.js'), 'utf8').includes("const VERSION = 'lamplit-v3';"));
+}
+
+/**
  * 1.2.162: a pipeline moves when a step is done, not on the next 2-hour round
  * (bot_pass), and a decision only the human can make reaches the human at once
  * (tell_human) - on 11-15 质检's "可以发布，等老板" went only to 文案. The
@@ -5024,18 +5052,18 @@ async function scenarioV160() {
   check('ENG-04 page: index.html holds only the markup (under 120 KB, no <style>, no inline <script>); style and scripts are files under app/',
     Buffer.byteLength(raw) < 120 * 1024 && !/<style[\s>]/.test(raw) && inline === 0
     && head.includes('<script src="app/theme.js"></script>') && head.includes('<link rel="stylesheet" href="app/style.css" />')
-    && raw.includes('<script type="module" src="app/main.js"></script>') && raw.includes('<script src="app/diag.js"></script>') && raw.includes('<script src="app/lang.js"></script>'),
+    && raw.includes('<script defer src="app/main/01-core.js"></script>') && raw.includes('<script src="app/diag.js"></script>') && raw.includes('<script src="app/lang.js"></script>'),
     `${Buffer.byteLength(raw)} bytes, ${inline} inline scripts`);
 
   const PS = await import('./page-source.mjs');
   const whole = PS.pageSource(path.join(REPO, 'public'));
   const i18n = await readText('../scripts/check-i18n.mjs');
   check('ENG-04 checks: the self-tests and the English check read the split page as one text (every part present, in page order)',
-    PS.PAGE_PARTS.length === 5 && whole.includes('<style>') && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
+    PS.PAGE_PARTS.length === 16 && whole.includes('<style>') && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
     && i18n.includes("import { pageSource } from './page-source.mjs';") && (await readText('../public/index.html')) === whole);
 
   const auth = await import('../src/auth.mjs');
-  const js = await fetch(`${base}/app/main.js`);
+  const js = await fetch(`${base}/app/main/01-core.js`);
   const css = await fetch(`${base}/app/style.css`);
   check('ENG-04 serving: the parts load before pairing (the sign-in screen needs them) with the right types',
     PS.PAGE_PARTS.every((p) => auth.isPublicShellPath(`/${p}`)) && !auth.isPublicShellPath('/api/app/x')
@@ -5055,7 +5083,7 @@ async function scenarioV160() {
 
   const sw = await readText('../public/sw.js');
   check('ENG-04 offline: the service worker keeps every part of the page, under a new cache name so old single-file copies are dropped',
-    PS.PAGE_PARTS.every((p) => sw.includes(`'/${p}'`)) && sw.includes("const VERSION = 'lamplit-v2';"));
+    PS.PAGE_PARTS.every((p) => sw.includes(`'/${p}'`)) && /const VERSION = 'lamplit-v\d+';/.test(sw));
 }
 
 /**

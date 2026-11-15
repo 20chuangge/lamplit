@@ -330,7 +330,8 @@ export function isPublicShellPath(pathname) {
   if (PUBLIC_SHELL_PATHS.has(value)) return true;
   if (value.startsWith('/icons/')) return true;
   // The page's own style and scripts (ENG-04): the sign-in screen needs them.
-  if (/^\/app\/[\w.-]+\.(?:js|css)$/.test(value)) return true;
+  // The main script is split by feature into app/main/ (ENG-04 step 2).
+  if (/^\/app\/(?:main\/)?[\w-]+(?:\.[\w-]+)*\.(?:js|css)$/.test(value)) return true;
   return false;
 }
 

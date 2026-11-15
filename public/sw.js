@@ -8,12 +8,16 @@
  * Only registered on https or localhost: LAN http:// is not a secure context.
  */
 // A new name drops every older cache once (activate below).
-const VERSION = 'lamplit-v2';
+const VERSION = 'lamplit-v3';
 const SHELL = [
   '/', '/index.html', '/manifest.json', '/offline.html',
   // The page's parts (ENG-04): without them the cached page is a blank shell.
   // (Only paths that load before pairing: one refused file and addAll keeps nothing.)
-  '/app/theme.js', '/app/lang.js', '/app/style.css', '/app/main.js', '/app/diag.js',
+  '/app/theme.js', '/app/lang.js', '/app/style.css', '/app/diag.js',
+  // The page script, split by feature (scripts/page-source.mjs MAIN_PARTS).
+  '/app/main/01-core.js', '/app/main/02-avatars.js', '/app/main/03-groups.js', '/app/main/04-bots.js',
+  '/app/main/05-chat.js', '/app/main/06-live.js', '/app/main/07-skills-routines.js', '/app/main/08-settings.js',
+  '/app/main/09-apps.js', '/app/main/10-computer.js', '/app/main/11-machines.js', '/app/main/12-wiring.js',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png',
 ];
 

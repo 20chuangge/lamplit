@@ -156,6 +156,7 @@ async function main() {
     await stage('1.2.161: bots take turns, stop reaches colleagues, cd paths, who wrote to whom', scenarioV161);
     await stage('1.2.162: pass on when done, decisions reach the human, badge to the card', scenarioV162);
     await stage('1.2.163: the page script split by feature (ENG-04 step 2)', scenarioV163);
+    await stage('1.2.164: a machine given to the bots stops asking; remembered yes; the group does the work', scenarioV164);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -3957,7 +3958,7 @@ async function scenarioMcp({ home, toolsMod }) {
       && ask('fs_read', { path: '/opt/desk-hub/data/vault.key' }) && ask('shell', { command: 'cat data/secrets.json' })
       && !ask('shell', { command: 'sed -n 1,20p /opt/desk-hub/src/mail.mjs' }) && !ask('fs_write', { path: 'myapp/index.mjs', content: "import { render } from './src/render-page.mjs';" })
       && !ask('shell', { command: 'python3 sort.py && node build.mjs' }) && !ask('fs_write', { path: 'notes.md', content: '整理了邮箱' })
-      && ag.includes("if (secretReason && verdict.decision !== DECISION.DENY) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason };"));
+      && ag.includes("if (secretReason && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason }; sticky = true; }"));
     check('M30 rules: a connected app is used only through its tools (never scripted around); bulk changes touch only what should change (never move everything out and the keepers back) - in the bot\'s rules and on the mail tools',
       ag.includes('A connected app (mail, GitHub, Notion, ...) is used only through its own tools. Never script around one') && ag.includes('Never move everything out and then move the keepers back')
       && mailSrc.includes('never move everything out and then move the keepers back') && mailSrc.includes('never delete everything and then restore the keepers'));
@@ -4474,7 +4475,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         const pg = await readText('../public/index.html');
         check('M15 task board: the group shows a live card (owner, status, result) and can fetch a board by id',
           pg.includes('function planCard(planId') && pg.includes("if (ev.type === 'group.plan') {") && pg.includes("if (kind === 'plan' && item.planId)") && srvSrc.includes('/plans\\/(?<planId>') && srvSrc.includes('state.runtime.answerBoard?.(')
-          && (await readText('../src/groups.mjs')).includes("'status', 'plan']") && (await readText('../src/groups.mjs')).includes('planId: String(record.planId)'));
+          && (await readText('../src/groups.mjs')).includes("'status', 'plan', 'handoff']") && (await readText('../src/groups.mjs')).includes('planId: String(record.planId)'));
       }
       const agentSrc2 = await readText('../src/agent.mjs');
       check('M12 roster: a change that arrives while the bot list is loading is loaded right after (a quickly deleted bot no longer stays on screen); remote group members count as busy too', pageSrc.includes('if (state.rosterBusy) { state.rosterAgain = true; return; }') && pageSrc.includes('if (state.rosterAgain) refreshRoster();') && agentSrc2.includes('remoteKey = `remote_') && agentSrc2.includes('for (const said of waiting) {') && agentSrc2.includes('!info.kickoff'));
@@ -4831,6 +4832,139 @@ async function scenarioTeamFixes() {
     const src = await readText('../src/agent.mjs');
     check('T4 group: at the step limit a group member goes on by itself and says so in Chinese (not "Stopped after 80 steps.")',
       src.includes('groupContinuation') && src.includes('到了单轮的上限，我接着做') && /queue\.unshift\(\{ member, role, prompt: continuationText\(/.test(src));
+  }
+}
+
+/**
+ * 1.2.164: on 11-15 the bots on the Ubuntu machine (approval level 放手) kept
+ * asking: "命令用到了没开放给机器人的位置：/" (a `/` inside sed / a regex),
+ * and "要在脚本里直接调用 Lamplit 自己的模块" because the workspace is
+ * /opt/desk-hub/workspace. New bots there had few tools. And the assistant
+ * relayed every step between 数据匠 / 图表师 / 主笔 itself instead of handing
+ * the job to the group, so the group never saw the work or the result.
+ */
+async function scenarioV164() {
+  const boundary = await import('../src/boundary.mjs');
+  const agentMod = await import('../src/agent.mjs');
+  const approvalsMod = await import('../src/approvals.mjs');
+  const abilities = await import('../src/abilities.mjs');
+  const toolsMod = await import('../src/tools.mjs');
+  const workspaceDir = path.join(home, 'workspace');
+
+  // --- R1: false alarms in the fence ------------------------------------------------
+  {
+    const seen = boundary.unixPathsIn(`cd /opt/desk-hub/workspace && grep -o '](charts/[^)]*)' ops/r.md | sed 's/^](/x/' && echo a / b && cat /etc/hosts`);
+    check('R1 fence: a lone "/" (in sed, a regex, a sentence) is not a place; real paths still are',
+      !seen.includes('/') && seen.includes('/opt/desk-hub/workspace') && seen.includes('/etc/hosts'), JSON.stringify(seen));
+    const ws = '/opt/desk-hub/workspace';
+    const script = `cd ${ws} && python3 - <<'EOF'\nimport re\np='ops/maildecade/报告.md'\ns=open(p,encoding='utf-8').read()\nEOF`;
+    const reaching = `python3 -c "import sys; sys.path.insert(0,'/opt/desk-hub/src'); import vault"`;
+    check('R1 fence: a script that only works in the workspace (/opt/desk-hub/workspace) is not "calling Lamplit\'s own modules"; one that imports from the app folder still asks',
+      agentMod.reachesSecrets('shell', { command: script }, { workspaceDir: ws }) === ''
+      && agentMod.reachesSecrets('shell', { command: reaching }, { workspaceDir: ws }) !== '', agentMod.reachesSecrets('shell', { command: script }, { workspaceDir: ws }));
+  }
+
+  // --- R2: a machine given to the bots, set to 放手 ----------------------------------------
+  {
+    const out = path.join(path.parse(workspaceDir).root, 'srv', 'lamplit-r2', 'x.txt');
+    const free = { workspaceDir, policy: {}, remote: true, autonomous: true };
+    check('R2 放手 on a machine given to the bots: no "not opened to the bots" stops for commands or files anywhere on it',
+      boundary.checkBoundary('shell', { command: `cp a.txt ${out}` }, free) === null
+      && boundary.checkBoundary('fs_write', { path: out, content: 'x' }, free) === null
+      // On the human's own computer, or a careful remote machine, the fence still holds.
+      && boundary.checkBoundary('fs_write', { path: out, content: 'x' }, { ...free, remote: false }) !== null
+      && boundary.checkBoundary('fs_write', { path: out, content: 'x' }, { ...free, autonomous: false }) !== null);
+    const full = abilities.grantsForNewBot({ role: '写报告', remote: true });
+    const here = abilities.grantsForNewBot({ role: '写报告' });
+    check('R2 new bots on a machine given to the bots start with every everyday tool (commands, delete, browser, hand work on); the human can switch any off',
+      ['shell', 'fs_delete', 'browser_open', 'bot_message', 'skill_save'].every((t) => full.includes(t))
+      && !full.includes('cli_agent_run') && !full.includes('desktop_ui') && !here.includes('shell'), JSON.stringify(full));
+    const agentSrc = await readText('../src/agent.mjs');
+    check('R2 asking for a tool on a 放手 machine given to the bots is granted at once (no card); elsewhere it still asks',
+      agentSrc.includes("const freeMachine = machineMode() === 'remote' && machine.autonomous;")
+      && agentSrc.includes('if (freeMachine) verdict = { ...verdict, decision: DECISION.AUTO')
+      && (await readText('../src/tools.mjs')).includes("remote: machineMode() === 'remote'"));
+  }
+
+  // --- R3: remember a yes --------------------------------------------------------------
+  {
+    const k1 = approvalsMod.permissionKey('shell', { command: 'cd /opt/w && python3 - <<EOF\nprint(1)\nEOF' });
+    const k2 = approvalsMod.permissionKey('shell', { command: 'python3 make.py' });
+    const k3 = approvalsMod.permissionKey('shell', { command: 'npm install' });
+    const k4 = approvalsMod.permissionKey('fs_write', { path: path.join(workspaceDir, '..', 'out', 'a.md') }, { workspaceDir });
+    const k5 = approvalsMod.permissionKey('fs_write', { path: path.join(workspaceDir, '..', 'out', 'b.md') }, { workspaceDir });
+    check('R3 remember: "the same permission" is the same program for a command (python3 = python3, not npm) and the same folder for files',
+      k1?.key === 'shell:python3' && k2?.key === k1.key && k3?.key === 'shell:npm' && k4?.key && k4.key === k5?.key && /python3/.test(k1.label), JSON.stringify({ k1, k3, k4 }));
+    const bots = await import('../src/bots.mjs');
+    const made = await bots.createBot({ name: 'R3记住', role: 'x' });
+    const saved = await bots.updateBot(made.id, { policy: { allowed: [{ key: 'shell:python3', label: '用 python3 运行命令' }] } });
+    const again = await bots.getBot(made.id);
+    check('R3 remember: a bot keeps the permissions the human allowed for good, and they can be taken back',
+      approvalsMod.isRemembered(again, 'shell:python3') && !approvalsMod.isRemembered(again, 'shell:npm')
+      && saved.policy.allowed.length === 1 && (await bots.updateBot(made.id, { policy: { allowed: [] } })).policy.allowed.length === 0);
+    await bots.deleteBot(made.id).catch(() => {});
+    const agentSrc = await readText('../src/agent.mjs');
+    const serverSrc = await readText('../src/server.mjs');
+    const page = await readText('../public/index.html');
+    check('R3 remember: a remembered permission runs unasked; the danger list, Lamplit\'s secrets, coding assistants and "ask first" rules still ask every time',
+      agentSrc.includes('if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key))')
+      && agentSrc.includes('sticky = true;') && serverSrc.includes('body?.always === true && record.status === \'approved\' && record.remember'));
+    check('R3 card: three answers - 允许这一次 / 以后都允许 / 拒绝; the bot\'s settings list what it may do unasked, each with 撤销',
+      page.includes("'以后都允许'") && page.includes("'允许这一次'") && page.includes('已记住的权限') && page.includes("'撤销'"));
+  }
+
+  // --- R4: the group does the work ---------------------------------------------------------
+  {
+    const started = [];
+    const fake = {
+      handOverToGroup: async (o) => { started.push(o); return { handedOver: true, group: '邮箱十年史', coordinator: '数据匠' }; },
+    };
+    const registry = toolsMod.createRegistry({ workspaceDir, config: {}, getRuntime: () => fake, getRoutines: () => null });
+    const hand = registry.get('group_handover');
+    const out = hand ? await hand.run({ group: 'g-1', text: '做邮箱十年史报告' }, { bot: { id: 'chief', name: '助理' }, turnId: 't1' }) : null;
+    check('R4 group_handover: the assistant hands the whole job to the group and does not wait; whoever may make groups may hand work to one',
+      out?.handedOver === true && started[0]?.groupId === 'g-1' && started[0]?.bot?.id === 'chief' && hand.risk === 'LOW'
+      && registry.isGranted({ tools: ['group_create'] }, 'group_handover') && !registry.isGranted({ tools: ['bot_message'] }, 'group_handover'));
+
+    const { AgentRuntime } = agentMod;
+    const events = [];
+    const groupMsgs = [];
+    const recorded = [];
+    const runs = [];
+    const group = { id: 'g-1', name: '邮箱十年史', coordinatorId: 'data', members: [{ id: 'data', name: '数据匠' }, { id: 'chart', name: '图表师' }] };
+    const rt = new AgentRuntime({ config: { workspaceDir }, registry: { schemasFor: () => [] }, model: { complete: async () => ({ content: 'ok' }) }, bots: { getBot: async () => null, listBots: async () => [] }, memory: {}, skills: {},
+      approvals: { cancelForTurn() {} }, bus: { emit: (e) => events.push(e) },
+      groups: {
+        listGroups: async () => [{ id: 'g-1', name: '邮箱十年史', members: ['data', 'chart'] }],
+        readGroupMessages: async () => groupMsgs,
+        appendGroupMessage: async (id, m) => { const msg = { id: `m${groupMsgs.length}`, ts: new Date().toISOString(), ...m }; groupMsgs.push(msg); return msg; },
+        publicGroupMessage: (m) => m,
+      } });
+    rt.record = async (botId, rec) => { recorded.push({ botId, ...rec }); };
+    rt.pushOut = async () => 1;
+    rt.groupForRun = async (id) => (id === 'g-1' ? { group } : null);
+    rt.runGroupMessage = async (o) => { runs.push(o); groupMsgs.push({ kind: 'assistant', from: 'data', ts: new Date().toISOString(), text: '报告做好了：ops/maildecade/报告.md' }); };
+    const res = await rt.handOverToGroup({ bot: { id: 'chief', name: '助理' }, groupId: 'g-1', text: '做邮箱十年史报告', turnId: 't1' });
+    await sleep(50);
+    check('R4 hand-over: the brief shows in the group (助理 → 数据匠), the coordinator runs it there, and the assistant is told to stop relaying',
+      res?.handedOver === true && groupMsgs[0]?.kind === 'handoff' && groupMsgs[0]?.from === 'chief' && groupMsgs[0]?.to === 'data'
+      && runs[0]?.group?.id === 'g-1' && /做邮箱十年史报告/.test(runs[0]?.text || '') && /do not relay/i.test(res.note || ''), JSON.stringify({ res, groupMsgs, runs }));
+    check('R4 done: the result stays in the group; the human gets a notice, and the assistant\'s chat only a one-line pointer to the group',
+      events.some((e) => e.type === 'human.notice' && e.groupId === 'g-1' && /报告做好了/.test(e.text))
+      && recorded.some((r) => r.botId === 'chief' && /邮箱十年史/.test(r.text) && /群里/.test(r.text) && r.groupId === 'g-1'), JSON.stringify({ recorded, events: events.map((e) => e.type) }));
+
+    groupMsgs.length = 0;
+    await rt.mirrorHandoff({ fromId: 'data', toId: 'chart', text: '请按 aggregates.json 画 4 张图' });
+    await rt.mirrorHandoff({ fromId: 'data', toId: 'stranger', text: 'x' });
+    const groupsSrc = await readText('../src/groups.mjs');
+    const toolsSrc = await readText('../src/tools.mjs');
+    check('R4 mirror: work passed between two members of a group (bot_message, its reply, bot_pass) shows in that group with both faces',
+      groupMsgs.length === 1 && groupMsgs[0].kind === 'handoff' && groupMsgs[0].from === 'data' && groupMsgs[0].to === 'chart'
+      && groupsSrc.includes("'handoff'") && (toolsSrc.match(/runtime\.mirrorHandoff\?\.\(/g) || []).length >= 3, JSON.stringify(groupMsgs));
+    const page = await readText('../public/index.html');
+    const agentSrc = await readText('../src/agent.mjs');
+    check('R4 page + prompt: a hand-off row reads "数据匠 → 图表师"; the assistant is told to hand a team\'s job to its group and not relay',
+      page.includes("if (kind === 'handoff')") && agentSrc.includes('hand the whole job over with group_handover'));
   }
 }
 
@@ -5417,8 +5551,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       && pageA.includes("const AVATAR_DEFAULT = { shape: 'squircle', color: '#7c6cf0' };")
       && pageA.includes("const ink = isLightColor(bg) ? '#1c1a17' : '#fff';") && pageA.includes('function isLightColor(hex)'));
     // L4: the approval card in the design's shape - nothing lost (approve once, deny, a note, the raw details).
-    check('L4 approval card: one row 批准 / 拒绝 / 看详情 plus the optional note; 看详情 opens the technical details; it still decides through the same call',
-      pageA.includes("const allow = el('button', 'btn primary approval-allow', '批准');") && pageA.includes("const reject = el('button', 'btn approval-reject', '拒绝');")
+    check('L4 approval card: one row 允许这一次 / (以后都允许) / 拒绝 / 看详情 plus the optional note; 看详情 opens the technical details; it still decides through the same call',
+      pageA.includes("const allow = el('button', 'btn primary approval-allow', '允许这一次');") && pageA.includes("const reject = el('button', 'btn approval-reject', '拒绝');")
       && pageA.includes("const more = el('button', 'btn approval-more', '看详情');") && pageA.includes("note.placeholder = '想补一句话？（可选）';")
       && pageA.includes("tech.open = !tech.open;") && pageA.includes("allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject));")
       && pageA.includes("card.classList.remove('pending');"));

@@ -578,15 +578,22 @@ function buildApprovalCard(data) {
     return card;
   }
 
-  // One row of buttons (批准 / 拒绝 / 看详情), the optional note under it.
-  // 批准 only approves this one step; 拒绝 tells the bot no.
+  // One row of buttons (允许这一次 / 以后都允许 / 拒绝 / 看详情), the optional note under it.
+  // 允许这一次 approves this one step; 以后都允许 also lets the same kind of
+  // step run unasked for this bot (the danger list etc. offer only the first);
+  // 拒绝 tells the bot no, and the next such step asks again.
   card.classList.add('pending');
   const actions = el('div', 'approval-actions');
   const choose = el('div', 'approval-buttons');
 
-  const allow = el('button', 'btn primary approval-allow', '批准');
+  const allow = el('button', 'btn primary approval-allow', '允许这一次');
   allow.type = 'button';
-  allow.title = '只批准这一步，做完就结束';
+  allow.title = '只批准这一步，下次同样的操作还会问你';
+  const always = data.remember?.key ? el('button', 'btn approval-always', '以后都允许') : null;
+  if (always) {
+    always.type = 'button';
+    always.title = `以后「${data.remember.label}」不再问你（机器人设置里可以撤销）`;
+  }
   const reject = el('button', 'btn approval-reject', '拒绝');
   reject.type = 'button';
   reject.title = '不执行，把「不行」告诉它';
@@ -598,9 +605,11 @@ function buildApprovalCard(data) {
   note.setAttribute('aria-label', '审批备注');
 
   allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject));
+  if (always) always.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject, data.remember));
   reject.addEventListener('click', () => decide(data.approvalId, 'deny', note.value, card, allow, reject));
 
   choose.appendChild(allow);
+  if (always) choose.appendChild(always);
   choose.appendChild(reject);
   choose.appendChild(more);
   actions.appendChild(choose);
@@ -649,20 +658,24 @@ function settleApprovalCard(card, decision, note) {
   }
 }
 
-async function decide(approvalId, decision, note, card, approve, deny) {
+async function decide(approvalId, decision, note, card, approve, deny, remember = null) {
   if (approve) approve.disabled = true;
   if (deny) deny.disabled = true;
+  const alwaysBtn = card?.querySelector('.approval-always');
+  if (alwaysBtn) alwaysBtn.disabled = true;
   try {
-    await api(`/api/approvals/${encodeURIComponent(approvalId)}`, {
+    const res = await api(`/api/approvals/${encodeURIComponent(approvalId)}`, {
       method: 'POST',
-      body: { decision, note: note || '' },
+      body: { decision, note: note || '', ...(remember ? { always: true } : {}) },
     });
     settleApprovalCard(card, decision, note);
+    if (res?.remembered) toast(`好的，以后「${res.remembered.label}」不再问你`);
     state.approvals = state.approvals.filter((a) => a.id !== approvalId);
     refreshPendingApprovals();
   } catch (err) {
     if (approve) approve.disabled = false;
     if (deny) deny.disabled = false;
+    if (alwaysBtn) alwaysBtn.disabled = false;
     toast(err.message, true);
     refreshPendingApprovals();
   }

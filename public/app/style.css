@@ -3144,3 +3144,11 @@
     .sidebar.open .home-search { min-width: 0; flex: 1 1 0; height: 48px; }
     .sidebar.open #settings-btn { width: 48px; height: 48px; }
   }
+
+/* 已记住的权限 (1.2.164) */
+.be-allowed { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.be-allowed-title { font-size: 12px; color: var(--muted); }
+.be-allowed-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 8px 12px; border-radius: 10px; background: var(--panel-2, rgba(127,127,127,.08)); }
+.be-allowed-label { font-size: 13px; overflow-wrap: anywhere; }
+/* A hand-off between two bots in a group: "数据匠 → 图表师", quieter than a reply */
+.row.handoff .bubble { opacity: .9; border-style: dashed; }

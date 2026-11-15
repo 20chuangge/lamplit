@@ -31,7 +31,7 @@ import {
   sessionFile,
   turnFile,
 } from './store.mjs';
-import { effectivePolicy, classify, DECISION, machineMode, mediumRunsUnasked } from './approvals.mjs';
+import { effectivePolicy, classify, DECISION, machineMode, mediumRunsUnasked, permissionKey, isRemembered } from './approvals.mjs';
 import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 import { checkBoundary } from './boundary.mjs';
 import { noteUsage } from './usage.mjs';
@@ -420,13 +420,18 @@ const HUB_MODULES = (() => {
 const HUB_ROOTS = ['desk-hub', ...(HUB_SRC_DIR ? [path.dirname(HUB_SRC_DIR), path.dirname(HUB_SRC_DIR).replace(/\\/g, '/')] : [])].map(escRe);
 const HUB_MODULE = new RegExp(String.raw`\b(import|require)\b[\s\S]{0,400}?(${HUB_ROOTS.join('|')}|[\\/]src[\\/](${HUB_MODULES.join('|')})\.mjs)`, 'i');
 
-export function reachesSecrets(name, args = {}) {
+export function reachesSecrets(name, args = {}, { workspaceDir = '' } = {}) {
   const SECRET_FILES = /(vault\.(key|json|mjs)|secrets\.json|\brevealVault\b|\bputVault\b)/i;
-  const text = name === 'shell' ? String(args.command || '')
+  let text = name === 'shell' ? String(args.command || '')
     : name === 'fs_write' ? `${args.path || ''}\n${args.content || ''}`
       : name === 'fs_read' || name === 'fs_list' ? String(args.path || '')
         : '';
   if (!text) return '';
+  // The workspace may sit inside the app's folder (/opt/desk-hub/workspace on a
+  // Linux machine): naming it is working there, not reaching Lamplit's modules
+  // (11-15: every python script there asked "直接调用 Lamplit 自己的模块").
+  for (const ws of new Set([workspaceDir, String(workspaceDir).replace(/\\/g, '/')].filter(Boolean))) text = text.split(ws).join('<workspace>');
+  text = text.replace(/desk-hub[\\/]+workspace\b/gi, '<workspace>');
   if (SECRET_FILES.test(text)) return '要碰 Lamplit 保险箱里的密钥或授权码（vault），每次都先问你';
   if (name !== 'fs_read' && name !== 'fs_list' && HUB_MODULE.test(text)) return '要在脚本里直接调用 Lamplit 自己的模块（会绕过「连接应用」的审批），每次都先问你';
   return '';
@@ -573,6 +578,78 @@ export class AgentRuntime {
       if (typeof this.pushOut === 'function') feishu = Number(await this.pushOut(`【${bot.name}·需要你拍板】\n${said}`)) > 0;
     } catch { /* Feishu not connected or down: the chat and the phone still have it */ }
     return { told: true, feishu, note: 'The human has been told (chat, phone, Feishu if connected). Finish your turn; do not wait for the answer here.' };
+  }
+
+  /**
+   * group_handover (1.2.164): the job goes to the group. The brief shows there
+   * (助理 → 协调者), the coordinator runs it with the members, and when it is
+   * done the human is told and the handing bot's chat gets one line pointing
+   * to the group - the result itself stays in the group.
+   */
+  async handOverToGroup({ bot, groupId, text, turnId }) {
+    const fail = (code, message) => Object.assign(new Error(message), { code });
+    const info = typeof this.groupForRun === 'function' ? await this.groupForRun(groupId) : null;
+    if (!info) throw fail('GROUP_NOT_FOUND', `no group "${groupId}"`);
+    if (info.error) throw fail('GROUP_CANNOT_RUN', info.error);
+    const { group } = info;
+    const coordinator = (group.members || []).find((m) => m.id === group.coordinatorId);
+    if (!coordinator) throw fail('GROUP_NO_COORDINATOR', `"${group.name}" has no coordinator`);
+    if (coordinator.id === bot.id) throw fail('GROUP_HANDOVER_SELF', `you coordinate "${group.name}" yourself: do the work in the group`);
+    await this.recordGroupMessage(group.id, { kind: 'handoff', from: bot.id, to: coordinator.id, text, turnId });
+    const prompt = `${bot.name} 把这件事交给群里来做（用户交代的），由你协调：\n${text}`;
+    const busy = this.busyGroupTurn(group.id);
+    if (busy) {
+      this.routeGroupMessage({ group, text: prompt }).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+    } else {
+      const since = nowIso();
+      Promise.resolve()
+        .then(() => this.runGroupMessage({ group, text: prompt, recordUser: false }))
+        .then(() => this.groupDone({ group, from: bot, since }))
+        .catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+    }
+    return {
+      handedOver: true,
+      group: group.name,
+      coordinator: coordinator.name,
+      note: `「${group.name}」 has the job now; ${coordinator.name} coordinates it there and the result is posted in the group. Finish your turn: tell the human in one line that the group has it and where to watch. Do not relay between the bots or wait for them.`,
+    };
+  }
+
+  /** A handed-over job finished: the human hears of it; the result stays in the group. */
+  async groupDone({ group, from, since }) {
+    const msgs = (await this.groups?.readGroupMessages?.(group.id, { limit: 80 }).catch(() => [])) || [];
+    const last = [...msgs].reverse().find((m) => (m.kind || 'assistant') === 'assistant' && m.text && String(m.ts || '') >= since);
+    if (!last) return;
+    const who = (group.members || []).find((m) => m.id === last.from)?.name || '';
+    const flat = String(last.text).replace(/\s+/g, ' ').trim();
+    const summary = flat.length > 200 ? `${flat.slice(0, 200)}…` : flat;
+    const line = `「${group.name}」做完了${who ? `（${who}）` : ''}：${summary}\n完整结果在群里。`;
+    const ts = nowIso();
+    await this.record(from.id, { kind: 'assistant', text: line, notice: true, final: true, groupId: group.id });
+    this.bus.emit({ type: 'message', botId: from.id, botName: from.name, text: line, final: true, ts });
+    this.bus.emit({ type: 'human.notice', botId: from.id, botName: group.name, groupId: group.id, text: summary, ts });
+    try {
+      if (typeof this.pushOut === 'function') await this.pushOut(`【${group.name}·完成】\n${summary}`);
+    } catch { /* Feishu not connected: the chat and the phone still have it */ }
+  }
+
+  /**
+   * Work passed between two members of one group shows in that group (1.2.164):
+   * the group is where the human watches the team. The group in hand when the
+   * turn is a group's, else the one group both are in (none or several: skip).
+   */
+  async mirrorHandoff({ fromId, toId, text, group = null }) {
+    if (!this.groups || !fromId || !toId || !String(text || '').trim()) return;
+    const ids = (g) => (g?.members || []).map((m) => (typeof m === 'string' ? m : m?.id));
+    let target = group?.id && ids(group).includes(fromId) && ids(group).includes(toId) ? group : null;
+    if (!target) {
+      const all = (await this.groups.listGroups?.().catch(() => [])) || [];
+      const both = all.filter((g) => ids(g).includes(fromId) && ids(g).includes(toId));
+      if (both.length !== 1) return;
+      [target] = both;
+    }
+    const flat = String(text).trim();
+    await this.recordGroupMessage(target.id, { kind: 'handoff', from: fromId, to: toId, text: flat.length > 1500 ? `${flat.slice(0, 1500)}…` : flat });
   }
 
   /** The turn this bot is working on for the human right now (not a hand-off or a group turn), or null. */
@@ -778,6 +855,7 @@ export class AgentRuntime {
       ...peersLine(this.getPeers()?.list?.() || [], this.registry.isGranted(bot, 'bot_message')),
       ...(this.registry.isGranted(bot, 'bot_message') ? ['In a pipeline (write → review → fix …): when your part is done and the next step is a teammate\'s, use bot_pass to hand it on now and finish - do not leave it for a later scheduled round. Use bot_message only when you need their result to finish your own work.'] : []),
       'When something needs the human\'s decision (publish or not, pick an option, a blocker only they can clear), say it with tell_human - also when a teammate or a routine asked you, because your reply may only reach them.',
+      ...(this.registry.isGranted(bot, 'group_handover') ? ['When you have set up a team in a group for a job, hand the whole job over with group_handover and finish: its coordinator runs it in the group and the result is posted there. Do not relay between the bots yourself, and do not pass their results on to the human - the group shows them.'] : []),
       '',
       ...(group ? [renderGroupSection(bot, group, groupRole), ''] : []),
       ...(!direct ? [] : task ? [
@@ -2025,11 +2103,17 @@ export class AgentRuntime {
       extraRiskReason: riskInfo.reason || '',
       unattended: ctx.unattended,
     });
+    // Asks that "以后都允许" never turns off: the danger list, Lamplit's
+    // secrets, coding assistants on the subscription, the human's "ask first"
+    // rules and money for pictures (set below).
+    let sticky = verdict.decision === DECISION.ASK && /danger denylist/.test(verdict.reason || '');
+    // A machine given to the bots and set to 放手 (11-15, Ubuntu).
+    const freeMachine = machineMode() === 'remote' && machine.autonomous;
 
     // Pictures and videos cost money: the human's choice for them wins over the level; a one-sentence rule below can still ask.
     const generate = this.config.policy?.generate;
     if ((name === 'image_generate' || name === 'video_generate') && verdict.decision !== DECISION.DENY) {
-      if (generate === 'ask') verdict = { ...verdict, decision: DECISION.ASK, reason: '按你的设置，生成图片、视频前先问你（会产生费用）' };
+      if (generate === 'ask') { verdict = { ...verdict, decision: DECISION.ASK, reason: '按你的设置，生成图片、视频前先问你（会产生费用）' }; sticky = true; }
       else if (generate === 'auto') verdict = { ...verdict, decision: DECISION.AUTO, reason: '按你的设置，生成图片、视频不用问' };
     }
 
@@ -2037,11 +2121,14 @@ export class AgentRuntime {
     const rules = Array.isArray(this.config.policy?.rules) ? this.config.policy.rules : [];
     if (rules.length && verdict.decision !== DECISION.DENY && !RULE_EXEMPT.has(name)) {
       try {
+        const before = verdict.decision;
         verdict = applyRules(verdict, await judgeRules({ rules, toolName: name, args, model: this.model }), DECISION);
+        if (before !== DECISION.ASK && verdict.decision === DECISION.ASK) sticky = true;
       } catch (err) {
         // Could not check: with any "ask first" rule on the books, ask.
         if (rules.some((r) => r.action === 'ask') && verdict.decision === DECISION.AUTO) {
           verdict = { ...verdict, decision: DECISION.ASK, reason: `没能对照你的规则（${err.message}），先问你` };
+          sticky = true;
         }
       }
     }
@@ -2053,7 +2140,7 @@ export class AgentRuntime {
     // so formatting a disk or deleting system folders keeps asking.
     const trusted = Boolean(this.config.policy?.trustPrimary) && Boolean(bot.primary || (this.config.primaryBotId && bot.id === this.config.primaryBotId));
     if (verdict.decision !== DECISION.DENY && !trusted) {
-      const fence = checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {}, remote: machineMode() === 'remote' });
+      const fence = checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {}, remote: machineMode() === 'remote', autonomous: machine.autonomous });
       if (fence?.decision === 'deny') verdict = { ...verdict, decision: DECISION.DENY, risk: 'HIGH', reason: fence.reason, code: fence.code };
       else if (fence) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: fence.reason, code: fence.code };
     }
@@ -2065,11 +2152,15 @@ export class AgentRuntime {
       const want = (Array.isArray(args?.tools) ? args.tools : []).map(String).filter((n) => isRequestable(n) && !this.registry.isGranted(bot, n));
       verdict = { ...verdict, decision: DECISION.ASK, risk: want.includes('shell') || want.includes('fs_delete') || want.includes('desktop_ui') ? 'HIGH' : 'MEDIUM',
         reason: `给「${bot.name}」加上：${want.map(toolLabel).join('、') || '（都已经有了）'}。原因：${String(args?.reason || '').trim().replace(/[。.！!；;]+$/, '').slice(0, 200) || '没说'}。同意后一直有效，可以在机器人设置里关掉；有风险的操作照样会先问你。` };
+      sticky = true;
+      // A machine given to the bots, set to 放手: its bots take what they need.
+      if (freeMachine) verdict = { ...verdict, decision: DECISION.AUTO, reason: `这台机器交给了机器人、设成了放手：直接给「${bot.name}」加上 ${want.map(toolLabel).join('、') || '（都已经有了）'}` };
     }
     // Nightshift's own secrets and modules: asked every time - on a remote
     // machine, for a trusted bot, at any level. Only "deny" stays a deny.
-    const secretReason = reachesSecrets(name, args);
-    if (secretReason && verdict.decision !== DECISION.DENY) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason };
+    const secretReason = reachesSecrets(name, args, { workspaceDir: this.config.workspaceDir });
+    if (secretReason && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason }; sticky = true; }
+    if (name === 'cli_agent_run' && verdict.decision !== DECISION.DENY) sticky = true;
     if (name === 'cli_agent_run' && verdict.decision === DECISION.AUTO) {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `交给 ${args?.agent === 'codex' ? 'Codex' : 'Claude Code'}（用你的订阅额度，会在工作区里写文件${args?.allowShell ? '、运行命令' : ''}），每次都先问你` };
     }
@@ -2082,6 +2173,12 @@ export class AgentRuntime {
       if (t && t.trust !== 'always' && !t.readOnly) {
         verdict = { ...verdict, decision: DECISION.ASK, reason: `用「${t.server}」的 ${t.tool}（连接应用，设成「始终允许」后就不再问）` };
       }
+    }
+
+    // "以后都允许": the human said yes to this kind of step for this bot for good.
+    const remember = sticky ? null : permissionKey(name, args, { workspaceDir: this.config.workspaceDir });
+    if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key)) {
+      verdict = { ...verdict, decision: DECISION.AUTO, reason: `你之前选了「以后都允许」：${remember.label}` };
     }
 
     this.bus.emit({
@@ -2116,6 +2213,7 @@ export class AgentRuntime {
         risk: verdict.risk,
         reason: verdict.reason,
         unattended: ctx.unattended,
+        ...(remember ? { remember } : {}),
       });
 
       // approvals.request() exposes the record synchronously so the UI can show
@@ -2130,6 +2228,7 @@ export class AgentRuntime {
         args,
         risk: verdict.risk,
         reason: verdict.reason,
+        ...(remember ? { remember } : {}),
       });
 
       const resolution = await pending;

@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { RISK } from './approvals.mjs';
+import { RISK, machineMode } from './approvals.mjs';
 import { childEnv } from './childenv.mjs';
 import { describeImage, imageMime } from './vision.mjs';
 import { fitForVision } from './imagefit.mjs';
@@ -1427,6 +1427,8 @@ export function createRegistry(deps) {
       budget.left -= 1;
 
       const runtime = deps.getRuntime();
+      // Two members of one group: the group sees who gave whom what (1.2.164).
+      await runtime.mirrorHandoff?.({ fromId: ctx.bot.id, toId: target.id, text: args?.text, group: ctx.group });
       // One thing at a time: a busy colleague finishes first (the chat says whom we wait for).
       if (runtime.botBusy?.(target.id)) ctx.progress?.(`等${target.name}忙完手上的事…`);
       const off = runtime.noteWaiting?.(ctx.bot.id, target.id) || (() => {});
@@ -1452,6 +1454,7 @@ export function createRegistry(deps) {
       } finally {
         off();
       }
+      if (result?.summary) await runtime.mirrorHandoff?.({ fromId: target.id, toId: ctx.bot.id, text: result.summary, group: ctx.group });
       return {
         botId: target.id,
         botName: target.name,
@@ -1490,6 +1493,7 @@ export function createRegistry(deps) {
       if (!target) throw toolError('BOT_NOT_FOUND', `no bot with id "${targetId}"`);
       const runtime = deps.getRuntime();
       const queued = Boolean(runtime.botBusy?.(target.id));
+      await runtime.mirrorHandoff?.({ fromId: ctx.bot.id, toId: target.id, text: args?.text, group: ctx.group });
       // Not awaited: the teammate's turn runs on its own (after its current one).
       Promise.resolve(runtime.runTurn({
         botId: target.id,
@@ -1620,7 +1624,7 @@ export function createRegistry(deps) {
         name,
         role: String(args?.role ?? ''),
         // What every teammate needs, what its role calls for, and what was asked for.
-        tools: grantsForNewBot({ role: args?.role, requested: Array.isArray(args?.tools) ? args.tools : [], known: new Set(tools.keys()) }),
+        tools: grantsForNewBot({ role: args?.role, requested: Array.isArray(args?.tools) ? args.tools : [], known: new Set(tools.keys()), remote: machineMode() === 'remote' }),
         skills: Array.isArray(args?.skills) ? args.skills : [],
         ...(args?.avatar && typeof args.avatar === 'object' ? { avatar: args.avatar } : {}),
       });
@@ -1860,6 +1864,31 @@ export function createRegistry(deps) {
       // of truth, this is just the live view.
       ctx.emit({ type: 'group.message', groupId: group.id, message: ctx.groups.publicGroupMessage(message) });
       return { posted: true, groupId: group.id, groupName: group.name, messageId: message.id };
+    },
+  });
+
+  // 1.2.164: on 11-15 the assistant built 数据匠 / 图表师 / 主笔 and a group,
+  // then relayed every step itself; the group never saw the work or the result.
+  add({
+    name: 'group_handover',
+    description:
+      'Hand a whole job to a group and finish: the brief is posted in the group, its coordinator plans and runs it with the members there, and the result is posted in the group (the human is notified). Use it once you have set up a team in a group for a job, instead of relaying between the bots yourself. Give the full brief: the goal in their words, inputs and file paths, what to deliver.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        group: { type: 'string', description: 'Group id (or name).' },
+        text: { type: 'string', description: 'The full brief for the group.' },
+      },
+      required: ['group', 'text'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const groupId = String(args?.group ?? '').trim();
+      const text = String(args?.text ?? '').trim();
+      if (!groupId) throw toolError('GROUP_REQUIRED', 'group id is required');
+      if (!text) throw toolError('EMPTY_MESSAGE', 'give the group the brief');
+      return deps.getRuntime().handOverToGroup({ bot: ctx.bot, groupId, text: text.slice(0, 8000), turnId: ctx.turnId });
     },
   });
 
@@ -2257,6 +2286,8 @@ export function createRegistry(deps) {
       if (name.startsWith('browser_') && grants.has('browser_open')) return true;
       // Handing work to another machine needs moving its inputs and results.
       if ((name === 'file_send' || name === 'file_fetch' || name === 'bot_pass') && grants.has('bot_message')) return true;
+      // Who may set up a group may give it a job.
+      if (name === 'group_handover' && grants.has('group_create')) return true;
       return false;
     },
     /** OpenAI function-tool schemas for the model call. */

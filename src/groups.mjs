@@ -37,7 +37,8 @@ export const GROUP_MIN_MEMBERS = 2;
 export const GROUP_MAX_MEMBERS = 6;
 
 /** Message kinds the transcript (and the UI) understands. */
-export const GROUP_MESSAGE_KINDS = ['user', 'assistant', 'tool', 'status', 'plan'];
+// 'handoff' (1.2.164): one bot giving another a piece of the group's work, {from, to, text}.
+export const GROUP_MESSAGE_KINDS = ['user', 'assistant', 'tool', 'status', 'plan', 'handoff'];
 
 const PREVIEW_MAX_CHARS = 120;
 // Same widening strategy as the sidebar preview for bots: only a small tail is
@@ -329,6 +330,7 @@ export async function appendGroupMessage(groupId, record = {}) {
     ...(record.status ? { status: String(record.status) } : {}),
     ...(record.turnId ? { turnId: String(record.turnId) } : {}),
     ...(record.planId ? { planId: String(record.planId) } : {}),
+    ...(record.to ? { to: String(record.to) } : {}),
   };
   await appendJsonl(groupMessagesFile(groupId), message);
   return message;
@@ -345,6 +347,7 @@ export function publicGroupMessage(message) {
     ...(message.name !== undefined ? { name: message.name } : {}),
     ...(message.status !== undefined ? { status: message.status } : {}),
     ...(message.planId ? { planId: message.planId } : {}),
+    ...(message.to ? { to: message.to } : {}),
   };
 }
 
@@ -375,10 +378,12 @@ export async function hasAssistantMessage(groupId, turnId, botId) {
 export async function loadGroupHistory(groupId, { limit = 16, names = new Map() } = {}) {
   const records = await readJsonl(groupMessagesFile(groupId));
   const usable = records.filter(
-    (record) => (record.kind === 'user' || record.kind === 'assistant') && record.text,
+    (record) => (record.kind === 'user' || record.kind === 'assistant' || record.kind === 'handoff') && record.text,
   );
   return usable.slice(-limit).map((record) => {
     if (record.kind === 'user') return { role: 'user', content: String(record.text) };
+    // Work one bot gave another in the group: who to whom, as context.
+    if (record.kind === 'handoff') return { role: 'user', content: `[${names.get(record.from) || record.from} → ${names.get(record.to) || record.to}] ${record.text}` };
     const label = names.get(record.from);
     // The coordinator's own words are plain assistant text; a teammate's are
     // attributed so the model does not mistake them for its own.

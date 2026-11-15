@@ -58,6 +58,18 @@ export function commandBase(command, startDir) {
   return path.resolve(startDir, sysPath((m[1] || m[2] || m[3]).replace(/[\\/]+$/, '') || '.'));
 }
 
+/**
+ * Absolute Unix paths in a command. A path names something after the slash:
+ * a lone "/" in `sed 's/^](/…/'`, a regex or "a / b" is not the disk's root
+ * (seen 11-15: "命令用到了没开放给机器人的位置：/"). Wiping the root is on
+ * the danger list, which does not depend on this.
+ */
+export function unixPathsIn(command) {
+  const out = [];
+  for (const m of String(command || '').matchAll(/(?:^|[\s"'=(,])(\/[\w.~\u0080-￿-][^\s"'|&;<>,)]*)/gu)) out.push(m[1]);
+  return out;
+}
+
 /** Paths a shell command names (absolute, ~, or climbing out with ..); `..` counts from `base`. */
 export function pathsInCommand(command, workspaceDir, base = workspaceDir) {
   let text = String(command || '');
@@ -68,9 +80,7 @@ export function pathsInCommand(command, workspaceDir, base = workspaceDir) {
   text = text.replace(QUOTED, ' ');
   const home = os.homedir();
   for (const m of text.matchAll(/(?:^|[\s"'=(,])([A-Za-z]:[\\/][^\s"'|&;<>,)]*)/g)) found.add(m[1]);
-  if (process.platform !== 'win32') {
-    for (const m of text.matchAll(/(?:^|[\s"'=(,])(\/[^\s"'|&;<>,)]*)/g)) found.add(m[1]);
-  }
+  if (process.platform !== 'win32') for (const p of unixPathsIn(text)) found.add(p);
   for (const m of text.matchAll(/(?:^|[\s"'=(,])(~(?:[\\/][^\s"'|&;<>,)]*)?)/g)) found.add(m[1].replace(/^~/, home));
   for (const m of text.matchAll(/(\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE)([\\/][^\s"'|&;<>,)]*)?/gi)) found.add(home + (m[2] || ''));
   for (const m of text.matchAll(/(?:^|[\s"'=(,])((?:\.\.[\\/])+[^\s"'|&;<>,)]*|\.\.)(?=$|[\s"'|&;<>,)])/g)) found.add(path.resolve(base, sysPath(m[1])));
@@ -201,12 +211,17 @@ export function lookOnly(command) {
  * Check one tool call against the machine's boundary.
  * -> null (fine) | {decision:'ask'|'deny', reason, code}
  */
-export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = false } = {}) {
+export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = false, autonomous = false } = {}) {
   const folders = Array.isArray(policy.folders) ? policy.folders : [];
   const outside = policy.outside === 'deny' ? 'deny' : 'ask';
   const ctx = { workspaceDir, folders };
+  // A machine given to the bots and set to 放手 is theirs: no folder fence
+  // (11-15, Ubuntu: every bot stopped on "没开放给机器人的位置"). sudo still
+  // follows the machine's sudo setting; the danger list still asks.
+  const free = remote && autonomous;
 
   const spec = FILE_TOOLS[name];
+  if (spec && free) return null;
   if (spec) {
     const raw = args?.[spec[0]];
     if (raw === undefined || raw === null || raw === '') return null;
@@ -231,7 +246,7 @@ export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = 
     // measure (ps, df, du, ls). Reading a file's contents outside the opened
     // folders still asks there, and anything that writes goes by the rules below.
     const look = lookOnly(command);
-    if (look.look && (remote || !look.reads)) return null;
+    if (free || (look.look && (remote || !look.reads))) return null;
     const cwd = args?.cwd ? path.resolve(workspaceDir, String(args.cwd)) : null;
     const named = pathsInCommand(command, workspaceDir, commandBase(command, cwd || workspaceDir)).concat(cwd ? [cwd] : []);
     const programs = new Set(programsInCommand(command).concat(existenceChecksInCommand(command)).map((p) => norm(p)));

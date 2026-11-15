@@ -53,6 +53,19 @@ export const DEFAULT_ASSISTANT_CONFIG = {
   },
 };
 
+function normalizeAllowed(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const a of list) {
+    const key = String(a?.key || '').trim().slice(0, 300);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ key, label: String(a?.label || key).slice(0, 300), at: String(a?.at || nowIso()) });
+  }
+  return out.slice(-200);
+}
+
 // The muted colourful palette (same list as the UI picker).
 const AVATAR_COLORS = ['#7c6cf0', '#5b7bea', '#3d9be0', '#2bab9c', '#4cae6e', '#d79b3a', '#e0744f', '#d65c7a', '#a46ad8', '#6b7280'];
 // Colours the hub handed out by itself before 1.2.150. The picker in the UI
@@ -404,6 +417,8 @@ function normalizeBot(raw, index) {
       denyPatterns: Array.isArray(policy.denyPatterns) ? policy.denyPatterns.map(String) : [],
       maxSteps: Number(policy.maxSteps || 80),
       maxTurnMs: Number(policy.maxTurnMs || 30 * 60 * 1000),
+      // "以后都允许": what the human allowed this bot for good ({key, label, at}).
+      allowed: normalizeAllowed(policy.allowed),
     },
     createdAt: raw.createdAt || nowIso(),
   };
@@ -611,7 +626,8 @@ export async function createBot(input = {}) {
   // No grant list given (the 新建 form): start with what every teammate needs
   // plus what its role calls for, not with nothing - a bot that cannot read or
   // write a file only looks like a member of the team.
-  const tools = Array.isArray(input.tools) ? input.tools : grantsForNewBot({ role: input.role });
+  // A machine given to the bots: every everyday tool from the start (1.2.164).
+  const tools = Array.isArray(input.tools) ? input.tools : grantsForNewBot({ role: input.role, remote: process.env.DESK_MACHINE_MODE === 'remote' });
   const bot = normalizeBot(
     {
       ...input,

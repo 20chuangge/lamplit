@@ -475,6 +475,17 @@ function renderGroupItem(item) {
       ts: item.ts,
     }));
   }
+  if (kind === 'handoff') {
+    // One bot giving another a piece of the work (1.2.164): "数据匠 → 图表师".
+    const target = item.to ? (botById(item.to) || groupMemberById(item.to) || { id: item.to, name: item.to }) : null;
+    const bubble = el('div', 'bubble');
+    fillBubble(bubble, item.text || '', false, sender?.id);
+    const row = groupSenderRow(sender, bubble);
+    row.classList.add('handoff');
+    const label = row.querySelector('.g-name');
+    if (label && target) label.textContent = `${sender?.name || ''} → ${target.name || ''}`;
+    return row;
+  }
   if (kind === 'approval') {
     return groupSenderRow(sender, buildApprovalCard({
       approvalId: item.approvalId || item.id,

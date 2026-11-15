@@ -40,6 +40,41 @@ function renderAbilities(bot) {
     box.appendChild(row);
   }
   $('botedit-trust').checked = Boolean(bot.policy?.autoApproveMedium);
+  renderAllowed(bot);
+}
+
+/** 已记住的权限: what you said "以后都允许" to for this bot, each with 撤销. */
+function renderAllowed(bot) {
+  const box = $('botedit-allowed');
+  if (!box) return;
+  const list = Array.isArray(bot.policy?.allowed) ? bot.policy.allowed : [];
+  box.innerHTML = '';
+  box.hidden = !list.length;
+  if (!list.length) return;
+  box.appendChild(el('div', 'be-allowed-title', '已记住的权限（不再问你）'));
+  for (const item of list) {
+    const row = el('div', 'be-allowed-row');
+    row.appendChild(el('span', 'be-allowed-label', item.label || item.key));
+    const undo = el('button', 'btn small be-allowed-undo', '撤销');
+    undo.type = 'button';
+    undo.title = '以后这类操作又会先问你';
+    undo.addEventListener('click', async () => {
+      undo.disabled = true;
+      try {
+        const allowed = list.filter((a) => a.key !== item.key);
+        const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { policy: { ...(bot.policy || {}), allowed } } });
+        const updated = (res && res.bot) || { ...bot, policy: { ...(bot.policy || {}), allowed } };
+        const index = state.bots.findIndex((b) => b.id === bot.id);
+        if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
+        renderAllowed(state.bots[index] || updated);
+      } catch (err) {
+        undo.disabled = false;
+        toast(err.message, true);
+      }
+    });
+    row.appendChild(undo);
+    box.appendChild(row);
+  }
 }
 
 /** The bot's tool list after the checkboxes: groups on/off, other tools kept. */

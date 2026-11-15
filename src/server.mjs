@@ -371,6 +371,17 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   refs.runtime = runtime;
   // tell_human also reaches Feishu when it is connected (push returns 0 when it is not).
   runtime.pushOut = (text) => refs.feishu?.push?.(text);
+  // group_handover: a group in the shape a group turn needs, or why it cannot run.
+  runtime.groupForRun = async (idOrName) => {
+    const wanted = String(idOrName || '').trim();
+    const group = (await groups.getGroup(wanted)) || (await groups.listGroups()).find((g) => g.name === wanted) || null;
+    if (!group) return null;
+    const blocker = groups.groupRunBlocker(group);
+    if (blocker) return { error: blocker.message };
+    const byId = await botsById();
+    if (!byId.get(group.coordinatorId)) return { error: `"${group.name}" has no coordinator bot` };
+    return { group: { id: group.id, name: group.name, coordinatorId: group.coordinatorId, members: groupMemberList(group, byId).map(({ avatar, ...m }) => m) } };
+  };
   // Tasks a bot was working through before the app stopped go on by themselves.
   runtime.resumeTasks().then((n) => { if (n) console.log(`[tasks] picking up ${n} open task(s) in a moment`); }).catch((err) => console.error('[tasks] resume:', err.message));
   // Which coding assistants on the human's subscription are ready here: bots
@@ -2972,6 +2983,18 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
   const record = state.approvals.decide(params.id, decision, body?.note || '', by);
   if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', `no approval with id "${params.id}"`);
   if (record.error) throw httpError(409, 'APPROVAL_CONFLICT', record.error);
+  // "以后都允许" (1.2.164): the same kind of step runs unasked for this bot from now on.
+  let remembered = null;
+  if (body?.always === true && record.status === 'approved' && record.remember) {
+    const bot = await getBot(record.botId);
+    if (bot) {
+      const allowed = [...(bot.policy?.allowed || []).filter((a) => a.key !== record.remember.key), { ...record.remember, at: nowIso() }];
+      await updateBot(bot.id, { policy: { ...(bot.policy || {}), allowed } });
+      await audit({ kind: 'bot.allowed', botId: bot.id, key: record.remember.key, label: record.remember.label });
+      remembered = record.remember;
+      state.bus.emit({ type: 'roster.changed', scope: 'bots', action: 'update', botId: bot.id });
+    }
+  }
 
   state.bus.emit({
     type: 'approval.decided',
@@ -3092,7 +3115,7 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
       });
     }
   }
-  return { approval: record };
+  return { approval: record, ...(remembered ? { remembered } : {}) };
 });
 
 /**

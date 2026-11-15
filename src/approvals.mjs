@@ -14,6 +14,7 @@
  * the agent loop can never disagree about why something was allowed.
  */
 
+import path from 'node:path';
 import { uid, nowIso } from './store.mjs';
 import { lookOnly } from './boundary.mjs';
 
@@ -159,6 +160,56 @@ export function mediumRunsUnasked({ careful = false, autonomous = false, trusted
   if (autonomous) return true;
   if (!trusted) return false;
   return toolName !== 'shell' || lookOnly(String(args?.command || '')).look;
+}
+
+/**
+ * "以后都允许" (1.2.164): what counts as the same permission next time.
+ *   shell      - the program it runs (python3, npm, git); `cd`, env settings and
+ *                sudo in front do not count, so `cd x && python3 -` is python3
+ *   file tools - the folder (writing a.md and b.md in one folder is one permission)
+ *   others     - the tool
+ * -> {key, label} or null (nothing to remember).
+ */
+const FILE_VERBS = { fs_write: '写文件', fs_mkdir: '建文件夹', fs_delete: '删文件', fs_read: '读文件', fs_list: '查看文件', fs_move: '移动文件', fs_copy: '复制文件' };
+export function permissionKey(toolName, args = {}, { workspaceDir = '' } = {}) {
+  const name = String(toolName || '');
+  if (!name) return null;
+  if (name === 'shell') {
+    const program = mainProgram(String(args?.command || ''));
+    return program ? { key: `shell:${program}`, label: `用 ${program} 运行命令` } : null;
+  }
+  if (FILE_VERBS[name]) {
+    const raw = args?.path ?? args?.from ?? args?.src;
+    if (raw === undefined || raw === null || raw === '') return { key: name, label: FILE_VERBS[name] };
+    const abs = path.resolve(workspaceDir || '.', String(raw));
+    const dir = path.dirname(abs);
+    return { key: `${name}:${dir.toLowerCase()}`, label: `在 ${dir} 里${FILE_VERBS[name]}` };
+  }
+  return { key: name, label: name };
+}
+
+/** The program a command line is really about: past cd, env settings, sudo/env/nohup. */
+export function mainProgram(command) {
+  for (const part of String(command || '').split(/&&|\|\||[;|\n]/)) {
+    let rest = part.trim().replace(/^&\s*/, '');
+    // Settings and wrappers in front: FOO=1 sudo env nohup ... python3
+    for (;;) {
+      const m = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*|sudo|env|nohup|time|exec|command)(?:\s+|$)/.exec(rest);
+      if (!m) break;
+      rest = rest.slice(m[0].length);
+    }
+    const w = /^"([^"]+)"|^'([^']+)'|^(\S+)/.exec(rest);
+    const first = w ? (w[1] || w[2] || w[3]) : '';
+    if (!first || /^(cd|pushd|popd|set|export|echo|true|:)$/i.test(first) || first.startsWith('#')) continue;
+    const base = first.replace(/^["']|["']$/g, '').split(/[\\/]/).pop().replace(/\.exe$/i, '').toLowerCase();
+    if (base) return base;
+  }
+  return '';
+}
+
+/** Has the human allowed this for good for this bot? */
+export function isRemembered(bot, key) {
+  return Boolean(key) && Array.isArray(bot?.policy?.allowed) && bot.policy.allowed.some((a) => a && a.key === key);
 }
 
 /** Patterns that do not compile (they would never match): checked at start. */
@@ -338,7 +389,7 @@ export class ApprovalQueue {
    * routine report that in chat. That is the honest behaviour - a scheduled run
    * should never hang for ten minutes pretending to work.
    */
-  request({ turnId, botId, toolName, args, risk, reason, unattended = false }) {
+  request({ turnId, botId, toolName, args, risk, reason, unattended = false, remember = null }) {
     const id = uid('ap');
     const record = {
       id,
@@ -353,6 +404,8 @@ export class ApprovalQueue {
       decidedAt: null,
       note: '',
       unattended,
+      // What "以后都允许" would remember ({key, label}); absent when it always asks.
+      ...(remember?.key ? { remember: { key: String(remember.key), label: String(remember.label || remember.key) } } : {}),
     };
     this.records.set(id, record);
     void this.onAudit({ kind: 'approval.requested', ...record });

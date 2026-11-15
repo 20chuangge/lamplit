@@ -1580,6 +1580,7 @@ const TOOL_TEXT = {
   browser_close: { label: '关闭浏览器', title: '想关上浏览器', impact: '会关闭当前打开的浏览器窗口。' },
   bot_message: { label: '转交给同事', title: '想把任务交给另一位助手', impact: '对方会用自己的工具和记忆独立完成，再回来汇报。' },
   bot_pass: { label: '交给下一位同事', title: '想把下一步交给另一位助手', impact: '对方接着做，这一位不等回复就结束。' },
+  group_handover: { label: '交给群里做', title: '想把整件事交给一个群', impact: '群里的协调者接手安排，结果发在群里。' },
   tell_human: { label: '请你拍板', title: '有件事需要你决定', impact: '在对话、手机和飞书里告诉你。' },
   tool_request: { label: '申请工具', title: '想申请加上一些工具', impact: '同意后这个机器人一直能用这些工具，可以在机器人设置里关掉；有风险的操作照样会先问你。' },
   bot_create: { label: '新建助手', title: '想新建一个助手', impact: '列表里会多一个成员，拥有你授予的工具。' },

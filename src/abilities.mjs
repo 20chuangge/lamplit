@@ -57,8 +57,19 @@ const LABELS = {
 export const toolLabel = (name) => (LABELS[name] ? `${LABELS[name]}（${name}）` : name);
 
 /** The grant list for a new bot: base + what its role calls for + what was asked for, known tools only. */
-export function grantsForNewBot({ role = '', requested = [], known = null } = {}) {
-  const out = new Set([...BASE_TOOLS, ...toolsForText(role), ...(Array.isArray(requested) ? requested.map(String) : [])]);
+/**
+ * On a machine given to the bots (a Linux box set up by setup-linux.sh), a new
+ * bot starts with every everyday tool: the machine is theirs, and asking for
+ * each one held up the work (11-15, Ubuntu). Not coding assistants (they spend
+ * the human's subscription) nor the desktop. The human can switch any off.
+ */
+export const REMOTE_FULL_TOOLS = [
+  'shell', 'fs_delete', 'browser_open', 'bot_message', 'bot_pass', 'file_send', 'file_fetch',
+  'skill_save', 'routine_list', 'routine_create', 'routine_run', 'group_list', 'machine_list',
+];
+
+export function grantsForNewBot({ role = '', requested = [], known = null, remote = false } = {}) {
+  const out = new Set([...BASE_TOOLS, ...(remote ? REMOTE_FULL_TOOLS : []), ...toolsForText(role), ...(Array.isArray(requested) ? requested.map(String) : [])]);
   return [...out].filter((t) => !known || known.has(t));
 }
 

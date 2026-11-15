@@ -4886,7 +4886,10 @@ async function scenarioV161() {
   // --- Q3: relative paths after cd ------------------------------------------
   {
     const B = await import('../src/boundary.mjs');
-    const at = (command) => B.checkBoundary('shell', { command }, { workspaceDir, policy: {}, remote: false });
+    // Not under the temp dir: on Linux /tmp counts as a system place, so climbing
+    // out of a /tmp workspace would never ask. The check reads no files.
+    const qWs = path.join(os.homedir(), 'lamplit-q3-workspace');
+    const at = (command) => B.checkBoundary('shell', { command }, { workspaceDir: qWs, policy: {}, remote: false });
     const inside = at('cd "xhs\\成稿\\2026-11-15-D7" && node ..\\..\\tools\\dims.mjs .');
     const insidePs = at("Set-Location 'xhs/成稿/D7'; node ../../tools/dims.mjs");
     const outside = at('cd xhs && type ..\\..\\secret.txt');

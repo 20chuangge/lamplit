@@ -43,7 +43,7 @@ npm run desktop:build    # 出 Windows 安装包 → desktop/dist/
 ```bash
 # 1) 起后端 + 浏览器打开
 npm start                      # http://127.0.0.1:4390
-npm run smoke                  # 1191 assertions, boots the real server on a free port
+npm run smoke                  # 1194 assertions, boots the real server on a free port
 
 # 2) 桌面应用（Electron 壳）
 npm run desktop                # 开发模式，等同 npm start 但带窗口/托盘
@@ -172,7 +172,9 @@ config/assistant.json      assistant name, persona, timezone, primary bot, globa
 config/bots/*.json         one file per bot: role, tools, skills, policy
 skills/*.md                the shared skill library (frontmatter + markdown)
 workspace/                 THE shared computer - every bot sees this
-public/index.html          the whole UI (single file, no build)
+public/index.html          the UI markup (no build); style and scripts in public/app/
+public/app/main/*.js       the page script by feature: plain scripts sharing one scope, loaded
+                           in order (scripts/check-page-parts.mjs keeps that safe)
 src/*.mjs                  server, agent, tools, model, approvals, memory, skills, routines, bots, store
 scripts/smoke.mjs          end-to-end self test
 data/                      created on first boot (gitignored)

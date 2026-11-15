@@ -1425,20 +1425,31 @@ export function createRegistry(deps) {
       budget.left -= 1;
 
       const runtime = deps.getRuntime();
-      const result = await runtime.runTurn({
-        botId: target.id,
-        text: String(args?.text || ''),
-        source: 'bot',
-        depth: (ctx.depth || 0) + 1,
-        chain: [...chain, target.id],
-        handoffBudget: budget,
-        unattended: ctx.unattended,
-        parentTurnId: ctx.turnId,
-        // A hand-off from inside a group hands the group context down too: the
-        // teammate then knows the group id and can answer the whole group with
-        // group_post instead of only replying privately.
-        ...(ctx.group && ctx.groupTurn ? { group: ctx.group, groupRole: 'member' } : {}),
-      });
+      // One thing at a time: a busy colleague finishes first (the chat says whom we wait for).
+      if (runtime.botBusy?.(target.id)) ctx.progress?.(`等${target.name}忙完手上的事…`);
+      const off = runtime.noteWaiting?.(ctx.bot.id, target.id) || (() => {});
+      let result;
+      try {
+        result = await runtime.runTurn({
+          botId: target.id,
+          text: String(args?.text || ''),
+          source: 'bot',
+          depth: (ctx.depth || 0) + 1,
+          chain: [...chain, target.id],
+          handoffBudget: budget,
+          unattended: ctx.unattended,
+          parentTurnId: ctx.turnId,
+          // Stopping this bot stops the colleague it is waiting on too.
+          signal: ctx.signal,
+          fromBotId: ctx.bot.id,
+          // A hand-off from inside a group hands the group context down too: the
+          // teammate then knows the group id and can answer the whole group with
+          // group_post instead of only replying privately.
+          ...(ctx.group && ctx.groupTurn ? { group: ctx.group, groupRole: 'member' } : {}),
+        });
+      } finally {
+        off();
+      }
       return {
         botId: target.id,
         botName: target.name,

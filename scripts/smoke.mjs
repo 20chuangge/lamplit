@@ -153,6 +153,7 @@ async function main() {
     await stage('1.2.158: electron-builder 26', scenarioV158);
     await stage('1.2.159: decode once, cheap 304, tidy docs, updates only to listed machines', scenarioV159);
     await stage('1.2.160: the page split into files (ENG-04)', scenarioV160);
+    await stage('1.2.161: bots take turns, stop reaches colleagues, cd paths, who wrote to whom', scenarioV161);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4832,6 +4833,102 @@ async function scenarioTeamFixes() {
 }
 
 /**
+ * 1.2.161: what the 小红书运营组 ran into on 11-15 - stopping a bot left the
+ * colleague it waited on running; four requests made 质检 review one draft four
+ * times at once; `cd sub && node ..\..\tools\x.mjs` was judged outside the
+ * workspace. And the human could not tell which bot wrote to which.
+ */
+async function scenarioV161() {
+  const { AgentRuntime } = await import('../src/agent.mjs');
+  const workspaceDir = path.join(home, 'workspace');
+  const rt = new AgentRuntime({ config: { workspaceDir }, registry: { schemasFor: () => [] }, model: { complete: async () => ({ content: 'ok' }) }, bots: { getBot: async (id) => ({ id, name: id, tools: [], policy: {} }), listBots: async () => [] }, memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus: { emit() {} } });
+  const agentSrc = await readText('../src/agent.mjs');
+  const toolsSrc = await readText('../src/tools.mjs');
+
+  // --- Q1: one bot does one thing at a time -----------------------------------
+  {
+    rt.active.set('turn_q1', { controller: new AbortController(), botId: 'qa', inbox: [], depth: 0 });
+    let done = null;
+    const waiting = rt.waitTurnFree('qa', { caller: 'writer' }).then((r) => { done = r; });
+    await sleep(60);
+    const stillWaiting = done === null && rt.botBusy('qa');
+    rt.active.delete('turn_q1');
+    rt.wakeBot('qa');
+    await waiting;
+    // The waiter claims the bot at once, so a second waiter woken with it cannot start too.
+    const claimed = rt.botBusy('qa');
+    rt.releaseClaim('qa');
+    check('Q1 queue: a hand-off or routine for a bot that is busy waits until it is free, then claims it (no second turn of the same bot at once)',
+      stillWaiting && done?.waited >= 50 && !done.skipped && claimed && !rt.botBusy('qa'), JSON.stringify(done));
+
+    // Waiting would deadlock: qa's running turn is itself waiting on the writer.
+    rt.active.set('turn_q2', { controller: new AbortController(), botId: 'qa', inbox: [], depth: 0 });
+    const off = rt.noteWaiting('qa', 'writer');
+    const cyc = await rt.waitTurnFree('qa', { caller: 'writer' });
+    off();
+    const ctl = new AbortController();
+    const aborted = rt.waitTurnFree('qa', { caller: 'boss', signal: ctl.signal });
+    ctl.abort();
+    const ab = await aborted;
+    rt.active.delete('turn_q2');
+    check('Q1 queue: no waiting when that would deadlock (the busy bot is waiting on the caller), and a stopped caller stops waiting',
+      cyc.skipped === 'cycle' && ab.aborted === true, JSON.stringify({ cyc, ab }));
+    check('Q1 queue: hand-offs, routines and automatic continuations wait their turn; the waiting bot says whom it waits for; the human\'s own messages still reach a busy bot at once',
+      agentSrc.includes("const QUEUED_SOURCES = new Set(['bot', 'routine', 'task']);") && agentSrc.includes('if (QUEUED_SOURCES.has(source) && !groupContext) {')
+      && agentSrc.includes('await this.waitTurnFree(botId, { caller: fromBotId, signal });') && agentSrc.includes('this.wakeBot(bot.id);')
+      && toolsSrc.includes('const off = runtime.noteWaiting?.(ctx.bot.id, target.id)') && toolsSrc.includes('ctx.progress?.(`等${target.name}忙完手上的事…`)'));
+  }
+
+  // --- Q2: stopping a bot stops the colleague it waits on ---------------------
+  check('Q2 stop: a hand-off passes the asking turn\'s stop signal down, so stopping a bot also stops the colleague it is waiting on',
+    /result = await runtime\.runTurn\(\{[\s\S]{0,400}signal: ctx\.signal,/.test(toolsSrc) && toolsSrc.includes('fromBotId: ctx.bot.id,'));
+
+  // --- Q3: relative paths after cd ------------------------------------------
+  {
+    const B = await import('../src/boundary.mjs');
+    const at = (command) => B.checkBoundary('shell', { command }, { workspaceDir, policy: {}, remote: false });
+    const inside = at('cd "xhs\\成稿\\2026-11-15-D7" && node ..\\..\\tools\\dims.mjs .');
+    const insidePs = at("Set-Location 'xhs/成稿/D7'; node ../../tools/dims.mjs");
+    const outside = at('cd xhs && type ..\\..\\secret.txt');
+    check('Q3 shell: ..\\ paths after a cd count from that folder (xhs\\tools\\dims.mjs is in the workspace); climbing out of the workspace still asks',
+      inside === null && insidePs === null && outside?.code === 'FOLDER_NOT_OPEN', JSON.stringify({ inside, insidePs, outside }));
+  }
+
+  // --- U1: who wrote to whom ---------------------------------------------------
+  {
+    const srv = await readText('../src/server.mjs');
+    const page = await readText('../public/index.html');
+    const roster = (await api('/api/bots')).json;
+    const bots = Array.isArray(roster) ? roster : roster?.bots || [];
+    const target = bots[0];
+    const sender = bots[1] || bots[0];
+    let shown = null;
+    if (target) {
+      const file = path.join(home, 'data', 'sessions', `${target.id}.jsonl`);
+      await fsp.mkdir(path.dirname(file), { recursive: true });
+      await fsp.appendFile(file, JSON.stringify({ ts: new Date().toISOString(), kind: 'user', text: '请复核 D7', turnId: 'turn_u1', source: 'bot', from: sender.id }) + '\n');
+      const msgs = (await api(`/api/bots/${target.id}/messages?limit=5`)).json;
+      shown = (Array.isArray(msgs) ? msgs : msgs?.messages || []).find((m) => m.turnId === 'turn_u1');
+    }
+    check('U1 chat: a message one bot sends another is kept with its sender; the chat shows it with that bot\'s face and name (live too), not as the human\'s bubble',
+      shown?.role === 'user' && shown?.fromBot === sender?.id
+      && agentSrc.includes('...(fromBotId ? { from: fromBotId } : {})') && agentSrc.includes('...(fromBotId ? { fromBotId } : {})')
+      && srv.includes("fromBot: record.from || null") && page.includes('if (item.fromBot) return botMessageRow(item);') && page.includes('function botMessageRow(item)')
+      && page.includes('if (ev.fromBotId && ev.text && !isGroupMode() && ev.botId === state.botId) {'), JSON.stringify(shown));
+    check('U2 chat: @机器人名 in a message shows as a chip with that bot\'s face; in a group, "正在…" shows the face of the bot at work',
+      page.includes('function decorateMentions(node)') && page.includes('decorateMentions(bubble);') && page.includes("const chip = el('span', 'mention');")
+      && page.includes("if (isGroupMode() && botId) {") && page.includes("row.querySelector('.typing-who')"));
+    check('U3 sidebar: previews show plain text (no **, `, #), and bots with the newest message come first; the main bot stays on top',
+      page.includes('function plainPreview(text)') && page.includes('return plainPreview(text);') && page.includes('plainPreview(group.preview.text)')
+      && page.includes("const when = (b) => Date.parse(b.preview?.ts || '') || 0;") && page.includes('|| when(b) - when(a)'));
+    check('U4 settings: on a computer the settings list has the same icons as the phone',
+      /@media \(min-width: 861px\) \{\s*\.setnav \{ display: flex; align-items: center; gap: 9px; \}\s*\.setnav-icon \{ display: block;/.test(page));
+    check('U5 connected apps: the "已连接" page names its own icon, so a browser does not keep an old cached one',
+      srv.includes('<link rel="icon" href="/icons/icon-32.png">'));
+  }
+}
+
+/**
  * 1.2.160 (ENG-04): the page is no longer one 680 KB file. index.html holds the
  * markup; the style and the scripts are files of their own under public/app/,
  * cached by the browser and phone between versions. With no inline script
@@ -5906,7 +6003,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('change-only: the run is told the last result and may answer "没有变化"; then no badge and no Feishu push', srv.includes('只回复「没有变化」四个字') && srv.includes("attention.quiet(") && srv.includes('else if (routine.pushFeishu && report && refs.feishu)'));
     const agentSrc14 = await readText('../src/agent.mjs');
     check('change-only: "no change" counts only when the run really checked (used a tool); otherwise it runs once more', srv.includes('NO_CHANGE.test(report) && tools === 0') && srv.includes('NO_CHANGE.test(report) && tools > 0') && srv.includes('不要凭聊天记录判断'));
-    check('change-only: the last result goes to the model only, not into the chat', srv.includes('hiddenNote: changeNote') && agentSrc14.includes("content: String(text) + (hiddenNote ?") && agentSrc14.includes("await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });"));
+    check('change-only: the last result goes to the model only, not into the chat', srv.includes('hiddenNote: changeNote') && agentSrc14.includes("content: String(text) + (hiddenNote ?") && agentSrc14.includes("await this.record(bot.id, { kind: 'user', text: String(text), turnId, source, ...(fromBotId ? { from: fromBotId } : {}) });"));
     const fsSrc = await readText('../src/feishu.mjs');
     check('feishu: results can go to every paired person directly (open_id)', fsSrc.includes('receive_id_type=open_id') && fsSrc.includes('async push(text)'));
     // Routes.

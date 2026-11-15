@@ -576,8 +576,21 @@ function filterHome() {
 function previewText(bot) {
   const p = bot && bot.preview;
   const text = p && typeof p.text === 'string' ? p.text.replace(/\s+/g, ' ').trim() : '';
-  if (text) return text;
+  if (text) return plainPreview(text);
   return (bot && bot.role) || '还没有消息';
+}
+
+/** A sidebar preview is one line of plain text: the reply's **bold**, `code`, # titles and list marks dropped. */
+function plainPreview(text) {
+  return String(text || '')
+    .replace(/```[a-z]*\s*/gi, '')
+    .replace(/\*\*([^*]*)\*\*/g, '$1').replace(/__([^_]*)__/g, '$1').replace(/\*\*/g, '')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/(^|\s)#{1,6}\s+/g, '$1')
+    .replace(/(^|\s)(?:[-*+]|\d+[.)])\s+/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /* ---------------------------------------------------------------------
@@ -687,7 +700,7 @@ function renderGroups() {
     const nameRow = el('div', 'bot-name');
     nameRow.appendChild(el('span', 'bot-name-text', group.name || '未命名群组'));
     text.appendChild(nameRow);
-    const preview = (group.preview && group.preview.text)
+    const preview = (group.preview && group.preview.text && plainPreview(group.preview.text))
       || (members.length ? `${members.length} 位成员 · ${members.map((b) => b.name).join('、')}` : '还没有消息');
     text.appendChild(el('div', 'bot-preview', preview));
     row.appendChild(text);
@@ -1990,8 +2003,9 @@ function renderBots() {
   list.innerHTML = '';
   $('bot-count').textContent = String(state.bots.length);
 
-  // The primary bot is always on top; the rest keep their order.
-  const ordered = [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)));
+  // The primary bot is always on top; the rest by their newest message (like a chat app).
+  const when = (b) => Date.parse(b.preview?.ts || '') || 0;
+  const ordered = [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || when(b) - when(a));
   for (const bot of ordered) {
     const active = !isGroupMode() && bot.id === state.botId;
     const row = el('div', `bot${active ? ' active' : ''}${bot.primary ? ' is-primary' : ''}`);
@@ -2512,6 +2526,8 @@ function renderItem(item) {
     case 'user':
       // A background job reporting back (video ready): a note, not something the human said.
       if (item.source === 'media') return el('div', 'status-line', /没有生成成功/.test(item.text || '') ? '后台任务：视频没有生成成功' : '后台任务：视频生成好了');
+      // Another bot wrote this (a hand-off): its face and name, not the human's bubble.
+      if (item.fromBot) return botMessageRow(item);
       return userRow(item);
     case 'assistant':
       return assistantRow(item.text, { system: item.system });
@@ -2708,10 +2724,56 @@ function attachmentNode(file) {
   return a;
 }
 
+/** A message one bot sent another: "文案 → 质检", with the sender's face. */
+function botMessageRow(item) {
+  const sender = botById(item.fromBot) || { id: item.fromBot, name: item.fromBot };
+  const target = botById(state.botId);
+  const bubble = el('div', 'bubble');
+  fillBubble(bubble, item.text || '', false, sender.id);
+  bubble.title = fmtClock(item.ts);
+  const row = groupSenderRow(sender, bubble);
+  row.classList.add('from-bot');
+  const name = row.querySelector('.g-name');
+  if (name) name.textContent = `${sender.name || '助手'} → ${(target && target.name) || ''}`;
+  return row;
+}
+
+/** "@质检" in a message: a chip with that bot's face, so it is clear who is meant. */
+function decorateMentions(node) {
+  const names = (state.bots || []).map((b) => b && b.name).filter(Boolean).sort((a, b) => b.length - a.length);
+  if (!node || !names.length || !String(node.textContent || '').includes('@')) return;
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`@(${names.map(esc).join('|')})`, 'g');
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
+    acceptNode: (t) => (t.parentElement?.closest('code, pre, a, .mention') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  });
+  const probe = new RegExp(re.source); // no /g: test() keeps no position between nodes
+  const hits = [];
+  while (walker.nextNode()) if (probe.test(walker.currentNode.nodeValue)) hits.push(walker.currentNode);
+  for (const textNode of hits) {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    const value = textNode.nodeValue;
+    re.lastIndex = 0;
+    for (const m of value.matchAll(re)) {
+      if (m.index > last) frag.appendChild(document.createTextNode(value.slice(last, m.index)));
+      const bot = state.bots.find((b) => b.name === m[1]);
+      const chip = el('span', 'mention');
+      if (bot) chip.appendChild(avatarNode(bot, 16));
+      chip.appendChild(document.createTextNode(`@${m[1]}`));
+      frag.appendChild(chip);
+      last = m.index + m[0].length;
+    }
+    if (last < value.length) frag.appendChild(document.createTextNode(value.slice(last)));
+    textNode.replaceWith(frag);
+  }
+}
+
 function userRow(item) {
   const row = el('div', 'row user');
   const { text, files } = splitAttachments(item.text);
   const wrap = el('div', 'bubble', text);
+  decorateMentions(wrap);
   wrap.title = fmtClock(item.ts);
   if (files.length) {
     const box = el('div', 'att-list');
@@ -3533,6 +3595,7 @@ function fillBubble(bubble, text, system = false, botId = '') {
     bubble.textContent = text;
   }
   if (system) return;
+  decorateMentions(bubble);
   const images = mentionedImages(text);
   if (images.length) {
     const list = el('div', 'att-list');
@@ -4252,6 +4315,10 @@ function handleEvent(ev) {
         if (!state.pcPinned && $('pane-computer')?.classList.contains('active')) loadComputer();
       }
       state.liveTurn = { turnId: ev.turnId, bubble: null, text: '', sender };
+      // A colleague handed this bot work: show what it asked, with its face, as it arrives.
+      if (ev.fromBotId && ev.text && !isGroupMode() && ev.botId === state.botId) {
+        messagesEl.appendChild(botMessageRow({ fromBot: ev.fromBotId, text: ev.text, ts: ev.ts }));
+      }
       showTyping(ev.botId || state.botId, '正在处理…');
       break;
 
@@ -4332,6 +4399,19 @@ function showTyping(botId, label = '正在处理…') {
   // Always under the newest message (a message sent meanwhile goes above it).
   if (messagesEl.lastElementChild !== row) messagesEl.appendChild(row);
   row.querySelector('.typing-label').textContent = label;
+  // In a group: the face of the bot at work, so the human sees who is busy.
+  const who = row.querySelector('.typing-who');
+  if (isGroupMode() && botId) {
+    const bot = botById(botId) || groupMemberById?.(botId);
+    if (bot && who?.dataset.bot !== botId) {
+      const face = avatarNode(bot, 18, 'typing-who');
+      face.dataset.bot = botId;
+      face.title = bot.name || '';
+      if (who) who.replaceWith(face); else row.prepend(face);
+    }
+  } else if (who) {
+    who.remove();
+  }
   scrollToBottom();
 }
 

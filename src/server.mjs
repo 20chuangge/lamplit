@@ -1654,7 +1654,7 @@ route('GET', /^\/api\/mcp\/oauth\/callback$/, async (req, res, { state, query })
   const title = out.ok ? `已连接「${esc(out.name)}」${out.machine ? `（${esc(out.machine)}）` : ''}` : '没有连上';
   const text = out.ok ? '可以关掉这个页面，回到 Lamplit。机器人现在就能用它的工具了（默认每次先问你）。' : esc(out.message);
   res.writeHead(out.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;line-height:1.6;color:#222"><h2>${title}</h2><p>${text}</p></body>`);
+  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/icons/icon-32.png"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;line-height:1.6;color:#222"><h2>${title}</h2><p>${text}</p></body>`);
 });
 
 route('GET', /^\/api\/vision$/, async (_req, _res, { state }) => visionModule.publicVision(state.vision, visionCtx(state)));
@@ -3758,7 +3758,7 @@ function toMessageItem(record, index) {
   const base = { id: `${record.turnId || 'turn'}-${index}`, ts: record.ts, turnId: record.turnId || null };
   switch (record.kind) {
     case 'user':
-      return { ...base, role: 'user', text: record.text, source: record.source || 'chat' };
+      return { ...base, role: 'user', text: record.text, source: record.source || 'chat', fromBot: record.from || null };
     case 'assistant':
       return { ...base, role: 'assistant', text: record.text, system: Boolean(record.system), source: record.source || 'chat' };
     case 'tool':

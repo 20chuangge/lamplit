@@ -43,8 +43,23 @@ function placeOf(abs, { workspaceDir, folders }) {
   return { ok: false, write: false };
 }
 
-/** Paths a shell command names (absolute, ~, or climbing out with ..). */
-export function pathsInCommand(command, workspaceDir) {
+/** A path as this system reads it: on Linux a `..\x` written for Windows means `../x`. */
+const sysPath = (p) => (process.platform === 'win32' ? p : String(p).replace(/\\/g, '/'));
+
+/**
+ * The folder a command's relative paths count from: where its leading
+ * `cd X &&` (cmd: `cd /d X &`, PowerShell: `Set-Location X;`) goes, else start.
+ * `cd "xhs\稿" && node ..\..\tools\x.mjs` names xhs\tools\x.mjs, not one two
+ * levels above the workspace.
+ */
+export function commandBase(command, startDir) {
+  const m = /^\s*(?:cd|chdir|pushd|Set-Location|sl)\s+(?:\/d\s+)?(?:-(?:Literal)?Path\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|"']+))\s*(?:&&|;|&(?!&)|\n)/i.exec(String(command || ''));
+  if (!m) return startDir;
+  return path.resolve(startDir, sysPath((m[1] || m[2] || m[3]).replace(/[\\/]+$/, '') || '.'));
+}
+
+/** Paths a shell command names (absolute, ~, or climbing out with ..); `..` counts from `base`. */
+export function pathsInCommand(command, workspaceDir, base = workspaceDir) {
   let text = String(command || '');
   const found = new Set();
   // A quoted Windows path may hold spaces ("C:\Program Files\..."): take it whole first.
@@ -58,7 +73,7 @@ export function pathsInCommand(command, workspaceDir) {
   }
   for (const m of text.matchAll(/(?:^|[\s"'=(,])(~(?:[\\/][^\s"'|&;<>,)]*)?)/g)) found.add(m[1].replace(/^~/, home));
   for (const m of text.matchAll(/(\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE)([\\/][^\s"'|&;<>,)]*)?/gi)) found.add(home + (m[2] || ''));
-  for (const m of text.matchAll(/(?:^|[\s"'=(,])((?:\.\.[\\/])+[^\s"'|&;<>,)]*|\.\.)(?=$|[\s"'|&;<>,)])/g)) found.add(path.resolve(workspaceDir, m[1]));
+  for (const m of text.matchAll(/(?:^|[\s"'=(,])((?:\.\.[\\/])+[^\s"'|&;<>,)]*|\.\.)(?=$|[\s"'|&;<>,)])/g)) found.add(path.resolve(base, sysPath(m[1])));
   return [...found].map((p) => path.resolve(p));
 }
 
@@ -218,7 +233,7 @@ export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = 
     const look = lookOnly(command);
     if (look.look && (remote || !look.reads)) return null;
     const cwd = args?.cwd ? path.resolve(workspaceDir, String(args.cwd)) : null;
-    const named = pathsInCommand(command, workspaceDir).concat(cwd ? [cwd] : []);
+    const named = pathsInCommand(command, workspaceDir, commandBase(command, cwd || workspaceDir)).concat(cwd ? [cwd] : []);
     const programs = new Set(programsInCommand(command).concat(existenceChecksInCommand(command)).map((p) => norm(p)));
     const away = named.filter((p) => !programs.has(norm(p)) && !placeOf(p, ctx).ok && !SYSTEM_PREFIXES.some((s) => inside(p, s)));
     if (away.length) {

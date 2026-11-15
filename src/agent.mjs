@@ -355,6 +355,8 @@ GROUP_TOOLS.task_end = {
   parameters: { type: 'object', properties: { done: { type: 'boolean' }, note: { type: 'string' } }, required: ['done'] },
 };
 const SOLO_TASK_TOOLS = ['task_plan', 'task_step', 'task_end'];
+// Turns that wait while their bot is busy (1.2.161): hand-offs, routines, continuations.
+const QUEUED_SOURCES = new Set(['bot', 'routine', 'task']);
 const groupToolSchemas = (names) => names.map((n) => ({ type: 'function', function: { name: GROUP_TOOLS[n].name, description: GROUP_TOOLS[n].description, parameters: GROUP_TOOLS[n].parameters } }));
 
 /**
@@ -478,6 +480,78 @@ export class AgentRuntime {
 
   activeTurns() {
     return [...this.active.entries()].map(([turnId, info]) => ({ turnId, botId: info.botId }));
+  }
+
+  /**
+   * One bot does one thing at a time (1.2.161). On 11-15 four requests made 质检
+   * review the same draft in four turns at once. A hand-off, a routine or an
+   * automatic continuation for a bot that is busy now waits until it is free.
+   */
+  botBusy(botId) {
+    if (this.claims?.has(botId)) return true;
+    for (const info of this.active.values()) if (info.botId === botId) return true;
+    return false;
+  }
+
+  /** `caller` is waiting for `target`'s reply (a hand-off). -> a function that ends it. */
+  noteWaiting(caller, target) {
+    this.waitEdges = this.waitEdges || [];
+    const edge = { from: caller, to: target };
+    this.waitEdges.push(edge);
+    return () => { this.waitEdges = this.waitEdges.filter((e) => e !== edge); };
+  }
+
+  /** Is `from` (through anyone it waits on) waiting for `to`? Waiting for it then would deadlock. */
+  waitsOn(from, to) {
+    const seen = new Set();
+    const queue = [from];
+    while (queue.length) {
+      const at = queue.shift();
+      if (at === to) return true;
+      if (seen.has(at)) continue;
+      seen.add(at);
+      for (const e of this.waitEdges || []) if (e.from === at) queue.push(e.to);
+    }
+    return false;
+  }
+
+  /** The claimed turn has started (or will not): the bot counts as busy by its turn alone. */
+  releaseClaim(botId) {
+    this.claims?.delete(botId);
+  }
+
+  /** A turn of this bot ended: whoever waits for it looks again. */
+  wakeBot(botId) {
+    const list = this.botWaiters?.get(botId) || [];
+    this.botWaiters?.delete(botId);
+    for (const wake of list) wake();
+  }
+
+  /**
+   * Wait until the bot is free, then claim it (the caller starts its turn right
+   * away). Not when that would deadlock, nor past maxMs; a stopped caller stops.
+   * -> {waited, skipped?, aborted?}
+   */
+  async waitTurnFree(botId, { caller = null, signal = null, maxMs = 30 * 60 * 1000 } = {}) {
+    const started = Date.now();
+    const waited = () => Date.now() - started;
+    while (this.botBusy(botId)) {
+      if (signal?.aborted) return { waited: waited(), aborted: true };
+      if (caller && this.waitsOn(botId, caller)) return { waited: waited(), skipped: 'cycle' };
+      if (waited() >= maxMs) return { waited: waited(), skipped: 'timeout' };
+      await new Promise((resolve) => {
+        this.botWaiters = this.botWaiters || new Map();
+        const list = this.botWaiters.get(botId) || [];
+        list.push(resolve);
+        this.botWaiters.set(botId, list);
+        // Look again now and then: a deadlock can form while waiting.
+        setTimeout(resolve, 2000);
+        signal?.addEventListener('abort', resolve, { once: true });
+      });
+    }
+    this.claims = this.claims || new Set();
+    this.claims.add(botId);
+    return { waited: waited() };
   }
 
   /** The turn this bot is working on for the human right now (not a hand-off or a group turn), or null. */
@@ -839,6 +913,8 @@ export class AgentRuntime {
     priorReceipts = [],
     // In a group: how many times this member already went on by itself.
     groupContinuation = 0,
+    // A hand-off: the bot that sent this (the chat shows its face and name).
+    fromBotId = null,
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -861,9 +937,16 @@ export class AgentRuntime {
       if (signal.aborted) controller.abort();
       else signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
+    // One thing at a time: a hand-off, routine or continuation waits while this
+    // bot is busy (the human's own messages reach the running turn instead).
+    if (QUEUED_SOURCES.has(source) && !groupContext) {
+      await this.waitTurnFree(botId, { caller: fromBotId, signal });
+      if (signal?.aborted) controller.abort();
+    }
     // What it is doing, for a message the human sends meanwhile (aside()): the
     // task, the step in progress, the latest result, and the human's new words.
     if (coordinatorTurn) this.groupTurns.add(turnId);
+    this.releaseClaim(bot.id);
     this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), groupId: group?.id || null, kickoff, unattended });
     const live = this.active.get(turnId);
 
@@ -916,6 +999,7 @@ export class AgentRuntime {
       depth,
       parentTurnId,
       unattended,
+      ...(fromBotId ? { fromBotId } : {}),
       ...(coordinatorTurn ? { groupId: group.id } : {}),
     };
     this.bus.emit({ type: 'turn.start', ...baseEvent, text });
@@ -958,7 +1042,7 @@ export class AgentRuntime {
           + (stoppedByHuman ? '\n\n（系统：你手上的任务已经按用户的话停止了，不会再自动接着做。用一句话确认已经停下，说清做到了哪一步、留下了什么；不要再调用工具。）' : '') },
       ];
 
-      if (recordUser) await this.record(bot.id, { kind: 'user', text: String(text), turnId, source });
+      if (recordUser) await this.record(bot.id, { kind: 'user', text: String(text), turnId, source, ...(fromBotId ? { from: fromBotId } : {}) });
       if (coordinatorTurn && recordUser) {
         await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text), turnId });
       }
@@ -1296,6 +1380,7 @@ export class AgentRuntime {
       return { turnId, status, summary, steps };
     } finally {
       this.active.delete(turnId);
+      this.wakeBot(bot.id);
       const endedAt = nowIso();
       await this.record(bot.id, {
         kind: 'turn',

@@ -1347,6 +1347,17 @@
   .g-block { min-width: 0; display: flex; flex-direction: column; gap: 4px; max-width: min(680px, 86%); }
   .g-name { font-size: 11.5px; font-weight: 650; color: var(--muted); padding-left: 2px; }
   .g-block .bubble { max-width: 100%; }
+  /* A hand-off from another bot in a 1:1 chat: its face and "文案 → 质检", a quieter bubble. */
+  .row.from-bot .bubble { background: var(--panel); border: 1px solid var(--border-soft); }
+  /* "@质检": a small chip with the bot's face. */
+  .mention {
+    display: inline-flex; align-items: center; gap: 4px; vertical-align: -3px;
+    padding: 1px 7px 1px 2px; border-radius: 999px; background: var(--panel-2);
+    font-weight: 550; line-height: 1.5; white-space: nowrap;
+  }
+  .mention .av { flex: none; }
+  /* In a group, "正在…" starts with the face of the bot at work. */
+  .typing-row .typing-who { flex: none; margin-right: 2px; }
   .g-block .chip, .g-block .approval { max-width: 100%; }
 
   /* modal (create group) */
@@ -2245,6 +2256,11 @@
   }
   .setnav:hover { background: var(--panel-2); color: var(--text); }
   .setnav.active { background: var(--panel-2); color: var(--text); font-weight: 500; }
+  /* On a computer the settings list has the phone's icons too. */
+  @media (min-width: 861px) {
+    .setnav { display: flex; align-items: center; gap: 9px; }
+    .setnav-icon { display: block; width: 16px; height: 16px; flex: none; opacity: 0.85; }
+  }
   .settings-scroll {
     flex: 1; min-width: 0; overflow-y: auto; overscroll-behavior: contain;
     padding: 22px 28px 40px; scroll-behavior: smooth;

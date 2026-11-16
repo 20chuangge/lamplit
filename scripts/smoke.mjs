@@ -173,6 +173,7 @@ async function main() {
     await stage('1.5.5: update packages carry the release signature', scenarioV155);
     await stage('1.5.6: an evaluation set of 20 real tasks', scenarioV1506);
     await stage('1.5.6: the pairing screen never traps the window', scenarioAuthEscape156);
+    await stage('1.5.7: Windows commands run as their own low-privilege account', scenarioWinRunner157);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4953,6 +4954,81 @@ async function scenarioV167() {
 }
 
 /**
+ * 1.5.7: on Windows the bots' commands run as their own low-privilege account
+ * (report 7.2 #2). Lamplit makes a hidden local account, lamplit-runner
+ * (Users only), once with a UAC prompt; a shell step then runs through
+ * lamplit-run.exe (compiled here with Windows' own C# compiler) as that
+ * account, in a job object so a stop ends everything it started. Windows keeps
+ * each user's folder to its owner, so Lamplit's data and the human's files are
+ * out of reach; the workspace, the opened folders and the program folders of
+ * tools installed in the human's folder are granted, Lamplit's program and
+ * data folders denied. runas-like commands and steps let past the fence run
+ * as the human.
+ */
+async function scenarioWinRunner157() {
+  const W = await import('../src/winrunner.mjs');
+  const dec = (l) => Buffer.from(l, 'base64').toString('utf8');
+  const payload = W.helperPayload({ user: 'lamplit-runner', password: 'p@ss', cwd: 'D:\\ws', command: 'echo 中文 & dir', env: { PATH: 'C:\\x', 'BAD=K': 'no' } });
+  const lines = payload.split('\n');
+  check('W1 request: user, password, folder, command and the environment as base64 lines, ended by an empty line',
+    dec(lines[0]) === 'lamplit-runner' && dec(lines[1]) === 'p@ss' && dec(lines[2]) === 'D:\\ws' && dec(lines[3]) === 'echo 中文 & dir'
+    && dec(lines[4]) === 'PATH=C:\\x' && lines.length === 7 && lines[5] === '' && payload.endsWith('\n\n'));
+
+  const LA = 'C:\\Users\\me\\AppData\\Local';
+  const PATHV = [`${LA}\\Programs\\Python\\Python312`, `${LA}\\Programs\\Python\\Launcher\\`, `${LA}\\Programs\\ffmpeg\\bin`, `${LA}\\Microsoft\\WindowsApps`,
+    `${LA}\\Microsoft\\WinGet\\Packages\\uv_x`, 'C:\\Users\\me\\.secret-tool\\bin', 'C:\\Program Files\\nodejs', 'D:\\Git\\cmd'].join(';');
+  const tools = W.toolDirs(PATHV, LA);
+  check('W2 tools: program folders under the human\'s Programs and WinGet packages (Python, ffmpeg, uv), not WindowsApps or other folders there',
+    tools.map((t) => t.dir).join('|') === [`${LA}\\Programs\\Python`, `${LA}\\Programs\\ffmpeg`, `${LA}\\Microsoft\\WinGet\\Packages\\uv_x`].join('|'));
+  const env = W.runnerEnv({ Path: PATHV, USERPROFILE: 'C:\\Users\\me', APPDATA: 'C:\\Users\\me\\AppData\\Roaming', OneDrive: 'C:\\Users\\me\\OneDrive', FOO: '1' }, { home: 'C:\\PD\\home', userProfile: 'C:\\Users\\me', tools });
+  check('W2 environment: home, profile, temp in the account\'s own folder; PATH keeps granted tools and system folders, drops the rest of the human\'s folder',
+    env.USERPROFILE === 'C:\\PD\\home' && env.TEMP === 'C:\\PD\\home\\Temp' && env.APPDATA.startsWith('C:\\PD\\home') && !('OneDrive' in env) && env.FOO === '1' && env.USERNAME === 'lamplit-runner'
+    && env.Path.includes('Python312') && env.Path.includes('ffmpeg\\bin') && env.Path.includes('C:\\Program Files\\nodejs') && env.Path.includes('D:\\Git\\cmd')
+    && !env.Path.includes('WindowsApps') && !env.Path.includes('.secret-tool'));
+
+  const denied = W.deniedDirs({ execPath: 'D:\\Apps\\Lamplit\\Lamplit.exe', root: 'D:\\Apps\\Lamplit\\resources\\server', dataDir: 'C:\\Users\\me\\AppData\\Roaming\\Desk\\data' });
+  check('W3 denied: Lamplit\'s data entirely, its installed program for writing',
+    denied.length === 2 && denied[0].full === true && denied[0].path.endsWith('data') && denied[1].path === 'D:\\Apps\\Lamplit' && denied[1].full === false);
+  const { plan, granted } = W.grantPlan({ workspace: 'D:\\ws', folders: [{ path: 'D:\\docs', write: false }, { path: 'E:\\out', write: true }, { path: '/home/x' }], tools, denied, previous: ['D:\\old', 'D:\\docs'] });
+  const flat = plan.map((a) => a.join(' '));
+  check('W3 grants: workspace and writable folders modify, read-only folders and tools read+run, a folder no longer open taken back, Lamplit\'s folders denied',
+    flat.includes('D:\\ws /grant:r lamplit-runner:(OI)(CI)M') && flat.includes('D:\\docs /grant:r lamplit-runner:(OI)(CI)RX') && flat.includes('E:\\out /grant:r lamplit-runner:(OI)(CI)M')
+    && flat.includes(`${LA}\\Programs\\Python /grant:r lamplit-runner:(OI)(CI)RX`) && flat.includes('D:\\old /remove:g lamplit-runner') && !flat.some((f) => f.startsWith('D:\\docs /remove'))
+    && flat.includes('C:\\Users\\me\\AppData\\Roaming\\Desk\\data /deny lamplit-runner:(OI)(CI)F') && flat.includes('D:\\Apps\\Lamplit /deny lamplit-runner:(OI)(CI)(W,D,DC,WDAC,WO)')
+    && plan.findIndex((a) => a[1] === '/deny') > plan.findIndex((a) => a[1] === '/grant:r') && granted.length === 6 && !granted.includes('/home/x'));
+
+  check('W4 which commands: on Windows yes; runas / Start-Process -Verb RunAs / gsudo, a step let past the fence, and other systems no',
+    W.runsAsRunner({ platform: 'win32', command: 'python make.py' }) && !W.runsAsRunner({ platform: 'win32', command: 'runas /user:admin cmd' })
+    && !W.runsAsRunner({ platform: 'win32', command: 'Start-Process powershell -Verb RunAs' }) && !W.runsAsRunner({ platform: 'win32', command: 'gsudo net stop x' })
+    && !W.runsAsRunner({ platform: 'win32', command: 'dir', unfenced: true }) && !W.runsAsRunner({ platform: 'linux', command: 'ls' }));
+  check('W4 not set up: a step runs as the human', W.runnerFor('dir', {}) === null);
+
+  check('W5 helper: credentials through .NET (no profile loaded), a job that ends everything on close, released when the command ends on its own',
+    W.HELPER_SOURCE.includes('psi.Password = secret;') && W.HELPER_SOURCE.includes('psi.LoadUserProfile = false;') && W.HELPER_SOURCE.includes('KILL_ON_JOB_CLOSE = 0x2000')
+    && W.HELPER_SOURCE.includes('AssignProcessToJobObject(job, child.Handle);') && W.HELPER_SOURCE.includes('Limit(job, 0);') && W.HELPER_SOURCE.includes('psi.EnvironmentVariables.Clear();'));
+  check('W5 set up: Users only, never Administrators, hidden from the sign-in screen, its home closed to others; the password comes from a file, not the command line',
+    W.SETUP_SCRIPT.includes("Add-LocalGroupMember -SID 'S-1-5-32-545'") && W.SETUP_SCRIPT.includes("Remove-LocalGroupMember -SID 'S-1-5-32-544'")
+    && W.SETUP_SCRIPT.includes('SpecialAccounts\\UserList') && W.SETUP_SCRIPT.includes('/inheritance:r') && W.SETUP_SCRIPT.includes('Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0]'));
+  if (process.platform === 'win32' && W.findCsc()) {
+    let built = '';
+    try { built = await W.ensureHelper(); } catch (err) { built = `ERR ${err.message}`; }
+    check('W5 Windows: lamplit-run.exe compiles with the C# compiler that comes with Windows', /lamplit-run\.exe$/.test(built), built);
+  }
+
+  const tools2 = await readText('../src/tools.mjs');
+  const sandboxSrc = await readText('../src/sandbox.mjs');
+  const store = await readText('../src/store.mjs');
+  const serverSrc = await readText('../src/server.mjs');
+  const apps = await readText('../public/app/main/09-apps.js');
+  const html = await readText('../public/index.html');
+  check('W6 wiring: the shell step goes through it (and tells the bot), the status is the account\'s on Windows, its password is sealed, setup only from this computer, a button in 边界 → 命令隔离',
+    tools2.includes('const runner = sandbox ? null : runnerFor(command, ctx, childEnv());') && tools2.includes('spawn(runner.exe, []') && tools2.includes('child.stdin.end(runner.input);')
+    && tools2.includes('result.isolation =') && sandboxSrc.includes("if (process.platform === 'win32') return { ...runnerStatus(), mode: 'windows' };")
+    && /SEALED_FILES = new Set\([^)]*'runner\.json'/.test(store) && serverSrc.includes("route('POST', /^\\/api\\/runner\\/setup$/") && serverSrc.includes("'LOCAL_ONLY', '只能在这台电脑上的 Lamplit 里设置")
+    && serverSrc.includes('syncGrants(next,') && html.includes('id="runner-setup"') && apps.includes("s?.mode === 'windows'"));
+}
+
+/**
  * 1.5.6: the pairing screen never traps the window. In the desktop app the
  * screen covers the whole page, title bar included: no way to move the
  * window, close it or go back, and a forgotten code meant being stuck. Now
@@ -5142,8 +5218,8 @@ async function scenarioV153() {
       return { code: 1, out: '' };
     };
     const st = process.platform === 'linux' ? await SB.checkSandbox({ workspaceDir: '/w', secret: '/s', runImpl: fake }) : null;
-    check('V3 Ubuntu: blocked, then fixed: the check adds the rule and the sandbox is on (Linux only; Windows says "na")',
-      process.platform === 'linux' ? (st.state === 'on' && calls.some((c) => c.startsWith('sudo -n sh -c'))) : SB.sandboxStatus().state === 'na', JSON.stringify({ st, calls }));
+    check('V3 Ubuntu: blocked, then fixed: the check adds the rule and the sandbox is on (Linux only; on Windows the status is the lamplit-runner account, 1.5.7)',
+      process.platform === 'linux' ? (st.state === 'on' && calls.some((c) => c.startsWith('sudo -n sh -c'))) : process.platform === 'win32' ? SB.sandboxStatus().mode === 'windows' : SB.sandboxStatus().state === 'na', JSON.stringify({ st, calls }));
   }
   check('V3 settings: 设置 → 审批 shows whether commands run isolated on this machine',
     page.includes('id="sandbox-state"') && page.includes('function renderSandboxState('));

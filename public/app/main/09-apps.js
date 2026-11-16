@@ -888,7 +888,19 @@ function renderSandboxState(s) {
   if (!box) return;
   const state = s?.state || 'na';
   box.classList.toggle('warn-note', state === 'off');
-  if (state === 'na') box.textContent = '这台是 Windows：机器人执行的命令还没有隔离（下一步改用单独的低权限账号来跑）。';
+  const setup = $('runner-setup');
+  if (setup) setup.hidden = !(s?.mode === 'windows' && (state === 'setup' || state === 'off'));
+  if (s?.mode === 'windows') {
+    clearTimeout(renderSandboxState.poll);
+    box.classList.toggle('warn-note', state === 'off' || state === 'setup');
+    if (state === 'on') box.textContent = '已开启：机器人执行的命令用单独的 Windows 账户 lamplit-runner 来跑，看不到你的用户文件夹（C:\\Users\\你），包括 Lamplit 自己的数据（密钥、配对凭据、保险箱）；工作区和开放的文件夹照常可用，Python、ffmpeg 这类装在你用户文件夹里的工具可以运行。其他磁盘（比如 D 盘）按 Windows 默认，所有账户都能读写。以管理员身份运行的命令、你批准越过边界的那一步，用你自己的账户。';
+    else if (state === 'setting-up') { box.textContent = '正在设置：在弹出的管理员确认里点「是」…'; renderSandboxState.poll = setTimeout(() => loadPolicy().catch(() => {}), 2500); }
+    else if (state === 'unknown') { box.textContent = '正在检查单独账户…'; renderSandboxState.poll = setTimeout(() => loadPolicy().catch(() => {}), 3000); }
+    else if (state === 'setup') box.textContent = `还没有隔离：机器人执行的命令用你自己的账户来跑，看得到 Lamplit 自己的数据。点「设置单独账户」，Lamplit 会建一个隐藏的普通账户 lamplit-runner 来跑这些命令（会弹一次管理员确认）。${s.reason ? `上次没成功：${s.reason}。` : ''}`;
+    else box.textContent = `没有生效：${s.reason || '原因不明'}。命令照常用你自己的账户运行。可以再点一次「设置单独账户」。`;
+    return;
+  }
+  if (state === 'na') box.textContent = '这台机器上机器人执行的命令没有隔离。';
   else if (state === 'unknown') box.textContent = '正在检查这台机器能不能用沙箱…';
   else if (state === 'off') box.textContent = `没有生效：${s.reason || '原因不明'}。命令照常运行，但看得到 Lamplit 自己的数据。`;
   else if (s.mode === 'open') box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。这台机器交给了机器人（放手），其他位置照常可用。用 sudo 的命令不在沙箱里。';

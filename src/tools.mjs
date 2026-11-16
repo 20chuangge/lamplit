@@ -16,6 +16,7 @@
 
 import os from 'node:os';
 import { sandboxFor } from './sandbox.mjs';
+import { runnerFor } from './winrunner.mjs';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
@@ -176,7 +177,7 @@ function decodeOutput(buffer) {
   }
 }
 
-function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHELL_OUTPUT, sandbox = null }) {
+function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHELL_OUTPUT, sandbox = null, runner = null }) {
   return new Promise((resolve) => {
     let settled = false;
     // Raw bytes, decoded once at the end: a multi-byte character may be split
@@ -196,9 +197,12 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
     const env = childEnv();
 
     // In the sandbox on Linux (1.5.3): bwrap runs the shell, Lamplit's data out of sight.
+    // On Windows (1.5.7): lamplit-run.exe runs it as the lamplit-runner account.
     const child = sandbox
       ? spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command], { cwd, env, detached: true })
-      : spawn(process.platform === 'win32' ? `chcp 65001 >nul & ${command}` : command, {
+      : runner
+        ? spawn(runner.exe, [], { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+        : spawn(process.platform === 'win32' ? `chcp 65001 >nul & ${command}` : command, {
         shell: true,
         cwd,
         windowsHide: true,
@@ -218,11 +222,20 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
       out.bytes[which] += slice.length;
     };
     const text = (which) => {
-      const decoded = decodeOutput(Buffer.concat(out[which]));
+      let decoded = decodeOutput(Buffer.concat(out[which]));
+      // lamplit-run.exe's own words (1.5.7), not the command's.
+      if (runner && which === 'stderr') {
+        if (/LAMPLIT_RUNNER_LINGERING/.test(decoded)) lingering = true;
+        decoded = decoded.replace(/^LAMPLIT_RUNNER_LINGERING\r?\n?/m, '').replace(/^LAMPLIT_RUNNER_START: /m, 'could not start the command as the lamplit-runner account: ');
+      }
       if (decoded.length > maxOutput) truncated = true;
       return decoded;
     };
 
+    if (runner) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(runner.input);
+    }
     child.stdout.on('data', (c) => append('stdout', c));
     child.stderr.on('data', (c) => append('stderr', c));
 
@@ -704,12 +717,17 @@ export function createRegistry(deps) {
       if (!command) throw toolError('SHELL_BAD_ARGS', 'shell needs a command');
       const timeoutMs = Math.min(Math.max(Number(args?.timeoutMs) || 30000, 1000), 120000);
       const sandbox = sandboxFor(command, ctx);
+      const runner = sandbox ? null : runnerFor(command, ctx, childEnv());
       const result = await runShellCommand(command, {
         cwd: ctx.workspaceDir,
         timeoutMs,
         signal: ctx.signal,
         sandbox,
+        runner,
       });
+      if (runner) {
+        result.isolation = 'ran as the separate low-privilege Windows account lamplit-runner: the workspace and the opened folders are there; the human\'s user folder (C:\\Users\\<them>, including Lamplit\'s data) is not, and tools installed only there may be missing. Anything else needs the human (ask).';
+      }
       // Said to the bot, so a missing file there is understood (1.5.3).
       if (sandbox) {
         result.sandbox = sandbox.mode === 'open'

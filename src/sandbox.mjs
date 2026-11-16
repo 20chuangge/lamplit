@@ -23,6 +23,7 @@ import path from 'node:path';
 import { P } from './store.mjs';
 import { effectivePolicy, machineMode } from './approvals.mjs';
 import { SUDO } from './boundary.mjs';
+import { runnerStatus } from './winrunner.mjs';
 
 const under = (p, dir) => p === dir || p.startsWith(`${dir.replace(/\/+$/, '')}/`);
 
@@ -134,6 +135,8 @@ export async function checkSandbox({ workspaceDir = P.workspaceDir, secret = P.s
 
 /** For GET /api/policy: {state:'on'|'off'|'na'|'unknown', reason, mode}. */
 export function sandboxStatus(policy = null) {
+  // Windows (1.5.7): a separate low-privilege account instead of bwrap.
+  if (process.platform === 'win32') return { ...runnerStatus(), mode: 'windows' };
   const eff = effectivePolicy(policy || {});
   return { ...status, mode: sandboxMode({ remote: machineMode() === 'remote', autonomous: eff.autonomous }) };
 }

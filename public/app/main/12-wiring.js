@@ -23,6 +23,14 @@ function wireChrome() {
       else if (act === 'close') window.deskShell.close();
     });
   }
+  // Settings → 边界 → 命令隔离 on Windows (1.5.7): make the lamplit-runner account.
+  $('runner-setup')?.addEventListener('click', async () => {
+    try {
+      renderSandboxState(await api('/api/runner/setup', { method: 'POST', body: {} }));
+    } catch (err) {
+      toast(`没能开始设置：${err.message}`, true);
+    }
+  });
   $('auth-back')?.addEventListener('click', async () => {
     const res = await window.desk.useLocal().catch((err) => ({ ok: false, error: err.message }));
     if (res && res.ok === false) setAuthMsg(res.error || '回不去这台电脑，重启 Lamplit 试试。');

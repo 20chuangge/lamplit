@@ -93,6 +93,7 @@ import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
 import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
 import { checkSandbox, sandboxStatus } from './sandbox.mjs';
+import { checkRunner, setupRunner, syncGrants } from './winrunner.mjs';
 import * as modelsModule from './models.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES, verifyUpdate, readSignedPackage } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
@@ -3104,6 +3105,10 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   if (body?.readGuard !== undefined) next.readGuard = Boolean(body.readGuard);
   state.config.policy = next;
   await writeAssistantConfig({ ...state.config, workspaceDir: undefined });
+  // The Windows account follows the opened folders (1.5.7).
+  if (body?.addFolder !== undefined || body?.removeFolder !== undefined || body?.folderWrite !== undefined) {
+    syncGrants(next, { workspaceDir: state.config.workspaceDir }).catch((err) => console.error('[runner] grants:', err.message));
+  }
   const change = {};
   for (const k of ['level', 'takeover', 'generate', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll', 'addFolder', 'removeFolder', 'folderWrite', 'outside', 'sudo', 'trustPrimary', 'readGuard']) {
     if (body?.[k] !== undefined) change[k] = body[k];
@@ -3113,6 +3118,18 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   state.bus.emit({ type: 'policy.changed', autoApproveAll: pub.autoApproveAll, level: pub.level });
   state.bus.emit({ type: 'settings.changed', section: 'policy' });
   return pub;
+});
+
+//   POST /api/runner/setup -> {state}   Windows: make the lamplit-runner account (a UAC
+//        prompt on this computer) and run the bots' commands as it (1.5.7). This computer only.
+route('POST', /^\/api\/runner\/setup$/, async (req, _res, { state }) => {
+  if (req.viaPublic || !isLoopbackHost(clientIp(req)) || req.headers.origin && !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(req.headers.origin)) {
+    throw httpError(403, 'LOCAL_ONLY', '只能在这台电脑上的 Lamplit 里设置（会弹出管理员确认）');
+  }
+  if (process.platform !== 'win32') throw httpError(400, 'NOT_WINDOWS', '只有 Windows 用单独的账户');
+  setupRunner(state.config.policy || {}, { workspaceDir: state.config.workspaceDir });
+  await audit({ kind: 'runner.setup' });
+  return sandboxStatus(state.config.policy);
 });
 
 // --- usage / cost -----------------------------------------------------------
@@ -4051,6 +4068,12 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
 
   // Linux: check once that the bots' commands can run in the sandbox (1.5.3).
   checkSandbox({ workspaceDir: state.config.workspaceDir }).catch((err) => console.error('[sandbox] check failed:', err.message));
+  // Windows: the bots' commands as lamplit-runner, once it is set up (1.5.7).
+  if (process.platform === 'win32') {
+    syncGrants(state.config.policy || {}, { workspaceDir: state.config.workspaceDir, onlyIfChanged: true })
+      .then(() => checkRunner({ workspaceDir: state.config.workspaceDir }))
+      .catch((err) => console.error('[runner] check failed:', err.message));
+  }
 
   const actualPort = server.address().port;
   const url = `http://${host}:${actualPort}`;

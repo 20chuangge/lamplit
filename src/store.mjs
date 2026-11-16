@@ -174,7 +174,7 @@ export async function appendText(file, text) {
 // the command line, a Linux machine) they stay plain, as before.
 
 /** Files that hold a model / voice / app key or a connected app's token. */
-export const SEALED_FILES = new Set(['secrets.json', 'voice.json', 'media.json', 'vision.json', 'feishu.json', 'mcp.json']);
+export const SEALED_FILES = new Set(['secrets.json', 'voice.json', 'media.json', 'vision.json', 'feishu.json', 'mcp.json', 'runner.json']);
 
 export function masterKey() {
   const hex = String(process.env.ASSIST_MASTER_KEY || '').trim();

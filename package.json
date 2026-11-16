@@ -1,6 +1,6 @@
 {
   "name": "personal-assistant",
-  "version": "1.5.5",
+  "version": "1.5.6",
   "private": true,
   "type": "module",
   "description": "Lamplit (Lamplit) - a personal AI assistant with its own computer: durable bots, per-bot memory, a shared skill library, routines, and a human approval boundary.",
@@ -19,7 +19,8 @@
     "mobile:sync": "node mobile/scripts/sync-www.mjs && cd mobile && npx cap sync",
     "check": "node --check src/server.mjs && node --check src/agent.mjs && node --check src/tools.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
-    "smoke:selfupdate": "node scripts/smoke-selfupdate.mjs"
+    "smoke:selfupdate": "node scripts/smoke-selfupdate.mjs",
+    "eval": "node scripts/eval.mjs"
   },
   "keywords": [
     "assistant",

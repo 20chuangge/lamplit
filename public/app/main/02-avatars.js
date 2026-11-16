@@ -246,7 +246,8 @@ function previewText(bot) {
 
 /** A sidebar preview is one line of plain text: the reply's **bold**, `code`, # titles and list marks dropped. */
 function plainPreview(text) {
-  return String(text || '')
+  // Names, not ids, here too (1.5.11: the list showed "rt_aa77… 更新成…").
+  return humanizeIds(String(text || ''))
     .replace(/```[a-z]*\s*/gi, '')
     .replace(/\*\*([^*]*)\*\*/g, '$1').replace(/__([^_]*)__/g, '$1').replace(/\*\*/g, '')
     .replace(/`([^`]*)`/g, '$1')

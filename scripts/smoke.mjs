@@ -177,6 +177,7 @@ async function main() {
     await stage('1.5.8: Android signed, first-run guide, file changes can be undone', scenarioDist158);
     await stage('1.5.9: what the cloud 小红书 project showed', scenarioXhs159);
     await stage('1.5.10: settings and models', scenarioSettings1510);
+    await stage('1.5.11: the files a reply names can be seen and saved', scenarioFiles1511);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4954,6 +4955,57 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.5.11: the files a reply names can be seen and saved. On 11-16 the 求职组
+ * made four résumé PDFs and a comparison picture; the replies named them but
+ * the chat showed nothing - only ASCII picture names were recognised. Now any
+ * letters, PDFs and office files, and a list of bare names under a folder the
+ * reply named; documents get a card with 预览 (PDF in the app's viewer) and
+ * 下载, looked up here, then on the other machines. Also from that team: a
+ * teammate is found by name as well as id, and the phone knows BOSS直聘.
+ */
+async function scenarioFiles1511() {
+  const chat = await readText('../public/app/main/05-chat.js');
+  const start = chat.indexOf('const FILE_EXTS');
+  const end = chat.indexOf('\n}\n', chat.indexOf('function mentionedImages(')) + 3;
+  // eslint-disable-next-line no-new-func
+  const { mentionedImages } = new Function(`${chat.slice(start, end)}; return { mentionedImages };`)();
+  const list = mentionedImages('四份 PDF 在 `job/resume/customized/`：\n- 张三-运维工程师-甲公司.pdf\n- 张三-运维开发工程师-乙公司.pdf');
+  const mixed = mentionedImages('对照图 `job/resume/preview/四版对照.png`，改动出处 `job/resume/改动对照-2026-11-16.md`，表格 reports/汇总.xlsx。网址 https://x.com/a.png 不算。');
+  check('F1 names: Chinese names, PDFs and office files; bare names under the folder the reply named; pictures stay pictures; web addresses are not files',
+    list.length === 2 && list[0].path === 'job/resume/customized/张三-运维工程师-甲公司.pdf' && list[0].pdf === true
+    && mixed.map((f) => f.path).join('|') === 'job/resume/preview/四版对照.png|job/resume/改动对照-2026-11-16.md|reports/汇总.xlsx'
+    && mixed[0].image === true && mixed[1].doc === true, JSON.stringify([list, mixed]));
+  const serverSrc = await readText('../src/server.mjs');
+  const main = await readText('../desktop/main.mjs');
+  const live = await readText('../public/app/main/06-live.js');
+  check('F2 documents: a card with 预览 (PDF, where the browser can show one) and 下载; checked here, then on the other machines, else no card; PDFs inline only when asked; the desktop window has the PDF viewer',
+    live.includes('function docCard(') && live.includes("navigator.pdfViewerEnabled !== false") && live.includes("api(`/api/workspace/stat?path=")
+    && live.includes('findElsewhere(file.path).then((machine) => {\n      if (!machine) { card.remove(); return; }') && chat.includes('if (file.pdf || file.doc) return docCard(file, url);')
+    && serverSrc.includes("route('GET', /^\\/api\\/workspace\\/stat$/") && serverSrc.includes("(mime === 'application/pdf' && query.get('inline') === '1')")
+    && main.includes('plugins: true'));
+  const avatars = await readText('../public/app/main/02-avatars.js');
+  check('F3 the chat list shows names, not ids', avatars.includes('return humanizeIds(String(text || \'\'))'));
+  const tools = await readText('../src/tools.mjs');
+  const Ph = await import('../src/phone.mjs');
+  check('F3 teammates by name: bot_message and bot_pass find a bot by id, then by name; the phone knows BOSS直聘 (spaces and case do not matter)',
+    (tools.match(/const target = await findBot\(ctx, targetId\);/g) || []).length === 2 && tools.includes('all.find((b) => b.name === want)')
+    && Ph.KNOWN_APPS['BOSS直聘'] === 'com.hpbr.bosszhipin' && (await readText('../src/phone.mjs')).includes("const loose = (s) => String(s).replace(/\\s+/g, '').toLowerCase();"));
+  // A scheduled run: one line (when, which task, how often), the instruction
+  // folded with 改指令 / 暂停 / 现在再跑一次; "没有变化" runs are only that line;
+  // the sidebar shows what the run found, not its instruction.
+  const routinesUi = await readText('../public/app/main/07-skills-routines.js');
+  const liveSrc = await readText('../public/app/main/06-live.js');
+  const botsSrc = await readText('../src/bots.mjs');
+  check('F4 scheduled runs: a line naming the task, instruction folded (edit, pause, run again), quiet runs only the line, live too; the sidebar shows the result',
+    routinesUi.includes('function routineRunRow(item)') && routinesUi.includes("parts = [when, rt ? `定时任务「${rt.name}」` : '定时任务']")
+    && routinesUi.includes("button('改指令'") && routinesUi.includes("button('现在再跑一次'")
+    && chat.includes("if (item.source === 'routine') return routineRunRow(item);")
+    && chat.includes("if (item.source === 'routine' && item.turnId && quietRun(item.turnId)) return document.createDocumentFragment();")
+    && liveSrc.includes("if (ev.source === 'routine' && ev.text && !isGroupMode() && ev.botId === state.botId)")
+    && botsSrc.includes("if (record.kind === 'user' && record.source === 'routine') continue;"));
 }
 
 /**

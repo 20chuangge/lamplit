@@ -28,6 +28,8 @@ const IGNORE = new Set([
   '命令命中危险黑名单（$1）',
   '要动的文件不在共享工作区里（$1）',
   '始终使用简体中文回答。技术名词、命令、路径、代码和报错原文保持原样。',
+  // 1.5.11: the folder-name pattern for files a reply lists (a regex, not text).
+  "{0}((?:{1}+\\/)+)(?=$|[\\s`'\"，。：:)）]|里|中|下)",
 ]);
 
 const cjk = /[一-鿿]/;

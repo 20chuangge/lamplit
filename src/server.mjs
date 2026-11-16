@@ -1335,7 +1335,7 @@ route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/file$/, async (_req, res, { para
       // that could run here (HTML, SVG, XML, script), whatever that machine says.
       'content-type': /html|svg|xml|javascript/i.test(r.headers.get('content-type') || '') ? 'text/plain; charset=utf-8' : (r.headers.get('content-type') || 'application/octet-stream'),
       'x-content-type-options': 'nosniff',
-      'content-disposition': /^(image\/(png|jpe?g|gif|webp)|video\/)/i.test(r.headers.get('content-type') || '') ? 'inline' : 'attachment',
+      'content-disposition': /^(image\/(png|jpe?g|gif|webp)|video\/)/i.test(r.headers.get('content-type') || '') || (query.get('inline') === '1' && /^application\/pdf/i.test(r.headers.get('content-type') || '')) ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(p.split('/').pop())}`,
       'cache-control': 'private, max-age=600',
     };
   res.writeHead(200, { ...headers, 'content-length': bytes.length });
@@ -2500,17 +2500,26 @@ route(
   { rawBody: true },
 );
 
+//   GET /api/workspace/stat?path=… -> {exists, size}   is a file a reply names here (1.5.11)
+route('GET', /^\/api\/workspace\/stat$/, async (_req, _res, { state, query }) => {
+  const abs = workspaceFile(state, query.get('path'));
+  const st = await fsp.stat(abs).catch(() => null);
+  return st && st.isFile() ? { exists: true, size: st.size } : { exists: false };
+});
+
 route('GET', /^\/api\/workspace\/file$/, async (_req, res, { state, query }) => {
   const abs = workspaceFile(state, query.get('path'));
   let data;
   try { data = await fsp.readFile(abs); } catch { return errorResponse(res, 404, 'FILE_NOT_FOUND', 'no such file in the workspace'); }
   const mime = mimeOf(abs);
+  // A PDF may be shown in the app's viewer (?inline=1, 1.5.11); everything else that is not a picture downloads.
+  const inline = (mime.startsWith('image/') && mime !== 'image/svg+xml') || (mime === 'application/pdf' && query.get('inline') === '1');
   res.writeHead(200, {
     // Never let an uploaded HTML/SVG run as part of the app.
     'content-type': mime === 'image/svg+xml' ? 'text/plain; charset=utf-8' : mime,
     'content-length': data.length,
     'x-content-type-options': 'nosniff',
-    'content-disposition': mime.startsWith('image/') && mime !== 'image/svg+xml' ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(abs))}`,
+    'content-disposition': inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(abs))}`,
     'cache-control': 'private, max-age=3600',
   });
   res.end(data);

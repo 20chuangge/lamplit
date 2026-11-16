@@ -300,6 +300,10 @@ function handleEvent(ev) {
       if (ev.fromBotId && ev.text && !isGroupMode() && ev.botId === state.botId) {
         messagesEl.appendChild(botMessageRow({ fromBot: ev.fromBotId, text: ev.text, ts: ev.ts }));
       }
+      // A scheduled run starting: its line, as the transcript will show it (1.5.11).
+      if (ev.source === 'routine' && ev.text && !isGroupMode() && ev.botId === state.botId) {
+        messagesEl.appendChild(routineRunRow({ role: 'user', source: 'routine', text: ev.text, ts: ev.ts, botId: ev.botId }));
+      }
       showTyping(ev.botId || typingBotId(), '正在处理…');
       break;
 
@@ -920,3 +924,67 @@ function renderActivity() {
   if (!items.length) list.appendChild(el('div', 'muted tiny', '还没有动态。发一条消息试试。'));
 }
 
+/*
+ * A document a reply names (1.5.11): its name and size, 预览 (PDFs, where the
+ * browser can show them) and 下载. It looks on this machine first, then on the
+ * other machines; a name that is nowhere shows no card.
+ */
+function docCard(file, url) {
+  const card = el('div', 'att-doc');
+  card.appendChild(el('span', 'att-icon', file.pdf ? '📕' : '📄'));
+  const meta = el('span', 'att-meta');
+  meta.appendChild(el('span', 'att-name', file.name));
+  const size = el('span', 'att-size', '…');
+  meta.appendChild(size);
+  card.appendChild(meta);
+  const acts = el('span', 'att-doc-acts');
+  let src = url;
+  const preview = el('button', 'btn tiny', '预览');
+  preview.type = 'button';
+  preview.hidden = !(file.pdf && navigator.pdfViewerEnabled !== false);
+  preview.addEventListener('click', () => openFileViewer(`${src}&inline=1`, file.name, src));
+  const dl = el('a', 'btn tiny', '下载');
+  dl.href = url;
+  dl.setAttribute('download', file.name);
+  acts.appendChild(preview);
+  acts.appendChild(dl);
+  if (canOpenLocally()) {
+    const open = el('button', 'btn tiny', '打开');
+    open.type = 'button';
+    open.title = '用系统程序打开；按住 Ctrl：在文件夹中显示';
+    open.addEventListener('click', (event) => openLocalFile(file.path, event.ctrlKey || event.metaKey));
+    acts.appendChild(open);
+  }
+  card.appendChild(acts);
+  api(`/api/workspace/stat?path=${encodeURIComponent(file.path)}`).then((r) => {
+    if (r.exists) { size.textContent = fmtBytes(r.size); return; }
+    findElsewhere(file.path).then((machine) => {
+      if (!machine) { card.remove(); return; }
+      src = remoteFileUrl(machine, file.path);
+      dl.href = src;
+      size.textContent = `在「${machine}」上`;
+      acts.querySelector('.btn:not([download]):last-child')?.remove();
+    });
+  }).catch(() => { size.textContent = ''; });
+  return card;
+}
+
+/** A PDF in the app, with 下载 and 关闭 (Esc). */
+function openFileViewer(src, name, downloadUrl) {
+  let box = $('file-viewer');
+  if (!box) {
+    box = el('div', 'page-viewer');
+    box.id = 'file-viewer';
+    box.innerHTML = '<div class="page-viewer-bar"><span class="page-viewer-title"></span><a class="btn tiny" data-dl>下载</a><button class="btn tiny" type="button" data-close>关闭</button></div><iframe referrerpolicy="no-referrer"></iframe>';
+    const close = () => { box.classList.remove('show'); box.querySelector('iframe').src = 'about:blank'; };
+    box.querySelector('[data-close]').addEventListener('click', close);
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && box.classList.contains('show')) close(); });
+    document.body.appendChild(box);
+  }
+  box.querySelector('.page-viewer-title').textContent = name;
+  const dl = box.querySelector('[data-dl]');
+  dl.href = downloadUrl;
+  dl.setAttribute('download', name);
+  box.querySelector('iframe').src = src;
+  box.classList.add('show');
+}

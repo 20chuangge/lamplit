@@ -26,6 +26,10 @@ export const KNOWN_APPS = {
   美团: 'com.sankuai.meituan', 高德地图: 'com.autonavi.minimap', 知乎: 'com.zhihu.android', 拼多多: 'com.xunmeng.pinduoduo',
   快手: 'com.smile.gifmaker', 网易云音乐: 'com.netease.cloudmusic', 大众点评: 'com.dianping.v1', 携程: 'ctrip.android.view',
   设置: 'com.android.settings', Chrome: 'com.android.chrome', 浏览器: 'com.heytap.browser', 相机: 'com.oplus.camera',
+  // 1.5.11: the job-search team asked for "BOSS直聘" by name.
+  BOSS直聘: 'com.hpbr.bosszhipin', 猎聘: 'com.lietou.mishu', 智联招聘: 'com.zhaopin.social', 前程无忧: 'com.job.android',
+  企业微信: 'com.tencent.wework', 腾讯会议: 'com.tencent.wemeet.app', 闲鱼: 'com.taobao.idlefish', 饿了么: 'me.ele',
+  百度: 'com.baidu.searchbox', 今日头条: 'com.ss.android.article.news', 微信读书: 'com.tencent.weread', 夸克: 'com.quark.browser',
   Lamplit: LAMPLIT_PACKAGE,
 };
 const APP_NAMES = Object.fromEntries(Object.entries(KNOWN_APPS).map(([name, pkg]) => [pkg, name]));
@@ -377,7 +381,9 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
   async function resolveApp(serial, app) {
     const name = String(app || '').trim();
     if (!name) throw fail('PHONE_BAD_ARGS', 'say which app');
-    const pkg = KNOWN_APPS[name] || Object.entries(KNOWN_APPS).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1] || name;
+    // "BOSS 直聘", "boss直聘", "BOSS直聘": spaces and case do not matter.
+    const loose = (s) => String(s).replace(/\s+/g, '').toLowerCase();
+    const pkg = KNOWN_APPS[name] || Object.entries(KNOWN_APPS).find(([k]) => loose(k) === loose(name))?.[1] || name;
     if (!/^[A-Za-z][\w]*(\.[\w]+)+$/.test(pkg)) throw fail('PHONE_APP_NOT_FOUND', `don't know the app "${name}"; use its package name (apps lists them)`);
     const there = await text(['-s', serial, 'shell', 'pm', 'path', pkg]);
     if (!/package:/.test(there)) throw fail('PHONE_APP_NOT_FOUND', `"${name}" (${pkg}) is not installed on the phone`);

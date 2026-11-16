@@ -438,8 +438,12 @@ function renderItem(item) {
       if (item.source === 'media') return el('div', 'status-line', /没有生成成功/.test(item.text || '') ? '后台任务：视频没有生成成功' : '后台任务：视频生成好了');
       // Another bot wrote this (a hand-off): its face and name, not the human's bubble.
       if (item.fromBot) return botMessageRow(item);
+      // A scheduled run: one line naming the task, the instruction folded (1.5.11).
+      if (item.source === 'routine') return routineRunRow(item);
       return userRow(item);
     case 'assistant':
+      // A run that found nothing new already says so on its line.
+      if (item.source === 'routine' && item.turnId && quietRun(item.turnId)) return document.createDocumentFragment();
       return assistantRow(item.text, { system: item.system });
     case 'tool': {
       const node = toolChip(item);
@@ -618,6 +622,7 @@ function attachmentNode(file) {
     a.appendChild(img);
     return a;
   }
+  if (file.pdf || file.doc) return docCard(file, url);
   const a = el('a', 'att-file');
   a.href = url;
   a.setAttribute('download', file.name);
@@ -633,6 +638,7 @@ function attachmentNode(file) {
   a.appendChild(meta);
   return a;
 }
+
 
 /** A message one bot sent another: "文案 → 质检", with the sender's face. */
 function botMessageRow(item) {
@@ -1404,19 +1410,46 @@ function assistantRow(text, { system = false, streaming = false } = {}) {
   return row;
 }
 
-/** Workspace images a reply mentions ("截图保存为 artifacts/x.png"), in order, once each. */
+/*
+ * Workspace files a reply mentions, in order, once each: pictures and videos
+ * shown, documents as cards with 预览 / 下载 (1.5.11). On 11-16 four résumé
+ * PDFs and "job/resume/preview/四版对照.png" showed nothing: only ASCII
+ * names of pictures were recognised. Now any letters (Chinese too), PDFs and
+ * office files, and a list of bare names under "PDF 在 job/resume/customized/：".
+ */
+const FILE_EXTS = 'png|jpe?g|gif|webp|mp4|webm|pdf|docx?|xlsx?|pptx?|csv|md|txt|zip';
+const PATH_CH = '[\\p{L}\\p{N}_.\\-·]';
+function fileKind(p) {
+  if (/\.(png|jpe?g|gif|webp)$/i.test(p)) return { image: true };
+  if (/\.(mp4|webm)$/i.test(p)) return { video: true };
+  if (/\.pdf$/i.test(p)) return { pdf: true };
+  return { doc: true };
+}
 function mentionedImages(text) {
   const seen = new Set();
   const out = [];
-  const re = /(?:^|[\s`'"(（「：:，,])((?:[\w.\-]+\/)+[\w.\-]+\.(?:png|jpe?g|gif|webp|mp4|webm))(?=$|[\s`'")）」（(，。,.;；:：、!！?？])/gi;
-  for (const m of String(text || '').matchAll(re)) {
-    const p = m[1].replace(/^\.\//, '').replace(/^workspace\//, '');
-    if (seen.has(p) || p.startsWith('/') || /:\/\//.test(p)) continue;
+  const src = String(text || '');
+  const add = (raw) => {
+    const p = raw.replace(/^\.\//, '').replace(/^workspace\//, '');
+    if (seen.has(p) || p.startsWith('/') || /:\/\//.test(p) || /^pages\/[a-z0-9-]+\.html$/.test(p)) return;
     seen.add(p);
-    const video = /\.(mp4|webm)$/i.test(p);
-    out.push({ path: p, image: !video, video, name: p.split('/').pop(), size: '' });
-    if (out.length >= 6) break;
+    out.push({ path: p, ...fileKind(p), name: p.split('/').pop(), size: '' });
+  };
+  const before = '(?:^|[\\s`\'"(（「：:，,])';
+  const after = '(?=$|[\\s`\'")）」（(，。,.;；:：、!！?？])';
+  const hits = [];
+  for (const m of src.matchAll(new RegExp(`${before}((?:${PATH_CH}+\\/)+${PATH_CH}+\\.(?:${FILE_EXTS}))${after}`, 'giu'))) hits.push({ at: m.index, path: m[1] });
+  // Bare names in a list under a folder the reply named ("四份 PDF 在 job/resume/customized/：").
+  const dirs = [...src.matchAll(new RegExp(`${before}((?:${PATH_CH}+\\/)+)(?=$|[\\s\`'"，。：:)）]|里|中|下)`, 'gu'))].map((m) => ({ at: m.index, dir: m[1] }));
+  if (dirs.length) {
+    for (const m of src.matchAll(new RegExp(`(?:^|[\\s\`'"(（「：:，,•*\\-])(${PATH_CH}+\\.(?:${FILE_EXTS}))${after}`, 'giu'))) {
+      if (m[1].includes('/')) continue;
+      const dir = [...dirs].reverse().find((d) => d.at < m.index);
+      if (dir) hits.push({ at: m.index, path: `${dir.dir}${m[1]}` });
+    }
   }
+  hits.sort((a, b) => a.at - b.at);
+  for (const h of hits) { add(h.path); if (out.length >= 12) break; }
   // Pages from the page library ("已保存到 pages/weekly-sales.html").
   for (const m of String(text || '').matchAll(/(?:^|[^\w/.-])(?:workspace\/)?pages\/([a-z0-9-]{1,60})\.html\b/g)) {
     const p = `pages/${m[1]}.html`;

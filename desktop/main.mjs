@@ -675,6 +675,8 @@ function createWindowFor(url, bounds = null) {
       nodeIntegration: false,
       sandbox: true,
       spellcheck: true,
+      // Chromium's PDF viewer: a résumé a bot made opens in the app (1.5.11).
+      plugins: true,
     },
   });
 

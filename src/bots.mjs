@@ -266,6 +266,8 @@ function pickPreview(records) {
   for (let i = records.length - 1; i >= 0; i -= 1) {
     const record = records[i];
     if (!record || (record.kind !== 'user' && record.kind !== 'assistant')) continue;
+    // A scheduled run's instruction is not news; what it found is (1.5.11).
+    if (record.kind === 'user' && record.source === 'routine') continue;
     const text = previewText(record.text);
     if (!text) continue;
     return { text, ts: record.ts || null, kind: record.kind };

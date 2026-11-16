@@ -1318,6 +1318,17 @@ export function createRegistry(deps) {
   // 1.2.165: 选题 took over coordinating on 11-15 but could not remove the
   // assistant's old routines - there was no tool to change or delete one.
   // A bot's own routine it changes at once; another bot's asks the human.
+  // A teammate by id or by name (1.5.11: "简历" failed with BOT_NOT_FOUND and the
+  // human was asked which bot to send to, though the description says "or name").
+  const findBot = async (ctx, idOrName) => {
+    const want = String(idOrName || '').trim().replace(/^@/, '');
+    if (!want) return null;
+    const byId = await ctx.bots.getBot(want).catch(() => null);
+    if (byId) return byId;
+    const all = await ctx.bots.listBots().catch(() => []);
+    return all.find((b) => b.name === want) || all.find((b) => b.name.toLowerCase() === want.toLowerCase()) || null;
+  };
+
   const routineRisk = (verb) => (args, ctx) => {
     const routine = deps.getRoutines()?.get?.(String(args?.id || ''));
     if (!routine || !ctx?.bot || routine.botId === ctx.bot.id) return { risk: RISK.LOW };
@@ -1600,7 +1611,7 @@ export function createRegistry(deps) {
       if ((ctx.depth || 0) >= MAX_HANDOFF_DEPTH) {
         throw toolError('BOT_DEPTH_EXCEEDED', `hand-offs go at most ${MAX_HANDOFF_DEPTH} levels deep and this is the last one: do this part yourself`);
       }
-      const target = await ctx.bots.getBot(targetId);
+      const target = await findBot(ctx, targetId);
       if (!target) throw toolError('BOT_NOT_FOUND', `no bot with id "${targetId}"`);
       // Everyone above this bot on the chain is waiting for it; handing work
       // back to one of them would make both wait for each other forever.
@@ -1700,7 +1711,7 @@ export function createRegistry(deps) {
       if (hops >= MAX_PASS_HOPS) {
         throw toolError('BOT_PASS_LIMIT', `this piece of work was already passed on ${MAX_PASS_HOPS} times: stop and tell the human where it stands (tell_human)`);
       }
-      const target = await ctx.bots.getBot(targetId);
+      const target = await findBot(ctx, targetId);
       if (!target) throw toolError('BOT_NOT_FOUND', `no bot with id "${targetId}"`);
       const runtime = deps.getRuntime();
       const queued = Boolean(runtime.botBusy?.(target.id));

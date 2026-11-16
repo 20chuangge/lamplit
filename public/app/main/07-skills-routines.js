@@ -505,3 +505,104 @@ async function resetAvatar() {
   renderCustomizer();
 }
 
+
+/* ---------------------------------------------------------------------
+   A scheduled run in the chat (1.5.11): not the whole instruction as if the
+   human had sent it, but one line - when, which task, how often - with the
+   instruction folded away (看指令: change it, pause, run once more). A run
+   that found nothing new is just that line, "没有变化", and no reply.
+   --------------------------------------------------------------------- */
+const QUIET_REPLY = /^[「"]?(没有变化|无变化|NO_CHANGE)[」"]?[。.!！]?$/i;
+
+/** The routine a run's message came from: same bot, same instruction. */
+function routineOfRun(item) {
+  const text = String(item.text || '').trim();
+  const botId = item.botId || state.botId;
+  const all = state.routines || [];
+  const found = all.find((r) => r.botId === botId && String(r.instruction || '').trim() === text)
+    || all.find((r) => String(r.instruction || '').trim() === text);
+  if (!found && !routineRunRow.asked) {
+    routineRunRow.asked = true;
+    api('/api/routines').then((list) => { state.routines = list; renderMessages(); }).catch(() => {});
+  }
+  return found || null;
+}
+
+/** Every reply of a routine's run was "没有变化". */
+function quietRun(turnId) {
+  const replies = (state.messages || []).filter((m) => m.role === 'assistant' && m.turnId === turnId);
+  return replies.length > 0 && replies.every((m) => QUIET_REPLY.test(String(m.text || '').trim()));
+}
+
+function routineRunRow(item) {
+  const rt = routineOfRun(item);
+  const quiet = item.turnId && quietRun(item.turnId);
+  const wrap = el('div', `routine-run${quiet ? ' quiet' : ''}`);
+  const line = el('div', 'routine-run-line');
+  const at = item.ts ? new Date(item.ts) : null;
+  const when = at && !Number.isNaN(at.getTime()) ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : '';
+  const parts = [when, rt ? `定时任务「${rt.name}」` : '定时任务'];
+  if (rt?.schedule) parts.push(scheduleText(rt.schedule));
+  if (rt && !rt.enabled) parts.push('已暂停');
+  if (quiet) parts.push('没有变化');
+  line.appendChild(el('span', 'routine-run-icon', '⏱'));
+  line.appendChild(el('span', null, parts.filter(Boolean).join(' · ')));
+  const toggle = el('button', 'routine-run-toggle', '看指令');
+  toggle.type = 'button';
+  line.appendChild(toggle);
+  wrap.appendChild(line);
+
+  const body = el('div', 'routine-run-body');
+  body.hidden = true;
+  const text = el('div', 'routine-run-text', String(item.text || ''));
+  body.appendChild(text);
+  if (rt) {
+    const actions = el('div', 'routine-run-actions');
+    const button = (label, fn) => { const b = el('button', 'btn tiny', label); b.type = 'button'; b.addEventListener('click', fn); actions.appendChild(b); return b; };
+    const edit = button('改指令', () => {
+      const box = el('textarea', 'routine-run-edit');
+      box.value = rt.instruction || '';
+      box.rows = Math.min(14, Math.max(4, box.value.split('\n').length + 1));
+      text.replaceWith(box);
+      edit.remove();
+      const save = el('button', 'btn tiny primary', '保存');
+      save.type = 'button';
+      save.addEventListener('click', async () => {
+        try {
+          await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { instruction: box.value.trim() } });
+          rt.instruction = box.value.trim();
+          toast('指令已更新，下次运行按新的来');
+          text.textContent = rt.instruction;
+          box.replaceWith(text);
+          save.remove();
+          actions.prepend(edit);
+        } catch (err) { toast(err.message, true); }
+      });
+      actions.prepend(save);
+      box.focus();
+    });
+    button(rt.enabled ? '暂停' : '恢复', async () => {
+      try {
+        await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { enabled: !rt.enabled } });
+        rt.enabled = !rt.enabled;
+        toast(rt.enabled ? '已恢复，按计划继续跑' : '已暂停，不会再自动跑');
+        renderMessages();
+      } catch (err) { toast(err.message, true); }
+    });
+    const again = button('现在再跑一次', async () => {
+      again.disabled = true;
+      again.textContent = '运行中…';
+      try {
+        const res = await api(`/api/routines/${encodeURIComponent(rt.id)}/test`, { method: 'POST', body: {} });
+        toast(`跑完了：${runStatusLabel(res.run.status)}`);
+      } catch (err) { toast(err.message, true); } finally { again.disabled = false; again.textContent = '现在再跑一次'; }
+    });
+    body.appendChild(actions);
+  }
+  wrap.appendChild(body);
+  toggle.addEventListener('click', () => {
+    body.hidden = !body.hidden;
+    toggle.textContent = body.hidden ? '看指令' : '收起';
+  });
+  return wrap;
+}

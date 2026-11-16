@@ -40,7 +40,7 @@ export const RUNNER_USER = 'lamplit-runner';
 const runnerFile = () => path.join(P.dataDir, 'runner.json');
 const runnerDir = () => path.join(P.dataDir, 'runner');
 export const helperExe = () => path.join(runnerDir(), 'lamplit-run.exe');
-export const RUNNER_HOME = path.join(process.env.ProgramData || 'C:\\ProgramData', 'Lamplit', 'runner-home');
+export const RUNNER_HOME = path.win32.join(process.env.ProgramData || 'C:\\ProgramData', 'Lamplit', 'runner-home');
 
 // --- the helper ------------------------------------------------------------------
 
@@ -144,7 +144,7 @@ export function helperPayload({ user = RUNNER_USER, password, cwd, command, env 
 /** The C# compiler that comes with Windows, or ''. */
 export function findCsc(windir = process.env.WINDIR || 'C:\\Windows', exists = fs.existsSync) {
   for (const fw of ['Framework64', 'Framework']) {
-    const p = path.join(windir, 'Microsoft.NET', fw, 'v4.0.30319', 'csc.exe');
+    const p = path.win32.join(windir, 'Microsoft.NET', fw, 'v4.0.30319', 'csc.exe');
     if (exists(p)) return p;
   }
   return '';
@@ -152,7 +152,7 @@ export function findCsc(windir = process.env.WINDIR || 'C:\\Windows', exists = f
 
 // --- what the account may use ------------------------------------------------------
 
-const lower = (p) => path.resolve(String(p || '')).toLowerCase();
+const lower = (p) => path.win32.resolve(String(p || '')).toLowerCase();
 const inside = (p, dir) => { const a = lower(p); const b = lower(dir); return a === b || a.startsWith(b.endsWith('\\') ? b : `${b}\\`); };
 
 /**
@@ -162,15 +162,15 @@ const inside = (p, dir) => { const a = lower(p); const b = lower(dir); return a 
  */
 export function toolDirs(pathEnv = process.env.PATH || '', localAppData = process.env.LOCALAPPDATA || '') {
   if (!localAppData) return [];
-  const roots = [path.join(localAppData, 'Programs'), path.join(localAppData, 'Microsoft', 'WinGet', 'Packages')];
+  const roots = [path.win32.join(localAppData, 'Programs'), path.win32.join(localAppData, 'Microsoft', 'WinGet', 'Packages')];
   const out = new Map();
   for (const raw of String(pathEnv).split(';')) {
     const entry = raw.trim().replace(/[\\/]+$/, '');
     if (!entry) continue;
     for (const root of roots) {
       if (!inside(entry, root) || lower(entry) === lower(root)) continue;
-      const rel = path.relative(root, entry).split(/[\\/]/)[0];
-      const dir = path.join(root, rel);
+      const rel = path.win32.relative(root, entry).split(/[\\/]/)[0];
+      const dir = path.win32.join(root, rel);
       if (!out.has(lower(dir))) out.set(lower(dir), { dir, pathDirs: [] });
       out.get(lower(dir)).pathDirs.push(entry);
     }
@@ -194,10 +194,10 @@ export function runnerEnv(base = {}, { home = RUNNER_HOME, userProfile = process
   Object.assign(env, {
     USERPROFILE: home,
     HOME: home,
-    APPDATA: path.join(home, 'AppData', 'Roaming'),
-    LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
-    TEMP: path.join(home, 'Temp'),
-    TMP: path.join(home, 'Temp'),
+    APPDATA: path.win32.join(home, 'AppData', 'Roaming'),
+    LOCALAPPDATA: path.win32.join(home, 'AppData', 'Local'),
+    TEMP: path.win32.join(home, 'Temp'),
+    TMP: path.win32.join(home, 'Temp'),
     USERNAME: RUNNER_USER,
   });
   return env;
@@ -303,7 +303,7 @@ async function mySid() {
 export function deniedDirs({ execPath = process.execPath, root = P.root, dataDir = P.dataDir } = {}) {
   const dirs = [{ path: dataDir, full: true }];
   // The installed app; resources/server (root) is inside it.
-  if (/\\lamplit\.exe$/i.test(execPath)) dirs.push({ path: path.dirname(execPath), full: false });
+  if (/\\lamplit\.exe$/i.test(execPath)) dirs.push({ path: path.win32.dirname(execPath), full: false });
   if (!dirs.some((d) => inside(root, d.path))) dirs.push({ path: root, full: false });
   return dirs;
 }

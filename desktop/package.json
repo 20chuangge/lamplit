@@ -1,7 +1,7 @@
 {
   "name": "desk-desktop",
   "productName": "Lamplit",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "description": "Lamplit - AI bots that put your idle computers to work",
   "private": true,
   "main": "main.mjs",
@@ -13,7 +13,7 @@
   "scripts": {
     "start": "electron .",
     "icons": "node make-icons.mjs",
-    "build:win": "electron-builder --win --x64",
+    "build:win": "node ../scripts/sign-update.mjs && electron-builder --win --x64",
     "build:dir": "electron-builder --dir"
   },
   "devDependencies": {

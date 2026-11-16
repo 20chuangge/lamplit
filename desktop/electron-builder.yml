@@ -50,6 +50,10 @@ extraResources:
     to: server/node_modules/safer-buffer
   - from: ../package.json
     to: server/package.json
+  # The signed update package the app pushes to other machines (1.5.5),
+  # made by scripts/sign-update.mjs right before this build.
+  - from: build/update
+    to: server/update
 
 asar: true
 compression: normal

@@ -10,6 +10,9 @@ mobile/node_modules/
 
 # build output
 desktop/dist/
+# signed update package, made at build time (1.5.5)
+desktop/build/update/
+desktop/build/update-stage/
 mobile/www/
 mobile/android/app/build/
 mobile/android/.gradle/

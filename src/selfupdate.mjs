@@ -18,6 +18,7 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -53,6 +54,43 @@ export function shippedSetupVersion(root = appRoot()) {
     } catch { /* not shipped */ }
   }
   return best;
+}
+
+/**
+ * Lamplit's release key (1.5.5, SEC-06 step 2): a machine takes new code only
+ * when the package is signed with it. The private half stays on the computer
+ * that builds releases (scripts/sign-update.mjs); a new key would be added
+ * here in a release signed with this one.
+ */
+export const UPDATE_PUBLIC_KEYS = ['MCowBQYDK2VwAyEA4GZ8GzzbeRaLOSrj9YgUcZ7JKoIbczSLfVv5XSot9ms='];
+
+/** Is this package signed by a release key? (Ed25519 over the package bytes, base64.) */
+export function verifyUpdate(bytes, signatureB64, keys = UPDATE_PUBLIC_KEYS) {
+  const sig = Buffer.from(String(signatureB64 || ''), 'base64');
+  if (sig.length !== 64 || !bytes?.length) return false;
+  return keys.some((k) => {
+    try {
+      return crypto.verify(null, bytes, crypto.createPublicKey({ key: Buffer.from(k, 'base64'), format: 'der', type: 'spki' }), sig);
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * The signed package that came with this build's installer
+ * (resources/server/update), or null in a build without one.
+ */
+export function readSignedPackage(version, root = appRoot()) {
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(root, 'update', 'lamplit-update.json'), 'utf8'));
+    if (meta.version !== version) return null;
+    const bytes = fs.readFileSync(path.join(root, 'update', 'lamplit-update.tar.gz'));
+    if (crypto.createHash('sha256').update(bytes).digest('hex') !== meta.sha256 || !verifyUpdate(bytes, meta.signature)) return null;
+    return { bytes, signature: meta.signature };
+  } catch {
+    return null;
+  }
 }
 
 /** -1 / 0 / 1 for dotted versions ("1.2.10" > "1.2.9"). */

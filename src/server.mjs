@@ -94,7 +94,7 @@ import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
 import { checkSandbox, sandboxStatus } from './sandbox.mjs';
 import * as modelsModule from './models.mjs';
-import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES } from './selfupdate.mjs';
+import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES, verifyUpdate, readSignedPackage } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
 import {
   evaluateAuth,
@@ -2228,6 +2228,9 @@ route(
     }
     const bytes = await readRawBody(req, UPDATE_MAX_BYTES, { code: 'UPDATE_TOO_LARGE', message: '更新包太大' });
     if (!safeEqual(sha256Hex(bytes), expected)) throw httpError(400, 'UPDATE_HASH_MISMATCH', '更新包和它的校验值对不上（传输中损坏或被改过）');
+    // Only Lamplit's own releases (1.5.5, SEC-06 step 2): a paired phone or a
+    // stolen token can no longer put code here.
+    if (!verifyUpdate(bytes, String(req.headers['x-nightshift-signature'] || ''))) throw httpError(400, 'UPDATE_BAD_SIGNATURE', '更新包没有 Lamplit 发版签名，或签名不对：这台机器只装正式发布的版本');
     const result = await applyUpdate({ bytes, currentVersion: VERSION, log: (line) => console.error(line) });
     if (process.env.ASSIST_UPDATE_NO_EXIT !== '1') {
       setTimeout(() => process.exit(0), 800).unref?.();
@@ -2262,12 +2265,15 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state })
   if (shippedSetupVersion() > Number(before.setupVersion || 1)) {
     return { ok: false, needsSetup: true, version: before.version, message: '这次更新需要改动系统组件，请重新添加一次这台机器' };
   }
-  const packed = await packApp();
+  // The signed package that came with the installer (1.5.5); a build without
+  // one (running from the repository) packs itself, which 1.5.5+ machines refuse.
+  const signed = readSignedPackage(VERSION);
+  const packed = signed ? null : await packApp();
   try {
-    const packageBytes = fs.readFileSync(packed.file);
+    const packageBytes = signed ? signed.bytes : fs.readFileSync(packed.file);
     const res = await fetch(`${url}/api/system/update`, {
       method: 'POST',
-      headers: { ...headers, 'content-type': 'application/gzip', 'x-nightshift-version': VERSION, 'x-nightshift-sha256': sha256Hex(packageBytes) },
+      headers: { ...headers, 'content-type': 'application/gzip', 'x-nightshift-version': VERSION, 'x-nightshift-sha256': sha256Hex(packageBytes), ...(signed ? { 'x-nightshift-signature': signed.signature } : {}) },
       body: packageBytes,
       // The machine test-starts the new version (up to 2 min) before answering.
       signal: AbortSignal.timeout(300000),
@@ -2278,7 +2284,7 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state })
       return { ok: false, busy: code === 'UPDATE_BUSY', needsSetup: code === 'UPDATE_NEEDS_SETUP', version: before.version, message: reply?.error?.message || `HTTP ${res.status}` };
     }
   } finally {
-    cleanupPack(packed.file);
+    if (packed) cleanupPack(packed.file);
   }
   // It restarts on its own; wait until it answers with the new version.
   const deadline = Date.now() + 90000;

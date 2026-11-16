@@ -170,6 +170,7 @@ async function main() {
     await stage('1.5.1: a cloud server behind Tailscale is reached and paired; the phone app opens into the machine', scenarioV151);
     await stage('1.5.2: what a bot reads is not an instruction; the live phone screen left Settings', scenarioV152);
     await stage('1.5.3: the bots\' commands run in a sandbox on Linux', scenarioV153);
+    await stage('1.5.5: update packages carry the release signature', scenarioV155);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4635,6 +4636,11 @@ async function scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, auth
   check('SEC-06: the package must come with its SHA-256, and a wrong one is refused (400)', noHash.status === 400 && /UPDATE_HASH_REQUIRED/.test(noHash.text) && badHash.status === 400 && /UPDATE_HASH_MISMATCH/.test(badHash.text), `${noHash.status} ${badHash.status} ${badHash.text.slice(0, 100)}`);
   const fromMachine = await rawHttp('/api/system/update', { method: 'POST', headers: { host: `lamplit.test:${port}`, cookie: `desk_session=${machineToken}`, 'content-type': 'application/gzip', 'x-nightshift-sha256': '1'.repeat(64) }, body: junk });
   check('SEC-06: another computer (the desktop app\'s own session) still gets past the gate', Boolean(machineToken) && fromMachine.status === 400 && /UPDATE_HASH_MISMATCH/.test(fromMachine.text), `${fromMachine.status} ${fromMachine.text.slice(0, 100)}`);
+  // 1.5.5: right token, right hash, but no release signature (or a made-up one): refused before anything is unpacked.
+  const unsigned = await push({ authorization: `Bearer ${security.token}`, 'x-nightshift-sha256': sha });
+  const forged = await push({ authorization: `Bearer ${security.token}`, 'x-nightshift-sha256': sha, 'x-nightshift-signature': Buffer.alloc(64, 7).toString('base64') });
+  check('SEC-06 1.5.5: even the master token cannot install a package without the Lamplit release signature (400 UPDATE_BAD_SIGNATURE)',
+    unsigned.status === 400 && /UPDATE_BAD_SIGNATURE/.test(unsigned.text) && forged.status === 400 && /UPDATE_BAD_SIGNATURE/.test(forged.text), `${unsigned.status} ${unsigned.text.slice(0, 120)}`);
   const fromPage = await rawHttp('/api/system/update', { method: 'POST', headers: { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}`, 'content-type': 'application/gzip', 'x-nightshift-sha256': sha }, body: junk });
   check('SEC-06: a web page (even this hub\'s own) cannot push an update', fromPage.status === 403, `${fromPage.status}`);
   const srvSrc = await readText('../src/server.mjs');
@@ -4942,6 +4948,43 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.5.5: update packages carry the release signature (SEC-06 step 2). A
+ * machine replaces its code only with a package signed by Lamplit's release
+ * key (Ed25519; the private half stays on the computer that builds releases,
+ * the public half is in src/selfupdate.mjs). The desktop app pushes the signed
+ * package that came with its installer. A paired phone, a stolen device
+ * token or a tampered package can no longer put code on a machine.
+ */
+async function scenarioV155() {
+  const crypto = await import('node:crypto');
+  const U = await import('../src/selfupdate.mjs');
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+  const pub = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const bytes = Buffer.from('a package');
+  const sig = crypto.sign(null, bytes, privateKey).toString('base64');
+  check('V1 verify: a package signed by a release key passes; another key, a changed byte, no signature or garbage fail',
+    U.verifyUpdate(bytes, sig, [pub]) === true && U.verifyUpdate(bytes, sig, U.UPDATE_PUBLIC_KEYS) === false
+    && U.verifyUpdate(Buffer.from('a packagf'), sig, [pub]) === false && U.verifyUpdate(bytes, '', [pub]) === false && U.verifyUpdate(bytes, 'xyz', [pub]) === false);
+  check('V1 key: the built-in release key is one Ed25519 public key',
+    Array.isArray(U.UPDATE_PUBLIC_KEYS) && U.UPDATE_PUBLIC_KEYS.length >= 1 && U.UPDATE_PUBLIC_KEYS.every((k) => crypto.createPublicKey({ key: Buffer.from(k, 'base64'), format: 'der', type: 'spki' }).asymmetricKeyType === 'ed25519'));
+
+  const serverSrc = await readText('../src/server.mjs');
+  check('V2 machine: POST /api/system/update refuses a package without a valid release signature, after the hash check and before unpacking',
+    serverSrc.includes("if (!verifyUpdate(bytes, String(req.headers['x-nightshift-signature'] || ''))) throw httpError(400, 'UPDATE_BAD_SIGNATURE'")
+    && serverSrc.indexOf("'UPDATE_BAD_SIGNATURE'") > serverSrc.indexOf("'UPDATE_HASH_MISMATCH'") && serverSrc.indexOf("'UPDATE_BAD_SIGNATURE'") < serverSrc.indexOf('const result = await applyUpdate('));
+  check('V2 desktop: the push sends the signed package that came with the installer (and its signature), packing fresh only in a build without one',
+    serverSrc.includes('const signed = readSignedPackage(VERSION);') && serverSrc.includes("'x-nightshift-signature': signed.signature"));
+  const signer = await readText('./sign-update.mjs');
+  const builder = await readText('../desktop/electron-builder.yml');
+  const desktopPkg = JSON.parse(await readText('../desktop/package.json'));
+  const ignore = await readText('../.gitignore');
+  check('V3 build: the Windows build signs the package first (key outside the repo, LAMPLIT_UPDATE_KEY or ~/.lamplit-release), checks it against the built-in key, and ships it in resources/server/update',
+    /sign-update\.mjs/.test(desktopPkg.scripts['build:win']) && signer.includes("path.join(os.homedir(), '.lamplit-release', 'update-ed25519.pem')")
+    && signer.includes('verifyUpdate(bytes, signature)') && builder.includes('from: build/update') && builder.includes('to: server/update')
+    && ignore.includes('desktop/build/update/') && ignore.includes('desktop/build/update-stage/'));
 }
 
 /**

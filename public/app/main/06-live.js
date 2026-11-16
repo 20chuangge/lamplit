@@ -925,59 +925,76 @@ function renderActivity() {
 }
 
 /*
- * A document a reply names (1.5.11): its name and size, 预览 (PDFs, where the
- * browser can show them) and 下载. It looks on this machine first, then on the
- * other machines; a name that is nowhere shows no card.
+ * A document a reply names: a card like a page's (1.5.12) - its kind as a
+ * coloured badge, the name, "Markdown · 12 KB · 点开查看". A click shows it in
+ * the app when it can (PDF where the browser can, md / txt / csv always), else
+ * opens it here with the system's program, else downloads it; the arrow always
+ * downloads. It looks on this machine first, then on the other machines; a
+ * name that is nowhere shows no card.
  */
+const DOC_KINDS = {
+  pdf: ['PDF', 'PDF 文档', 'pdf'], md: ['MD', 'Markdown', 'md'], txt: ['TXT', '文本', 'txt'], csv: ['CSV', '表格', 'xls'],
+  doc: ['DOC', 'Word 文档', 'doc'], docx: ['DOC', 'Word 文档', 'doc'], xls: ['XLS', 'Excel 表格', 'xls'], xlsx: ['XLS', 'Excel 表格', 'xls'],
+  ppt: ['PPT', 'PPT 演示', 'ppt'], pptx: ['PPT', 'PPT 演示', 'ppt'], zip: ['ZIP', '压缩包', 'zip'],
+};
+function docKind(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase();
+  const [badge, label, tone] = DOC_KINDS[ext] || [ext.slice(0, 4).toUpperCase() || 'FILE', '文件', 'txt'];
+  const view = ext === 'pdf' ? (navigator.pdfViewerEnabled !== false ? 'frame' : '') : (['md', 'txt', 'csv'].includes(ext) ? ext : '');
+  return { badge, label, tone, view };
+}
+
 function docCard(file, url) {
+  const kind = docKind(file.name);
   const card = el('div', 'att-doc');
-  card.appendChild(el('span', 'att-icon', file.pdf ? '📕' : '📄'));
+  const main = el('button', 'att-doc-main');
+  main.type = 'button';
+  main.appendChild(el('span', `att-badge ft-${kind.tone}`, kind.badge));
   const meta = el('span', 'att-meta');
   meta.appendChild(el('span', 'att-name', file.name));
-  const size = el('span', 'att-size', '…');
-  meta.appendChild(size);
-  card.appendChild(meta);
-  const acts = el('span', 'att-doc-acts');
-  let src = url;
-  const preview = el('button', 'btn tiny', '预览');
-  preview.type = 'button';
-  preview.hidden = !(file.pdf && navigator.pdfViewerEnabled !== false);
-  preview.addEventListener('click', () => openFileViewer(`${src}&inline=1`, file.name, src));
-  const dl = el('a', 'btn tiny', '下载');
+  const sub = el('span', 'att-size', kind.label);
+  meta.appendChild(sub);
+  main.appendChild(meta);
+  card.appendChild(main);
+  const dl = el('a', 'att-doc-dl', '↓');
   dl.href = url;
+  dl.title = '下载';
+  dl.setAttribute('aria-label', '下载');
   dl.setAttribute('download', file.name);
-  acts.appendChild(preview);
-  acts.appendChild(dl);
-  if (canOpenLocally()) {
-    const open = el('button', 'btn tiny', '打开');
-    open.type = 'button';
-    open.title = '用系统程序打开；按住 Ctrl：在文件夹中显示';
-    open.addEventListener('click', (event) => openLocalFile(file.path, event.ctrlKey || event.metaKey));
-    acts.appendChild(open);
-  }
-  card.appendChild(acts);
+  card.appendChild(dl);
+  let src = url;
+  let local = true;
+  const action = () => (kind.view ? '点开查看' : (local && canOpenLocally() ? '点开打开' : '点开下载'));
+  const describe = (where) => { sub.textContent = [kind.label, where, action()].filter(Boolean).join(' · '); };
+  describe('');
+  main.addEventListener('click', (event) => {
+    if (kind.view) { openFileViewer(kind.view === 'frame' ? `${src}&inline=1` : src, file.name, src, kind.view, local ? file.path : ''); return; }
+    if (local && canOpenLocally()) { openLocalFile(file.path, event.ctrlKey || event.metaKey); return; }
+    dl.click();
+  });
   api(`/api/workspace/stat?path=${encodeURIComponent(file.path)}`).then((r) => {
-    if (r.exists) { size.textContent = fmtBytes(r.size); return; }
+    if (r.exists) { describe(fmtBytes(r.size)); return; }
     findElsewhere(file.path).then((machine) => {
       if (!machine) { card.remove(); return; }
       src = remoteFileUrl(machine, file.path);
+      local = false;
       dl.href = src;
-      size.textContent = `在「${machine}」上`;
-      acts.querySelector('.btn:not([download]):last-child')?.remove();
+      describe(`在「${machine}」上`);
     });
-  }).catch(() => { size.textContent = ''; });
+  }).catch(() => {});
   return card;
 }
 
-/** A PDF in the app, with 下载 and 关闭 (Esc). */
-function openFileViewer(src, name, downloadUrl) {
+/** A document in the app: a PDF in a frame, Markdown / text / CSV drawn here; 打开, 下载, 关闭 (Esc). */
+function openFileViewer(src, name, downloadUrl, view = 'frame', localPath = '') {
   let box = $('file-viewer');
   if (!box) {
     box = el('div', 'page-viewer');
     box.id = 'file-viewer';
-    box.innerHTML = '<div class="page-viewer-bar"><span class="page-viewer-title"></span><a class="btn tiny" data-dl>下载</a><button class="btn tiny" type="button" data-close>关闭</button></div><iframe referrerpolicy="no-referrer"></iframe>';
-    const close = () => { box.classList.remove('show'); box.querySelector('iframe').src = 'about:blank'; };
+    box.innerHTML = '<div class="page-viewer-bar"><span class="page-viewer-title"></span><button class="btn tiny" type="button" data-open>打开</button><a class="btn tiny" data-dl>下载</a><button class="btn tiny" type="button" data-close>关闭</button></div><iframe referrerpolicy="no-referrer"></iframe><div class="file-viewer-doc"></div>';
+    const close = () => { box.classList.remove('show'); box.querySelector('iframe').src = 'about:blank'; box.querySelector('.file-viewer-doc').innerHTML = ''; };
     box.querySelector('[data-close]').addEventListener('click', close);
+    box.querySelector('[data-open]').addEventListener('click', (event) => openLocalFile(box.dataset.path, event.ctrlKey || event.metaKey));
     document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && box.classList.contains('show')) close(); });
     document.body.appendChild(box);
   }
@@ -985,6 +1002,31 @@ function openFileViewer(src, name, downloadUrl) {
   const dl = box.querySelector('[data-dl]');
   dl.href = downloadUrl;
   dl.setAttribute('download', name);
-  box.querySelector('iframe').src = src;
+  box.dataset.path = localPath;
+  box.querySelector('[data-open]').hidden = !(localPath && canOpenLocally());
+  const frame = box.querySelector('iframe');
+  const doc = box.querySelector('.file-viewer-doc');
+  frame.hidden = view !== 'frame';
+  doc.hidden = view === 'frame';
+  if (view === 'frame') frame.src = src;
+  else {
+    doc.textContent = '…';
+    fetch(src, { credentials: 'same-origin' }).then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status))))).then((text) => {
+      const body = text.length > 400000 ? `${text.slice(0, 400000)}\n…` : text;
+      doc.innerHTML = '';
+      if (view === 'md') { const md = el('div', 'bubble md file-viewer-md'); /* the chat's Markdown look, tables included */ md.innerHTML = mdToHtml(body); doc.appendChild(md); return; }
+      if (view === 'csv') {
+        const table = el('table', 'csv-table');
+        body.split(/\r?\n/).filter(Boolean).slice(0, 2000).forEach((line, i) => {
+          const tr = el('tr');
+          line.split(',').forEach((cell) => tr.appendChild(el(i ? 'td' : 'th', null, cell.replace(/^"|"$/g, ''))));
+          table.appendChild(tr);
+        });
+        doc.appendChild(table);
+        return;
+      }
+      doc.appendChild(el('pre', 'file-viewer-text', body));
+    }).catch(() => { doc.textContent = '没能读到这个文件。'; });
+  }
   box.classList.add('show');
 }

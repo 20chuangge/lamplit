@@ -135,6 +135,11 @@ export function existenceChecksInCommand(command) {
 }
 
 export const SUDO = /(^|[\s;&|(`])(sudo|doas|pkexec|su\s+-c|runas)\b|Start-Process\b[^;|]*-Verb\s+RunAs|\bgsudo\b/i;
+// The browser's own control port (1.5.12): a command that talks to Chrome's
+// DevTools protocol directly (curl …/json, a ws://…/devtools/ socket,
+// connectOverCDP) drives the bot's logged-in browser around the browser tools
+// and their checks. The agent asks every time (next to adb in the shell).
+export const DEVTOOLS = /\/devtools\/(browser|page)\/|\/json\/(version|list|new|activate|close)\b|(127\.0\.0\.1|localhost|\[::1\]):\d{2,5}\/json\b|\b(connectOverCDP|chrome-remote-interface|webSocketDebuggerUrl|pychrome|remote-debugging-port)\b/i;
 
 // Commands that only look: they list, measure or print, and change nothing.
 // Not here on purpose (SEC-08): env (runs any program), awk / sed (have their

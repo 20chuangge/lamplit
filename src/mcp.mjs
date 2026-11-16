@@ -68,19 +68,19 @@ export const MCP_PRESETS = [
  */
 export const MCP_CATALOG = [
   {
-    id: 'notion', name: 'Notion', category: '效率', badge: 'N', color: '#111111',
+    id: 'notion', icon: true, name: 'Notion', category: '效率', badge: 'N', color: '#111111',
     desc: '读写你的 Notion 页面和数据库', auth: 'oauth', transport: 'http', url: 'https://mcp.notion.com/mcp',
     help: '会打开 Notion 的授权页：选要给机器人看的页面，点「允许」。',
   },
   {
-    id: 'github', name: 'GitHub', category: '开发', badge: 'GH', color: '#24292f',
+    id: 'github', icon: true, name: 'GitHub', category: '开发', badge: 'GH', color: '#24292f',
     desc: '仓库、Issue、Pull Request', auth: 'token', transport: 'http', url: 'https://api.githubcopilot.com/mcp/',
     headers: { Authorization: 'Bearer ${TOKEN}' }, secret: 'TOKEN',
     help: '在 GitHub 建一个 Personal access token（Fine-grained 就行，选要给的仓库和权限），贴到下面。',
     tokenUrl: 'https://github.com/settings/personal-access-tokens/new',
   },
   {
-    id: 'gitlab', name: 'GitLab', category: '开发', badge: 'GL', color: '#fc6d26',
+    id: 'gitlab', icon: true, name: 'GitLab', category: '开发', badge: 'GL', color: '#fc6d26',
     desc: '项目、Issue、合并请求、流水线（GitLab 官方 MCP）', auth: 'oauth', transport: 'http', url: 'https://gitlab.com/api/v4/mcp',
     help: '会打开 GitLab 的授权页，点「Authorize」（会提示这是未验证的动态应用，属正常）。用不了时，请顶层群组的所有者在群组设置里打开「允许访问 MCP 服务器」。自建的 GitLab 用下面「自己添加」，地址填 https://你的GitLab地址/api/v4/mcp。',
   },
@@ -97,7 +97,7 @@ export const MCP_CATALOG = [
     help: '会打开 Runway 的登录授权页，登录后点允许。生成会用掉你 Runway 账户里的额度。',
   },
   {
-    id: 'suno', name: 'Suno', category: '创作', badge: 'S', color: '#1a1a1a',
+    id: 'suno', icon: true, name: 'Suno', category: '创作', badge: 'S', color: '#1a1a1a',
     desc: '写歌、生成音乐（Suno 官方 MCP，测试版）', auth: 'oauth', transport: 'http', url: 'https://api.suno.com/mcp',
     help: 'Suno 的 MCP 还在内测：先在 suno.com/mcp 申请开通，通过后再点「连接」，在 Suno 的页面登录授权。生成的歌用你 Suno 套餐里的额度。',
   },
@@ -118,6 +118,84 @@ export const MCP_CATALOG = [
     desc: '读写工作区里的文件', auth: 'none', transport: 'stdio', command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-filesystem', '{workspace}'],
     help: '第一次连接会用 npx 下载官方的 @modelcontextprotocol/server-filesystem。',
+  },
+  // 1.5.12: more apps. Only ones whose way in is documented by the app itself
+  // (or its official package); `local: true` = it talks to a program on this
+  // computer, so 「连接」 sets it up here only, not on every machine.
+  {
+    id: 'x', icon: true, name: 'X（推特）', category: '通信', badge: 'X', color: '#000000',
+    desc: '搜帖子、看用户和话题（X 官方托管 MCP，只读）', auth: 'token', transport: 'http', url: 'https://api.x.com/mcp',
+    headers: { Authorization: 'Bearer ${TOKEN}' }, secret: 'TOKEN',
+    help: '在 X 开发者后台建一个 App，在它的「Keys and Tokens」里复制 Bearer Token 贴到下面。用这个 token 只能读，不能发帖；按 X API 的用量计费。',
+    tokenUrl: 'https://developer.x.com/en/portal/dashboard', tokenLabel: '去 X 开发者后台 ↗',
+  },
+  {
+    id: 'dingtalk', name: '钉钉', category: '通信', badge: '钉', color: '#1677ff',
+    desc: '通讯录、日程、待办、机器人发消息、工作通知（钉钉官方 MCP）', auth: 'fields', transport: 'stdio', command: 'npx',
+    args: ['-y', 'dingtalk-mcp@latest'], env: { DINGTALK_Client_ID: '${CLIENT_ID}', DINGTALK_Client_Secret: '${CLIENT_SECRET}', ACTIVE_PROFILES: 'ALL' },
+    fields: [
+      { key: 'CLIENT_ID', label: 'Client ID（AppKey）' },
+      { key: 'CLIENT_SECRET', label: 'Client Secret（AppSecret）', secret: true },
+    ],
+    help: '在钉钉开放平台建一个企业内部应用，在「凭证与基础信息」里复制 Client ID 和 Client Secret；要用的功能（通讯录、日程、待办…）还要在「权限管理」里开权限。第一次连接会用 npx 下载钉钉官方的 dingtalk-mcp。',
+    tokenUrl: 'https://open-dev.dingtalk.com/', tokenLabel: '去钉钉开放平台 ↗',
+  },
+  {
+    id: 'amap', name: '高德地图', category: '生活', badge: '高', color: '#1a7cf2',
+    desc: '地点搜索、地理编码、天气、驾车 / 步行 / 骑行路线（高德官方 MCP）', auth: 'token', transport: 'stdio', command: 'npx',
+    args: ['-y', '@amap/amap-maps-mcp-server'], env: { AMAP_MAPS_API_KEY: '${TOKEN}' }, secret: 'TOKEN',
+    help: '在高德开放平台「应用管理」里建一个应用，添加 Key（服务平台选「Web 服务」），把 Key 贴到下面。第一次连接会用 npx 下载高德官方的 @amap/amap-maps-mcp-server。',
+    tokenUrl: 'https://console.amap.com/dev/key/app', tokenLabel: '去高德开放平台拿 Key ↗',
+  },
+  {
+    id: 'minimax', icon: true, name: 'MiniMax', category: '创作', badge: 'MM', color: '#e2457a',
+    desc: '文字转语音、声音克隆、生图、生视频（MiniMax 官方 MCP）', auth: 'fields', transport: 'stdio', command: 'npx',
+    args: ['-y', 'minimax-mcp-js'], env: { MINIMAX_API_KEY: '${API_KEY}', MINIMAX_API_HOST: '${API_HOST}', MINIMAX_MCP_BASE_PATH: '{workspace}' },
+    fields: [
+      { key: 'API_KEY', label: 'API Key', secret: true },
+      { key: 'API_HOST', label: '账号在哪个站', options: [['https://api.minimax.chat', '国内站（platform.minimaxi.com）'], ['https://api.minimaxi.chat', '国际站（minimax.io）']] },
+    ],
+    help: '在 MiniMax 开放平台「接口密钥」里建一个 API Key。Key 和站点要对应，不然会报 Invalid API key。生成的文件放在工作区。用的是你 MiniMax 账户里的余额。',
+    tokenUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key', tokenLabel: '去国内站拿 Key ↗',
+  },
+  {
+    id: 'cloudflare', icon: true, name: 'Cloudflare', category: '开发', badge: 'CF', color: '#f38020',
+    desc: 'Workers、KV、R2、D1 等账户资源（Cloudflare 官方 MCP）', auth: 'oauth', transport: 'http', url: 'https://bindings.mcp.cloudflare.com/mcp',
+    help: '会打开 Cloudflare 的授权页：选账户，点允许。',
+  },
+  {
+    id: 'kubernetes', icon: true, name: 'Kubernetes', category: '开发', badge: 'K8s', color: '#326ce5', local: true,
+    desc: '查看和管理集群里的 Pod、Deployment、日志（用这台机器的 kubectl 配置）', auth: 'none', transport: 'stdio', command: 'npx',
+    args: ['-y', 'mcp-server-kubernetes'],
+    help: '用这台机器上 kubectl 已经配好的集群（~/.kube/config）。改动集群的操作都会先问你。第一次连接会用 npx 下载 mcp-server-kubernetes。',
+  },
+  {
+    id: 'docker', icon: true, name: 'Docker', category: '开发', badge: 'Dk', color: '#1d63ed', local: true,
+    desc: '通过 Docker 的 MCP Toolkit 用它目录里的几百个工具（Docker 官方）', auth: 'none', transport: 'stdio', command: 'docker',
+    args: ['mcp', 'gateway', 'run'],
+    help: '需要这台电脑装了 Docker Desktop，并在设置里打开 MCP Toolkit，在里面选好要用的工具。Lamplit 连的是它的网关（docker mcp gateway run）。',
+  },
+  {
+    id: 'godot', icon: true, name: 'Godot', category: '创作', badge: 'Gd', color: '#478cbf', local: true,
+    desc: '打开编辑器、运行项目、看调试输出、改场景（Godot 游戏引擎）', auth: 'none', transport: 'stdio', command: 'npx',
+    args: ['-y', '@coding-solo/godot-mcp'],
+    help: '需要这台电脑装了 Godot（4.x）。它会自己找 Godot 在哪；找不到时，用下面「自己添加」，命令 npx -y @coding-solo/godot-mcp，环境变量 GODOT_PATH=Godot 程序的完整路径。',
+  },
+  {
+    id: 'obsidian', icon: true, name: 'Obsidian', category: '效率', badge: 'Ob', color: '#7c3aed', local: true,
+    desc: '搜索、阅读、编辑你笔记库里的笔记和标签', auth: 'token', transport: 'stdio', command: 'npx',
+    args: ['-y', 'obsidian-mcp-server'], env: { OBSIDIAN_API_KEY: '${TOKEN}', OBSIDIAN_BASE_URL: 'https://127.0.0.1:27124' }, secret: 'TOKEN',
+    help: '在 Obsidian 里装上社区插件「Local REST API」并启用，在它的设置里复制 API Key 贴到下面。Obsidian 要开着，笔记库在这台电脑上。第一次连接会用 npx 下载 obsidian-mcp-server。',
+  },
+  {
+    id: 'home-assistant', icon: true, name: 'Home Assistant', category: '生活', badge: 'HA', color: '#18bcf2',
+    desc: '查看和控制家里的灯、开关、空调等设备（Home Assistant 自带的 MCP）', auth: 'fields', transport: 'http', url: '${HA_URL}/api/mcp',
+    headers: { Authorization: 'Bearer ${TOKEN}' },
+    fields: [
+      { key: 'HA_URL', label: 'Home Assistant 地址', placeholder: 'http://192.168.1.10:8123', plain: true },
+      { key: 'TOKEN', label: '长期访问令牌', secret: true },
+    ],
+    help: '先在 Home Assistant 的「设置 → 设备与服务 → 添加集成」里加「Model Context Protocol Server」，选好要开放的设备；再在你的个人资料页最下面「长期访问令牌」里新建一个，复制贴到下面。地址填在浏览器里打开 Home Assistant 用的那个。',
   },
 ];
 
@@ -724,7 +802,8 @@ export function createMcpManager({
       bots: Array.isArray(input.bots) ? input.bots.map(String).slice(0, 50) : (input.bots === 'all' ? 'all' : old.bots || 'all'),
     };
     if (transport === 'stdio' && !cfg.command) throw Object.assign(new Error('填一下要运行的命令'), { status: 400, code: 'MCP_NO_COMMAND' });
-    if (web && !/^https?:\/\//i.test(cfg.url)) throw Object.assign(new Error('网址要以 http:// 或 https:// 开头'), { status: 400, code: 'MCP_BAD_URL' });
+    // ${HA_URL}/api/mcp (1.5.12): the address itself is a kept value, checked when it is typed.
+    if (web && !/^(https?:\/\/|\$\{[A-Z_]+\})/i.test(cfg.url)) throw Object.assign(new Error('网址要以 http:// 或 https:// 开头'), { status: 400, code: 'MCP_BAD_URL' });
     return cfg;
   }
 
@@ -831,7 +910,11 @@ export function createMcpManager({
         const pub = cfg ? publicCfg(cfg) : null;
         return {
           id: e.id, name: e.name, category: e.category, badge: e.badge, color: e.color, desc: e.desc,
+          // The app's own mark (public/vendor/app-icons/<id>.svg, from simple-icons, 1.5.12).
+          icon: e.icon ? `vendor/app-icons/${e.id}.svg` : '',
           auth: e.auth, help: e.help, tokenUrl: e.tokenUrl || '', tokenLabel: e.tokenLabel || '',
+          fields: (e.fields || []).map((f) => ({ key: f.key, label: f.label, secret: Boolean(f.secret), placeholder: f.placeholder || '', options: f.options || null })),
+          local: Boolean(e.local),
           server: pub,
         };
       });
@@ -875,6 +958,26 @@ export function createMcpManager({
       if (e.auth === 'token') {
         if (!String(token).trim() && !cfg?.secretRef) throw Object.assign(new Error('先把 token 贴进来'), { status: 400, code: 'MCP_TOKEN_NEEDED' });
         const secrets = String(token).trim() ? { [e.secret]: String(token).trim() } : undefined;
+        const server = cfg ? await api.update(cfg.id, { ...base, enabled: true, secrets }) : await api.add({ ...base, secrets, catalogId: e.id });
+        return { server };
+      }
+      if (e.auth === 'fields') {
+        // Several values (an id and a secret, a key and its region, an address
+        // and a token): all kept in the vault; empty = keep what is there.
+        const f = fields && typeof fields === 'object' ? fields : {};
+        const typed = {};
+        for (const d of e.fields || []) {
+          const v = String(f[d.key] ?? '').trim();
+          if (v) typed[d.key] = d.plain ? v.replace(/\/+$/, '') : v;
+          else if (d.options?.length && !cfg?.secretRef) typed[d.key] = d.options[0][0];
+        }
+        // Nothing typed and already connected: connect again with what is kept.
+        const keep = cfg?.secretRef && !(e.fields || []).some((d) => !d.options && typed[d.key]);
+        const missing = keep ? [] : (e.fields || []).filter((d) => !typed[d.key]);
+        if (missing.length) throw Object.assign(new Error(`先填好：${missing.map((d) => d.label).join('、')}`), { status: 400, code: 'MCP_FIELDS_NEEDED' });
+        if (keep) for (const k of Object.keys(typed)) delete typed[k];
+        if (typed.HA_URL && !/^https?:\/\/[^\s/]+/i.test(typed.HA_URL)) throw Object.assign(new Error('地址要以 http:// 或 https:// 开头'), { status: 400, code: 'MCP_BAD_URL' });
+        const secrets = Object.keys(typed).length ? typed : undefined;
         const server = cfg ? await api.update(cfg.id, { ...base, enabled: true, secrets }) : await api.add({ ...base, secrets, catalogId: e.id });
         return { server };
       }
@@ -958,6 +1061,12 @@ export function createMcpManager({
         const { mailboxesFrom } = await import('./mail.mjs');
         const boxes = mailboxesFrom(await secretsFor(cfg));
         return boxes.length ? { catalogId: e.id, auth: e.auth, fields: { MAILBOXES: JSON.stringify(boxes) } } : null;
+      }
+      if (e.auth === 'fields') {
+        const s = await secretsFor(cfg);
+        const out = {};
+        for (const d of e.fields || []) if (s[d.key]) out[d.key] = s[d.key];
+        return Object.keys(out).length ? { catalogId: e.id, auth: e.auth, fields: out } : null;
       }
       if (e.auth === 'feishu') {
         const s = await secretsFor(cfg);

@@ -306,7 +306,7 @@ async function connectMcpApp(app, extra = {}, btn = null, { here = false } = {})
       await openSignInPage(out.authorizeUrl);
       toast(`在浏览器里登录「${app.name}」并点允许，完成后回到这里`);
     } else {
-      toast(`正在连接「${app.name}」${app.auth === 'none' || app.auth === 'feishu' ? '（第一次会下载它，稍等）' : ''}`);
+      toast(`正在连接「${app.name}」${app.auth !== 'oauth' && app.auth !== 'mail' ? '（第一次会下载它，稍等）' : ''}`);
     }
     mcpUi.open = app.id;
     // The other machines: after this one's own note, so it is the one you see.
@@ -399,7 +399,40 @@ function mcpConnectForm(app) {
     box.appendChild(tok);
     go.addEventListener('click', () => {
       if (!tok.value.trim()) { toast('先把 token 贴进来', true); return; }
-      connectMcpApp(app, { token: tok.value.trim() }, go);
+      connectMcpApp(app, { token: tok.value.trim() }, go, { here: app.local });
+    });
+  } else if (app.auth === 'fields') {
+    // Several values (1.5.12): an id and a secret, a key and its region, an address and a token.
+    if (app.tokenUrl) {
+      const a = el('a', '', app.tokenLabel || '去拿 ↗');
+      a.href = app.tokenUrl;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      box.appendChild(a);
+    }
+    const inputs = (app.fields || []).map((f) => {
+      let input;
+      if (f.options) {
+        input = document.createElement('select');
+        input.className = 'field';
+        for (const [value, label] of f.options) { const o = document.createElement('option'); o.value = value; o.textContent = label; input.appendChild(o); }
+      } else {
+        input = document.createElement('input');
+        input.className = 'field';
+        input.type = f.secret ? 'password' : 'text';
+        input.autocomplete = f.secret ? 'new-password' : 'off';
+        input.placeholder = f.placeholder || f.label;
+      }
+      input.setAttribute('aria-label', f.label);
+      const label = el('label', 'mcp-field', f.label);
+      label.appendChild(input);
+      box.appendChild(label);
+      return [f, input];
+    });
+    go.addEventListener('click', () => {
+      const empty = inputs.filter(([f, input]) => !f.options && !input.value.trim()).map(([f]) => f.label);
+      if (empty.length) { toast(`先填好：${empty.join('、')}`, true); return; }
+      connectMcpApp(app, { fields: Object.fromEntries(inputs.map(([f, input]) => [f.key, input.value.trim()])) }, go, { here: app.local });
     });
   } else if (app.auth === 'mail') {
     mailboxFields(box, app, go);
@@ -416,12 +449,67 @@ function mcpConnectForm(app) {
     box.append(id, secret);
     go.addEventListener('click', () => connectMcpApp(app, { appId: id.value.trim(), appSecret: secret.value.trim() }, go));
   } else {
-    go.addEventListener('click', () => connectMcpApp(app, {}, go));
+    go.addEventListener('click', () => connectMcpApp(app, {}, go, { here: app.local }));
   }
+  if (app.local) box.appendChild(el('div', 'row-note', '它连的是这台电脑上的程序，所以只在这台机器上连接，不会同步到别的机器。'));
   const row = el('div', 'btn-row');
   row.appendChild(go);
   box.appendChild(row);
   return box;
+}
+
+/*
+ * 连接应用 (1.5.12): a grid of tiles - the app's mark, its name, one line on
+ * what it does, connected or not - with the categories as chips above. A tile
+ * opens in place across the whole row: how to connect, or what is connected.
+ */
+function mcpTile(app) {
+  const srv = app.server;
+  const card = el('div', `mcp-app${mcpUi.open === app.id ? ' open' : ''}${srv?.state === 'ready' ? ' on' : ''}`);
+  const head = el('button', 'mcp-app-head');
+  head.type = 'button';
+  const badge = el('div', 'mcp-badge', app.badge || app.name.slice(0, 1));
+  badge.style.background = app.color || '#5b6474';
+  if (String(app.badge || '').length >= 3) badge.classList.add('small');
+  // The app's own mark, white on its colour; the letters stay for apps without one.
+  if (app.icon) {
+    badge.textContent = '';
+    badge.classList.add('has-icon');
+    const mark = el('span', 'mcp-mark');
+    // On the element itself: a url() inside a CSS variable would resolve against style.css's folder.
+    mark.style.webkitMaskImage = `url("${app.icon}")`;
+    mark.style.maskImage = `url("${app.icon}")`;
+    badge.appendChild(mark);
+  }
+  const meta = el('div', 'mcp-app-meta');
+  meta.appendChild(el('b', '', app.name));
+  meta.appendChild(el('small', '', app.desc || ''));
+  head.append(badge, meta);
+  const status = srv
+    ? el('span', `mcp-state ${srv.state === 'ready' ? 'ok' : srv.state === 'needs_auth' || srv.state === 'failed' ? 'warn' : ''}`, mcpStateLabel(srv))
+    : el('span', 'mcp-state', app.local ? '连接 · 本机' : '连接');
+  head.appendChild(status);
+  card.appendChild(head);
+  if (mcpUi.open === app.id) {
+    const body = srv ? mcpServerPanel(srv) : mcpConnectForm(app);
+    // Waiting for a sign-in: a link to the page, for when the browser did not open.
+    if (mcpUi.signIn?.app === app.id && srv?.state === 'needs_auth') {
+      const link = el('a', '', '浏览器没打开？点这里去登录 ↗');
+      link.href = mcpUi.signIn.url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.addEventListener('click', (e) => { e.preventDefault(); openSignInPage(mcpUi.signIn.url); });
+      body.prepend(link);
+    }
+    card.appendChild(body);
+  }
+  head.addEventListener('click', () => {
+    // One click is enough when there is nothing to type: an OAuth sign-in.
+    if (!srv && app.auth === 'oauth' && mcpUi.open !== app.id) { mcpUi.open = app.id; connectMcpApp(app, {}, null); return; }
+    mcpUi.open = mcpUi.open === app.id ? '' : app.id;
+    renderMcp();
+  });
+  return card;
 }
 
 function renderMcp() {
@@ -430,54 +518,26 @@ function renderMcp() {
   list.innerHTML = '';
   const q = String($('mcp-search')?.value || '').trim().toLowerCase();
   const custom = mcpUi.servers.filter((s) => !s.catalogId).map((s) => ({ id: `custom-${s.id}`, name: s.name, category: '自己添加的', badge: s.name.slice(0, 1).toUpperCase(), color: '#7a5af8', desc: s.transport !== 'stdio' ? hostOfUrl(s.url) : s.command, auth: 'custom', server: s }));
-  const apps = [...(mcpUi.apps || []), ...custom].filter((a) => !q || `${a.name} ${a.desc} ${a.category}`.toLowerCase().includes(q));
-  if (!apps.length) { list.appendChild(el('div', 'row-note', q ? '没有找到。目录里没有的，可以在下面自己添加。' : '还没有接任何应用。')); return; }
-  const cats = [...new Set(apps.map((a) => a.category))];
+  const all = [...(mcpUi.apps || []), ...custom];
+  const connected = all.filter((a) => a.server);
+  const cats = ['全部', ...(connected.length ? ['已连接'] : []), ...new Set(all.map((a) => a.category))];
+  if (!cats.includes(mcpUi.cat)) mcpUi.cat = '全部';
+  const chips = el('div', 'mcp-chips');
   for (const cat of cats) {
-    list.appendChild(el('div', 'mcp-cat', cat));
-    for (const app of apps.filter((a) => a.category === cat)) {
-      const card = el('div', 'mcp-app');
-      const head = el('div', 'mcp-app-head');
-      const badge = el('div', 'mcp-badge', app.badge || app.name.slice(0, 1));
-      badge.style.background = app.color || '#5b6474';
-      const meta = el('div', 'mcp-app-meta');
-      meta.appendChild(el('b', '', app.name));
-      meta.appendChild(el('small', '', app.desc || ''));
-      head.append(badge, meta);
-      const srv = app.server;
-      let btn;
-      if (srv && srv.state === 'ready') {
-        btn = el('button', 'mcp-ok', mcpStateLabel(srv));
-      } else if (srv) {
-        btn = el('button', `btn tiny${srv.state === 'needs_auth' || srv.state === 'failed' ? ' mcp-warn' : ''}`, mcpStateLabel(srv));
-      } else {
-        btn = el('button', 'btn tiny', '连接');
-      }
-      btn.type = 'button';
-      head.appendChild(btn);
-      card.appendChild(head);
-      const body = srv ? mcpServerPanel(srv) : mcpConnectForm(app);
-      // Waiting for a sign-in: a link to the page, for when the browser did not open.
-      if (mcpUi.signIn?.app === app.id && srv?.state === 'needs_auth') {
-        const a = el('a', '', '浏览器没打开？点这里去登录 ↗');
-        a.href = mcpUi.signIn.url;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        a.addEventListener('click', (e) => { e.preventDefault(); openSignInPage(mcpUi.signIn.url); });
-        body.prepend(a);
-      }
-      body.hidden = mcpUi.open !== app.id;
-      card.appendChild(body);
-      const toggle = () => { body.hidden = !body.hidden; mcpUi.open = body.hidden ? '' : app.id; };
-      btn.addEventListener('click', () => {
-        // One click is enough when there is nothing to type: an OAuth sign-in, or a ready Feishu app.
-        if (!srv && app.auth === 'oauth') { connectMcpApp(app, {}, btn); return; }
-        toggle();
-      });
-      meta.addEventListener('click', toggle);
-      list.appendChild(card);
-    }
+    const chip = el('button', `chip-btn${mcpUi.cat === cat ? ' on' : ''}`, cat === '已连接' ? `已连接 ${connected.length}` : cat);
+    chip.type = 'button';
+    chip.addEventListener('click', () => { mcpUi.cat = cat; renderMcp(); });
+    chips.appendChild(chip);
   }
+  list.appendChild(chips);
+  const apps = all.filter((a) => (mcpUi.cat === '全部' || (mcpUi.cat === '已连接' ? a.server : a.category === mcpUi.cat))
+    && (!q || `${a.name} ${a.desc} ${a.category}`.toLowerCase().includes(q)));
+  if (!apps.length) { list.appendChild(el('div', 'row-note', q ? '没有找到。目录里没有的，可以在下面自己添加。' : '还没有接任何应用。')); return; }
+  // Connected first, then the rest in catalog order.
+  apps.sort((x, y) => Number(Boolean(y.server)) - Number(Boolean(x.server)));
+  const grid = el('div', 'mcp-grid');
+  apps.forEach((app) => grid.appendChild(mcpTile(app)));
+  list.appendChild(grid);
 }
 
 function setupMcpForm() {

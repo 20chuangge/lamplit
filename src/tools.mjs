@@ -638,7 +638,7 @@ export function createRegistry(deps) {
   add({
     name: 'fs_write',
     description:
-      'Write UTF-8 text to a file, creating parent directories. Overwrites by default. Paths outside the shared workspace need human approval.',
+      'Write UTF-8 text to a file, creating parent directories. Overwrites by default. Paths outside the shared workspace need human approval. Keep each call under about 2500 characters of content: write a longer file in parts, the first with mode "overwrite" and the rest with mode "append" (one long call gets cut off).',
     risk: workspaceRisk(RISK.LOW, RISK.HIGH),
     parameters: {
       type: 'object',

@@ -1688,7 +1688,9 @@ route('POST', /^\/api\/mcp\/mailbox\/remove$/, async (_req, _res, { state, body 
 route('POST', /^\/api\/mcp\/catalog\/(?<id>[A-Za-z0-9_-]+)\/connect$/, async (_req, _res, { state, body, params }) => {
   const out = await state.mcp.connectCatalog(params.id, { ...(body || {}), relay: mcpRelay(body) });
   state.bus.emit({ type: 'settings.changed', section: 'mcp' });
-  if (body?.everywhere) out.peers = await syncMcpToPeers(state, params.id, { relay: mcpRelay(body) });
+  // An app of this computer's own (Obsidian, Docker, Godot…) is not set up on the others.
+  const local = state.mcp.catalog().find((a) => a.id === params.id)?.local;
+  if (body?.everywhere && !local) out.peers = await syncMcpToPeers(state, params.id, { relay: mcpRelay(body) });
   return out;
 });
 route('POST', /^\/api\/mcp\/catalog\/(?<id>[A-Za-z0-9_-]+)\/sync$/, async (_req, _res, { state, body, params }) => {

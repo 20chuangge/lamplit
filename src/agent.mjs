@@ -34,7 +34,7 @@ import {
 } from './store.mjs';
 import { effectivePolicy, classify, DECISION, machineMode, mediumRunsUnasked, permissionKey, isRemembered } from './approvals.mjs';
 import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
-import { checkBoundary } from './boundary.mjs';
+import { checkBoundary, DEVTOOLS } from './boundary.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
 import { noteUsage } from './usage.mjs';
 
@@ -2320,6 +2320,12 @@ export class AgentRuntime {
     // adb in the shell works the phone around the phone tool's rules (1.3.1): ask every time.
     if (name === 'shell' && adbInShell(args?.command) && verdict.decision !== DECISION.DENY) {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: '直接用 adb 操作手机，会绕过「操作手机」的规矩（付款、发布、同意每次问你，不解锁，不输密码），每次都先问你。机器人应该改用「操作手机」。' };
+      sticky = true;
+    }
+    // The browser's control port from the shell (1.5.12): the bot's logged-in
+    // browser driven around the browser tools and their checks - ask every time.
+    if (name === 'shell' && DEVTOOLS.test(String(args?.command || '')) && verdict.decision !== DECISION.DENY) {
+      verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: '要绕过浏览器工具，直接通过调试端口控制浏览器（里面有你的登录状态），每次都先问你。机器人应该改用 browser_* 工具。' };
       sticky = true;
     }
     // A tool that knows this one step always needs the human (a phone tap that pays or posts).

@@ -178,6 +178,7 @@ async function main() {
     await stage('1.5.9: what the cloud 小红书 project showed', scenarioXhs159);
     await stage('1.5.10: settings and models', scenarioSettings1510);
     await stage('1.5.11: the files a reply names can be seen and saved', scenarioFiles1511);
+    await stage('1.5.12: connected apps, long writes, the browser debug port', scenarioApps1512);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4222,6 +4223,8 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     { id: 'fake-oauth', name: '假应用', category: '效率', auth: 'oauth', transport: 'http', url: appBase + '/mcp' },
     { id: 'fake-token', name: '假令牌', category: '开发', auth: 'token', transport: 'http', url: appBase + '/mcp', headers: { Authorization: 'Bearer ${TOKEN}' }, secret: 'TOKEN' },
     { id: 'fake-feishu', name: '假飞书', category: '通信', auth: 'feishu', transport: 'stdio', command: process.execPath, args: [fake, '-a', '${APP_ID}', '-s', '${APP_SECRET}'] },
+    { id: 'fake-fields', name: '假家居', category: '生活', auth: 'fields', transport: 'http', url: '${HA_URL}/mcp', headers: { Authorization: 'Bearer ${TOKEN}' }, local: true,
+      fields: [{ key: 'HA_URL', label: '地址', plain: true }, { key: 'TOKEN', label: '令牌', secret: true }] },
   ];
   let feishu = { appId: 'cli_test', appSecret: 'sec_test' };
   const registry = toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: {} });
@@ -4271,6 +4274,20 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     const fsPub = m.list().find((x) => x.id === fs1.server.id);
     check('M5 feishu app: one click uses the App ID / Secret from Settings → 飞书, read when it starts; nothing copied',
       fsReady && /args -a cli_test -s sec_test/.test(envOut.text) && fsPub.secrets.length === 0 && !JSON.stringify(m.list()).includes('sec_test') && !(await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'mcp.json'), 'utf8')).includes('sec_test'), envOut.text);
+    // Several values (1.5.12): an address and a token, both kept in the vault.
+    let noFields = null;
+    try { await m.connectCatalog('fake-fields', { fields: { HA_URL: appBase } }); } catch (e) { noFields = e; }
+    const fl = await m.connectCatalog('fake-fields', { fields: { HA_URL: `${appBase}/`, TOKEN: 'TOK' } });
+    const flReady = await wait(() => m.list().find((x) => x.id === fl.server.id)?.state === 'ready');
+    const flSaved = await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'mcp.json'), 'utf8');
+    const flCat = m.catalog().find((a) => a.id === 'fake-fields');
+    const flSync = await m.syncPayload('fake-fields');
+    const flAgain = await m.connectCatalog('fake-fields', { fields: {} });
+    check('M5b fields app (1.5.12): every field needed the first time; the address (its trailing / dropped) and token go in the URL / header from the vault; the page gets the field names, never the values; sync sends them; connecting again with nothing typed keeps them',
+      noFields?.code === 'MCP_FIELDS_NEEDED' && /令牌/.test(noFields.message) && flReady && !flSaved.includes('"TOK"')
+      && flCat.local === true && flCat.fields.map((f) => f.key).join() === 'HA_URL,TOKEN' && flCat.fields[1].secret === true && !JSON.stringify(m.catalog()).includes('"TOK"')
+      && flSync?.fields?.TOKEN === 'TOK' && flSync.fields.HA_URL === appBase && flAgain.server.id === fl.server.id,
+      noFields?.message);
     // Sync to the other machines: what they get to connect the same app.
     const syncTok = await m.syncPayload('fake-token');
     const syncFs = await m.syncPayload('fake-feishu');
@@ -4348,7 +4365,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
       srvSrc.includes("String(req.socket?.remoteAddress || '')") &&srvSrc.includes("if (fromHere && !state.mcp.hasPending(q.state) && q.state)")
       && srvSrc.includes("'POST', '/api/mcp/oauth/finish'") && srvSrc.includes("if (!state.mcp.hasPending(q.state)) return { known: false };"));
     check('M7 sync: 「连接」 connects on every machine; already connected ones are left alone; a button syncs an app connected earlier',
-      srvSrc.includes('if (body?.everywhere) out.peers = await syncMcpToPeers(') && srvSrc.includes("['ready', 'connecting'].includes(there.server.state)")
+      srvSrc.includes('if (body?.everywhere && !local) out.peers = await syncMcpToPeers(') && srvSrc.includes("['ready', 'connecting'].includes(there.server.state)")
       && pageSrc.includes('everywhere: !here') && pageSrc.includes("'同步到其他机器'") && pageSrc.includes('function mcpRelay()')
       && /localUrl: serverPort \? localUrl\(\)/.test(mainSrc));
     check('M8 disconnect: a catalog app can be disconnected here only or on every machine',
@@ -4578,7 +4595,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
       authSrc.includes("if (value === '/api/mcp/oauth/callback' && verb === 'GET') return true;") && res?.status === 400 && /已经过期或无效/.test(await res.text()));
     const page = await readText('../public/index.html');
     check('M5 catalog page: search, categories, 连接 / ✓ 已连接, one-click OAuth opens the app\'s page, custom form kept',
-      page.includes('id="mcp-search"') && page.includes('id="mcp-catalog"') && page.includes("if (!srv && app.auth === 'oauth') { connectMcpApp(app, {}, btn); return; }")
+      page.includes('id="mcp-search"') && page.includes('id="mcp-catalog"') && page.includes("if (!srv && app.auth === 'oauth' && mcpUi.open !== app.id) { mcpUi.open = app.id; connectMcpApp(app, {}, null); return; }")
       && page.includes('await openSignInPage(out.authorizeUrl);') && !page.includes('location.href = out.authorizeUrl') && page.includes('自己添加一个（目录里没有的应用）'));
   }
 }
@@ -4958,6 +4975,46 @@ async function scenarioV167() {
 }
 
 /**
+ * 1.5.12: 连接应用 (the human's list, 11-16): tiles in a grid with category
+ * chips; more apps, each from its own docs or official package; apps that
+ * talk to a program on this computer are set up here only. And two small ones
+ * from the 求职组: long writes go in parts from the start, and a command that
+ * drives the browser through its debug port asks every time.
+ */
+async function scenarioApps1512() {
+  const mcp = await import('../src/mcp.mjs');
+  const ids = mcp.MCP_CATALOG.map((e) => e.id);
+  const want = ['x', 'dingtalk', 'amap', 'minimax', 'cloudflare', 'kubernetes', 'docker', 'godot', 'obsidian', 'home-assistant'];
+  const byId = Object.fromEntries(mcp.MCP_CATALOG.map((e) => [e.id, e]));
+  check('A1 catalog: the new apps are there, each with a mark, colour, category and how to connect; the local ones say so; fields apps name their fields',
+    want.every((id) => ids.includes(id)) && want.every((id) => byId[id].badge && byId[id].color && byId[id].category && byId[id].help && byId[id].auth)
+    && ['kubernetes', 'docker', 'godot', 'obsidian'].every((id) => byId[id].local === true) && !byId.x.local
+    && byId.dingtalk.fields.length === 2 && byId['home-assistant'].fields[0].plain === true && byId.minimax.fields[1].options.length === 2
+    && byId.amap.args.includes('@amap/amap-maps-mcp-server') && byId.dingtalk.env.DINGTALK_Client_ID === '${CLIENT_ID}', ids.join());
+  const apps = await readText('../public/app/main/09-apps.js');
+  const serverSrc = await readText('../src/server.mjs');
+  check('A2 page: a grid of tiles with category chips (全部 / 已连接 / each category), connected first, an open tile spans the row; fields form; local apps connect here only',
+    apps.includes('function mcpTile(app)') && apps.includes("const grid = el('div', 'mcp-grid');") && apps.includes("const cats = ['全部', ...(connected.length ? ['已连接'] : [])")
+    && apps.includes("} else if (app.auth === 'fields') {") && apps.includes('{ here: app.local }')
+    && serverSrc.includes("if (body?.everywhere && !local) out.peers = await syncMcpToPeers("));
+  const B = await import('../src/boundary.mjs');
+  const agentSrc = await readText('../src/agent.mjs');
+  const tools = await readText('../src/tools.mjs');
+  check('A3 the browser\'s debug port from the shell asks every time (curl …/json, a devtools socket, connectOverCDP), other web addresses do not; fs_write says to write long files in parts',
+    B.DEVTOOLS.test('curl -s http://127.0.0.1:9222/json') && B.DEVTOOLS.test("python3 -c \"ws('ws://127.0.0.1:41233/devtools/page/AB')\"") && B.DEVTOOLS.test('node -e "chromium.connectOverCDP(u)"')
+    && !B.DEVTOOLS.test('curl -s https://example.com:8443/json') && !B.DEVTOOLS.test('curl -s https://example.com/api.json')
+    && agentSrc.includes("if (name === 'shell' && DEVTOOLS.test(String(args?.command || '')) && verdict.decision !== DECISION.DENY) {")
+    && tools.includes('Keep each call under about 2500 characters of content'));
+  // The apps' own marks (simple-icons, CC0): a file for each app that has one, the licence next to them.
+  const fsMod = await import('node:fs');
+  const withIcon = mcp.MCP_CATALOG.filter((e) => e.icon);
+  check('A4 icons: the apps with a mark have its SVG (plain paths, no script) and the page draws it as a mask; the licence is shipped',
+    withIcon.length >= 12 && withIcon.every((e) => { const f = new URL(`../public/vendor/app-icons/${e.id}.svg`, import.meta.url); return fsMod.existsSync(f) && !/<script|on\w+=/i.test(fsMod.readFileSync(f, 'utf8')); })
+    && fsMod.existsSync(new URL('../public/vendor/LICENSE-simple-icons.txt', import.meta.url))
+    && apps.includes("mark.style.maskImage = `url(\"${app.icon}\")`;"));
+}
+
+/**
  * 1.5.11: the files a reply names can be seen and saved. On 11-16 the 求职组
  * made four résumé PDFs and a comparison picture; the replies named them but
  * the chat showed nothing - only ASCII picture names were recognised. Now any
@@ -5006,6 +5063,13 @@ async function scenarioFiles1511() {
     && chat.includes("if (item.source === 'routine' && item.turnId && quietRun(item.turnId)) return document.createDocumentFragment();")
     && liveSrc.includes("if (ev.source === 'routine' && ev.text && !isGroupMode() && ev.botId === state.botId)")
     && botsSrc.includes("if (record.kind === 'user' && record.source === 'routine') continue;"));
+  // 1.5.12: a document's card looks like a page's (badge, name, "Markdown · 12 KB ·
+  // 点开查看", a download arrow); md / txt / csv open in the app's viewer.
+  check('F5 documents: a card like a page card (kind badge, name, size, what a click does, download arrow); md / txt / csv shown in the app',
+    liveSrc.includes("const DOC_KINDS = {") && liveSrc.includes("main.appendChild(el('span', `att-badge ft-${kind.tone}`, kind.badge));")
+    && liveSrc.includes("(['md', 'txt', 'csv'].includes(ext) ? ext : '')")
+    && liveSrc.includes("const action = () => (kind.view ? '点开查看' : (local && canOpenLocally() ? '点开打开' : '点开下载'));")
+    && liveSrc.includes("md.innerHTML = mdToHtml(body);") && liveSrc.includes("const table = el('table', 'csv-table');"));
 }
 
 /**

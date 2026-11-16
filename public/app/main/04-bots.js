@@ -614,6 +614,7 @@ async function boot() {
     pollHealth();
     loadAttention();
     if (state.tab === 'computer') refreshScreen();
+    maybeCheckForUpdate();
   });
   window.addEventListener('focus', () => markSeen());
   pollHealth();
@@ -623,9 +624,10 @@ async function boot() {
   reportUiState();
   setInterval(whenVisible(reportUiState), 30000);
   deliverPendingTask();
-  // 有新版本: a few seconds after start, then every 6 hours (the machine caches GitHub's answer).
+  // 有新版本: a few seconds after start, then hourly and on coming back after
+  // half an hour (the machine asks GitHub at most hourly), 1.5.0.
   setTimeout(() => checkForUpdate().catch(() => {}), 8000);
-  setInterval(whenVisible(() => checkForUpdate().catch(() => {})), 6 * 60 * 60 * 1000);
+  setInterval(whenVisible(() => checkForUpdate().catch(() => {})), 60 * 60 * 1000);
 }
 
 /** Wrap a polling function so a hidden tab (phone screen off) does not poll. */
@@ -689,6 +691,7 @@ function updateModelUi() {
   const app = st.app || {};
   $('about-app').textContent = 'Lamplit';
   $('about-version').textContent = app.version || (state.config && state.config.version) || '—';
+  if ($('about-update-row')) $('about-update-row').hidden = !canUpdateHere();
   const server = st.server || {};
   $('about-server').textContent = `${server.host || location.hostname}${server.port ? ':' + server.port : (location.port ? ':' + location.port : '')}`;
   syncMachineBranding();

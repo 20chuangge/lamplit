@@ -417,6 +417,8 @@ public class NightshiftWatcher extends Service {
         if (jobId.isEmpty() || !jobId.matches("[A-Za-z0-9_-]+")) return;
         Thread t = new Thread(() -> {
             JSONObject reply = new JSONObject();
+            final String action = event.optString("action", "");
+            final JSONObject given = event.optJSONObject("args");
             try {
                 PhoneAgentService agent = PhoneAgentService.instance;
                 if (agent == null) {
@@ -446,6 +448,10 @@ public class NightshiftWatcher extends Service {
                     // nothing more to say
                 }
             }
+            // 「我的手机」 in the app lists what the machines did (1.5.0): the kind of
+            // step and which app, never what was typed or seen.
+            PhoneActivity.record(this, hub, action, given != null && given.optBoolean("watch", false),
+                    "open".equals(action) && given != null ? given.optString("pkg", "") : "", reply.optBoolean("ok", false));
             String token = TokenBox.open(prefs(this).getString("desk.token:" + hub, null));
             if (token == null) return;
             try {

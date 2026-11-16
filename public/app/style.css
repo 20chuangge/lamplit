@@ -3168,6 +3168,14 @@
 /* 有新版本 (1.2.166) */
 .update-banner { margin: 8px 16px 0; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel-2); font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
 .update-banner[hidden] { display: none; }
+/* The list screen's copy (1.5.0) is for the phone; on a wide window the chat's copy is in view. */
+.update-banner.side { margin: 4px 10px 8px; }
+@media (min-width: 861px) { .update-banner.side { display: none; } }
+/* the phone's screen, live (1.5.0) */
+.modal.phone-live { width: min(420px, calc(100vw - 32px)); }
+.phone-live-body { padding: 12px 16px 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.phone-live-img { max-width: 100%; max-height: calc(100vh - 170px); border-radius: 14px; border: 1px solid var(--border); background: #000; }
+.phone-live-state { font-size: 12px; color: var(--muted); text-align: center; }
 .update-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .update-notes summary { cursor: pointer; color: var(--muted); }
 .update-notes ul { margin: 6px 0 0; padding-left: 18px; }

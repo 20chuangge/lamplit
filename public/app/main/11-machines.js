@@ -107,6 +107,35 @@ async function switchMachine(url) {
   if (!res?.ok) toast(res?.error || '切换失败', true);
 }
 
+/**
+ * The phone is one of the machines (1.5.0). In the phone app, 「我的手机」 is
+ * first and goes back to it; on a computer, each phone this machine can use
+ * is listed and opens its screen live.
+ */
+function inPhoneApp() {
+  return typeof window.NightshiftShell?.openMyPhone === 'function';
+}
+let menuPhones = [];
+async function refreshMenuPhones() {
+  if (inPhoneApp()) return;
+  let data;
+  try { data = await api('/api/phone'); } catch { return; }
+  const ready = (data?.devices || []).filter((d) => d.state === 'device').map((d) => ({ serial: d.serial, model: d.model || d.serial, via: d.via }));
+  if (JSON.stringify(ready) === JSON.stringify(menuPhones)) return;
+  menuPhones = ready;
+  renderMachineMenu();
+}
+function phoneMenuRows() {
+  if (inPhoneApp()) {
+    return `<button type="button" role="menuitem" class="mm-item" data-my-phone="1"><b>我的手机</b><small>这部手机</small></button><div class="menu-sep"></div>`;
+  }
+  if (!menuPhones.length) return '';
+  return '<div class="menu-sep"></div>' + menuPhones.map((p) => `
+    <button type="button" role="menuitem" class="mm-item" data-phone-live="${escapeHtml(p.serial)}" data-phone-name="${escapeHtml(p.model)}">
+      <b>${escapeHtml(p.model)}</b><small>${escapeHtml(p.via === 'app' ? '手机 · 点开看实时屏幕' : '手机（数据线）· 点开看实时屏幕')}</small>
+    </button>`).join('');
+}
+
 /** Sidebar dropdown: every machine, plus "添加机器". */
 function renderMachineMenu() {
   const menu = $('machine-menu');
@@ -148,7 +177,7 @@ function renderMachineMenu() {
           : row(m.name, m.tailnetUrl || m.url || '', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
       );
     }
-    menu.innerHTML = rows.join('');
+    menu.innerHTML = (inPhoneApp() ? phoneMenuRows() : '') + rows.join('') + (inPhoneApp() ? '' : phoneMenuRows());
     // The machine we came from is not a peer of this hub, so its state is unknown:
     // probe it once and mark it 离线 if it does not answer.
     if (back) {
@@ -171,6 +200,7 @@ function renderMachineMenu() {
     <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" data-machine="${escapeHtml(m.url)}">
       <b>${escapeHtml(m.name)}</b>${machineAttLabel(m.url)}<small>${escapeHtml(m.sub)}</small>
     </button>`).join('')
+    + phoneMenuRows()
     + '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加机器…</button>';
 }
 
@@ -233,14 +263,10 @@ function bindPhoneBox() {
   $('phone-refresh').dataset.bound = '1';
   $('phone-refresh').addEventListener('click', () => { $('phone-shot').hidden = true; renderPhoneBox(); });
   $('phone-look').addEventListener('click', async () => {
-    const img = $('phone-shot');
-    try {
-      const res = await fetch(`/api/phone/screen?t=${Date.now()}`, { credentials: 'same-origin' });
-      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message || `HTTP ${res.status}`);
-      if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
-      img.src = URL.createObjectURL(await res.blob());
-      img.hidden = false;
-    } catch (err) { toast(err.message, true); }
+    let data;
+    try { data = await api('/api/phone'); } catch (err) { toast(err.message, true); return; }
+    const first = (data?.devices || []).find((d) => d.state === 'device');
+    if (first) openPhoneLive(first.serial, first.model || first.serial);
   });
   $('phone-adb-save').addEventListener('click', async () => {
     try {
@@ -250,6 +276,65 @@ function bindPhoneBox() {
     } catch (err) { toast(err.message, true); }
   });
 }
+
+/**
+ * The phone's screen, live (1.5.0): the next picture is asked for as soon as
+ * the last one came (at most one a second), only while the window is open and
+ * seen. The phone's own log says once that the computer is watching.
+ */
+const PHONE_LIVE_MIN_MS = 1000;
+const phoneLive = { serial: '', timer: null, busy: false };
+async function openPhoneLive(serial, name) {
+  closeMenus();
+  phoneLive.serial = String(serial || '');
+  $('phone-live-title').textContent = `${name || '手机'}的屏幕`;
+  $('phone-live-state').textContent = '正在连手机…';
+  $('phone-live-img').hidden = true;
+  $('phone-live').classList.add('open');
+  $('phone-live').setAttribute('aria-hidden', 'false');
+  $('phone-live-scrim').classList.add('show');
+  phoneLiveTick();
+}
+async function phoneLiveTick() {
+  clearTimeout(phoneLive.timer);
+  if (!phoneLive.serial || phoneLive.busy || document.hidden || !$('phone-live').classList.contains('open')) return;
+  phoneLive.busy = true;
+  const serial = phoneLive.serial;
+  const started = Date.now();
+  let wait = 3000;
+  try {
+    const res = await fetch(`/api/phone/screen?watch=1&device=${encodeURIComponent(serial)}&t=${started}`, { credentials: 'same-origin' });
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message || `HTTP ${res.status}`);
+    const blob = await res.blob();
+    if (phoneLive.serial === serial) {
+      const img = $('phone-live-img');
+      const old = img.src;
+      img.src = URL.createObjectURL(blob);
+      if (old.startsWith('blob:')) URL.revokeObjectURL(old);
+      img.hidden = false;
+      $('phone-live-state').textContent = `实时 · ${new Date().toLocaleTimeString()}`;
+      wait = Math.max(0, PHONE_LIVE_MIN_MS - (Date.now() - started));
+    }
+  } catch (err) {
+    if (phoneLive.serial === serial) $('phone-live-state').textContent = `看不到手机屏幕：${err.message}`;
+  } finally {
+    phoneLive.busy = false;
+  }
+  if (phoneLive.serial === serial) phoneLive.timer = setTimeout(phoneLiveTick, wait);
+}
+function closePhoneLive() {
+  phoneLive.serial = '';
+  clearTimeout(phoneLive.timer);
+  $('phone-live').classList.remove('open');
+  $('phone-live').setAttribute('aria-hidden', 'true');
+  $('phone-live-scrim').classList.remove('show');
+  const img = $('phone-live-img');
+  if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+  img.removeAttribute('src');
+  img.hidden = true;
+}
+// Back in view: carry on where the hidden window stopped.
+document.addEventListener('visibilitychange', () => { if (!document.hidden && phoneLive.serial) phoneLiveTick(); });
 
 function renderMachinesList() {
   bindPhoneBox();

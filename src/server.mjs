@@ -1482,7 +1482,7 @@ route('DELETE', /^\/api\/models\/(?<id>[^/]+)$/, async (_req, _res, { params, st
 let updateChecker = null;
 route('GET', /^\/api\/update$/, async (_req, _res, { query }) => {
   updateChecker = updateChecker || createUpdateChecker({ current: VERSION });
-  return updateChecker.check({ have: query.get('have') || '' });
+  return updateChecker.check({ have: query.get('have') || '', fresh: query.get('fresh') === '1' });
 });
 
 // --- attention (sidebar status) ----------------------------------------------
@@ -2029,6 +2029,7 @@ function phoneConfig() {
 //   GET /api/phone                 -> {adb:{found, path, configured}, devices:[{serial, model, state, locked, app, appName}], error?}
 //   PUT /api/phone {adbPath}       -> same; the desktop app on this computer only (it names a program to run)
 //   GET /api/phone/screen?device=  -> PNG of the phone's screen now
+//                         &watch=1  the human's live view (1.5.0): the phone logs it once, the bots' phone choice stays
 route('GET', /^\/api\/phone$/, async (_req, _res, { state }) => phoneView(state));
 
 route('PUT', /^\/api\/phone$/, async (req, _res, { body, state }) => {
@@ -2045,7 +2046,7 @@ route('PUT', /^\/api\/phone$/, async (req, _res, { body, state }) => {
 
 route('GET', /^\/api\/phone\/screen$/, async (_req, res, { state, query }) => {
   let bytes;
-  try { bytes = await state.phone.screenshotBytes({ device: query.get('device') || '' }); } catch (err) { throw httpError(409, err.code || 'PHONE_FAILED', err.message); }
+  try { bytes = await state.phone.screenshotBytes({ device: query.get('device') || '', watch: query.get('watch') === '1' }); } catch (err) { throw httpError(409, err.code || 'PHONE_FAILED', err.message); }
   res.writeHead(200, { 'content-type': imageExt(bytes) === '.jpg' ? 'image/jpeg' : 'image/png', 'content-length': bytes.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
   res.end(bytes);
   return undefined;

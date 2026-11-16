@@ -719,21 +719,48 @@ function loadAttention() {
  * this machine whether GitHub has a newer Lamplit (the machine caches it for
  * hours). Machines given to the bots are updated from this computer instead.
  */
-async function checkForUpdate() {
+/** The phone app or the desktop app on this computer: the ones that can update themselves. */
+function canUpdateHere() {
+  return typeof window.NightshiftShell?.appVersion === 'function' || (typeof window.desk?.installUpdate === 'function' && onLocalMachine());
+}
+
+// The phone app is rarely closed (1.5.0): coming back after half an hour asks again.
+const UPDATE_RECHECK_MS = 30 * 60 * 1000;
+let lastUpdateCheck = 0;
+function maybeCheckForUpdate() {
+  if (Date.now() - lastUpdateCheck > UPDATE_RECHECK_MS) checkForUpdate().catch(() => {});
+}
+
+/** fresh: ask GitHub now (检查更新 in 关于); manual: say what came of it. */
+async function checkForUpdate({ fresh = false, manual = false } = {}) {
   const phone = typeof window.NightshiftShell?.appVersion === 'function';
-  const desktop = typeof window.desk?.installUpdate === 'function' && onLocalMachine();
-  if (!phone && !desktop) return;
+  if (!canUpdateHere()) return;
+  lastUpdateCheck = Date.now();
   let have = '';
   try { have = phone ? String(window.NightshiftShell.appVersion() || '') : ''; } catch { /* older app */ }
+  const q = new URLSearchParams();
+  if (have) q.set('have', have);
+  if (fresh) q.set('fresh', '1');
   let info;
-  try { info = await api(`/api/update${have ? `?have=${encodeURIComponent(have)}` : ''}`); } catch { return; }
+  try { info = await api(`/api/update${q.toString() ? `?${q}` : ''}`); } catch (err) {
+    if (manual) toast(`没能检查更新：${err.message}`, true);
+    return;
+  }
   state.update = { ...info, phone };
+  if (manual) {
+    if (info.error) toast(`没能检查更新：${info.error}`, true);
+    else if (!info.newer) toast('已经是最新版');
+    // Asked for: show it even if this version was skipped before.
+    else { try { localStorage.removeItem('desk.updateSkip'); } catch { /* private mode */ } }
+  }
   renderUpdateBanner(state.update);
 }
 
 function renderUpdateBanner(info) {
-  const box = $('update-banner');
-  if (!box) return;
+  for (const box of [$('update-banner'), $('update-banner-side')]) if (box) fillUpdateBanner(box, info);
+}
+
+function fillUpdateBanner(box, info) {
   let skipped = '';
   try { skipped = localStorage.getItem('desk.updateSkip') || ''; } catch { /* private mode */ }
   const link = info?.phone ? info?.apkUrl : info?.setupUrl;
@@ -782,7 +809,7 @@ function renderUpdateBanner(info) {
   later.type = 'button';
   later.addEventListener('click', () => {
     try { localStorage.setItem('desk.updateSkip', info.latest); } catch { /* private mode */ }
-    box.hidden = true;
+    renderUpdateBanner(info);
   });
   actions.appendChild(go);
   if (info.page) {

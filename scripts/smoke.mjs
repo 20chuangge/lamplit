@@ -166,6 +166,7 @@ async function main() {
     await stage('1.3.2: a stopped routine\'s card can be closed or run again; 外观 and 语言 follow you between machines', scenarioV132);
     await stage('1.4.0: the phone works without the cable, through the Lamplit app', scenarioV140);
     await stage('1.4.1: one phone is listed once; it is back quickly after the computer restarts', scenarioV141);
+    await stage('1.5.0: the phone is one of the machines; the update reminder is seen', scenarioV150);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4937,6 +4938,91 @@ async function scenarioV167() {
       Boolean(tool) && tool.risk === 'MEDIUM' && registry.isGranted({ tools: ['bot_message'] }, 'task_move') && !registry.isGranted({ tools: [] }, 'task_move')
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
+  }
+}
+
+/**
+ * 1.5.0: the phone is one of the machines. The phone app opens on 「我的手机」
+ * (is it lent to the bots, what did they do with it) and switches to the
+ * computers from the top left; on the computer, the phone is in the machine
+ * list and opens its screen live. And the update reminder is seen: on the
+ * phone's list screen too, again after the app comes back, on demand in 关于,
+ * and within the hour of a release.
+ */
+async function scenarioV150() {
+  // --- V1: the machine asks GitHub at most hourly; 检查更新 asks now (once a minute at most)
+  {
+    const U = await import('../src/updates.mjs');
+    let calls = 0;
+    let t = 1_000_000;
+    const fakeFetch = async () => { calls += 1; return { ok: true, status: 200, json: async () => ({ tag_name: 'v1.5.0', html_url: 'https://github.com/20chuangge/lamplit/releases/tag/v1.5.0', body: '', assets: [] }) }; };
+    const checker = U.createUpdateChecker({ current: '1.4.1', fetchImpl: fakeFetch, now: () => t });
+    await checker.check();
+    t += 30 * 60 * 1000; await checker.check();
+    const halfHour = calls;
+    t += 31 * 60 * 1000; await checker.check();
+    const hour = calls;
+    await checker.check({ fresh: true });
+    const freshTooSoon = calls;
+    t += 61 * 1000; await checker.check({ fresh: true });
+    check('V1 update: the machine asks GitHub at most once an hour (was 6 h); 检查更新 asks again now, but not more than once a minute',
+      halfHour === 1 && hour === 2 && freshTooSoon === 2 && calls === 3, JSON.stringify({ halfHour, hour, freshTooSoon, calls }));
+    const serverSrc = await readText('../src/server.mjs');
+    check('V1 update: GET /api/update?fresh=1 is passed through', serverSrc.includes("fresh: query.get('fresh') === '1'"));
+  }
+
+  // --- V2: the reminder shows on the phone's list screen, re-checks on coming back, and 关于 has 检查更新
+  {
+    const page = await readText('../public/index.html');
+    check('V2 update: the reminder is drawn in the bot list too (the phone opens on the list, not in a chat)',
+      page.includes('id="update-banner-side"') && page.includes("for (const box of [$('update-banner'), $('update-banner-side')])"));
+    check('V2 update: coming back to the app after 30 min asks again (the phone app is rarely closed)',
+      page.includes('const UPDATE_RECHECK_MS = 30 * 60 * 1000;') && /visibilitychange[\s\S]{0,400}maybeCheckForUpdate\(\)/.test(page));
+    check('V2 update: Settings → 关于 has 检查更新, which asks now and says when it is already the newest',
+      page.includes('id="about-update-btn"') && page.includes("checkForUpdate({ fresh: true, manual: true })") && page.includes("'已经是最新版'"));
+  }
+
+  // --- V3: the computer watches the phone's screen without taking the bots' phone choice
+  {
+    const { makePhoneExec } = await import('../src/phonelink.mjs');
+    const asked = [];
+    const link = { list: () => [{ deviceId: 'd1', serial: 'lamplit:d1', model: 'Pixel 8' }], request: async (id, action, args) => { asked.push({ id, action, args }); return { image: Buffer.from('jpg').toString('base64') }; } };
+    const exec = makePhoneExec({ link });
+    await exec('', ['-s', 'lamplit:d1', 'exec-out', 'screencap', '-p'], { binary: true, watch: true });
+    await exec('', ['-s', 'lamplit:d1', 'exec-out', 'screencap', '-p'], { binary: true });
+    check('V3 live: a look from the live view tells the phone it is the human watching (its log says so, once, not a line a second)',
+      asked[0]?.action === 'screenshot' && asked[0]?.args?.watch === true && !asked[1]?.args?.watch, JSON.stringify(asked));
+
+    const { createPhone } = await import('../src/phone.mjs');
+    const two = 'List of devices attached\nAAA device product:x model:Pixel_8 transport_id:1\nBBB device product:y model:Pixel_9 transport_id:2\n';
+    const phone = createPhone({ adb: 'adb', workspaceDir: os.tmpdir(), exec: async (_f, args) => (args[0] === 'devices' ? { stdout: two } : { stdout: Buffer.from('png') }) });
+    await phone.screenshotBytes({ device: 'AAA', watch: true });
+    let code = '';
+    try { await phone.look({}); } catch (err) { code = err.code; }
+    check('V3 live: watching one phone does not make it "the phone" for the bots (with two, they still say which)', code === 'PHONE_WHICH', code);
+
+    const serverSrc = await readText('../src/server.mjs');
+    check('V3 live: GET /api/phone/screen?watch=1 is the live view', serverSrc.includes("watch: query.get('watch') === '1'"));
+    const page = await readText('../public/index.html');
+    check('V3 live: the phone is in the computer\'s machine list, and opens its screen live (a new picture as soon as the last one came, at most one a second, only while it is open and seen)',
+      page.includes('data-phone-live=') && page.includes('async function openPhoneLive(') && page.includes('const PHONE_LIVE_MIN_MS = 1000;')
+      && page.includes('/api/phone/screen?watch=1&device=') && /document\.hidden[\s\S]{0,200}phoneLive/.test(page) && page.includes('id="phone-live"'));
+  }
+
+  // --- V4: on the phone, 「我的手机」 is a machine and the app opens on it
+  {
+    const shellHtml = await readText('../mobile/shell/index.html');
+    const launcher = await readText('../mobile/shell/launcher.js');
+    const bridge = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ShellBridge.java');
+    const watcher = await readText('../mobile/android/app/src/main/java/com/desk/assistant/NightshiftWatcher.java');
+    const page = await readText('../public/index.html');
+    check('V4 my phone: the app opens on 「我的手机」 (lent to the bots or not, and what they did with it), and the computers are behind the switcher at the top left',
+      shellHtml.includes('id="my-phone"') && shellHtml.includes('id="switch-btn"') && launcher.includes('function renderMyPhone()') && launcher.includes('NightshiftShell.phoneActivity()')
+      && launcher.includes('NightshiftShell.openAccessibilitySettings()'));
+    check('V4 my phone: the phone keeps a short log of what the machines did with it (no typed text, no pictures)',
+      bridge.includes('public String phoneActivity()') && watcher.includes('PhoneActivity.record(') && !/PhoneActivity\.record\([^;]*text/.test(watcher));
+    check('V4 my phone: inside a computer, the switcher lists 「我的手机」 first and it goes back to it',
+      bridge.includes('public void openMyPhone()') && page.includes('data-my-phone') && page.includes('window.NightshiftShell.openMyPhone()'));
   }
 }
 

@@ -153,12 +153,15 @@ function wireChrome() {
     renderMachineMenu();
     toggleMenu($('machine-menu'), $('machine-btn'));
     refreshMachines();
+    refreshMenuPhones();
   });
   $('machine-menu').addEventListener('click', (event) => {
     const item = event.target.closest('button');
     if (!item || item.disabled) return;
     closeMenus();
     if (item.dataset.machineAdd) { openMachineModal(); return; }
+    if (item.dataset.myPhone) { try { window.NightshiftShell.openMyPhone(); } catch { /* older app */ } return; }
+    if (item.dataset.phoneLive) { openPhoneLive(item.dataset.phoneLive, item.dataset.phoneName); return; }
     if (item.dataset.backOrigin) { location.assign(item.dataset.backOrigin); return; }
     if (item.dataset.handoffMenu) { handoffToMachine(item.dataset.handoffMenu, item); return; }
     if (item.dataset.machine !== undefined && !item.classList.contains('current')) switchMachine(item.dataset.machine);
@@ -168,6 +171,9 @@ function wireChrome() {
   $('vnc-modal-close').addEventListener('click', closeMachineModal);
   $('vnc-cancel').addEventListener('click', closeMachineModal);
   $('vnc-scrim').addEventListener('click', closeMachineModal);
+  $('phone-live-close').addEventListener('click', closePhoneLive);
+  $('phone-live-scrim').addEventListener('click', closePhoneLive);
+  $('about-update-btn')?.addEventListener('click', () => checkForUpdate({ fresh: true, manual: true }));
   $('vnc-save').addEventListener('click', saveMachineFromModal);
   $('vnc-modal').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && event.target.matches('input')) {
@@ -180,6 +186,7 @@ function wireChrome() {
   window.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if ($('vnc-modal')?.classList.contains('open')) { closeMachineModal(); return; }
+    if ($('phone-live')?.classList.contains('open')) { closePhoneLive(); return; }
     if (document.body.classList.contains('panel-max')) togglePanelMax(false);
   });
   document.querySelectorAll('input[name="approval-level"]').forEach((radio) => {

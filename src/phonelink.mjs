@@ -116,7 +116,8 @@ export function makePhoneExec({ adbPath = () => '', link, adbExec = runAdb }) {
     }
     if (a === 'exec-out' && b === 'uiautomator') return { stdout: String((await ask('ui', {}, { timeoutMs: 30000 })).xml || '') };
     if (a === 'exec-out' && b === 'screencap') {
-      const shot = await ask('screenshot', {}, { timeoutMs: 40000 });
+      // The human's live view (1.5.0): the phone's log says "watched" once, not a line a second.
+      const shot = await ask('screenshot', opts.watch ? { watch: true } : {}, { timeoutMs: 40000 });
       const bytes = Buffer.from(String(shot.image || shot.png || ''), 'base64');
       return { stdout: opts.binary ? bytes : bytes.toString('latin1') };
     }

@@ -12,7 +12,10 @@
 
 export const RELEASES_API = 'https://api.github.com/repos/20chuangge/lamplit/releases/latest';
 export const RELEASE_DOWNLOAD_PREFIX = 'https://github.com/20chuangge/lamplit/releases/download/';
-const CACHE_MS = 6 * 60 * 60 * 1000;
+// Hourly (1.5.0): with 6 h a release reached the apps only the next day.
+const CACHE_MS = 60 * 60 * 1000;
+// 检查更新 in 关于 asks GitHub now, but not more than once a minute.
+const FRESH_MIN_MS = 60 * 1000;
 const FAIL_CACHE_MS = 30 * 60 * 1000;
 
 /** 1.2.10 > 1.2.9; anything that is not numbers sorts as 0. -> -1 | 0 | 1 */
@@ -42,9 +45,9 @@ export function createUpdateChecker({ current, fetchImpl = globalThis.fetch, now
   let failedAt = 0;
   let lastError = '';
 
-  async function latest() {
+  async function latest({ fresh = false } = {}) {
     const t = now();
-    if (cached && t - cachedAt < CACHE_MS) return cached;
+    if (cached && t - cachedAt < (fresh ? FRESH_MIN_MS : CACHE_MS)) return cached;
     if (!cached && failedAt && t - failedAt < FAIL_CACHE_MS) throw new Error(lastError || 'update check failed');
     try {
       const res = await fetchImpl(RELEASES_API, { headers: { accept: 'application/vnd.github+json', 'user-agent': 'Lamplit-update-check' }, signal: AbortSignal.timeout?.(15000) });
@@ -75,10 +78,10 @@ export function createUpdateChecker({ current, fetchImpl = globalThis.fetch, now
 
   return {
     /** -> {current, latest, newer, page, setupUrl, apkUrl, notes} or {current, newer:false, error} */
-    async check({ have = '' } = {}) {
+    async check({ have = '', fresh = false } = {}) {
       const mine = /^\d+\.\d+\.\d+$/.test(String(have)) ? String(have) : String(current || '');
       try {
-        const info = await latest();
+        const info = await latest({ fresh });
         return { current: mine, ...info, newer: compareVersions(info.latest, mine) > 0 };
       } catch (err) {
         return { current: mine, newer: false, error: err.message };

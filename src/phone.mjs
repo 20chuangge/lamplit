@@ -177,7 +177,7 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
   }
 
   /** The phone meant: the one asked for (serial or model), else the only one. */
-  async function pick(device) {
+  async function pick(device, { remember = true } = {}) {
     const list = await devices();
     const ready = list.filter((d) => d.state === 'device');
     const want = String(device || '').trim().toLowerCase();
@@ -185,7 +185,8 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
       const hit = list.find((d) => d.serial.toLowerCase() === want || d.model.toLowerCase() === want) || list.find((d) => d.model.toLowerCase().includes(want));
       if (!hit) throw fail('PHONE_NOT_CONNECTED', `no phone "${device}" on this computer; connected: ${list.map((d) => `${d.model || d.serial} (${d.state})`).join(', ') || 'none'}`);
       if (hit.state !== 'device') throw fail('PHONE_NOT_READY', stateHelp(hit));
-      return (lastSerial = hit.serial);
+      if (remember) lastSerial = hit.serial;
+      return hit.serial;
     }
     if (!ready.length) {
       const odd = list[0];
@@ -194,7 +195,9 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     if (ready.length > 1 && !ready.some((d) => d.serial === lastSerial)) {
       throw fail('PHONE_WHICH', `more than one phone is connected (${ready.map((d) => d.model || d.serial).join(', ')}); say which with device`);
     }
-    return (lastSerial = ready.find((d) => d.serial === lastSerial)?.serial || ready[0].serial);
+    const chosen = ready.find((d) => d.serial === lastSerial)?.serial || ready[0].serial;
+    if (remember) lastSerial = chosen;
+    return chosen;
   }
   const stateHelp = (d) => (d.state === 'unauthorized'
     ? `the phone ${d.model || d.serial} has not allowed this computer yet: ask the human to unlock it and tap 允许 on the USB debugging prompt`
@@ -441,9 +444,10 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     }
   }
 
-  async function screenshotBytes({ device } = {}) {
-    const serial = await pick(device);
-    const { stdout } = await run(['-s', serial, 'exec-out', 'screencap', '-p'], { timeout: 20000, binary: true });
+  /** watch: the human's live view on the computer (1.5.0), which leaves the bots' phone choice alone. */
+  async function screenshotBytes({ device, watch = false } = {}) {
+    const serial = await pick(device, { remember: !watch });
+    const { stdout } = await run(['-s', serial, 'exec-out', 'screencap', '-p'], { timeout: 20000, binary: true, watch: Boolean(watch) });
     return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '');
   }
 

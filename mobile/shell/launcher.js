@@ -45,6 +45,8 @@
     scanBtn: $('scan-btn'),
     previewBtn: $('preview-btn'),
     machines: $('machines'),
+    switchBtn: $('switch-btn'),
+    switchPanel: $('switch-panel'),
     connectBack: $('connect-back'),
     machineList: $('machine-list'),
     currentHub: $('current-hub'),
@@ -846,21 +848,109 @@
     if (!prefill && !state.hub) dom.hubUrl.focus();
   }
 
+  // ---------------------------------------------------------------- 我的手机 (1.5.0)
+  const shellApi = () => window.NightshiftShell || null;
+  const KIND_LABEL = {
+    look: '看了屏幕',
+    watch: '你在电脑上看了实时屏幕',
+    tap: '点了一下',
+    swipe: '滑了一下',
+    type: '输入了文字',
+    key: '按了键',
+    open: '打开了 App',
+    apps: '看了装了哪些 App',
+  };
+
+  function whenLabel(at) {
+    const d = new Date(Number(at) || 0);
+    const now = new Date();
+    const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    if (d.toDateString() === now.toDateString()) return hm;
+    const y = new Date(now);
+    y.setDate(now.getDate() - 1);
+    if (d.toDateString() === y.toDateString()) return `昨天 ${hm}`;
+    return `${d.getMonth() + 1}-${d.getDate()} ${hm}`;
+  }
+
+  /** This phone: lent to the bots or not, and what the machines did with it. */
+  async function renderMyPhone() {
+    const stateEl = $('mp-agent-state');
+    const btn = $('mp-agent-btn');
+    const list = $('mp-activity');
+    const sub = $('switch-sub');
+    if (!stateEl || !list) return;
+    const shell = shellApi();
+    let on = false;
+    try { on = Boolean(shell && shell.phoneAgentEnabled && shell.phoneAgentEnabled()); } catch { /* older app */ }
+    stateEl.textContent = !shell
+      ? '在 Lamplit App 里才能把这部手机借给机器人。'
+      : on
+        ? '已打开：你各台机器上的机器人可以看屏幕、点、输入、打开 App。付款、发送、发布、同意条款每次都会先问你；锁屏时不会解锁，也不会输入密码。通知栏里点「停止」随时关掉。'
+        : '还没打开。打开后，你电脑或云服务器上的机器人不用数据线也能用这部手机。';
+    stateEl.classList.toggle('on', on);
+    if (btn) {
+      btn.hidden = !shell || typeof shell.openAccessibilitySettings !== 'function';
+      btn.textContent = on ? '去系统设置里关掉' : '打开「让机器人用这部手机」';
+    }
+    if (sub) sub.textContent = on ? '这部手机 · 机器人可以用' : '这部手机';
+
+    let items = [];
+    try { items = JSON.parse((shell && typeof shell.phoneActivity === 'function' && NightshiftShell.phoneActivity()) || '[]'); } catch { items = []; }
+    const hubs = await readHubs().catch(() => []);
+    const nameOf = (hub) => {
+      const h = hubs.find((x) => x.url === hub || x.best === hub || (x.alt || []).includes(hub));
+      return h ? (h.name || hostLabel(h.url)) : hostLabel(hub);
+    };
+    list.textContent = '';
+    if (!Array.isArray(items) || !items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'mp-empty';
+      empty.textContent = '还没有。机器人用这部手机时，这里会一条条记下来（只记做了什么，不记输入的内容和屏幕画面）。';
+      list.appendChild(empty);
+      return;
+    }
+    for (const it of items.slice(0, 20)) {
+      const row = document.createElement('div');
+      row.className = `mp-row${it.ok === false ? ' bad' : ''}`;
+      const time = document.createElement('time');
+      time.textContent = whenLabel(it.at);
+      const what = document.createElement('div');
+      what.className = 'what';
+      let text = `${nameOf(String(it.hub || ''))} · ${KIND_LABEL[it.kind] || it.kind}`;
+      if (it.kind === 'open' && it.pkg) text += `（${it.pkg}）`;
+      if (Number(it.count) > 1) text += ` ×${Number(it.count)}`;
+      if (it.ok === false) text += ' · 没成功';
+      what.textContent = text;
+      row.append(time, what);
+      list.appendChild(row);
+    }
+  }
+
+  function setSwitchOpen(open) {
+    if (!dom.switchPanel || !dom.switchBtn) return;
+    dom.switchPanel.hidden = !open;
+    dom.switchBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) void renderMachines();
+  }
+
   function showConnected() {
-    // The app opens on the machine list: every hub this phone has paired with,
-    // with its live state, so a switched-off computer is obvious instead of a
-    // dead button.
+    // The app opens on 「我的手机」 (1.5.0); the machines this phone has paired
+    // with are behind the switcher, each with its live state, so a
+    // switched-off computer is obvious instead of a dead button.
     if (dom.currentHub) dom.currentHub.textContent = state.hub || '—';
     if (dom.shellVersion) dom.shellVersion.textContent = shellLabel();
     if (dom.currentStatus) setStatus('检测中…', 'warn');
     show('connected');
+    void renderMyPhone();
     void renderMachines().then(() => mergePeerMachines());
     void syncThemeFromHub();
     void refreshStatus();
     // Keep the online/offline tags honest while this screen is open.
     if (showConnected._timer) clearInterval(showConnected._timer);
     showConnected._timer = setInterval(() => {
-      if (state.view === 'connected') void renderMachines();
+      if (state.view !== 'connected') return;
+      void renderMachines();
+      void renderMyPhone();
     }, 15000);
   }
 
@@ -1309,12 +1399,17 @@
     showConnect('');
   }
 
-  // The app came back to the foreground and the launchpad is showing: re-check.
+  // The app came back to the foreground and the launchpad is showing: re-check
+  // (and say whether 「让机器人用这部手机」 is on now, back from the system settings).
   if (app && typeof app.addListener === 'function') {
     app.addListener('appStateChange', ({ isActive }) => {
-      if (isActive && state.view === 'connected') void refreshStatus();
+      if (isActive && state.view === 'connected') { void refreshStatus(); void renderMyPhone(); }
     });
   }
+  dom.switchBtn?.addEventListener('click', () => setSwitchOpen(dom.switchPanel.hidden));
+  $('mp-agent-btn')?.addEventListener('click', () => {
+    try { NightshiftShell.openAccessibilitySettings(); } catch { /* older app */ }
+  });
 
   boot().catch((err) => {
     console.error('[desk] boot failed', err);

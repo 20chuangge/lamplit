@@ -74,6 +74,9 @@
         </div>
       </div>
 
+      <!-- 有新版本 on the list screen too (1.5.0): the phone app opens on the list, not in a chat -->
+      <div class="update-banner side" id="update-banner-side" hidden></div>
+
       <div class="sidebar-scroll">
         <div class="side-section">
           <div class="side-head"><span>助手</span><span id="bot-count" class="count">0</span></div>
@@ -741,7 +744,7 @@
           <img class="phone-shot" id="phone-shot" alt="手机屏幕" hidden />
           <div class="btn-row">
             <button class="btn tiny" id="phone-refresh" type="button">刷新</button>
-            <button class="btn tiny" id="phone-look" type="button" hidden>看一眼屏幕</button>
+            <button class="btn tiny" id="phone-look" type="button" hidden>实时看屏幕</button>
           </div>
           <div id="phone-adb-row" hidden>
             <label class="lbl" for="phone-adb">adb 在哪（Android platform-tools 里的 adb.exe）</label>
@@ -921,6 +924,7 @@
         <div class="kv"><span class="k">机器地址</span><span class="v" id="about-origin">—</span></div>
         <div class="kv"><span class="k">时区</span><span class="v" id="timezone-pill">—</span></div>
         <div class="kv"><span class="k">访问控制</span><span class="v" id="about-auth">—</span></div>
+        <div class="btn-row" id="about-update-row" hidden><button class="btn tiny" id="about-update-btn" type="button">检查更新</button></div>
       </section>
     </div>
   </div>
@@ -972,6 +976,18 @@
     <button class="btn" id="clip-mine" type="button" hidden>粘贴手机剪贴板</button>
   </div>
   <div class="row-note">密码、验证码请直接在远端屏幕里输入，不要贴进聊天。中文由那台机器自己写进它的剪贴板（Linux 需要 xclip 或 wl-clipboard，安装脚本会装）；没有时中文会变成 ?，请用「键盘」输入。</div>
+</div>
+<!-- the phone's screen, live (1.5.0) -->
+<div class="scrim" id="phone-live-scrim" aria-hidden="true"></div>
+<div class="modal phone-live" id="phone-live" role="dialog" aria-modal="true" aria-labelledby="phone-live-title" aria-hidden="true">
+  <div class="modal-head">
+    <span class="modal-title" id="phone-live-title">手机屏幕</span>
+    <button class="icon-btn sm" id="phone-live-close" type="button" aria-label="关闭">✕</button>
+  </div>
+  <div class="phone-live-body">
+    <img class="phone-live-img" id="phone-live-img" alt="手机屏幕" hidden />
+    <div class="phone-live-state" id="phone-live-state">正在连手机…</div>
+  </div>
 </div>
 <div class="scrim" id="vnc-scrim" aria-hidden="true"></div>
 <div class="modal" id="vnc-modal" role="dialog" aria-modal="true" aria-labelledby="vnc-modal-title" aria-hidden="true">

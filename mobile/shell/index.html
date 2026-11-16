@@ -157,29 +157,6 @@
   #scan-status { position: absolute; left: 24px; right: 24px; top: calc(48px + env(safe-area-inset-top)); margin: 0; text-align: center; color: #fff; font-size: 15px; line-height: 1.5; }
   #scan-cancel { width: auto; padding: 0 36px; position: absolute; left: 50%; bottom: calc(40px + env(safe-area-inset-bottom)); transform: translateX(-50%); min-width: 140px; color: #fff; border: 1px solid rgba(255, 255, 255, 0.6); background: rgba(0, 0, 0, 0.45); }
   #connect-back[hidden] { display: none; }
-  /* 我的手机 (1.5.0) */
-  .switch { display: flex; align-items: center; gap: 10px; width: 100%; height: auto; padding: 6px 4px; margin: 0 0 14px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-  .switch .mark { width: 28px; height: 28px; border-radius: 8px; background: url("ui/icons/icon-128.png") center / cover no-repeat; flex: none; }
-  .switch .sw-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-  .switch .sw-text b { font-size: 16px; font-weight: 650; }
-  .switch .sw-text small { font-size: 12px; color: var(--dim); }
-  .switch .caret { color: var(--dim); font-size: 12px; }
-  .switch[aria-expanded="true"] .caret { transform: rotate(180deg); }
-  .switch-panel { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 14px; background: var(--panel); }
-  .switch-panel[hidden] { display: none; }
-  .switch-panel .machines { margin-top: 0; }
-  .mp-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; background: var(--panel-3, var(--panel)); }
-  .mp-title { font-size: 13.5px; font-weight: 600; margin-bottom: 6px; }
-  .mp-state { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
-  .mp-state.on { color: var(--green); }
-  .mp-activity { display: flex; flex-direction: column; }
-  .mp-row { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
-  .mp-row:first-child { border-top: 0; }
-  .mp-row time { flex: none; width: 64px; color: var(--dim); font-family: var(--mono); font-size: 11px; }
-  .mp-row .what { flex: 1; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
-  .mp-row .what small { color: var(--dim); }
-  .mp-row.bad .what { color: var(--amber); }
-  .mp-empty { font-size: 12px; color: var(--dim); line-height: 1.6; }
   .machines-title { font-size: 11.5px; color: var(--dim); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px; }
   .machines-hint { font-size: 11px; color: var(--dim); margin-top: 8px; }
   .machine {
@@ -362,36 +339,26 @@
   </section>
 
   <!-- 2. which machine to open: the app's home screen -->
-  <!-- 2. 我的手机 (1.5.0): this phone is one of the machines, and the app opens on it.
-       The computers are behind the switcher at the top left, as inside a machine. -->
   <section id="connected" class="card" hidden>
-    <button id="switch-btn" class="switch" type="button" aria-expanded="false" aria-controls="switch-panel" title="切换机器">
-      <span class="mark" aria-hidden="true"></span>
-      <span class="sw-text"><b>我的手机</b><small id="switch-sub">这部手机</small></span>
-      <span class="caret" aria-hidden="true">▾</span>
-    </button>
-
-    <div id="switch-panel" class="switch-panel" hidden>
-      <div class="machines-title">切换到一台机器</div>
-      <div id="machines" class="machines"><div id="machine-list"></div></div>
-      <p class="hint">点一台就进去，离线的会标出来。长按一行可以删除它。进去之后左上角能切回「我的手机」。</p>
-      <div class="row" style="margin-top:12px">
-        <button id="change-btn" class="primary" type="button">添加机器</button>
-        <button id="forget-btn" class="ghost" type="button">全部忘记</button>
+    <div class="brand">
+      <div class="mark" aria-hidden="true"></div>
+      <div>
+        <div class="name">Lamplit</div>
+        <div class="sub">personal assistant · mobile</div>
       </div>
     </div>
 
-    <div id="my-phone" class="my-phone">
-      <div class="mp-card">
-        <div class="mp-title">让机器人用这部手机</div>
-        <p class="mp-state" id="mp-agent-state">正在读取…</p>
-        <button id="mp-agent-btn" class="primary" type="button" hidden>打开「让机器人用这部手机」</button>
-      </div>
-      <div class="mp-card">
-        <div class="mp-title">机器人最近在这部手机上做的事</div>
-        <div id="mp-activity" class="mp-activity"></div>
-      </div>
-      <p class="hint">机器人在你的电脑或云服务器上运行。要和它们说话，点左上角切到那台机器；在电脑上，机器列表里点这部手机能看实时屏幕。</p>
+    <h1>选择机器<span class="en">Choose a machine</span></h1>
+    <p class="lede">点一台就进去。离线的那台会标出来，开机后再点即可。</p>
+
+    <div id="machines" class="machines"><div id="machine-list"></div></div>
+
+    <p class="hint">
+      长按一行可以删除它。进去之后左上角还能再切换机器，和电脑上一样。
+    </p>
+    <div class="row" style="margin-top:14px">
+      <button id="change-btn" class="primary" type="button">添加机器</button>
+      <button id="forget-btn" class="ghost" type="button">全部忘记</button>
     </div>
   </section>
 

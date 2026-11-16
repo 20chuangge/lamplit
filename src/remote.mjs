@@ -107,6 +107,34 @@ export function probeTcp(host, port, timeoutMs = 1800) {
   });
 }
 
+/** The machine's Tailscale IPv4 from `tailscale ip -4` (1.5.1), or ''. */
+export function parseTailnetIp(output) {
+  return /^(100\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*$/m.exec(String(output || ''))?.[1] || '';
+}
+
+/**
+ * Does a Lamplit answer there over HTTP? (1.5.1) Any answer counts - an
+ * unpaired machine says 401. A bare TCP connect is not enough: a cloud
+ * provider's edge can accept the connection and send nothing back.
+ */
+export async function probeHttp(url, timeoutMs = 5000) {
+  try {
+    const res = await fetch(`${String(url).replace(/\/$/, '')}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    await res.body?.cancel?.().catch?.(() => {});
+    return res.status > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** The first address that answers, in the order given ('' for none). */
+export async function firstAnswering(urls, probe = probeHttp) {
+  for (const url of urls) {
+    if (url && (await probe(url))) return url;
+  }
+  return '';
+}
+
 // ---------------------------------------------------------------------------
 // ssh helpers
 // ---------------------------------------------------------------------------
@@ -615,17 +643,33 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         cleanupPack(packed.file);
       }
 
-      setProgress(job, '确认这台电脑能连上它…');
-      let reachable = false;
-      for (let attempt = 0; attempt < 10 && !reachable; attempt += 1) {
-        reachable = (await probeTcp(host, hubPort, 1500)).reachable;
-        if (!reachable) await new Promise((resolve) => setTimeout(resolve, 1500));
+      // A cloud server is usually reachable only through Tailscale (its port
+      // 4390 rightly closed to the internet), 1.5.1: ask it over SSH for its
+      // 100.x address while Tailscale comes up, and keep it with the machine.
+      if (tailscaleKey && !/没装/.test(job.tailscale || '')) {
+        setProgress(job, '等 Tailscale 给这台机器分配地址（100 开头）…');
+        const cmd = windows ? `powershell -NoProfile -Command "& 'C:\\Program Files\\Tailscale\\tailscale.exe' ip -4"` : 'tailscale ip -4 2>/dev/null';
+        for (let attempt = 0; attempt < 30 && !job.tailnetUrl; attempt += 1) {
+          const out = await execStream(client, cmd, { timeoutMs: 10000 }).catch(() => ({ output: '' }));
+          const ip = parseTailnetIp(out.output);
+          if (ip) job.tailnetUrl = `http://${ip}:${hubPort}`;
+          else await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+        if (job.tailnetUrl) job.tailscale = `Tailscale 装好了：${job.tailnetUrl.replace(/^http:\/\//, '').replace(/:\d+$/, '')}，在外面也能连上这台机器`;
       }
+
+      setProgress(job, '确认这台电脑能连上它…');
+      job.reachUrl = '';
+      for (let attempt = 0; attempt < 10 && !job.reachUrl; attempt += 1) {
+        job.reachUrl = await firstAnswering([job.hubUrl, job.tailnetUrl || '']);
+        if (!job.reachUrl) await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      const reachable = Boolean(job.reachUrl);
       const model = reachable ? modelToShare() : null;
       if (model) {
         setProgress(job, '把模型设置同步过去…');
         try {
-          await shareModel(job.hubUrl, job.pairCode, model, voiceToShare(), visionToShare());
+          await shareModel(job.reachUrl, job.pairCode, model, voiceToShare(), visionToShare());
           job.modelShared = true;
         } catch (err) {
           job.warning = job.warning || `装好了，但模型设置没同步过去（${err.message}）；切过去后在「设置 → 模型」里填一下。`;
@@ -633,7 +677,9 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       }
       if (!reachable) {
         job.state = 'warning';
-        job.message = `装好了，但从这台电脑连不上 ${host}:${hubPort}；检查两台机器之间的防火墙或安全组。`;
+        job.message = tailscaleKey
+          ? `装好了，但从这台电脑连不上 ${host}:${hubPort}，也还没等到它的 Tailscale 地址；几分钟后在机器列表里点它试试，或检查这台电脑的 Tailscale 是否在线。`
+          : `装好了，但从这台电脑连不上 ${host}:${hubPort}；检查两台机器之间的防火墙或安全组（云服务器建议填 Tailscale 密钥，不用对外开放端口）。`;
       } else if (job.warning) {
         job.state = 'warning';
         job.message = job.warning;

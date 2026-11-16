@@ -93,6 +93,36 @@ export async function saveProfile({ id, label, provider, baseUrl, model, apiKey 
   return (await publicProfiles()).find((p) => p.id === next.id);
 }
 
+/**
+ * 同步到所有机器 (1.5.1): this computer's 其他模型, under the same ids so a
+ * bot that picked one finds it on every machine. Adds or updates; models only
+ * this machine has stay. A key comes along when this computer has its own.
+ */
+export async function upsertProfiles(list = []) {
+  const profiles = await listProfiles();
+  const keys = await readKeys();
+  let changedKeys = false;
+  for (const item of (Array.isArray(list) ? list : []).slice(0, MAX_PROFILES)) {
+    const id = slug(item?.id);
+    if (!id) continue;
+    const clean = validateSettings({ provider: item.provider, baseUrl: item.baseUrl, model: item.model });
+    if (clean.provider === 'mock') continue;
+    const next = { id, label: String(item.label || '').trim().slice(0, 40) || clean.model, provider: clean.provider, baseUrl: clean.baseUrl, model: clean.model };
+    const i = profiles.findIndex((p) => p.id === id);
+    if (i >= 0) profiles[i] = next;
+    else if (profiles.length < MAX_PROFILES) profiles.push(next);
+    else continue;
+    if (typeof item.apiKey === 'string' && item.apiKey.trim()) { keys[id] = item.apiKey.trim(); changedKeys = true; }
+  }
+  await writeJsonAtomic(profilesFile(), profiles);
+  if (changedKeys) {
+    await writeJsonAtomic(keysFile(), keys);
+    try { await fsp.chmod(keysFile(), 0o600); } catch { /* Windows */ }
+  }
+  invalidate();
+  return publicProfiles();
+}
+
 export async function deleteProfile(id) {
   const profiles = await listProfiles();
   if (!profiles.some((p) => p.id === id)) throw modelError(404, 'MODEL_NOT_FOUND', `no model "${id}"`);

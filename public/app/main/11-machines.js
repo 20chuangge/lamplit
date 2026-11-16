@@ -107,35 +107,6 @@ async function switchMachine(url) {
   if (!res?.ok) toast(res?.error || '切换失败', true);
 }
 
-/**
- * The phone is one of the machines (1.5.0). In the phone app, 「我的手机」 is
- * first and goes back to it; on a computer, each phone this machine can use
- * is listed and opens its screen live.
- */
-function inPhoneApp() {
-  return typeof window.NightshiftShell?.openMyPhone === 'function';
-}
-let menuPhones = [];
-async function refreshMenuPhones() {
-  if (inPhoneApp()) return;
-  let data;
-  try { data = await api('/api/phone'); } catch { return; }
-  const ready = (data?.devices || []).filter((d) => d.state === 'device').map((d) => ({ serial: d.serial, model: d.model || d.serial, via: d.via }));
-  if (JSON.stringify(ready) === JSON.stringify(menuPhones)) return;
-  menuPhones = ready;
-  renderMachineMenu();
-}
-function phoneMenuRows() {
-  if (inPhoneApp()) {
-    return `<button type="button" role="menuitem" class="mm-item" data-my-phone="1"><b>我的手机</b><small>这部手机</small></button><div class="menu-sep"></div>`;
-  }
-  if (!menuPhones.length) return '';
-  return '<div class="menu-sep"></div>' + menuPhones.map((p) => `
-    <button type="button" role="menuitem" class="mm-item" data-phone-live="${escapeHtml(p.serial)}" data-phone-name="${escapeHtml(p.model)}">
-      <b>${escapeHtml(p.model)}</b><small>${escapeHtml(p.via === 'app' ? '手机 · 点开看实时屏幕' : '手机（数据线）· 点开看实时屏幕')}</small>
-    </button>`).join('');
-}
-
 /** Sidebar dropdown: every machine, plus "添加机器". */
 function renderMachineMenu() {
   const menu = $('machine-menu');
@@ -177,7 +148,7 @@ function renderMachineMenu() {
           : row(m.name, m.tailnetUrl || m.url || '', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
       );
     }
-    menu.innerHTML = (inPhoneApp() ? phoneMenuRows() : '') + rows.join('') + (inPhoneApp() ? '' : phoneMenuRows());
+    menu.innerHTML = rows.join('');
     // The machine we came from is not a peer of this hub, so its state is unknown:
     // probe it once and mark it 离线 if it does not answer.
     if (back) {
@@ -200,7 +171,6 @@ function renderMachineMenu() {
     <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" data-machine="${escapeHtml(m.url)}">
       <b>${escapeHtml(m.name)}</b>${machineAttLabel(m.url)}<small>${escapeHtml(m.sub)}</small>
     </button>`).join('')
-    + phoneMenuRows()
     + '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加机器…</button>';
 }
 
@@ -1156,7 +1126,7 @@ async function startRemoteProvision(options) {
     if (barStep) barStep.textContent = `完成 · 用时 ${clock(Date.now() - t0)}`;
     let paired = false;
     if (window.desk?.addMachine) {
-      const added = await window.desk.addMachine({ url: job.hubUrl, name: options.name, pairCode: job.pairCode });
+      const added = await window.desk.addMachine({ url: job.hubUrl, tailnetUrl: job.tailnetUrl, name: options.name, pairCode: job.pairCode });
       paired = Boolean(added?.paired);
       await refreshMachines();
     }

@@ -179,24 +179,6 @@ public class ShellBridge {
         }
     }
 
-    /** What the machines did with this phone lately (1.5.0), JSON [{at, hub, kind, pkg, ok, count}]. */
-    @JavascriptInterface
-    public String phoneActivity() {
-        if (!fromTrustedPage()) return "[]";
-        return PhoneActivity.read(activity);
-    }
-
-    /** 「我的手机」 in a machine's switcher (1.5.0): back to the app's own page. */
-    @JavascriptInterface
-    public void openMyPhone() {
-        if (!(activity instanceof BridgeActivity)) return;
-        activity.runOnUiThread(() -> {
-            com.getcapacitor.Bridge bridge = ((BridgeActivity) activity).getBridge();
-            if (bridge == null || bridge.getWebView() == null || bridge.getLocalUrl() == null) return;
-            bridge.getWebView().loadUrl(bridge.getLocalUrl());
-        });
-    }
-
     /** 「让机器人用这部手机」 is on (the accessibility service is running) - 1.4.0. */
     @JavascriptInterface
     public boolean phoneAgentEnabled() {

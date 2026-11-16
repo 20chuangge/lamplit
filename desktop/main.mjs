@@ -124,8 +124,15 @@ async function sharePeers() {
   if (HUB_MODE || !serverPort) return;
   const machines = [];
   for (const m of readMachines()) {
-    const raw = await session.defaultSession.cookies.get({ url: m.url, name: 'desk_session' }).catch(() => []);
-    const token = raw[0]?.value || '';
+    // Paired on its Tailscale address (a cloud server, 1.5.1), the login is
+    // there: without it the machine was left out, and an app's sign-in
+    // (Notion) coming back to this computer could not be passed on to it.
+    let token = '';
+    for (const u of [m.url, m.tailnetUrl].filter(Boolean)) {
+      const raw = await session.defaultSession.cookies.get({ url: u, name: 'desk_session' }).catch(() => []);
+      token = raw[0]?.value || '';
+      if (token) break;
+    }
     if (token) machines.push({ name: m.name || m.url, url: m.url, tailnetUrl: m.tailnetUrl || '', token });
   }
   // This computer, when it accepts other devices (LAN or Tailscale): it goes in
@@ -1102,11 +1109,15 @@ handle('desk:take-pending-message', () => {
 
 // A machine Desk just provisioned: remember it under the human's name and pair
 // with the code its installer printed, so switching to it is one click.
-handle('desk:add-machine', async (_event, { url, name, pairCode } = {}) => {
+handle('desk:add-machine', async (_event, { url, name, pairCode, tailnetUrl } = {}) => {
   const target = normalizeHub(url);
   if (!target) return { ok: false, error: '地址格式不对' };
-  const paired = await pairWith(target, pairCode);
-  rememberMachine(target, { name: String(name || '').trim().slice(0, 40) || undefined, addedAt: new Date().toISOString() });
+  // A cloud server answers only on Tailscale (1.5.1): pair there when the
+  // public address does not, and keep the address with the machine.
+  const alt = /^http:\/\/100\.\d+\.\d+\.\d+:\d+$/.test(String(tailnetUrl || '')) ? String(tailnetUrl) : '';
+  if (alt) await tailnetDirect();
+  const paired = (await pairWith(target, pairCode)) || (alt && await pairWith(alt, pairCode));
+  rememberMachine(target, { name: String(name || '').trim().slice(0, 40) || undefined, addedAt: new Date().toISOString(), ...(alt ? { tailnetUrl: alt } : {}) });
   refreshChrome();
   return { ok: true, url: target, paired };
 });
@@ -1141,6 +1152,29 @@ handle('desk:sync-model', async () => {
     const v = readSecretJson(path.join(HOME, 'data', 'vision.json'), masterKey());
     if (v?.apiKey) vision = { baseUrl: v.baseUrl || '', model: v.model || '', apiKey: v.apiKey };
   } catch { /* no vision key here */ }
+  // 生图 / 生视频 go along too (1.5.1): before, they reached the machines that
+  // existed when they were saved, so a machine added later never had them.
+  const media = {};
+  try {
+    const m = readSecretJson(path.join(HOME, 'data', 'media.json'), masterKey()) || {};
+    for (const kind of ['image', 'video']) {
+      const one = m[kind];
+      if (one?.apiKey) media[kind] = { service: one.service || '', baseUrl: one.baseUrl || '', model: one.model || '', apiKey: one.apiKey };
+    }
+  } catch { /* no media keys here */ }
+  // 其他模型 too (1.5.1), under the same ids, each with its own key when it has one.
+  let extra = [];
+  try {
+    const list = JSON.parse(fs.readFileSync(path.join(HOME, 'config', 'models.json'), 'utf8'));
+    let keys = {};
+    try { keys = readSecretJson(path.join(HOME, 'data', 'model-keys.json'), masterKey()) || {}; } catch { /* no own keys */ }
+    if (Array.isArray(list)) {
+      extra = list.filter((p) => p?.id && p.provider && p.model).map((p) => ({
+        id: p.id, label: p.label || '', provider: p.provider, baseUrl: p.baseUrl || '', model: p.model,
+        ...(typeof keys[p.id] === 'string' && keys[p.id] ? { apiKey: keys[p.id] } : {}),
+      }));
+    }
+  } catch { /* no other models here */ }
   const results = [];
   for (const machine of readMachines()) {
     const r = await putToMachine(machine.url, '/api/settings', model);
@@ -1151,6 +1185,16 @@ handle('desk:sync-model', async () => {
     if (r.ok && vision) {
       const v = await putToMachine(machine.url, '/api/vision', vision);
       if (!v.ok) Object.assign(r, { ok: false, error: L(`看图：${v.error}`, `vision: ${v.error}`) });
+    }
+    if (r.ok && extra.length) {
+      // POST: the same helper, the route takes a POST (an older machine says 404: it gets them after its update).
+      const v = await putToMachine(machine.url, '/api/models/sync', { models: extra }, 'POST');
+      if (!v.ok && !/404/.test(v.error)) Object.assign(r, { ok: false, error: L(`其他模型：${v.error}`, `other models: ${v.error}`) });
+    }
+    for (const kind of Object.keys(media)) {
+      if (!r.ok) break;
+      const v = await putToMachine(machine.url, `/api/media/${kind}`, media[kind]);
+      if (!v.ok) Object.assign(r, { ok: false, error: kind === 'image' ? L(`生图：${v.error}`, `image: ${v.error}`) : L(`生视频：${v.error}`, `video: ${v.error}`) });
     }
     results.push({ name: machine.name, ...r });
   }
@@ -1354,10 +1398,13 @@ async function autoUpdateMachines() {
 }
 
 /** PUT JSON to a hub with this app's pairing cookie. -> {ok, error} */
-async function putToMachine(url, apiPath, body) {
+async function putToMachine(url, apiPath, body, method = 'PUT') {
   try {
-    const res = await net.fetch(`${url}${apiPath}`, {
-      method: 'PUT',
+    // A cloud server answers only on its Tailscale address (1.5.1): its public
+    // one went through the system proxy and came back "HTTP 502".
+    const base = (await reachMachine(String(url).replace(/\/+$/, ''))) || url;
+    const res = await net.fetch(`${base}${apiPath}`, {
+      method,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(8000),

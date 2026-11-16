@@ -153,15 +153,12 @@ function wireChrome() {
     renderMachineMenu();
     toggleMenu($('machine-menu'), $('machine-btn'));
     refreshMachines();
-    refreshMenuPhones();
   });
   $('machine-menu').addEventListener('click', (event) => {
     const item = event.target.closest('button');
     if (!item || item.disabled) return;
     closeMenus();
     if (item.dataset.machineAdd) { openMachineModal(); return; }
-    if (item.dataset.myPhone) { try { window.NightshiftShell.openMyPhone(); } catch { /* older app */ } return; }
-    if (item.dataset.phoneLive) { openPhoneLive(item.dataset.phoneLive, item.dataset.phoneName); return; }
     if (item.dataset.backOrigin) { location.assign(item.dataset.backOrigin); return; }
     if (item.dataset.handoffMenu) { handoffToMachine(item.dataset.handoffMenu, item); return; }
     if (item.dataset.machine !== undefined && !item.classList.contains('current')) switchMachine(item.dataset.machine);

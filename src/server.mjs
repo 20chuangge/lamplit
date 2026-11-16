@@ -1449,6 +1449,14 @@ route('POST', /^\/api\/models$/, async (_req, _res, { body, state }) => {
   return { model };
 });
 
+//   POST   /api/models/sync      {models:[{id,label,provider,baseUrl,model,apiKey?}]}  同步到所有机器 (1.5.1)
+route('POST', /^\/api\/models\/sync$/, async (_req, _res, { body, state }) => {
+  const models = await modelsModule.upsertProfiles(body?.models);
+  await audit({ kind: 'model.synced', count: Array.isArray(body?.models) ? body.models.length : 0 });
+  state.bus.emit({ type: 'settings.changed', section: 'model' });
+  return { models };
+});
+
 route('POST', /^\/api\/models\/test$/, async (_req, _res, { body }) => {
   const started = Date.now();
   try {

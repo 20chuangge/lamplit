@@ -167,6 +167,7 @@ async function main() {
     await stage('1.4.0: the phone works without the cable, through the Lamplit app', scenarioV140);
     await stage('1.4.1: one phone is listed once; it is back quickly after the computer restarts', scenarioV141);
     await stage('1.5.0: the phone is one of the machines; the update reminder is seen', scenarioV150);
+    await stage('1.5.1: a cloud server behind Tailscale is reached and paired; the phone app opens into the machine', scenarioV151);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4942,6 +4943,45 @@ async function scenarioV167() {
 }
 
 /**
+ * 1.5.1: a cloud server added by its public address with a Tailscale key
+ * (port 4390 rightly closed to the internet) was installed, but this computer
+ * kept only the public address: the model did not reach it ("fetch failed"),
+ * it was never paired, and switching to it failed. And the phone app opened
+ * on a page of its own instead of the machine the human uses.
+ */
+async function scenarioV151() {
+  const R = await import('../src/remote.mjs');
+  check('V1 cloud: the server\'s Tailscale address is read from `tailscale ip -4` (first 100.x line only)',
+    typeof R.parseTailnetIp === 'function' && R.parseTailnetIp('100.100.1.2\n') === '100.100.1.2'
+    && R.parseTailnetIp('fd7a:115c::1\n100.100.1.2\n') === '100.100.1.2' && R.parseTailnetIp('') === '' && R.parseTailnetIp('192.168.1.5\n') === '');
+  const tried = [];
+  const pick = typeof R.firstAnswering === 'function' ? await R.firstAnswering(['http://203.0.113.9:4390', 'http://100.100.1.2:4390'], async (u) => { tried.push(u); return u.includes('100.'); }) : '';
+  const none = typeof R.firstAnswering === 'function' ? await R.firstAnswering(['http://203.0.113.9:4390', ''], async () => false) : 'x';
+  check('V1 cloud: the address used for pairing and the model is the first that answers over HTTP (public, else Tailscale)',
+    pick === 'http://100.100.1.2:4390' && tried.length === 2 && none === '', JSON.stringify({ pick, tried, none }));
+  const remoteSrc = await readText('../src/remote.mjs');
+  check('V1 cloud: with a Tailscale key, setup waits for the address over SSH and shares the model through what answers (not a bare TCP connect)',
+    remoteSrc.includes("'tailscale ip -4 2>/dev/null'") && remoteSrc.includes('job.tailnetUrl = `http://${ip}:${hubPort}`')
+    && remoteSrc.includes('await shareModel(job.reachUrl, job.pairCode') && remoteSrc.includes('export async function probeHttp('));
+  const page = await readText('../public/index.html');
+  const main = await readText('../desktop/main.mjs');
+  check('V1 cloud: the machine is saved with its Tailscale address and paired through it when the public one does not answer',
+    page.includes('window.desk.addMachine({ url: job.hubUrl, tailnetUrl: job.tailnetUrl,')
+    && main.includes("handle('desk:add-machine', async (_event, { url, name, pairCode, tailnetUrl } = {}) => {")
+    && main.includes('|| (alt && await pairWith(alt, pairCode))') && main.includes('...(alt ? { tailnetUrl: alt } : {})'));
+  check('V1 cloud: a machine paired on its Tailscale address is still shared with the other machines (an app sign-in like Notion comes back through this computer and needs it)',
+    main.includes("for (const u of [m.url, m.tailnetUrl].filter(Boolean)) {") && /async function sharePeers\(\) \{[\s\S]{0,900}m\.tailnetUrl\]\.filter\(Boolean\)/.test(main));
+  const modelsSrc = await readText('../src/models.mjs');
+  const serverSrc151 = await readText('../src/server.mjs');
+  check('V1 sync: 同步到所有机器 also brings the 其他模型 (same ids, so a bot\'s pick holds on every machine; keys only when this computer has one)',
+    modelsSrc.includes('export async function upsertProfiles(') && serverSrc151.includes("route('POST', /^\\/api\\/models\\/sync$/")
+    && main.includes("putToMachine(machine.url, '/api/models/sync', { models: extra }, 'POST')"));
+  check('V1 cloud: 同步到所有机器 (model, voice, vision keys) reaches a machine through its Tailscale address when the public one does not answer (was "HTTP 502")',
+    main.includes("putToMachine(machine.url, `/api/media/${kind}`, media[kind])") && /async function putToMachine\(url, apiPath, body, method = .PUT.\) \{[\s\S]{0,300}const base = \(await reachMachine\(/.test(main) && main.includes('const res = await net.fetch(`${base}${apiPath}`, {'));
+
+}
+
+/**
  * 1.5.0: the phone is one of the machines. The phone app opens on 「我的手机」
  * (is it lent to the bots, what did they do with it) and switches to the
  * computers from the top left; on the computer, the phone is in the machine
@@ -5004,25 +5044,20 @@ async function scenarioV150() {
     const serverSrc = await readText('../src/server.mjs');
     check('V3 live: GET /api/phone/screen?watch=1 is the live view', serverSrc.includes("watch: query.get('watch') === '1'"));
     const page = await readText('../public/index.html');
-    check('V3 live: the phone is in the computer\'s machine list, and opens its screen live (a new picture as soon as the last one came, at most one a second, only while it is open and seen)',
-      page.includes('data-phone-live=') && page.includes('async function openPhoneLive(') && page.includes('const PHONE_LIVE_MIN_MS = 1000;')
-      && page.includes('/api/phone/screen?watch=1&device=') && /document\.hidden[\s\S]{0,200}phoneLive/.test(page) && page.includes('id="phone-live"'));
+    check('V3 live: Settings → 机器 → 手机 opens the phone screen live (a new picture as soon as the last one came, at most one a second, only while it is open and seen); 1.5.1: the phone is not a row in the machine list',
+      page.includes('async function openPhoneLive(') && page.includes('const PHONE_LIVE_MIN_MS = 1000;')
+      && page.includes('/api/phone/screen?watch=1&device=') && /document\.hidden[\s\S]{0,200}phoneLive/.test(page) && page.includes('id="phone-live"') && !page.includes('data-phone-live='));
   }
 
-  // --- V4: on the phone, 「我的手机」 is a machine and the app opens on it
+  // --- V4: 1.5.1 took 「我的手机」 back out: the bots on the computers use the phone, as in 1.4.1
   {
     const shellHtml = await readText('../mobile/shell/index.html');
     const launcher = await readText('../mobile/shell/launcher.js');
     const bridge = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ShellBridge.java');
-    const watcher = await readText('../mobile/android/app/src/main/java/com/desk/assistant/NightshiftWatcher.java');
     const page = await readText('../public/index.html');
-    check('V4 my phone: the app opens on 「我的手机」 (lent to the bots or not, and what they did with it), and the computers are behind the switcher at the top left',
-      shellHtml.includes('id="my-phone"') && shellHtml.includes('id="switch-btn"') && launcher.includes('function renderMyPhone()') && launcher.includes('NightshiftShell.phoneActivity()')
-      && launcher.includes('NightshiftShell.openAccessibilitySettings()'));
-    check('V4 my phone: the phone keeps a short log of what the machines did with it (no typed text, no pictures)',
-      bridge.includes('public String phoneActivity()') && watcher.includes('PhoneActivity.record(') && !/PhoneActivity\.record\([^;]*text/.test(watcher));
-    check('V4 my phone: inside a computer, the switcher lists 「我的手机」 first and it goes back to it',
-      bridge.includes('public void openMyPhone()') && page.includes('data-my-phone') && page.includes('window.NightshiftShell.openMyPhone()'));
+    check('V4 1.5.1: the phone app opens on its machine list again (no 「我的手机」 page, no machine opened by itself), and the switcher in a machine has no 「我的手机」 row',
+      shellHtml.includes('<h1>选择机器') && !shellHtml.includes('id="my-phone"') && !launcher.includes('renderMyPhone') && !launcher.includes("sessionStorage.getItem('desk.entered')")
+      && !bridge.includes('openMyPhone') && !bridge.includes('phoneActivity') && !page.includes('data-my-phone'));
   }
 }
 

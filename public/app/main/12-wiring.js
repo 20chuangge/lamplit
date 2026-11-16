@@ -15,7 +15,18 @@ function wireChrome() {
       else if (act === 'max') window.deskShell.toggleMaximize();
       else if (act === 'close') window.deskShell.close();
     });
+    // The pairing screen's own title bar (1.5.6).
+    $('auth-winbtns')?.addEventListener('click', (event) => {
+      const act = event.target.closest('[data-win]')?.dataset.win;
+      if (act === 'min') window.deskShell.minimize();
+      else if (act === 'max') window.deskShell.toggleMaximize();
+      else if (act === 'close') window.deskShell.close();
+    });
   }
+  $('auth-back')?.addEventListener('click', async () => {
+    const res = await window.desk.useLocal().catch((err) => ({ ok: false, error: err.message }));
+    if (res && res.ok === false) setAuthMsg(res.error || '回不去这台电脑，重启 Lamplit 试试。');
+  });
 
   // topbar / drawers
   $('nav-toggle').addEventListener('click', () => {

@@ -1227,6 +1227,16 @@
   .auth-msg { margin-top: var(--s3); font-size: 12px; color: #ff9d9a; min-height: 18px; }
   .auth-msg.ok { color: #8ee8b6; }
   .auth-foot { color: var(--dim); font-size: 11.5px; margin: var(--s4) 0 0; line-height: 1.6; }
+  .auth-back { margin: calc(-1 * var(--s3)) 0 var(--s4) calc(-1 * var(--s2)); color: var(--muted); }
+  .auth .auth-back { margin-top: calc(-1 * var(--s3)); min-height: 30px; font-size: 12.5px; }
+  .auth-help { margin-top: var(--s4); color: var(--dim); font-size: 11.5px; line-height: 1.6; }
+  .auth-help summary { cursor: pointer; color: var(--muted); }
+  .auth-help ul { margin: var(--s2) 0 0; padding-left: 18px; }
+  .auth-help li + li { margin-top: 4px; }
+  .auth-help code { font-family: var(--mono); color: var(--muted); word-break: break-all; user-select: text; }
+  body.shell .auth .winbtns { display: flex; position: fixed; top: 0; right: 8px; z-index: 210; height: 30px; align-items: center; -webkit-app-region: no-drag; }
+  body.shell .auth .auth-drag { z-index: 205; }
+  body.shell .auth .auth-card { -webkit-app-region: no-drag; }
   .auth-foot code { font-family: var(--mono); color: var(--muted); }
 
   /* ---------------------------------------------------------------------

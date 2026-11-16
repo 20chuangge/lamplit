@@ -171,6 +171,8 @@ async function main() {
     await stage('1.5.2: what a bot reads is not an instruction; the live phone screen left Settings', scenarioV152);
     await stage('1.5.3: the bots\' commands run in a sandbox on Linux', scenarioV153);
     await stage('1.5.5: update packages carry the release signature', scenarioV155);
+    await stage('1.5.6: an evaluation set of 20 real tasks', scenarioV1506);
+    await stage('1.5.6: the pairing screen never traps the window', scenarioAuthEscape156);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4948,6 +4950,96 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.5.6: the pairing screen never traps the window. In the desktop app the
+ * screen covers the whole page, title bar included: no way to move the
+ * window, close it or go back, and a forgotten code meant being stuck. Now
+ * it has its own title bar (drag, minimise, maximise, close), a way back to
+ * this computer when it is another machine's screen, and says where to find
+ * the code (it changes every day).
+ */
+async function scenarioAuthEscape156() {
+  const html = await readText('../public/index.html');
+  const css = await readText('../public/app/style.css');
+  const bots = await readText('../public/app/main/04-bots.js');
+  const wiring = await readText('../public/app/main/12-wiring.js');
+  const en = await readText('../public/i18n-en.js');
+  const auth = html.slice(html.indexOf('id="auth-screen"'), html.indexOf('id="toast"'));
+  check('A1 title bar: the pairing screen has its own drag strip and window buttons, wired to the shell',
+    auth.includes('class="drag-strip auth-drag"') && auth.includes('id="auth-winbtns"') && auth.includes('data-win="close"')
+    && /body\.shell \.auth \.winbtns/.test(css) && wiring.includes("$('auth-winbtns')"));
+  check('A2 way back: on another machine inside the desktop app, a button goes back to this computer',
+    auth.includes('id="auth-back"') && bots.includes("$('auth-back').hidden = !(window.desk?.useLocal && !onLocalMachine());")
+    && wiring.includes("$('auth-back')?.addEventListener('click'") && wiring.includes('window.desk.useLocal()'));
+  check('A3 the code: where to find it (any paired device, the machine itself, or adding the machine again from this computer), with the right settings page',
+    auth.includes('id="auth-help"') && auth.includes('设置 → 手机和外网') && auth.includes('id="auth-curl"') && auth.includes('添加机器')
+    && bots.includes("$('auth-curl').textContent") && !bots.includes('「设置 → 配对」') && !auth.includes('「设置 → 配对」'));
+  check('A4 English for the new words', en.includes('"← 回到这台电脑"') && en.includes('"找不到配对码？"'));
+  // The screen comes from the machine: one still on an older version (and it
+  // cannot be updated while unpaired) shows its old screen. The desktop app
+  // adds the way out itself.
+  const main = await readText('../desktop/main.mjs');
+  check('A5 older machines: the desktop app adds a title bar with the way back and where to find the code to a pairing screen that lacks them, only while it is shown',
+    main.includes("win.webContents.on('did-finish-load', () => rescuePairingScreen(win));") && main.includes('function rescuePairingScreen(')
+    && main.includes("document.getElementById('auth-winbtns')") && main.includes('window.desk.useLocal()') && main.includes('/api/pairing')
+    && main.includes("attributeFilter: ['hidden']"));
+}
+
+/**
+ * 1.5.6: an evaluation set of 20 real tasks (report 8.4): sort files, fill
+ * forms, look things up and write a report, handle mail, scheduled briefings,
+ * four of each. `npm run eval` gives each task to a fresh bot on this
+ * computer's real model, answers its approval cards like a person would
+ * (each one counted as an intervention), checks the result files, and with
+ * --record writes success rate, interventions and cost into docs/EVAL.md, once
+ * per version. Each check must fail on the untouched folder and pass on a
+ * correct result, so a task cannot pass by doing nothing.
+ */
+async function scenarioV1506() {
+  const T = await import('../eval/tasks.mjs');
+  const L = await import('../eval/lib.mjs');
+  const kinds = {};
+  for (const t of T.TASKS) kinds[t.kind] = (kinds[t.kind] || 0) + 1;
+  check('V1 set: 20 tasks with distinct ids, four each of files / forms / report / mail / briefing, each with a prompt (naming its folder when it has files) and a check',
+    T.TASKS.length === 20 && new Set(T.TASKS.map((t) => t.id)).size === 20
+    && ['files', 'forms', 'report', 'mail', 'briefing'].every((k) => kinds[k] === 4)
+    && T.TASKS.every((t) => t.title && typeof t.prompt === 'function' && (!Object.keys(t.files || {}).length || t.prompt('eval/x/' + t.id).includes('eval/x/' + t.id)) && typeof t.check === 'function'));
+  const lazy = [];
+  const broken = [];
+  for (const t of T.TASKS) {
+    const before = await t.check(L.memoryView({ files: t.files || {}, routines: t.setupRoutines || [] , truth: t.good?.truth }));
+    if (before.ok) lazy.push(t.id);
+    const after = await t.check(L.memoryView({ files: { ...(t.files || {}), ...(t.good?.files || {}) }, remove: t.good?.remove || [], routines: t.good?.routines || [], reply: t.good?.reply || '', truth: t.good?.truth }));
+    if (!after.ok) broken.push(`${t.id}: ${after.why}`);
+  }
+  check('V1 checks: no task passes on the untouched folder', lazy.length === 0, lazy.join(', '));
+  check('V1 checks: every task passes on a correct result', broken.length === 0, broken.join(' | '));
+
+  check('V2 approvals: the runner answers like a careful person - file, routine and read-only steps yes; a command only when it stays in the task folder; anything else no',
+    L.judgeApproval({ toolName: 'fs_write', args: { path: 'eval/r1/f1/a.txt' } }, 'eval/r1/f1') === 'approve'
+    && L.judgeApproval({ toolName: 'shell', args: { command: 'mv eval/r1/f1/a.jpg eval/r1/f1/图片/' } }, 'eval/r1/f1') === 'approve'
+    && L.judgeApproval({ toolName: 'shell', args: { command: 'Remove-Item -Recurse C:\\Users' } }, 'eval/r1/f1') === 'deny'
+    && L.judgeApproval({ toolName: 'shell', args: { command: 'cd eval/r1/f1 && rm -rf ../../..' } }, 'eval/r1/f1') === 'deny'
+    && L.judgeApproval({ toolName: 'mail_send', args: {} }, 'eval/r1/f1') === 'deny');
+  const sum = L.summarize([
+    { id: 'a', ok: true, interventions: 0, tokens: 1000, cost: 0.01, seconds: 10 },
+    { id: 'b', ok: false, interventions: 2, tokens: 3000, cost: 0.03, seconds: 30 },
+  ]);
+  check('V2 summary: success rate, interventions, tokens, cost and time add up',
+    sum.passed === 1 && sum.total === 2 && sum.rate === 50 && sum.interventions === 2 && sum.tokens === 4000 && Math.abs(sum.cost - 0.04) < 1e-9 && sum.seconds === 40);
+  const rec = L.renderRecord({ version: '9.9.9', day: '2026-11-16', model: 'm', currency: 'CNY', results: [{ id: 'a', title: 'A', ok: true, interventions: 0, tokens: 1000, cost: 0.01, seconds: 10, why: '' }] });
+  check('V2 record: one section per version with the totals line and one row per task',
+    rec.includes('## 9.9.9') && rec.includes('1/1') && rec.includes('| a |') && !/[A-Z]:\\|\/Users\/|\/home\//.test(rec));
+
+  const runner = await readText('./eval.mjs');
+  const pkg = JSON.parse(await readText('../package.json'));
+  const doc = await readText('../docs/EVAL.md');
+  check('V3 runner: npm run eval, a fresh bot per task, cards answered and counted, results checked, bots, routines and files removed after, --record writes docs/EVAL.md',
+    /scripts\/eval\.mjs/.test(pkg.scripts.eval || '') && runner.includes("method: 'DELETE'") && runner.includes('/api/approvals?status=pending')
+    && runner.includes('judgeApproval(') && runner.includes('/cancel') && runner.includes("'--record'") && runner.includes('renderRecord(')
+    && runner.includes('fs.rmSync(') && doc.includes('npm run eval'));
 }
 
 /**

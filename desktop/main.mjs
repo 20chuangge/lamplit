@@ -745,6 +745,7 @@ function createWindowFor(url, bounds = null) {
   target.searchParams.set('shell', 'desk');
   win.loadURL(target.toString());
   attachTextMenu(win);
+  win.webContents.on('did-finish-load', () => rescuePairingScreen(win));
 
   // Safety net for an older UI (e.g. a hub that has not been updated yet):
   // without traffic buttons a frameless window cannot be closed. The page's own
@@ -796,6 +797,74 @@ function createWindowFor(url, bounds = null) {
 
 function localUrl() {
   return `http://127.0.0.1:${serverPort}/`;
+}
+
+/**
+ * Another machine's pairing screen covers the whole window, title bar
+ * included. 1.5.6 pages bring their own way out; a machine still on an older
+ * version (and it cannot be updated while this app is not paired with it)
+ * does not, and the window was stuck: it could not be moved, closed or sent
+ * back, and a forgotten code had nowhere to come from. Here the app adds that
+ * bar itself, shown only while the pairing screen is.
+ */
+function rescuePairingScreen(target) {
+  if (!target || target.isDestroyed()) return;
+  let url = '';
+  try { url = target.webContents.getURL(); } catch { return; }
+  if (!url || url.startsWith(localUrl())) return;
+  const text = {
+    back: L('← 回到这台电脑', '← Back to this computer'),
+    help: L('找不到配对码？', "Can't find the pairing code?"),
+    ways: [
+      L('配对码是 8 位数字，每天换一次。在已经连着这台机器的手机或浏览器上，打开 设置 → 手机和外网 就能看到。',
+        'The code is 8 digits and changes every day. On a phone or browser already connected to this machine, open Settings → Phone & remote.'),
+      L('在这台机器上打开终端运行下面这行，结果里的 code 就是（Windows 上用 curl.exe）：',
+        'On that machine, open a terminal and run this; the code in the result is the one (curl.exe on Windows):'),
+      L('这台机器是 Lamplit 帮你装的：回到这台电脑，在 设置 → 机器 → 添加机器 里用同样的地址再连一次，会重新配对，已经装好的部分不会重做。',
+        'If Lamplit installed it: go back to this computer and add it again under Settings → Machines → Add machine with the same address. It pairs again and skips what is installed.'),
+    ],
+  };
+  target.webContents.executeJavaScript(`
+    (() => {
+      const screen = document.getElementById('auth-screen');
+      if (!screen || document.getElementById('auth-winbtns') || document.getElementById('desk-auth-bar') || !window.desk) return;
+      const t = ${JSON.stringify(text)};
+      const bar = document.createElement('div');
+      bar.id = 'desk-auth-bar';
+      bar.style.cssText = 'position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483000;display:none;align-items:center;justify-content:space-between;padding:0 8px;-webkit-app-region:drag;font:13px system-ui,sans-serif';
+      const btn = 'border:0;background:transparent;color:#b8bfcc;height:26px;border-radius:7px;cursor:pointer;-webkit-app-region:no-drag;font:inherit';
+      bar.innerHTML = '<button data-a="back" style="' + btn + ';padding:0 10px"></button>'
+        + '<span style="display:flex;gap:2px"><button data-a="min" style="' + btn + ';width:36px">&#8211;</button>'
+        + '<button data-a="max" style="' + btn + ';width:36px">&#9633;</button>'
+        + '<button data-a="close" style="' + btn + ';width:36px">&#10005;</button></span>';
+      bar.querySelector('[data-a=back]').textContent = t.back;
+      bar.addEventListener('click', (e) => {
+        const a = e.target.closest('[data-a]')?.dataset.a;
+        if (a === 'back') window.desk.useLocal();
+        else if (a === 'min') window.deskShell?.minimize();
+        else if (a === 'max') window.deskShell?.toggleMaximize();
+        else if (a === 'close') window.deskShell?.close();
+      });
+      document.body.appendChild(bar);
+      // Where the code comes from, under the message (the old text named a page that does not exist).
+      const help = document.createElement('details');
+      help.id = 'desk-auth-help';
+      help.style.cssText = 'margin-top:14px;color:#8b93a3;font-size:12px;line-height:1.6';
+      const port = location.port || (location.protocol === 'https:' ? '443' : '80');
+      help.innerHTML = '<summary style="cursor:pointer;color:#b8bfcc"></summary><ul style="margin:8px 0 0;padding-left:18px"><li></li><li><span></span><br><code style="user-select:text;word-break:break-all"></code></li><li></li></ul>';
+      help.querySelector('summary').textContent = t.help;
+      const li = help.querySelectorAll('li');
+      li[0].textContent = t.ways[0];
+      li[1].querySelector('span').textContent = t.ways[1];
+      li[1].querySelector('code').textContent = 'curl -s http://127.0.0.1:' + port + '/api/pairing';
+      li[2].textContent = t.ways[2];
+      const foot = screen.querySelector('.auth-foot');
+      if (foot) foot.replaceWith(help); else screen.querySelector('.auth-card')?.appendChild(help);
+      const sync = () => { bar.style.display = screen.hidden ? 'none' : 'flex'; };
+      new MutationObserver(sync).observe(screen, { attributes: true, attributeFilter: ['hidden'] });
+      sync();
+    })();
+  `).catch(() => { /* the page is gone or blocks scripts */ });
 }
 
 /** Whose page is this URL: this computer's hub, an added machine, or something else (SEC-09). */

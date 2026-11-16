@@ -430,6 +430,10 @@ function enterAuth(reason) {
   $('auth-screen').hidden = false;
   const field = $('auth-url');
   if (!field.value) field.value = location.origin;
+  // Inside the desktop app on another machine: a way back (1.5.6), and the
+  // command that shows this machine's code on the machine itself.
+  $('auth-back').hidden = !(window.desk?.useLocal && !onLocalMachine());
+  $('auth-curl').textContent = `curl -s http://127.0.0.1:${location.port || (location.protocol === 'https:' ? 443 : 80)}/api/pairing`;
   setAuthMsg(reason || '');
   if (!isMobile()) setTimeout(() => $('auth-code').focus(), 80);
 }
@@ -518,7 +522,7 @@ async function connectDevice() {
     button.disabled = false;
     button.textContent = '连接';
     if (err.code === 'PAIR_INVALID_CODE' || err.status === 401) {
-      setAuthMsg('配对码不对，检查一下电脑上 Lamplit 的「设置 → 配对」。');
+      setAuthMsg('配对码不对。配对码每天换一次，看下面「找不到配对码？」。');
     } else if (err.code === 'PAIR_RATE_LIMITED' || err.status === 429) {
       setAuthMsg('试得太多次了，等一分钟再试。');
     } else if (err.status === 404) {

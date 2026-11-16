@@ -1153,7 +1153,15 @@
      unauthenticated: connect this device
      ===================================================================== -->
 <div class="auth" id="auth-screen" hidden>
+  <!-- Its own title bar: the app's is hidden while this screen is up (1.5.6). -->
+  <div class="drag-strip auth-drag" aria-hidden="true"></div>
+  <div class="winbtns" id="auth-winbtns">
+    <button type="button" data-win="min" aria-label="最小化" title="最小化">&#8211;</button>
+    <button type="button" data-win="max" aria-label="最大化" title="最大化">&#9633;</button>
+    <button type="button" data-win="close" class="win-close" aria-label="关闭" title="关闭">&#10005;</button>
+  </div>
   <div class="auth-card">
+    <button class="btn ghost tiny auth-back" id="auth-back" type="button" hidden>← 回到这台电脑</button>
     <div class="auth-top">
       <div class="brand-mark" aria-hidden="true"></div>
       <span class="name" id="auth-app-name">Lamplit</span>
@@ -1170,7 +1178,14 @@
     <button class="btn primary block" id="auth-connect" type="button">连接</button>
     <div class="auth-msg" id="auth-msg" role="alert"></div>
 
-    <p class="auth-foot">配对码是电脑上 Lamplit 的「设置 → 配对」里的 8 位数字，只在这台设备上生效。</p>
+    <details class="auth-help" id="auth-help">
+      <summary>找不到配对码？</summary>
+      <ul>
+        <li>配对码是 8 位数字，每天换一次。在已经连着这台机器的手机或浏览器上，打开 设置 → 手机和外网 就能看到。</li>
+        <li>在这台机器上打开终端运行 <code id="auth-curl">curl -s http://127.0.0.1:4390/api/pairing</code>，结果里的 code 就是（Windows 上用 curl.exe）。</li>
+        <li>这台机器是 Lamplit 帮你装的：回到这台电脑，在 设置 → 机器 → 添加机器 里用同样的地址再连一次，会重新配对，已经装好的部分不会重做。</li>
+      </ul>
+    </details>
   </div>
 </div>
 

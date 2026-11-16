@@ -3021,6 +3021,8 @@ function publicPolicy(policy) {
     // The primary bot past the machine boundary (sudo, places outside the
     // workspace); the dangerous-command list still asks.
     trustPrimary: Boolean(policy?.trustPrimary),
+    // After a web page, an email or the phone screen, sending out asks (1.5.2).
+    readGuard: policy?.readGuard !== false,
     platform: process.platform,
   };
 }
@@ -3090,10 +3092,11 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
     next.sudo = body.sudo;
   }
   if (body?.trustPrimary !== undefined) next.trustPrimary = Boolean(body.trustPrimary);
+  if (body?.readGuard !== undefined) next.readGuard = Boolean(body.readGuard);
   state.config.policy = next;
   await writeAssistantConfig({ ...state.config, workspaceDir: undefined });
   const change = {};
-  for (const k of ['level', 'takeover', 'generate', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll', 'addFolder', 'removeFolder', 'folderWrite', 'outside', 'sudo', 'trustPrimary']) {
+  for (const k of ['level', 'takeover', 'generate', 'addDeny', 'removeDeny', 'addRule', 'removeRule', 'autoApproveAll', 'addFolder', 'removeFolder', 'folderWrite', 'outside', 'sudo', 'trustPrimary', 'readGuard']) {
     if (body?.[k] !== undefined) change[k] = body[k];
   }
   await audit({ kind: 'policy.changed', change });

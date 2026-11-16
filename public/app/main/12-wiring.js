@@ -168,8 +168,6 @@ function wireChrome() {
   $('vnc-modal-close').addEventListener('click', closeMachineModal);
   $('vnc-cancel').addEventListener('click', closeMachineModal);
   $('vnc-scrim').addEventListener('click', closeMachineModal);
-  $('phone-live-close').addEventListener('click', closePhoneLive);
-  $('phone-live-scrim').addEventListener('click', closePhoneLive);
   $('about-update-btn')?.addEventListener('click', () => checkForUpdate({ fresh: true, manual: true }));
   $('vnc-save').addEventListener('click', saveMachineFromModal);
   $('vnc-modal').addEventListener('keydown', (event) => {
@@ -183,7 +181,6 @@ function wireChrome() {
   window.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if ($('vnc-modal')?.classList.contains('open')) { closeMachineModal(); return; }
-    if ($('phone-live')?.classList.contains('open')) { closePhoneLive(); return; }
     if (document.body.classList.contains('panel-max')) togglePanelMax(false);
   });
   document.querySelectorAll('input[name="approval-level"]').forEach((radio) => {
@@ -203,6 +200,7 @@ function wireChrome() {
   });
   $('folder-outside')?.addEventListener('change', (e) => savePolicy({ outside: e.target.value }, '已保存'));
   $('sudo-mode')?.addEventListener('change', (e) => savePolicy({ sudo: e.target.value }, '已保存'));
+  $('read-guard')?.addEventListener('change', (e) => savePolicy({ readGuard: e.target.checked }, e.target.checked ? '已打开：读过网页、邮件后，发出去和改东西的操作先问你' : '已关闭：读过网页、邮件后不再额外先问'));
   $('trust-primary')?.addEventListener('change', (e) => savePolicy({ trustPrimary: e.target.checked }, e.target.checked ? '已打开：主助理只有危险命令还会问你' : '已关闭：主助理的 sudo 和其他位置恢复先问'));
   $('feishu-save')?.addEventListener('click', saveFeishu);
   $('feishu-app-save')?.addEventListener('click', addFeishuApp);

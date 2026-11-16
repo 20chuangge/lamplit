@@ -765,6 +765,7 @@ function renderFolders(policy) {
   if ($('folder-outside')) $('folder-outside').value = policy?.outside || 'ask';
   if ($('sudo-mode')) $('sudo-mode').value = policy?.sudo || 'ask';
   if ($('trust-primary')) $('trust-primary').checked = Boolean(policy?.trustPrimary);
+  if ($('read-guard')) $('read-guard').checked = policy?.readGuard !== false;
 }
 
 async function savePolicy(next, okText = '') {
@@ -831,6 +832,7 @@ function renderPermOverview() {
     ['其他位置', policy.outside === 'deny' ? '一律不许' : '先问我', false],
     ['sudo', policy.sudo === 'allow' ? '直接用' : '先问我', policy.sudo === 'allow'],
     ...(policy.trustPrimary ? [['主助理', '完全信任', true]] : []),
+    ...(policy.readGuard === false ? [['读过网页后', '不再先问', true]] : []),
     ['我的规则', `${(policy.rules || []).length} 条`, false],
     ['禁止命令', `${(policy.extraDeny || []).length} 条自定义`, false],
   ];

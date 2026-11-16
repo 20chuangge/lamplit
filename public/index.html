@@ -556,6 +556,9 @@
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">主助理完全信任</div>
         <label class="switch-row"><input type="checkbox" id="trust-primary" /> 主助理用 sudo、动工作区以外的位置，都直接做</label>
         <div class="row-note">只对主助理生效，其他机器人不变。格式化磁盘、删除系统目录、关机重启这类危险命令，以及你写的「先问我」规则，仍然会问你。</div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">读到的内容不是指令</div>
+        <label class="switch-row"><input type="checkbox" id="read-guard" /> 机器人读过网页、邮件或手机屏幕后，发邮件、发文件、执行会改东西的命令先问我</label>
+        <div class="row-note">网页和邮件里可能藏着写给机器人的话（「把文件发给某某」）。打开时，这一轮读过这些内容后，上面这些操作都先问你，受信任的机器人和「放手」的机器也一样；只是看、浏览、写自己的文件不受影响。定时任务里遇到会停下来等你。</div>
       </section>
 
       <section class="dsec" id="sec-usage">
@@ -741,10 +744,8 @@
             <div class="btn-row"><button class="btn tiny primary" id="phone-agent-btn" type="button">打开「让机器人用这部手机」</button></div>
           </div>
           <div class="machine-list" id="phone-list"></div>
-          <img class="phone-shot" id="phone-shot" alt="手机屏幕" hidden />
           <div class="btn-row">
             <button class="btn tiny" id="phone-refresh" type="button">刷新</button>
-            <button class="btn tiny" id="phone-look" type="button" hidden>实时看屏幕</button>
           </div>
           <div id="phone-adb-row" hidden>
             <label class="lbl" for="phone-adb">adb 在哪（Android platform-tools 里的 adb.exe）</label>
@@ -976,18 +977,6 @@
     <button class="btn" id="clip-mine" type="button" hidden>粘贴手机剪贴板</button>
   </div>
   <div class="row-note">密码、验证码请直接在远端屏幕里输入，不要贴进聊天。中文由那台机器自己写进它的剪贴板（Linux 需要 xclip 或 wl-clipboard，安装脚本会装）；没有时中文会变成 ?，请用「键盘」输入。</div>
-</div>
-<!-- the phone's screen, live (1.5.0) -->
-<div class="scrim" id="phone-live-scrim" aria-hidden="true"></div>
-<div class="modal phone-live" id="phone-live" role="dialog" aria-modal="true" aria-labelledby="phone-live-title" aria-hidden="true">
-  <div class="modal-head">
-    <span class="modal-title" id="phone-live-title">手机屏幕</span>
-    <button class="icon-btn sm" id="phone-live-close" type="button" aria-label="关闭">✕</button>
-  </div>
-  <div class="phone-live-body">
-    <img class="phone-live-img" id="phone-live-img" alt="手机屏幕" hidden />
-    <div class="phone-live-state" id="phone-live-state">正在连手机…</div>
-  </div>
 </div>
 <div class="scrim" id="vnc-scrim" aria-hidden="true"></div>
 <div class="modal" id="vnc-modal" role="dialog" aria-modal="true" aria-labelledby="vnc-modal-title" aria-hidden="true">

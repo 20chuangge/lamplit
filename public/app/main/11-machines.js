@@ -184,8 +184,6 @@ async function renderPhoneBox() {
   try { data = await api('/api/phone'); } catch (err) { list.innerHTML = `<div class="machine-empty">${escapeHtml(err.message)}</div>`; return; }
   $('phone-adb-row').hidden = !local;
   if ($('phone-adb') && document.activeElement !== $('phone-adb')) $('phone-adb').value = data.adb?.configured || data.adb?.path || '';
-  const ready = (data.devices || []).filter((d) => d.state === 'device');
-  $('phone-look').hidden = !ready.length;
   renderPhoneAgentRow();
   if (!(data.devices || []).length) {
     const how = '在手机上的 Lamplit 里打开「让机器人用这部手机」（不用数据线），或者用数据线连这台电脑、打开 USB 调试。';
@@ -231,13 +229,7 @@ function bindPhoneBox() {
   }
   if (!$('phone-refresh') || $('phone-refresh').dataset.bound) return;
   $('phone-refresh').dataset.bound = '1';
-  $('phone-refresh').addEventListener('click', () => { $('phone-shot').hidden = true; renderPhoneBox(); });
-  $('phone-look').addEventListener('click', async () => {
-    let data;
-    try { data = await api('/api/phone'); } catch (err) { toast(err.message, true); return; }
-    const first = (data?.devices || []).find((d) => d.state === 'device');
-    if (first) openPhoneLive(first.serial, first.model || first.serial);
-  });
+  $('phone-refresh').addEventListener('click', () => renderPhoneBox());
   $('phone-adb-save').addEventListener('click', async () => {
     try {
       await api('/api/phone', { method: 'PUT', body: { adbPath: $('phone-adb').value.trim() } });
@@ -246,65 +238,6 @@ function bindPhoneBox() {
     } catch (err) { toast(err.message, true); }
   });
 }
-
-/**
- * The phone's screen, live (1.5.0): the next picture is asked for as soon as
- * the last one came (at most one a second), only while the window is open and
- * seen. The phone's own log says once that the computer is watching.
- */
-const PHONE_LIVE_MIN_MS = 1000;
-const phoneLive = { serial: '', timer: null, busy: false };
-async function openPhoneLive(serial, name) {
-  closeMenus();
-  phoneLive.serial = String(serial || '');
-  $('phone-live-title').textContent = `${name || '手机'}的屏幕`;
-  $('phone-live-state').textContent = '正在连手机…';
-  $('phone-live-img').hidden = true;
-  $('phone-live').classList.add('open');
-  $('phone-live').setAttribute('aria-hidden', 'false');
-  $('phone-live-scrim').classList.add('show');
-  phoneLiveTick();
-}
-async function phoneLiveTick() {
-  clearTimeout(phoneLive.timer);
-  if (!phoneLive.serial || phoneLive.busy || document.hidden || !$('phone-live').classList.contains('open')) return;
-  phoneLive.busy = true;
-  const serial = phoneLive.serial;
-  const started = Date.now();
-  let wait = 3000;
-  try {
-    const res = await fetch(`/api/phone/screen?watch=1&device=${encodeURIComponent(serial)}&t=${started}`, { credentials: 'same-origin' });
-    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message || `HTTP ${res.status}`);
-    const blob = await res.blob();
-    if (phoneLive.serial === serial) {
-      const img = $('phone-live-img');
-      const old = img.src;
-      img.src = URL.createObjectURL(blob);
-      if (old.startsWith('blob:')) URL.revokeObjectURL(old);
-      img.hidden = false;
-      $('phone-live-state').textContent = `实时 · ${new Date().toLocaleTimeString()}`;
-      wait = Math.max(0, PHONE_LIVE_MIN_MS - (Date.now() - started));
-    }
-  } catch (err) {
-    if (phoneLive.serial === serial) $('phone-live-state').textContent = `看不到手机屏幕：${err.message}`;
-  } finally {
-    phoneLive.busy = false;
-  }
-  if (phoneLive.serial === serial) phoneLive.timer = setTimeout(phoneLiveTick, wait);
-}
-function closePhoneLive() {
-  phoneLive.serial = '';
-  clearTimeout(phoneLive.timer);
-  $('phone-live').classList.remove('open');
-  $('phone-live').setAttribute('aria-hidden', 'true');
-  $('phone-live-scrim').classList.remove('show');
-  const img = $('phone-live-img');
-  if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
-  img.removeAttribute('src');
-  img.hidden = true;
-}
-// Back in view: carry on where the hidden window stopped.
-document.addEventListener('visibilitychange', () => { if (!document.hidden && phoneLive.serial) phoneLiveTick(); });
 
 function renderMachinesList() {
   bindPhoneBox();

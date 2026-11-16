@@ -730,6 +730,111 @@ function refreshMockState() {
   renderMessages();
 }
 
+/*
+ * First run (1.5.8, report 7.1 #1): three steps in the empty chat.
+ *   1 pick a provider - DeepSeek first, each with where to get a key
+ *   2 paste the key
+ *   3 Lamplit saves it, tests it and sends the first sentence
+ * The demo is still one click away; Settings → 模型 has everything else.
+ */
+const ONBOARD_PROVIDERS = ['deepseek', 'moonshot', 'zhipu', 'qwen', 'siliconflow', 'openai'];
+const ONBOARD_FIRST = '你好！用两三句话介绍一下你能帮我做什么。';
+const onboard = { step: 1, provider: '', error: '', busy: false };
+
+function onboardingCard() {
+  const wrap = el('div', 'empty onboard');
+  wrap.appendChild(emptyMark());
+  const steps = el('div', 'onboard-steps');
+  ['选服务商', '填密钥', '试一句'].forEach((name, i) => steps.appendChild(el('span', `onboard-step${onboard.step === i + 1 ? ' on' : onboard.step > i + 1 ? ' done' : ''}`, `${i + 1} ${name}`)));
+  wrap.appendChild(steps);
+  const providers = (state.providers || []);
+  const preset = (name) => providers.find((p) => p.name === name) || null;
+  if (!state.providers) ensureProviderOptions().then(() => { if (state.unconfigured && !state.mockAck) renderMessages(); }).catch(() => {});
+
+  if (onboard.step === 1) {
+    wrap.appendChild(el('h2', null, '先接入一个模型'));
+    wrap.appendChild(el('p', null, '现在用的是内置演示，回答由脚本生成，不会真的理解你的话。选一家模型服务商，填上密钥，它就开始正经干活。'));
+    const choices = el('div', 'choice-list');
+    ONBOARD_PROVIDERS.forEach((name, i) => {
+      const p = preset(name);
+      if (!p && providers.length) return;
+      const label = p?.label || name;
+      const desc = name === 'deepseek' ? '推荐：中文好、便宜，注册就能拿密钥' : (p?.models?.[0] ? `默认模型 ${p.models[0]}` : '');
+      choices.appendChild(choiceButton(String.fromCharCode(65 + i), label, desc, () => { onboard.provider = name; onboard.step = 2; onboard.error = ''; renderMessages(); }));
+    });
+    choices.appendChild(choiceButton('·', '先用演示模式看看', '不填任何东西，先熟悉界面和审批流程', () => {
+      state.mockAck = true;
+      try { sessionStorage.setItem('desk.mockAck', '1'); } catch { /* private mode */ }
+      refreshMockState();
+    }));
+    wrap.appendChild(choices);
+    const more = el('button', 'btn ghost tiny', '其他服务商、自己的地址：去设置 → 模型');
+    more.type = 'button';
+    more.addEventListener('click', () => openSettings('sec-model'));
+    wrap.appendChild(more);
+    return wrap;
+  }
+
+  const p = preset(onboard.provider) || { name: onboard.provider, label: onboard.provider, models: [], baseUrl: '' };
+  wrap.appendChild(el('h2', null, `填上 ${p.label} 的密钥`));
+  const how = el('p', null, '在服务商的网站登录，新建一个 API Key，复制回来贴在下面。密钥只存在这台电脑上，加密保存。');
+  wrap.appendChild(how);
+  if (p.keyUrl) {
+    const get = el('button', 'btn tiny', `去 ${p.label} 拿密钥 ↗`);
+    get.type = 'button';
+    get.addEventListener('click', () => openSignInPage(p.keyUrl));
+    wrap.appendChild(get);
+  }
+  const key = el('input', 'field onboard-key');
+  key.type = 'password';
+  key.placeholder = 'sk-…';
+  key.autocomplete = 'off';
+  key.spellcheck = false;
+  wrap.appendChild(key);
+  const go = el('button', 'btn primary', onboard.busy ? '正在连接…' : '连接并试一句');
+  go.type = 'button';
+  go.disabled = onboard.busy;
+  const msg = el('div', `onboard-msg${onboard.error ? ' bad' : ''}`, onboard.error || (onboard.busy ? '保存密钥，测试连接，然后替你发第一句话…' : ''));
+  const back = el('button', 'btn ghost tiny', '← 换一家');
+  back.type = 'button';
+  back.addEventListener('click', () => { onboard.step = 1; onboard.error = ''; renderMessages(); });
+  const connect = async () => {
+    const apiKey = key.value.trim();
+    if (!apiKey) { onboard.error = '先把密钥贴进来。'; renderMessages(); return; }
+    onboard.busy = true; onboard.error = ''; onboard.step = 3; renderMessages();
+    const model = { provider: p.name, baseUrl: p.baseUrl || '', model: (p.models || [])[0] || '', apiKey };
+    try {
+      // Tested before it is saved: a wrong key must not replace the demo and end the guide.
+      const test = await api('/api/settings/test', { method: 'POST', body: { model } });
+      if (test && (test.ok === false || test.error)) throw new Error(typeof test.error === 'string' ? test.error : test.error?.message || '连不上');
+      await putSettings(model);
+      await loadSettings();
+      try { state.config = await api('/api/config'); } catch { /* non-fatal */ }
+      onboard.busy = false; onboard.step = 1;
+      updateModelUi();
+      renderMessages();
+      // One model for every machine, as when saved in Settings.
+      if (machineBridge?.local && (machineBridge.machines || []).length && window.desk?.syncModel) window.desk.syncModel().catch(() => {});
+      // The first sentence, so the human sees it work.
+      const composer = $('composer');
+      composer.value = ONBOARD_FIRST;
+      send();
+    } catch (err) {
+      onboard.busy = false; onboard.step = 2;
+      onboard.error = `没连上：${truncate(err.message || '未知原因', 160)}。检查一下密钥有没有复制全，或者换一家试试。`;
+      renderMessages();
+    }
+  };
+  go.addEventListener('click', connect);
+  key.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); connect(); } });
+  wrap.appendChild(go);
+  wrap.appendChild(msg);
+  wrap.appendChild(back);
+  if (!onboard.busy) setTimeout(() => key.focus(), 50);
+  return wrap;
+}
+// end of first run
+
 /* ---------------------------------------------------------------------
    health
    --------------------------------------------------------------------- */

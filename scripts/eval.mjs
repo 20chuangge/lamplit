@@ -178,6 +178,21 @@ try {
   }
 } finally {
   if (!flag('--keep')) fs.rmSync(path.join(wsRoot, 'eval', runId), { recursive: true, force: true });
+  // The undo copies the bots' writes and deletes left in .trash (1.5.8): this run's only.
+  try {
+    for (const day of fs.readdirSync(path.join(wsRoot, '.trash'))) {
+      const dayDir = path.join(wsRoot, '.trash', day);
+      for (const f of fs.readdirSync(dayDir).filter((n) => n.endsWith('.json'))) {
+        let rel = '';
+        try { rel = JSON.parse(fs.readFileSync(path.join(dayDir, f), 'utf8')).rel || ''; } catch { /* not ours */ }
+        if (!rel.startsWith(`${runDir}/`)) continue;
+        fs.rmSync(path.join(dayDir, f), { force: true });
+        fs.rmSync(path.join(dayDir, f.replace(/\.json$/, '')), { recursive: true, force: true });
+      }
+      if (!fs.readdirSync(dayDir).length) fs.rmSync(dayDir, { recursive: true, force: true });
+    }
+    if (!fs.readdirSync(path.join(wsRoot, '.trash')).length) fs.rmSync(path.join(wsRoot, '.trash'), { recursive: true, force: true });
+  } catch { /* no trash */ }
   const evalRoot = path.join(wsRoot, 'eval');
   try { if (!flag('--keep') && !fs.readdirSync(evalRoot).length) fs.rmSync(evalRoot, { recursive: true, force: true }); } catch { /* gone */ }
 }

@@ -47,6 +47,7 @@ function renderMessages() {
   }
 
   messagesEl.innerHTML = '';
+  const changesByTurn = turnChanges(state.messages);
 
   if (!visible.length) {
     messagesEl.appendChild(emptyState());
@@ -66,6 +67,11 @@ function renderMessages() {
         console.error('render failed for a message', item && item.role, err);
         messagesEl.appendChild(el('div', 'status-line', `这条消息没能渲染（${item && item.role}）`));
       }
+      // The end of a turn that changed files: what changed, and 撤销 (1.5.8).
+      const next = items[items.indexOf(item) + 1];
+      if (item.turnId && (!next || next.turnId !== item.turnId) && changesByTurn.has(item.turnId)) {
+        messagesEl.appendChild(changesLine(item.turnId, changesByTurn.get(item.turnId)));
+      }
     }
     // The last ended turn's result goes at the bottom only while it is the newest
     // thing in the chat and nothing runs: an old "已取消" must not sit under a
@@ -81,6 +87,51 @@ function renderMessages() {
   updateComposerMode();
   renderVideoJobs();
   scrollToBottom(true);
+}
+
+/* --- file changes a turn made, undoable for 7 days (1.5.8) ------------------
+   fs_write / fs_delete in the workspace return an undo id; the line under the
+   turn lists the files and puts them all back at once. */
+function turnChanges(messages) {
+  const byTurn = new Map();
+  for (const m of messages) {
+    const id = m.role === 'tool' && m.ok && m.output && m.output.undo;
+    if (!id || !m.turnId) continue;
+    const list = byTurn.get(m.turnId) || [];
+    list.push({ id, path: m.output.path || '', kind: m.name === 'fs_delete' ? 'delete' : 'write' });
+    byTurn.set(m.turnId, list);
+  }
+  return byTurn;
+}
+
+state.undone = state.undone || new Set();
+function changesLine(turnId, changes) {
+  const line = el('div', 'changes-line');
+  const names = [...new Set(changes.map((c) => c.path.split('/').pop()))];
+  const deleted = changes.filter((c) => c.kind === 'delete').length;
+  const what = deleted && deleted === changes.length ? '删了' : deleted ? '改动了' : '改了';
+  line.appendChild(el('span', null, `这一轮${what} ${names.length} 个文件：${truncate(names.slice(0, 4).join('、'), 60)}${names.length > 4 ? ' 等' : ''}`));
+  const done = state.undone.has(turnId);
+  const btn = el('button', 'btn ghost tiny', done ? '已撤销' : '撤销');
+  btn.type = 'button';
+  btn.disabled = done;
+  btn.title = '把这一轮改过、删过的文件恢复成之前的样子（7 天内有效）';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const res = await api('/api/undo', { method: 'POST', body: { ids: changes.map((c) => c.id) } });
+      const failed = (res.results || []).filter((r) => !r.ok);
+      if (failed.length === (res.results || []).length) throw new Error(failed[0]?.error || '没能撤销');
+      state.undone.add(turnId);
+      btn.textContent = '已撤销';
+      toast(failed.length ? `撤销了一部分：${failed.map((f) => `${f.path || f.id}（${f.error}）`).join('；')}` : '已恢复成这一轮之前的样子');
+    } catch (err) {
+      btn.disabled = false;
+      toast(`没能撤销：${err.message}`, true);
+    }
+  });
+  line.appendChild(btn);
+  return line;
 }
 
 /* --- videos being made in the background ------------------------------------
@@ -163,24 +214,6 @@ function emptyMark() {
   img.src = 'icons/icon-128.png';
   img.alt = '';
   return img;
-}
-
-function onboardingCard() {
-  const wrap = el('div', 'empty');
-  wrap.appendChild(emptyMark());
-  wrap.appendChild(el('h2', null, '先接入一个模型'));
-  wrap.appendChild(el('p', null, '现在用的是内置演示，回答由脚本生成，不会真的理解你的话。接入模型后它才开始正经干活。'));
-
-  const choices = el('div', 'choice-list');
-  choices.appendChild(choiceButton('A', '接入真实模型', '填入接口地址、模型名和密钥，大约一分钟', () => openSettings('sec-model')));
-  choices.appendChild(choiceButton('B', '先用演示模式看看', '不填任何东西，先熟悉界面和审批流程', () => {
-    state.mockAck = true;
-    try { sessionStorage.setItem('desk.mockAck', '1'); } catch { /* private mode */ }
-    refreshMockState();
-  }));
-  wrap.appendChild(choices);
-  wrap.appendChild(el('div', 'empty-foot', '之后随时可以在左下角「设置」里更换。'));
-  return wrap;
 }
 
 /**

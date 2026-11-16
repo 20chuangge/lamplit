@@ -17,6 +17,7 @@
 import os from 'node:os';
 import { sandboxFor } from './sandbox.mjs';
 import { runnerFor } from './winrunner.mjs';
+import { snapshot, TRASH_DIR } from './trash.mjs';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
@@ -350,7 +351,8 @@ export function createRegistry(deps) {
       if (!stat) throw toolError('FS_NOT_FOUND', `no such path: ${r.rel}`);
       if (!stat.isDirectory()) throw toolError('FS_NOT_DIR', `${r.rel} is a file, not a directory`);
 
-      const names = await fsp.readdir(r.abs, { withFileTypes: true });
+      // The undo store (1.5.8) is not the bots' business.
+      const names = (await fsp.readdir(r.abs, { withFileTypes: true })).filter((e) => r.abs !== path.resolve(ctx.workspaceDir) || e.name !== TRASH_DIR);
       const entries = [];
       for (const entry of names.slice(0, 500)) {
         const info = await fsp.stat(path.join(r.abs, entry.name)).catch(() => null);
@@ -637,6 +639,8 @@ export function createRegistry(deps) {
       if (!args?.path) throw toolError('FS_BAD_ARGS', 'fs_write needs a path');
       const content = String(args?.content ?? '');
       await fsp.mkdir(path.dirname(r.abs), { recursive: true });
+      // What was there first, so the human can undo it (1.5.8).
+      const undo = r.inWorkspace ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: args?.mode === 'append' ? 'append' : 'write' }) : null;
       if (args?.mode === 'append') await fsp.appendFile(r.abs, content, 'utf8');
       else await fsp.writeFile(r.abs, content, 'utf8');
       return {
@@ -644,6 +648,7 @@ export function createRegistry(deps) {
         bytes: Buffer.byteLength(content, 'utf8'),
         inWorkspace: r.inWorkspace,
         mode: args?.mode === 'append' ? 'append' : 'overwrite',
+        ...(undo ? { undo } : {}),
       };
     },
   });
@@ -689,8 +694,10 @@ export function createRegistry(deps) {
       if (stat.isDirectory() && !args?.recursive) {
         throw toolError('FS_NEEDS_RECURSIVE', `${r.rel} is a directory; pass recursive=true to remove it`);
       }
-      await fsp.rm(r.abs, { recursive: Boolean(args?.recursive), force: false });
-      return { path: r.rel, deleted: true, recursive: Boolean(args?.recursive) };
+      // In the workspace a delete is a move into .trash, undoable for 7 days (1.5.8).
+      const undo = r.inWorkspace ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: 'delete' }) : null;
+      if (!undo) await fsp.rm(r.abs, { recursive: Boolean(args?.recursive), force: false });
+      return { path: r.rel, deleted: true, recursive: Boolean(args?.recursive), ...(undo ? { undo } : {}) };
     },
   });
 

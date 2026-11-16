@@ -94,6 +94,7 @@ import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
 import { checkSandbox, sandboxStatus } from './sandbox.mjs';
 import { checkRunner, setupRunner, syncGrants } from './winrunner.mjs';
+import { undoChanges, pruneTrash } from './trash.mjs';
 import * as modelsModule from './models.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES, verifyUpdate, readSignedPackage } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
@@ -3120,6 +3121,16 @@ route('PUT', /^\/api\/policy$/, async (_req, _res, { body, state }) => {
   return pub;
 });
 
+//   POST /api/undo {ids:[...]} -> {results:[{id, ok, path, error}]}   put back what a bot's
+//        fs_write / fs_delete changed in the workspace (1.5.8), newest first.
+route('POST', /^\/api\/undo$/, async (_req, _res, { body, state }) => {
+  const ids = (Array.isArray(body?.ids) ? body.ids : []).map(String).slice(0, 200);
+  if (!ids.length) throw httpError(400, 'NO_CHANGES', '没有要撤销的改动');
+  const results = await undoChanges(state.config.workspaceDir, ids);
+  await audit({ kind: 'files.undo', count: results.filter((r) => r.ok).length, paths: results.filter((r) => r.ok).map((r) => r.path).slice(0, 20) });
+  return { results };
+});
+
 //   POST /api/runner/setup -> {state}   Windows: make the lamplit-runner account (a UAC
 //        prompt on this computer) and run the bots' commands as it (1.5.7). This computer only.
 route('POST', /^\/api\/runner\/setup$/, async (req, _res, { state }) => {
@@ -4068,6 +4079,10 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
 
   // Linux: check once that the bots' commands can run in the sandbox (1.5.3).
   checkSandbox({ workspaceDir: state.config.workspaceDir }).catch((err) => console.error('[sandbox] check failed:', err.message));
+  // Undo copies older than 7 days go (1.5.8); once a day after this.
+  const prune = () => pruneTrash(state.config.workspaceDir).catch(() => {});
+  prune();
+  setInterval(prune, 24 * 3600 * 1000).unref();
   // Windows: the bots' commands as lamplit-runner, once it is set up (1.5.7).
   if (process.platform === 'win32') {
     syncGrants(state.config.policy || {}, { workspaceDir: state.config.workspaceDir, onlyIfChanged: true })

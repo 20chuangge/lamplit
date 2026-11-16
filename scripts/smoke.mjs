@@ -174,6 +174,7 @@ async function main() {
     await stage('1.5.6: an evaluation set of 20 real tasks', scenarioV1506);
     await stage('1.5.6: the pairing screen never traps the window', scenarioAuthEscape156);
     await stage('1.5.7: Windows commands run as their own low-privilege account', scenarioWinRunner157);
+    await stage('1.5.8: Android signed, first-run guide, file changes can be undone', scenarioDist158);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4951,6 +4952,75 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.5.8: distribution (report 8.4 #6). The Android app is signed with
+ * Lamplit's own release key (kept outside the repository, like the update
+ * key); Windows stays unsigned for now, and the release notes say how to get
+ * past the warning and give every file's SHA-256. A first-run guide in the
+ * empty chat: pick a provider (DeepSeek first, with where to get a key), paste
+ * the key, and Lamplit tests it and says the first sentence. File changes a
+ * bot makes in the workspace can be undone for 7 days: overwritten and deleted
+ * files go to workspace/.trash first, and under the reply a line lists what
+ * that turn changed with an undo button.
+ */
+async function scenarioDist158() {
+  const fsp = await import('node:fs/promises');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const T = await import('../src/trash.mjs');
+  const ws = await fsp.mkdtemp(pathMod.join(os.tmpdir(), 'lamplit-trash-'));
+  try {
+    const put = (rel, text) => fsp.mkdir(pathMod.dirname(pathMod.join(ws, rel)), { recursive: true }).then(() => fsp.writeFile(pathMod.join(ws, rel), text));
+    const read = (rel) => fsp.readFile(pathMod.join(ws, rel), 'utf8').catch(() => null);
+    await put('a.txt', 'old');
+    const w = await T.snapshot({ workspaceDir: ws, abs: pathMod.join(ws, 'a.txt'), rel: 'a.txt', kind: 'write' });
+    await put('a.txt', 'new');
+    const n = await T.snapshot({ workspaceDir: ws, abs: pathMod.join(ws, 'b.txt'), rel: 'b.txt', kind: 'write' });
+    await put('b.txt', 'made');
+    await put('dir/x.txt', 'x');
+    const d = await T.snapshot({ workspaceDir: ws, abs: pathMod.join(ws, 'dir'), rel: 'dir', kind: 'delete' });
+    check('U1 snapshot: an overwrite keeps the old file, a new file is noted, a delete moves the folder into .trash (gone from its place)',
+      /^\d{8}-[a-z0-9]+$/.test(w) && /^\d{8}-/.test(n) && /^\d{8}-/.test(d) && (await read('dir/x.txt')) === null);
+    const r1 = await T.undoChanges(ws, [w, n, d]);
+    check('U1 undo: old content back, the new file removed, the folder back where it was; in reverse order',
+      r1.every((r) => r.ok) && (await read('a.txt')) === 'old' && (await read('b.txt')) === null && (await read('dir/x.txt')) === 'x');
+    const again = await T.undoChanges(ws, [w]);
+    check('U1 twice: an undone change says so', again[0].ok === false && /撤销过/.test(again[0].error));
+    const outside = await T.snapshot({ workspaceDir: ws, abs: pathMod.join(os.tmpdir(), 'elsewhere.txt'), rel: '../elsewhere.txt', kind: 'write' });
+    const inTrash = await T.snapshot({ workspaceDir: ws, abs: pathMod.join(ws, '.trash', 'q'), rel: '.trash/q', kind: 'delete' });
+    check('U2 scope: only inside the workspace, never the trash itself', outside === null && inTrash === null);
+    const oldDay = pathMod.join(ws, '.trash', '20200101');
+    await fsp.mkdir(oldDay, { recursive: true });
+    await T.pruneTrash(ws, 7);
+    check('U2 7 days: older days are cleared', !(await fsp.stat(oldDay).catch(() => null)));
+  } finally {
+    await fsp.rm(ws, { recursive: true, force: true });
+  }
+  const tools = await readText('../src/tools.mjs');
+  const serverSrc = await readText('../src/server.mjs');
+  const chat = await readText('../public/app/main/05-chat.js');
+  check('U3 wiring: fs_write and fs_delete snapshot first and return the undo id; fs_list hides .trash; POST /api/undo; the turn\'s changes line with 撤销 under the reply',
+    tools.includes("const undo = r.inWorkspace ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: args?.mode === 'append' ? 'append' : 'write' }) : null;")
+    && tools.includes("await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: 'delete' })") && tools.includes("e.name !== TRASH_DIR")
+    && serverSrc.includes("route('POST', /^\\/api\\/undo$/") && chat.includes('function changesLine(') && chat.includes("'/api/undo'"));
+
+  const botsPart = await readText('../public/app/main/04-bots.js');
+  const onboarding = botsPart.slice(botsPart.indexOf('const ONBOARD_PROVIDERS'), botsPart.indexOf('// end of first run'));
+  check('O1 first run: three steps - provider (DeepSeek first, a link to get a key), the key, then test and the first sentence; demo still one click away',
+    onboarding.includes("'deepseek'") && onboarding.indexOf("'deepseek'") < onboarding.indexOf("'moonshot'") && onboarding.includes('keyUrl')
+    && onboarding.includes("'/api/settings/test'") && onboarding.includes('第一句') && onboarding.includes('先用演示模式看看') && onboarding.includes('step'));
+
+  const signer = await readText('./android-release.mjs');
+  const pkg = JSON.parse(await readText('../package.json'));
+  const notes = await readText('./release-notes.mjs');
+  const release = await readText('../RELEASE.md');
+  check('A1 Android: release key outside the repository (~/.lamplit-release), made once with a random password never printed, assembleRelease signed and checked',
+    /android-release\.mjs/.test(pkg.scripts['android:release'] || '') && signer.includes("path.join(os.homedir(), '.lamplit-release'") && signer.includes('-genkeypair')
+    && signer.includes('crypto.randomBytes(') && signer.includes('assembleRelease') && signer.includes('apksigner') && !/console\.log\([^)]*password/i.test(signer));
+  check('A2 Windows: unsigned for now - the notes say how past the warning and list every file\'s SHA-256',
+    notes.includes("createHash('sha256')") && notes.includes('更多信息') && notes.includes('仍要运行') && release.includes('未知发布者'));
 }
 
 /**

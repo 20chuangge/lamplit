@@ -169,6 +169,7 @@ async function main() {
     await stage('1.5.0: the phone is one of the machines; the update reminder is seen', scenarioV150);
     await stage('1.5.1: a cloud server behind Tailscale is reached and paired; the phone app opens into the machine', scenarioV151);
     await stage('1.5.2: what a bot reads is not an instruction; the live phone screen left Settings', scenarioV152);
+    await stage('1.5.3: the bots\' commands run in a sandbox on Linux', scenarioV153);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4941,6 +4942,76 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.5.3: the bots' commands run in a sandbox on Linux (report 7.2 #1). With
+ * bubblewrap, Lamplit's own data (keys, pairing tokens, the vault) is not
+ * there for a command at all. On the human's own Linux computer, or a machine
+ * not set to 放手, the command sees the system read-only and, of the homes,
+ * only the workspace and the opened folders. A machine given to the bots (放手)
+ * keeps everything else as it was. sudo and steps the human let past the
+ * fence run outside it. Settings says whether it is on, and why not.
+ */
+async function scenarioV153() {
+  const SB = await import('../src/sandbox.mjs');
+  const exists = () => true;
+  const base = { root: '/home/u/desk-hub', dataDir: '/home/u/desk-hub/data', workspaceDir: '/home/u/desk-hub/workspace', exists };
+  const strict = SB.bwrapArgs({ ...base, mode: 'strict', folders: [{ path: '/srv/photos', write: false }, { path: '/home/u/notes', write: true }] });
+  const at = (args, a, b) => args.findIndex((x, i) => x === a && args[i + 1] === b);
+  check('V1 strict: the system is read-only, the homes and Lamplit\'s folder are empty, and only the workspace (read-write) and the opened folders come back',
+    at(strict, '--ro-bind', '/') >= 0 && at(strict, '--tmpfs', '/home') >= 0 && at(strict, '--tmpfs', '/root') >= 0
+    && at(strict, '--bind', '/home/u/desk-hub/workspace') > at(strict, '--tmpfs', '/home')
+    && at(strict, '--ro-bind', '/srv/photos') >= 0 && at(strict, '--bind', '/home/u/notes') >= 0
+    && at(strict, '--bind', '/tmp') >= 0 && strict.includes('--die-with-parent') && at(strict, '--proc', '/proc') >= 0, JSON.stringify(strict));
+  const open = SB.bwrapArgs({ ...base, mode: 'open', folders: [] });
+  check('V1 open (a 放手 machine): everything stays as it was except Lamplit\'s data, which is empty',
+    at(open, '--bind', '/') >= 0 && at(open, '--tmpfs', '/home/u/desk-hub/data') > at(open, '--bind', '/') && at(open, '--ro-bind', '/') < 0 && at(open, '--tmpfs', '/home') < 0, JSON.stringify(open));
+  const outside = SB.bwrapArgs({ ...base, root: '/opt/lamplit', dataDir: '/opt/lamplit/data', workspaceDir: '/opt/lamplit/workspace', mode: 'strict', folders: [] });
+  check('V1 strict: Lamplit installed outside the homes is emptied too, its workspace comes back',
+    at(outside, '--tmpfs', '/opt/lamplit') >= 0 && at(outside, '--bind', '/opt/lamplit/workspace') > at(outside, '--tmpfs', '/opt/lamplit'), JSON.stringify(outside));
+  const missing = SB.bwrapArgs({ ...base, mode: 'strict', folders: [{ path: '/gone', write: true }], exists: (p) => p !== '/gone' });
+  check('V1 a folder that is gone is left out (bwrap would refuse to start)', !missing.includes('/gone'));
+
+  check('V2 when: Linux only; sudo and steps the human let past the fence run outside it; the rest inside',
+    SB.runsInside({ platform: 'linux', command: 'ls', unfenced: false }) === true
+    && SB.runsInside({ platform: 'win32', command: 'dir', unfenced: false }) === false
+    && SB.runsInside({ platform: 'linux', command: 'sudo apt-get install -y jq', unfenced: false }) === false
+    && SB.runsInside({ platform: 'linux', command: 'cp a /etc/x', unfenced: true }) === false);
+  check('V2 mode: a machine given to the bots and set to 放手 is "open", anything else "strict"',
+    SB.sandboxMode({ remote: true, autonomous: true }) === 'open' && SB.sandboxMode({ remote: true, autonomous: false }) === 'strict' && SB.sandboxMode({ remote: false, autonomous: true }) === 'strict');
+
+  const toolsSrc = await readText('../src/tools.mjs');
+  const agentSrc = await readText('../src/agent.mjs');
+  const serverSrc = await readText('../src/server.mjs');
+  const setup = await readText('../hub/setup-linux.sh');
+  const page = await readText('../public/index.html');
+  check('V3 shell: a sandboxed command runs as bwrap … -- /bin/sh -c <command>; the agent says when the human let a step past the fence',
+    toolsSrc.includes("spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command]") && toolsSrc.includes('const sandbox = sandboxFor(command, ctx);')
+    && agentSrc.includes('ctx.shellUnfenced = name === \'shell\' && Boolean(shellFence);'));
+  check('V3 ready: the machine checks once that the sandbox works (bwrap starts, Lamplit\'s data is not visible, the workspace is writable) before using it, and says why not',
+    typeof SB.checkSandbox === 'function' && SB.PROBE_SCRIPT.includes('[ ! -e "$1" ]') && SB.PROBE_SCRIPT.includes('[ -w "$2" ]')
+    && serverSrc.includes('sandbox: sandboxStatus(policy),') && setup.includes('has bwrap || pm_install bubblewrap'));
+  check('V3 Ubuntu: when AppArmor stops bwrap (Ubuntu 24.04, "setting up uid map"), the machine adds Ubuntu\'s rule for /usr/bin/bwrap only (where sudo needs no password) and checks again; new machines get it at setup',
+    SB.APPARMOR_PROFILE.includes('profile bwrap /usr/bin/bwrap flags=(unconfined) {') && SB.APPARMOR_PROFILE.includes('  userns,')
+    && SB.apparmorInstallCommand().endsWith('> /etc/apparmor.d/bwrap && apparmor_parser -r /etc/apparmor.d/bwrap')
+    && setup.includes('profile bwrap /usr/bin/bwrap flags=(unconfined) {') && setup.includes('apparmor_restrict_unprivileged_userns'));
+  {
+    const calls = [];
+    let fixed = false;
+    const fake = async (file, args) => {
+      calls.push([file, ...args].join(' ').slice(0, 80));
+      if (file === 'bwrap' && args[0] === '--version') return { code: 0, out: 'bubblewrap 0.9.0' };
+      if (file === 'sudo') { fixed = true; return { code: 0, out: '' }; }
+      if (file === 'bwrap') return fixed ? { code: 0, out: 'sandbox-ok\n' } : { code: 1, out: 'bwrap: setting up uid map: Permission denied\n' };
+      return { code: 1, out: '' };
+    };
+    const st = process.platform === 'linux' ? await SB.checkSandbox({ workspaceDir: '/w', secret: '/s', runImpl: fake }) : null;
+    check('V3 Ubuntu: blocked, then fixed: the check adds the rule and the sandbox is on (Linux only; Windows says "na")',
+      process.platform === 'linux' ? (st.state === 'on' && calls.some((c) => c.startsWith('sudo -n sh -c'))) : SB.sandboxStatus().state === 'na', JSON.stringify({ st, calls }));
+  }
+  check('V3 settings: 设置 → 审批 shows whether commands run isolated on this machine',
+    page.includes('id="sandbox-state"') && page.includes('function renderSandboxState('));
 }
 
 /**

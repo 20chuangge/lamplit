@@ -151,6 +151,23 @@ fi
 has tar || pm_install tar
 has gzip || pm_install gzip
 has curl || has wget || pm_install curl
+# The bots' commands run in a sandbox (1.5.3).
+has bwrap || pm_install bubblewrap
+# Ubuntu 23.10+ lets no ordinary program make a user namespace; allow it to
+# bwrap only (Ubuntu's own way for sandboxing programs).
+if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] && has apparmor_parser && [ -x /usr/bin/bwrap ]; then
+  cat > /etc/apparmor.d/bwrap <<'APPARMOR'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/bwrap>
+}
+APPARMOR
+  apparmor_parser -r /etc/apparmor.d/bwrap >/dev/null 2>&1 || warn "bwrap 的 AppArmor 规则没加载上"
+fi
 
 fetch() {
   if has curl; then curl -fsSL --retry 2 --connect-timeout 15 -m 600 "$1" -o "$2"

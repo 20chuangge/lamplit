@@ -134,7 +134,7 @@ export function existenceChecksInCommand(command) {
   return out;
 }
 
-const SUDO = /(^|[\s;&|(`])(sudo|doas|pkexec|su\s+-c|runas)\b|Start-Process\b[^;|]*-Verb\s+RunAs|\bgsudo\b/i;
+export const SUDO = /(^|[\s;&|(`])(sudo|doas|pkexec|su\s+-c|runas)\b|Start-Process\b[^;|]*-Verb\s+RunAs|\bgsudo\b/i;
 
 // Commands that only look: they list, measure or print, and change nothing.
 // Not here on purpose (SEC-08): env (runs any program), awk / sed (have their

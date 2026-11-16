@@ -2347,7 +2347,7 @@ export class AgentRuntime {
       ? (sendsOut(name, args) || (tool.mcp && !this.registry.mcpTrust?.(name)?.readOnly ? '用连接的应用改东西' : ''))
       : '';
     if (guarded) {
-      verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `这一轮读过${ctx.readFrom.join('、')}里的内容，之后${guarded}先问你，免得资料里藏着的指令带偏机器人（设置 → 审批 里可以关掉）` };
+      verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `这一轮读过${ctx.readFrom.join('、')}里的内容，之后${guarded}先问你，免得资料里藏着的指令带偏机器人（设置 → 边界 里可以关掉）` };
     }
 
     this.bus.emit({
@@ -2475,6 +2475,13 @@ export class AgentRuntime {
         return {};
       }
     }
+
+    // The sandbox (1.5.3): a shell step the human - or the primary bot's full
+    // trust - let past the fence names a place the sandbox hides: it runs outside.
+    const shellFence = name === 'shell'
+      ? checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: { ...(this.config.policy || {}), sudo: 'ask' }, remote: machineMode() === 'remote', autonomous: machine.autonomous })
+      : null;
+    ctx.shellUnfenced = name === 'shell' && Boolean(shellFence);
 
     // 3. Run it.
     let result;

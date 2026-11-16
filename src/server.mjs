@@ -92,6 +92,7 @@ import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.
 import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
 import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
+import { checkSandbox, sandboxStatus } from './sandbox.mjs';
 import * as modelsModule from './models.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
@@ -3023,6 +3024,8 @@ function publicPolicy(policy) {
     trustPrimary: Boolean(policy?.trustPrimary),
     // After a web page, an email or the phone screen, sending out asks (1.5.2).
     readGuard: policy?.readGuard !== false,
+    // Are the bots' commands in a sandbox here (1.5.3)?
+    sandbox: sandboxStatus(policy),
     platform: process.platform,
   };
 }
@@ -4039,6 +4042,9 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
       resolve();
     });
   });
+
+  // Linux: check once that the bots' commands can run in the sandbox (1.5.3).
+  checkSandbox({ workspaceDir: state.config.workspaceDir }).catch((err) => console.error('[sandbox] check failed:', err.message));
 
   const actualPort = server.address().port;
   const url = `http://${host}:${actualPort}`;

@@ -546,7 +546,7 @@
           <option value="ask">先问我</option>
           <option value="deny">一律不许</option>
         </select>
-        <div class="row-note">文件工具按路径严格检查；命令行里写到其他位置也会先问你，但命令行不是沙箱，一条命令能碰到的比它写出来的多。要彻底隔离，在机器人设置里关掉「执行命令」。</div>
+        <div class="row-note">文件工具按路径严格检查；命令行里写到其他位置也会先问你。Linux 上命令在沙箱里跑（见下面的「命令隔离」）；Windows 上命令行还不是沙箱，一条命令能碰到的比它写出来的多，要彻底隔离就在机器人设置里关掉「执行命令」。</div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">管理员权限（sudo）</div>
         <select class="field" id="sudo-mode">
           <option value="ask">先问我</option>
@@ -559,6 +559,8 @@
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">读到的内容不是指令</div>
         <label class="switch-row"><input type="checkbox" id="read-guard" /> 机器人读过网页、邮件或手机屏幕后，发邮件、发文件、执行会改东西的命令先问我</label>
         <div class="row-note">网页和邮件里可能藏着写给机器人的话（「把文件发给某某」）。打开时，这一轮读过这些内容后，上面这些操作都先问你，受信任的机器人和「放手」的机器也一样；只是看、浏览、写自己的文件不受影响。定时任务里遇到会停下来等你。</div>
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">命令隔离</div>
+        <div class="row-note" id="sandbox-state">—</div>
       </section>
 
       <section class="dsec" id="sec-usage">

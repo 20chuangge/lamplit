@@ -766,6 +766,7 @@ function renderFolders(policy) {
   if ($('sudo-mode')) $('sudo-mode').value = policy?.sudo || 'ask';
   if ($('trust-primary')) $('trust-primary').checked = Boolean(policy?.trustPrimary);
   if ($('read-guard')) $('read-guard').checked = policy?.readGuard !== false;
+  renderSandboxState(policy?.sandbox);
 }
 
 async function savePolicy(next, okText = '') {
@@ -879,6 +880,19 @@ function renderPermOverview() {
   if (note) note.hidden = strictEnough;
   const button = $('perm-strict');
   if (button) button.disabled = strictEnough;
+}
+
+/** 设置 → 边界 → 命令隔离 (1.5.3): are the bots' commands in a sandbox here? */
+function renderSandboxState(s) {
+  const box = $('sandbox-state');
+  if (!box) return;
+  const state = s?.state || 'na';
+  box.classList.toggle('warn-note', state === 'off');
+  if (state === 'na') box.textContent = '这台是 Windows：机器人执行的命令还没有隔离（下一步改用单独的低权限账号来跑）。';
+  else if (state === 'unknown') box.textContent = '正在检查这台机器能不能用沙箱…';
+  else if (state === 'off') box.textContent = `没有生效：${s.reason || '原因不明'}。命令照常运行，但看得到 Lamplit 自己的数据。`;
+  else if (s.mode === 'open') box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。这台机器交给了机器人（放手），其他位置照常可用。用 sudo 的命令不在沙箱里。';
+  else box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）；系统只读，个人文件夹里只看得到工作区和开放的文件夹。用 sudo 的命令、你批准越过边界的那一步不在沙箱里。';
 }
 
 async function applyStrictPermissions() {

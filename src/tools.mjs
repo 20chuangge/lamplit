@@ -15,6 +15,7 @@
  */
 
 import os from 'node:os';
+import { sandboxFor } from './sandbox.mjs';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
@@ -175,7 +176,7 @@ function decodeOutput(buffer) {
   }
 }
 
-function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHELL_OUTPUT }) {
+function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHELL_OUTPUT, sandbox = null }) {
   return new Promise((resolve) => {
     let settled = false;
     // Raw bytes, decoded once at the end: a multi-byte character may be split
@@ -194,14 +195,17 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
     // Never hand the hub's settings, keys or the user's secrets to a command (SEC-12).
     const env = childEnv();
 
-    const child = spawn(process.platform === 'win32' ? `chcp 65001 >nul & ${command}` : command, {
-      shell: true,
-      cwd,
-      windowsHide: true,
-      env,
-      // Its own process group on Linux/macOS, so a timeout ends everything it started.
-      detached: process.platform !== 'win32',
-    });
+    // In the sandbox on Linux (1.5.3): bwrap runs the shell, Lamplit's data out of sight.
+    const child = sandbox
+      ? spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command], { cwd, env, detached: true })
+      : spawn(process.platform === 'win32' ? `chcp 65001 >nul & ${command}` : command, {
+        shell: true,
+        cwd,
+        windowsHide: true,
+        env,
+        // Its own process group on Linux/macOS, so a timeout ends everything it started.
+        detached: process.platform !== 'win32',
+      });
 
     // maxOutput is in characters; 4 bytes per character is the UTF-8 worst case.
     const maxBytes = maxOutput * 4;
@@ -699,11 +703,20 @@ export function createRegistry(deps) {
       const command = String(args?.command ?? '').trim();
       if (!command) throw toolError('SHELL_BAD_ARGS', 'shell needs a command');
       const timeoutMs = Math.min(Math.max(Number(args?.timeoutMs) || 30000, 1000), 120000);
-      return runShellCommand(command, {
+      const sandbox = sandboxFor(command, ctx);
+      const result = await runShellCommand(command, {
         cwd: ctx.workspaceDir,
         timeoutMs,
         signal: ctx.signal,
+        sandbox,
       });
+      // Said to the bot, so a missing file there is understood (1.5.3).
+      if (sandbox) {
+        result.sandbox = sandbox.mode === 'open'
+          ? 'ran in the sandbox: everything as usual except Lamplit\'s own data, which is not visible'
+          : 'ran in the sandbox: the system is read-only and only the workspace, /tmp and the opened folders are visible; Lamplit\'s data is not. Anything else needs the human (ask, or use sudo where allowed).';
+      }
+      return result;
     },
   });
 

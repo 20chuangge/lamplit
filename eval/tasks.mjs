@@ -238,7 +238,9 @@ export const TASKS = [
         const line = doc.split('\n').find((l) => l.includes(area) && hasNumber(l, n));
         if (!line) return fail(`${area} 的总额应为 ${n}`);
       }
-      return /华东[^。\n]{0,20}(最高|第一|最多)|(最高|第一|最多)[^。\n]{0,20}华东/.test(doc) ? pass() : fail('没说华东最高');
+      // Said many ways: 最高 / 第一 / 最多 / 领先 / 居首 / 最大 / 排名第一 / Top.
+      const top = '(最高|第一|最多|领先|居首|最大|最好|冠军|top|Top|TOP)';
+      return new RegExp(`华东[^。\\n]{0,20}${top}|${top}[^。\\n]{0,20}华东`).test(doc) ? pass() : fail('没说华东最高');
     },
     good: { files: { '销售报告.md': '| 地区 | 总额 |\n|---|---|\n| 华东 | 2500 |\n| 华南 | 2300 |\n| 华北 | 950 |\n\n华东最高，华北明显落后。\n' } },
   },

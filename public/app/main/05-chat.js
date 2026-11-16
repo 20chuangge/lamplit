@@ -1433,6 +1433,8 @@ async function loadPages() {
   const data = await api('/api/pages');
   state.pages = data.pages || [];
   renderPages();
+  // The other machines' pages, listed here too (1.5.10); they stay where they were made.
+  api('/api/peers/pages').then((r) => { state.peerPages = r.machines || []; renderPages(); }).catch(() => {});
   return state.pages;
 }
 
@@ -1441,7 +1443,7 @@ function renderPages() {
   if (!box) return;
   box.innerHTML = '';
   const list = state.pages || [];
-  if (!list.length) { box.appendChild(el('div', 'row-note', '还没有页面。让机器人「把结果做成一个页面」试试。')); return; }
+  if (!list.length) box.appendChild(el('div', 'row-note', '这台机器上还没有页面。让机器人「把结果做成一个页面」试试。'));
   for (const p of list) {
     const row = el('div', 'vault-row');
     const head = el('div', 'vault-head');
@@ -1466,6 +1468,24 @@ function renderPages() {
     head.appendChild(del);
     row.appendChild(head);
     box.appendChild(row);
+  }
+  for (const m of state.peerPages || []) {
+    if (!(m.pages || []).length) continue;
+    box.appendChild(el('div', 'pages-machine', `「${m.machine}」上的页面`));
+    for (const p of m.pages) {
+      const row = el('div', 'vault-row');
+      const head = el('div', 'vault-head');
+      const title = el('div', 'vault-title');
+      title.appendChild(el('b', '', p.title));
+      title.appendChild(el('small', '', [p.botName, fmtWhen(p.updatedAt), fmtBytes(p.size)].filter(Boolean).join(' · ')));
+      head.appendChild(title);
+      const open = el('button', 'btn tiny', '打开');
+      open.type = 'button';
+      open.addEventListener('click', () => openPageViewer(p.name, p.title, m.machine));
+      head.appendChild(open);
+      row.appendChild(head);
+      box.appendChild(row);
+    }
   }
 }
 

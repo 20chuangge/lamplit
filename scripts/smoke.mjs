@@ -176,6 +176,7 @@ async function main() {
     await stage('1.5.7: Windows commands run as their own low-privilege account', scenarioWinRunner157);
     await stage('1.5.8: Android signed, first-run guide, file changes can be undone', scenarioDist158);
     await stage('1.5.9: what the cloud 小红书 project showed', scenarioXhs159);
+    await stage('1.5.10: settings and models', scenarioSettings1510);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4953,6 +4954,52 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.5.10: settings and models (the human's list, 11-16). One key, several
+ * models: 「多个模型」 lists what the key can use, any number are ticked and
+ * added at once, then shared with every machine. 成本 adds up every machine
+ * (or only this one), with a per-machine table. 页面库 lists every machine's
+ * pages (they stay where they were made; opening one fetches it). Settings
+ * pages are laid out as cards with labels beside their fields, switches as
+ * toggles, and the 模型 page has tabs instead of one long scroll.
+ */
+async function scenarioSettings1510() {
+  const apps = await readText('../public/app/main/09-apps.js');
+  const start = apps.indexOf('function mergeUsage(');
+  const end = apps.indexOf('\n}\n', start) + 3;
+  // eslint-disable-next-line no-new-func
+  const mergeUsage = new Function('machineDisplayName', `${apps.slice(start, end)}; return mergeUsage;`)(() => 'Windows 电脑');
+  const own = { currency: 'CNY', totals: { tokens: 100, cost: 0.5, calls: 2 }, byModel: [{ key: 'deepseek-flash', tokens: 100, cost: 0.5, calls: 2 }], byBot: [{ key: 'chief', tokens: 100, cost: 0.5 }] };
+  const peers = { machines: [{ machine: '腾讯云', currency: 'CNY', totals: { tokens: 300, cost: 1.25, calls: 5 }, byModel: [{ key: 'deepseek-flash', tokens: 200, cost: 1, calls: 3 }, { key: 'qwen', tokens: 100, cost: 0.25, calls: 2 }], byBot: [{ key: 'bot-a', tokens: 300, cost: 1.25 }] }], missing: ['rocky-vm'] };
+  const all = mergeUsage(own, peers);
+  check('S1 cost, every machine: totals and models add up across machines, bots keep their machine, a per-machine table, missing machines named',
+    all.totals.tokens === 400 && all.totals.cost === 1.75 && all.totals.calls === 7
+    && all.byModel.find((m) => m.key === 'deepseek-flash')?.tokens === 300 && all.byModel.length === 2
+    && all.byBot[0].machine === '腾讯云' && all.byMachine.length === 2 && all.byMachine[0].key === 'Windows 电脑' && all.byMachine[1].cost === 1.25
+    && all.missing.join() === 'rocky-vm' && all.scope === 'all');
+  const alone = mergeUsage(own, { machines: [] });
+  check('S1 cost, one machine: unchanged, no per-machine table', alone.totals.tokens === 100 && alone.byMachine.length === 0 && alone.scope === 'here');
+  const serverSrc = await readText('../src/server.mjs');
+  const html = await readText('../public/index.html');
+  check('S1 wiring: /api/peers/usage and /api/peers/pages ask every machine (8 s each, missing ones named); 成本 has 所有机器 / 只看这台; 页面库 lists other machines\' pages and opens them from there',
+    serverSrc.includes("route('GET', /^\\/api\\/peers\\/usage$/") && serverSrc.includes("route('GET', /^\\/api\\/peers\\/pages$/") && serverSrc.includes('async function fromEveryPeer(')
+    && html.includes('data-scope="all"') && html.includes('id="usage-machines"') && apps.includes("api(`/api/peers/usage?days=${state.usageDays}`)")
+    && (await readText('../public/app/main/05-chat.js')).includes('openPageViewer(p.name, p.title, m.machine)'));
+
+  const settings = await readText('../public/app/main/08-settings.js');
+  const wiring = await readText('../public/app/main/12-wiring.js');
+  check('S2 one key, several models: list what the key can use, filter, tick several, add each with that key, then share with every machine',
+    html.includes('id="mp-list"') && html.includes('id="mp-options"') && html.includes('id="mp-add-picked"')
+    && settings.includes("api('/api/providers/models'") && settings.includes("api('/api/models', { method: 'POST', body: { provider: b.provider, baseUrl: b.baseUrl, apiKey: b.apiKey, model, label: model } })")
+    && settings.includes('window.desk.syncModel()') && wiring.includes("$('mp-add-picked')?.addEventListener('click', addPickedModels);"));
+
+  const css = await readText('../public/app/style.css');
+  check('S3 layout: settings grouped into cards (moved, not rebuilt), labels beside fields on a computer, switches as toggles, the 模型 page in tabs',
+    settings.includes('function cardifySettings()') && wiring.includes('cardifySettings();') && settings.includes("['chat', '对话', ['settings-form', 'model-share']]")
+    && settings.includes("['media', '生图和视频', ['media-image-set', 'media-video-set']]") && css.includes('.set-card {') && css.includes('grid-template-columns: 168px minmax(0, 1fr)')
+    && css.includes('.dsec .switch-row input[type="checkbox"]:checked::after') && css.includes('.set-tab.on'));
 }
 
 /**

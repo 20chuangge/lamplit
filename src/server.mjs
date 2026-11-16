@@ -1243,6 +1243,29 @@ route('GET', /^\/api\/peers$/, async (_req, _res, { state }) => ({ peers: state.
 //   GET /api/peers/bots -> {machines:[{machine, bots:[{id,name,role}]}]}   who works on the other machines
 route('GET', /^\/api\/peers\/bots$/, async (_req, _res, { state }) => ({ machines: await state.peers.rosters().catch(() => []) }));
 
+// The other machines' cost and pages, for one view of everything (1.5.10).
+//   GET /api/peers/usage?days=7 -> {machines:[{machine, currency, totals, byBot, byModel, byDay}]}
+//   GET /api/peers/pages        -> {machines:[{machine, pages:[...]}]}
+// A machine that is off or away is left out (its name in "missing").
+async function fromEveryPeer(state, apiPath) {
+  const machines = [];
+  const missing = [];
+  await Promise.all(state.peers.list().map(async ({ name }) => {
+    try { machines.push({ machine: name, ...(await state.peers.json(state.peers.find(name), 'GET', apiPath, { timeoutMs: 8000 })) }); } catch { missing.push(name); }
+  }));
+  machines.sort((a, b) => a.machine.localeCompare(b.machine));
+  return { machines, missing };
+}
+route('GET', /^\/api\/peers\/usage$/, async (_req, _res, { state, query }) => {
+  const days = Math.min(Math.max(Number(query.get('days')) || 7, 1), 365);
+  const { machines, missing } = await fromEveryPeer(state, `/api/usage?days=${days}`);
+  return { machines: machines.map((m) => ({ machine: m.machine, currency: m.currency, totals: m.totals, byBot: m.byBot, byModel: m.byModel, byDay: m.byDay })), missing };
+});
+route('GET', /^\/api\/peers\/pages$/, async (_req, _res, { state }) => {
+  const { machines, missing } = await fromEveryPeer(state, '/api/pages');
+  return { machines: machines.map((m) => ({ machine: m.machine, pages: m.pages || [] })), missing };
+});
+
 route('PUT', /^\/api\/peers$/, async (_req, _res, { body, state }) => {
   // The computer that shares the list also says what this machine is called
   // (the name given in "添加机器"), so every list shows that name.

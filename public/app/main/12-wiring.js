@@ -24,6 +24,14 @@ function wireChrome() {
     });
   }
   // Settings → 边界 → 命令隔离 on Windows (1.5.7): make the lamplit-runner account.
+  // 成本: every machine, or only this one (1.5.10).
+  $('usage-scope')?.addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-scope]');
+    if (!btn) return;
+    state.usageScope = btn.dataset.scope;
+    for (const b of $('usage-scope').querySelectorAll('button')) b.classList.toggle('on', b === btn);
+    loadUsage().catch(() => {});
+  });
   $('runner-setup')?.addEventListener('click', async () => {
     try {
       renderSandboxState(await api('/api/runner/setup', { method: 'POST', body: {} }));
@@ -53,6 +61,7 @@ function wireChrome() {
   $('settings-close').addEventListener('click', closeSettings);
   $('settings-back')?.addEventListener('click', showSettingsHome);
   decorateSettingsNav();
+  cardifySettings();
   $('settings-scrim').addEventListener('click', closeSettings);
   // Settings is a page beside the sidebar: picking a chat there goes back to it.
   $('sidebar')?.addEventListener('click', (e) => {
@@ -227,6 +236,10 @@ function wireChrome() {
   $('desktop-full-install')?.addEventListener('click', installFullDesktop);
   $('feishu-newcode')?.addEventListener('click', async () => { try { renderFeishu(await api('/api/feishu', { method: 'PUT', body: { newPairCode: true } })); } catch (err) { toast(err.message, true); } });
   $('mp-save')?.addEventListener('click', saveNewModel);
+  $('mp-list')?.addEventListener('click', listKeyModels);
+  $('mp-filter')?.addEventListener('input', renderModelPicks);
+  $('mp-add-picked')?.addEventListener('click', addPickedModels);
+  $('mp-provider')?.addEventListener('change', () => { $('mp-pick').hidden = true; state.mpOptions = []; });
   $('mp-test')?.addEventListener('click', testNewModel);
   $('mp-provider')?.addEventListener('change', () => fillModelPreset(true));
   document.querySelectorAll('#audit-filters .chip-btn').forEach((btn) => {

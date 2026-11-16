@@ -521,6 +521,76 @@ const SETNAV_ICONS = {
   'sec-pair': '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
   'sec-about': '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
 };
+/*
+ * Settings laid out as cards (1.5.10, after Cursor / Codex): each page keeps
+ * its title and one line of description; what follows is grouped into cards,
+ * one per small heading, and the 模型 page gets tabs instead of one long
+ * scroll. The elements are moved, not rebuilt, so their ids and handlers stay.
+ */
+const MODEL_TABS = [
+  ['chat', '对话', ['settings-form', 'model-share']],
+  ['more', '多个模型', ['models-set']],
+  ['voice', '语音', ['voice-set']],
+  ['vision', '看图', ['vision-set']],
+  ['media', '生图和视频', ['media-image-set', 'media-video-set']],
+  ['code', '编程助手', ['cliagents-set']],
+];
+const CARD_BLOCKS = 'form, .voice-set, .perm-card, .pair-card, .model-share, .vault-add, details.set-block';
+
+function cardifySettings() {
+  for (const sec of document.querySelectorAll('#settings-scroll > .dsec')) {
+    if (sec.dataset.cards) continue;
+    sec.dataset.cards = '1';
+    const kids = [...sec.children];
+    let i = 0;
+    // The page title and its first line of description stay outside the cards.
+    if (kids[i]?.matches('.dsec-head')) i += 1;
+    if (kids[i]?.matches('.dsec-sub, .row-note') && !kids[i].id) i += 1;
+    let card = null;
+    for (; i < kids.length; i += 1) {
+      const node = kids[i];
+      if (node.matches(CARD_BLOCKS)) {
+        node.classList.add('set-card');
+        card = null;
+        continue;
+      }
+      if (node.matches('.dsec-head') || !card) {
+        card = el('div', 'set-card');
+        sec.insertBefore(card, node);
+      }
+      card.appendChild(node);
+    }
+    for (const c of sec.querySelectorAll('.set-card')) if (!c.textContent.trim() && !c.querySelector('input, select, button, table')) c.remove();
+  }
+  // 模型: tabs.
+  const model = $('sec-model');
+  if (model && !$('model-tabs')) {
+    const bar = el('div', 'set-tabs');
+    bar.id = 'model-tabs';
+    for (const [key, label] of MODEL_TABS) {
+      const b = el('button', 'set-tab', label);
+      b.type = 'button';
+      b.dataset.tab = key;
+      b.addEventListener('click', () => showModelTab(key));
+      bar.appendChild(b);
+    }
+    const anchor = model.querySelector('.set-card');
+    model.insertBefore(bar, anchor);
+    showModelTab(state.modelTab || 'chat');
+  }
+}
+
+function showModelTab(key) {
+  state.modelTab = key;
+  for (const b of document.querySelectorAll('#model-tabs .set-tab')) b.classList.toggle('on', b.dataset.tab === key);
+  for (const [tab, , ids] of MODEL_TABS) {
+    for (const id of ids) {
+      const node = $(id);
+      if (node) node.classList.toggle('tab-hidden', tab !== key);
+    }
+  }
+}
+
 function decorateSettingsNav() {
   document.querySelectorAll('.setnav').forEach((btn) => {
     const shape = SETNAV_ICONS[btn.dataset.setTarget];
@@ -1180,6 +1250,94 @@ async function saveNewModel() {
     toast(`已添加「${r.model.label}」，可以在助手设置里选它了`);
     loadModels();
   } catch (err) { modelNote(`保存失败：${err.message}`, true); }
+}
+
+/* --- one key, several models (1.5.10) -------------------------------------------
+   "列出这个密钥能用的模型" reads what the provider offers for that key; tick
+   any number and they are added as separate models with the same key, then
+   shared with every machine like the rest of the model settings. */
+async function listKeyModels() {
+  const b = newModelBody();
+  const btn = $('mp-list');
+  btn.disabled = true;
+  modelNote('正在向服务商读取…');
+  try {
+    const r = await api('/api/providers/models', { method: 'POST', body: { provider: b.provider, baseUrl: b.baseUrl, apiKey: b.apiKey } });
+    state.mpOptions = (r.models || []).map(String);
+    state.mpPicked = new Set();
+    $('mp-pick').hidden = false;
+    $('mp-filter').value = '';
+    renderModelPicks();
+    modelNote(r.live ? `这个密钥能用 ${state.mpOptions.length} 个模型，勾选要添加的（可以多选）。` : `没读到实时列表（${r.error || '未知原因'}），先列出常用的。`, !r.live);
+  } catch (err) {
+    modelNote(`读取失败：${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderModelPicks() {
+  const box = $('mp-options');
+  if (!box) return;
+  const provider = $('mp-provider').value;
+  const have = new Set((state.models?.models || []).filter((m) => m.provider === provider).map((m) => m.model));
+  const q = $('mp-filter').value.trim().toLowerCase();
+  const shown = (state.mpOptions || []).filter((m) => !q || m.toLowerCase().includes(q)).slice(0, 300);
+  box.innerHTML = '';
+  if (!shown.length) box.appendChild(el('div', 'row-note', '没有符合的模型。'));
+  for (const name of shown) {
+    const row = el('label', 'mp-option');
+    const box2 = document.createElement('input');
+    box2.type = 'checkbox';
+    box2.checked = have.has(name) || state.mpPicked.has(name);
+    box2.disabled = have.has(name);
+    box2.addEventListener('change', () => {
+      if (box2.checked) state.mpPicked.add(name); else state.mpPicked.delete(name);
+      updatePickButton();
+    });
+    row.appendChild(box2);
+    row.appendChild(el('span', 'mp-name', name));
+    if (have.has(name)) row.appendChild(el('span', 'tag', '已添加'));
+    box.appendChild(row);
+  }
+  updatePickButton();
+}
+
+function updatePickButton() {
+  const n = state.mpPicked?.size || 0;
+  const btn = $('mp-add-picked');
+  btn.disabled = !n;
+  btn.textContent = n ? `添加选中的 ${n} 个模型` : '添加选中的模型';
+}
+
+async function addPickedModels() {
+  const b = newModelBody();
+  const picked = [...(state.mpPicked || [])];
+  if (!picked.length) return;
+  const btn = $('mp-add-picked');
+  btn.disabled = true;
+  const failed = [];
+  for (const [i, model] of picked.entries()) {
+    modelNote(`正在添加 ${i + 1}/${picked.length}：${model}`);
+    try {
+      await api('/api/models', { method: 'POST', body: { provider: b.provider, baseUrl: b.baseUrl, apiKey: b.apiKey, model, label: model } });
+    } catch (err) {
+      failed.push(`${model}（${err.message}）`);
+    }
+  }
+  state.mpPicked = new Set();
+  await loadModels();
+  renderModelPicks();
+  const added = picked.length - failed.length;
+  // Shared with every machine, like any change to the model settings.
+  let synced = '';
+  if (added && machineBridge?.local && (machineBridge.machines || []).length && window.desk?.syncModel) {
+    modelNote(`已添加 ${added} 个，正在同步到所有机器…`);
+    const res = await window.desk.syncModel().catch((err) => ({ ok: false, error: err.message }));
+    synced = res?.ok ? '，并同步到了所有机器' : `；同步到其他机器失败：${res?.error || '未知原因'}`;
+  }
+  modelNote(failed.length ? `添加了 ${added} 个${synced}；没成功：${failed.join('、')}` : `添加了 ${added} 个模型${synced}。可以在每个助手的设置里给它选一个。`, Boolean(failed.length));
+  if (added) $('mp-apikey').value = '';
 }
 
 /* --- Feishu (Settings > 飞书) ------------------------------------------------- */

@@ -1229,6 +1229,57 @@
   .auth-foot { color: var(--dim); font-size: 11.5px; margin: var(--s4) 0 0; line-height: 1.6; }
   .auth-back { margin: calc(-1 * var(--s3)) 0 var(--s4) calc(-1 * var(--s2)); color: var(--muted); }
   .auth .auth-back { margin-top: calc(-1 * var(--s3)); min-height: 30px; font-size: 12.5px; }
+  /* settings as cards (1.5.10) ------------------------------------------- */
+  .settings-scroll > .dsec { max-width: 760px; }
+  .set-card {
+    background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: 12px;
+    padding: 16px 18px; margin: 0 0 14px;
+  }
+  .set-card.tab-hidden, .tab-hidden { display: none !important; }
+  .set-card > .dsec-head { font-size: 13.5px !important; font-weight: 600; margin: 0 0 6px !important; letter-spacing: 0; color: var(--text); }
+  .set-card > .dsec-head ~ .dsec-head { margin-top: 18px !important; padding-top: 14px; border-top: 1px solid var(--border-soft); }
+  .set-card > .row-note { line-height: 1.6; }
+  .set-card .btn-row { margin-top: 14px; }
+  .set-card .vault-add.set-card, .set-card .set-card { background: transparent; border: 0; padding: 0; margin: 10px 0 0; }
+  /* label | field, aligned (a computer; a phone keeps them stacked) */
+  @media (min-width: 861px) {
+    .set-card, #settings-form { display: grid; grid-template-columns: 168px minmax(0, 1fr); column-gap: 20px; row-gap: 8px; align-items: center; }
+    .set-card > *, #settings-form > * { grid-column: 1 / -1; }
+    .set-card > .lbl, #settings-form > .lbl { grid-column: 1; margin: 0 !important; color: var(--muted); font-size: 12.5px; }
+    /* whatever follows a label is its control (a field, a select, a password box with 显示) */
+    .set-card > .lbl + *, #settings-form > .lbl + * { grid-column: 2; }
+    .set-card > [hidden], #settings-form > [hidden], .set-card > datalist, #settings-form > datalist { display: none; }
+    details.set-card { display: block; }
+    details.set-card[open] > * { margin-top: 8px; }
+  }
+  /* tabs on the 模型 page */
+  .set-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 16px; padding: 3px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--border-soft); width: fit-content; max-width: 100%; }
+  .set-tab { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12.5px; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+  .set-tab:hover { color: var(--text); }
+  .set-tab.on { background: var(--panel-2); color: var(--text); font-weight: 600; }
+  /* switches: the words on the left, a toggle on the right */
+  .dsec .switch-row { flex-direction: row-reverse; justify-content: space-between; gap: 16px; font-size: 13px; color: var(--text); margin: 4px 0; padding: 4px 0; }
+  .dsec .switch-row input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none; flex: none; width: 34px; height: 20px; margin: 0;
+    border-radius: 999px; background: var(--border); position: relative; transition: background 0.15s;
+  }
+  .dsec .switch-row input[type="checkbox"]::after {
+    content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: transform 0.15s;
+  }
+  .dsec .switch-row input[type="checkbox"]:checked { background: var(--accent-2, #8b7cf6); }
+  .dsec .switch-row input[type="checkbox"]:checked::after { transform: translateX(14px); }
+  .dsec .switch-row input[type="checkbox"]:disabled { opacity: 0.5; }
+
+  /* one key, several models (1.5.10) */
+  .mp-pick { margin-top: 10px; }
+  .mp-options { max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-md, 10px); margin-top: 8px; padding: 4px; }
+  .mp-option { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  .mp-option:hover { background: rgba(255, 255, 255, 0.04); }
+  .mp-option .mp-name { flex: 1; font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  .mp-manual { margin-top: 12px; }
+  .mp-manual > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+  .pages-machine { margin: 16px 0 6px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
   /* first run (1.5.8) */
   .onboard-steps { display: flex; gap: 6px; justify-content: center; margin: 4px 0 10px; font-size: 11.5px; color: var(--dim); }
   .onboard-step { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }

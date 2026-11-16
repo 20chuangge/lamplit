@@ -940,11 +940,44 @@ function usageRangeLabel(days) {
 
 async function loadUsage(days = state.usageDays || 7) {
   state.usageDays = Math.min(Math.max(Number(days) || 7, 1), 365);
+  let own;
   try {
-    renderUsage(await api(`/api/usage?days=${state.usageDays}`));
+    own = await api(`/api/usage?days=${state.usageDays}`);
   } catch {
-    /* older server: the section simply stays empty */
+    return; /* older server: the section simply stays empty */
   }
+  // Every machine's cost in one view (1.5.10): this one plus the others,
+  // added up; prices stay each machine's own.
+  let peers = { machines: [], missing: [] };
+  if (state.usageScope !== 'here') peers = await api(`/api/peers/usage?days=${state.usageDays}`).catch(() => peers);
+  renderUsage(mergeUsage(own, peers));
+}
+
+/** This machine's usage plus the other machines' -> the same shape, with byMachine. */
+function mergeUsage(own, peers = { machines: [] }) {
+  const others = (peers.machines || []).filter((m) => m.totals);
+  const sumRows = (rows) => {
+    const out = { tokens: 0, prompt: 0, completion: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
+    for (const r of rows) for (const k of Object.keys(out)) out[k] += Number(r?.[k]) || 0;
+    out.cost = Math.round(out.cost * 10000) / 10000;
+    return out;
+  };
+  const byKey = (lists) => {
+    const map = new Map();
+    for (const row of lists.flat()) map.set(row.key, sumRows([map.get(row.key) || {}, row]));
+    return [...map.entries()].map(([key, v]) => ({ key, ...v })).sort((a, b) => b.tokens - a.tokens);
+  };
+  const here = typeof machineDisplayName === 'function' ? machineDisplayName() : '本机';
+  return {
+    ...own,
+    scope: others.length ? 'all' : 'here',
+    missing: peers.missing || [],
+    totals: sumRows([own.totals, ...others.map((m) => m.totals)]),
+    byModel: byKey([own.byModel || [], ...others.map((m) => m.byModel || [])]),
+    byBot: [...(own.byBot || []), ...others.flatMap((m) => (m.byBot || []).map((b) => ({ ...b, machine: m.machine })))].sort((a, b) => b.tokens - a.tokens),
+    byMachine: others.length ? [{ key: here, ...sumRows([own.totals]) }, ...others.map((m) => ({ key: m.machine, ...sumRows([m.totals]) }))] : [],
+    otherCurrencies: [...new Set(others.map((m) => m.currency).filter((c) => c && c !== own.currency))],
+  };
 }
 
 function usageCostText(row, currency) {
@@ -1011,13 +1044,31 @@ function renderUsage(data) {
     summary.appendChild(chip);
   }
 
+  const machineWrap = $('usage-machines-wrap');
+  if (machineWrap) machineWrap.hidden = !(data.byMachine || []).length;
+  renderUsageTable($('usage-machines'), data.byMachine, currency, (row) => row.key, '');
+  const note = $('usage-scope-note');
+  if (note) {
+    note.hidden = !(data.missing?.length || data.otherCurrencies?.length);
+    note.textContent = [data.missing?.length ? `没连上的机器没算进来：${data.missing.join('、')}` : '', data.otherCurrencies?.length ? '有的机器单价用的是另一种货币，合计只是粗略相加' : ''].filter(Boolean).join('；');
+  }
   renderUsageTable(
     $('usage-bots'),
     data.byBot,
     currency,
-    (row) => botById(row.key)?.name || row.key || '—',
+    (row) => {
+      const name = row.machine ? (state.peerBots?.[row.machine]?.[row.key] || row.key) : (botById(row.key)?.name || row.key);
+      return row.machine ? `${name || '—'} · ${row.machine}` : (name || '—');
+    },
     '还没有用量。接上真实模型聊几句，这里就会出现。',
   );
+  if ((data.byBot || []).some((r) => r.machine) && !state.peerBots) {
+    state.peerBots = {};
+    api('/api/peers/bots').then((r) => {
+      for (const m of r.machines || []) state.peerBots[m.machine] = Object.fromEntries((m.bots || []).map((b) => [b.id, b.name]));
+      renderUsage(state.usage);
+    }).catch(() => {});
+  }
   renderUsageTable($('usage-models'), data.byModel, currency, (row) => row.key || '—', '还没有用量。');
 
   const priceBox = $('usage-prices');

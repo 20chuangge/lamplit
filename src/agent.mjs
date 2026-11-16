@@ -437,6 +437,10 @@ export const REPLY_STYLE = [
   '- Long material (a full report, logs, tables, a step-by-step account, verification details) goes into a workspace file; name the path in one line instead of pasting it.',
   '- No headings in a chat reply. A list only when the items are really separate (at most about 5 short lines). Bold at most a word or two.',
   '- To a teammate (a bot_message reply, bot_pass, a group task report): what is done, the files (paths), what is next, any problem - facts only, no prose.',
+  // 1.5.9: a long bot_message was cut off mid-call (ARGS_TRUNCATED).
+  '- Long instructions for a teammate (more than about 1500 characters, a full routine text, a list of edits) go into a workspace file first; the message names the path and says what to do with it.',
+  // 1.5.9: the human saw "群 g-ab12cd", "rt_0123456789ab", "`5 20 * * *`", "profile bot-x1y2z3".
+  '- To the human, call things by their names: a group by its name (「小红书项目群」), a bot by its name, a scheduled task by its name with the time in words ("每天 20:05", "工作日 08:30", "每周五 21:00"). Never show internal ids (g-…, bot-…, rt_…), cron lines or browser profile names to the human; those belong only in tool calls and in messages to teammates.',
 ];
 
 export function reachesSecrets(name, args = {}, { workspaceDir = '' } = {}) {
@@ -2344,7 +2348,7 @@ export class AgentRuntime {
     // or the phone screen in this turn, sending out and changing things asks -
     // whatever the level, trust or 「以后都允许」 said. Settings → 审批 turns it off.
     const guarded = this.config.policy?.readGuard !== false && ctx.readFrom?.length && verdict.decision === DECISION.AUTO
-      ? (sendsOut(name, args) || (tool.mcp && !this.registry.mcpTrust?.(name)?.readOnly ? '用连接的应用改东西' : ''))
+      ? (sendsOut(name, args, { free: freeMachine }) || (tool.mcp && !this.registry.mcpTrust?.(name)?.readOnly ? '用连接的应用改东西' : ''))
       : '';
     if (guarded) {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `这一轮读过${ctx.readFrom.join('、')}里的内容，之后${guarded}先问你，免得资料里藏着的指令带偏机器人（设置 → 边界 里可以关掉）` };

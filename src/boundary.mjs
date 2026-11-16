@@ -144,7 +144,11 @@ const LOOKERS = new Set(('ps top htop df du ls ll dir lsblk blkid free uptime un
   + 'journalctl systemctl test true basename dirname realpath readlink md5sum sha256sum '
   + 'get-process get-psdrive get-childitem gci get-item get-itemproperty get-service get-ciminstance get-wmiobject get-computerinfo get-volume get-disk '
   + 'select-object select sort-object where-object where format-table ft format-list fl measure-object out-string tasklist systeminfo ipconfig '
-  + 'cat head tail grep egrep fgrep rg get-content gc type select-string sls').split(' '));
+  + 'cat head tail grep egrep fgrep rg get-content gc type select-string sls '
+  // 1.5.9 (the cloud project asked for 18 of these): moving around, JSON, the
+  // X screen's window list. sed and awk count only in their print-only forms
+  // (checked on the whole command first, see printOnly).
+  + 'cd pushd popd set-location sl jq xwininfo xprop xdpyinfo xset sed awk').split(' '));
 // Of those, the ones that read what is inside files (not just names and sizes).
 const READERS = new Set('cat head tail grep egrep fgrep rg get-content gc type select-string sls md5sum sha256sum'.split(' '));
 
@@ -163,7 +167,33 @@ const WRITE_ARGS = [
   ['uniq', (a) => nonFlags(a).length > 1],              // uniq IN OUT writes OUT
   ['rg', (a) => a.some((w) => /^--pre\b/.test(w))],     // runs a program on every file
   ['journalctl', (a) => a.some((w) => /^--(vacuum|rotate|flush|sync|relinquish|setup-keys)/.test(w))],
+  ['xset', (a) => nonFlags(a).some((w) => w !== 'q' && !/^\d?>/.test(w))],   // only "xset q" reads (2>&1 is no argument)
 ];
+
+/**
+ * sed and awk can run commands (sed e, awk system()), so they are lookers only
+ * in the forms that just print: sed -n with p-only scripts (40,52p, /re/p),
+ * awk with a program that has no system, getline, pipe or redirection.
+ * -> false when any sed / awk in the command is not one of those.
+ */
+function printOnly(raw) {
+  for (const m of raw.matchAll(/(?:^|[\s;&|(])sed\s+([^|;&\n]*)/g)) {
+    const args = m[1];
+    if (!/(^|\s)-(n|[a-zA-Z]*n[a-zA-Z]*)\b|--quiet|--silent/.test(args) || /(^|\s)-[a-zA-Z]*i|--in-place/.test(args)) return false;
+    // The first word that is not a flag, without its quotes.
+    const script = (args.split(/\s+/).find((w) => w && !w.startsWith('-')) || '').replace(/^['"]|['"]$/g, '');
+    if (!script.split(';').every((s) => /^\s*(\d+|\$|\/[^/]*\/)?(\s*,\s*(\d+|\$|\/[^/]*\/))?\s*p\s*$/.test(s))) return false;
+  }
+  for (const m of raw.matchAll(/(?:^|[\s;&|(])awk\s+((?:-F\s*\S+\s+|-v\s+\S+\s+)*)('([^']*)'|"([^"]*)")?/g)) {
+    const program = m[3] ?? m[4];
+    // NR>=1 compares; print > f / print | "cmd" write or run.
+    if (program === undefined || /system|getline|\||\bprintf?\b[^;}]*>|close\s*\(|fflush/.test(program)) return false;
+  }
+  return true;
+}
+
+// Shell words that only shape a loop or a test: "for d in 1 2; do ...; done".
+const SHELL_KEYWORDS = /^(do|then|else|elif|if|while|until|!|\{)\s+/;
 
 // PowerShell script blocks ({ ... } after Where-Object, Select-Object @{e={}})
 // run code. Plain comparisons ($_.CPU -gt 10) are looking; calls are not.
@@ -175,8 +205,11 @@ const SCRIPT_CALL = /\biex\b|::|&\s*[\w$'"({]|\.\w+\s*\(/i;
  * file, in-place edit, deletion or command execution makes it not one.
  */
 export function lookOnly(command) {
-  const raw = String(command || '').trim();
-  if (!raw) return { look: false };
+  const whole = String(command || '').trim();
+  if (!whole) return { look: false };
+  if (!printOnly(whole)) return { look: false };
+  // An awk program that passed printOnly is data from here on (its NR>=1 is no redirection).
+  const raw = whole.replace(/(\bawk\s+(?:-F\s*\S+\s+|-v\s+\S+\s+)*)'[^']*'/g, "$1'AWK'");
   // Quoted text is data ("dnf|packagekit", 'a > b'), not pipes or redirections.
   // A command substitution inside double quotes still runs, so check that first.
   if (/\$\(|`|\bsystem\s*\(|\bexec\s*\(/.test(raw)) return { look: false };
@@ -194,8 +227,13 @@ export function lookOnly(command) {
   if (/>|\btee\b|\b(sed|perl)\b[^|;&]*\s-i|--in-place|-delete\b|-exec(dir)?\b|-ok\b|\bsystem\s*\(|\b(Set|Remove|New|Stop|Start|Restart|Move|Copy|Rename|Clear|Add|Invoke|Out)-\w+/i.test(cleaned)) return { look: false };
   if (/\bsystemctl\b/i.test(text) && !/\bsystemctl\s+(status|is-active|is-enabled|list-units|list-unit-files|show|cat)\b/i.test(text)) return { look: false };
   let reads = false;
-  for (const part of text.split(/\|\||&&|[|;\n]/)) {
-    const words = part.trim().replace(/^(sudo|doas)\s+(-\S+\s+)*/i, '').split(/\s+/);
+  for (const piece of text.split(/\|\||&&|[|;\n]/)) {
+    // "DISPLAY=:121 xset q", "do echo", "for d in 1 2": the command is what follows.
+    let part = piece.trim();
+    while (SHELL_KEYWORDS.test(part)) part = part.replace(SHELL_KEYWORDS, '');
+    part = part.replace(/^([A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, '');
+    if (/^(done|fi|\})$/.test(part) || /^for\s+\w+\s+in\b/.test(part)) continue;
+    const words = part.replace(/^(sudo|doas)\s+(-\S+\s+)*/i, '').split(/\s+/);
     const cmd = (words[0] || '').replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
     if (!cmd) continue;
     if (!LOOKERS.has(cmd)) return { look: false };

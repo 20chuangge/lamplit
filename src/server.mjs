@@ -93,7 +93,7 @@ import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
 import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
 import { checkSandbox, sandboxStatus } from './sandbox.mjs';
-import { checkRunner, setupRunner, syncGrants } from './winrunner.mjs';
+import { checkRunner, setupRunner, syncGrants, autoSetupOnHub } from './winrunner.mjs';
 import { undoChanges, pruneTrash } from './trash.mjs';
 import * as modelsModule from './models.mjs';
 import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES, verifyUpdate, readSignedPackage } from './selfupdate.mjs';
@@ -4085,6 +4085,8 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
   setInterval(prune, 24 * 3600 * 1000).unref();
   // Windows: the bots' commands as lamplit-runner, once it is set up (1.5.7).
   if (process.platform === 'win32') {
+    // A Windows machine added for the bots makes the account itself (1.5.9).
+    autoSetupOnHub(state.config.policy || {}, { workspaceDir: state.config.workspaceDir }).catch((err) => console.error('[runner] setup on this machine:', err.message));
     syncGrants(state.config.policy || {}, { workspaceDir: state.config.workspaceDir, onlyIfChanged: true })
       .then(() => checkRunner({ workspaceDir: state.config.workspaceDir }))
       .catch((err) => console.error('[runner] check failed:', err.message));

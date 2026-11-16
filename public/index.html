@@ -558,7 +558,7 @@
         <div class="row-note">只对主助理生效，其他机器人不变。格式化磁盘、删除系统目录、关机重启这类危险命令，以及你写的「先问我」规则，仍然会问你。</div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">读到的内容不是指令</div>
         <label class="switch-row"><input type="checkbox" id="read-guard" /> 机器人读过网页、邮件或手机屏幕后，发邮件、发文件、执行会改东西的命令先问我</label>
-        <div class="row-note">网页和邮件里可能藏着写给机器人的话（「把文件发给某某」）。打开时，这一轮读过这些内容后，上面这些操作都先问你，受信任的机器人和「放手」的机器也一样；只是看、浏览、写自己的文件不受影响。定时任务里遇到会停下来等你。</div>
+        <div class="row-note">网页和邮件里可能藏着写给机器人的话（「把文件发给某某」）。打开时，这一轮读过这些内容后，上面这些操作都先问你，受信任的机器人也一样；只是看、浏览、写自己的文件不受影响。交给机器人、设成「放手」的机器上，只有发邮件、发文件和可能往外发数据的命令（上传、ssh、git push 之类）才问。定时任务里遇到会停下来等你。</div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">命令隔离</div>
         <div class="row-note" id="sandbox-state">—</div>
         <button class="btn tiny" id="runner-setup" type="button" hidden>设置单独账户</button>

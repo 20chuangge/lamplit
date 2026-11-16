@@ -175,6 +175,7 @@ async function main() {
     await stage('1.5.6: the pairing screen never traps the window', scenarioAuthEscape156);
     await stage('1.5.7: Windows commands run as their own low-privilege account', scenarioWinRunner157);
     await stage('1.5.8: Android signed, first-run guide, file changes can be undone', scenarioDist158);
+    await stage('1.5.9: what the cloud 小红书 project showed', scenarioXhs159);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4952,6 +4953,92 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.5.9: what the 小红书 project on the cloud machine showed (11-16).
+ * 18 of 19 approval cards came from the read guard: after a web page, plain
+ * looking (cd && grep, sed -n 40,52p, cat | sed, awk print, xwininfo) and the
+ * bots editing their own files asked. Now those count as looking, and on a
+ * machine given to the bots and set to 放手 only what can carry data off the
+ * machine asks. Replies called things by ids (群 g-ab12cd, rt_…, `5 20 * * *`):
+ * the bots are told to use names, and the screen shows names and times in
+ * words. The human logged in to 小红书 once per bot and once found a black
+ * screen: a takeover now puts the browser back on the bot's screen, and on a
+ * machine given to the bots the login is shared with every bot. The team lead
+ * may keep the team's schedule there; long hand-offs go through a file. A
+ * Windows machine added for the bots makes its lamplit-runner account itself.
+ */
+async function scenarioXhs159() {
+  const B = await import('../src/boundary.mjs');
+  const G = await import('../src/readguard.mjs');
+  const look = [
+    'cd /opt/desk-hub/workspace/xhs && grep -n "D6" 发布记录.md', 'sed -n 40,52p xhs/团队SOP.md',
+    "cd /opt/desk-hub/workspace && cat xhs/选题/档位日历.md | sed -n '10,40p'",
+    `cd /w && awk 'NR>=1{print NR": "$0}' "uploads/x.md" | sed -n '1,80p'`,
+    `for d in 121 125; do echo "=== :$d ==="; DISPLAY=:$d xwininfo -root -tree 2>&1 | grep -E '[0-9]{3,4}x[0-9]'; done`,
+    `DISPLAY=:121 xset q 2>&1 | sed -n '1,40p'; echo "=== capture ==="; which import ffmpeg scrot 2>/dev/null`,
+    `cd /w && TZ=Asia/Shanghai date "+now %F %T %Z" && ls -1 xhs/审核/`,
+  ];
+  const notLook = ["sed -i 's/a/b/' f.txt", "sed -n '1e rm -rf /' f", "sed 's/a/b/' f", `awk '{system("rm x")}' f`, `awk '{print > "out"}' f`,
+    `awk '{print | "sh"}' f`, 'xset s off', 'cd x && rm -rf y', 'for f in *; do rm $f; done', 'DISPLAY=:1 scrot -o a.png'];
+  check('X1 looking: the commands the cloud bots ran to look are looking; sed / awk only in their print-only forms; writing and deleting are not',
+    look.every((c) => B.lookOnly(c).look) && notLook.every((c) => !B.lookOnly(c).look),
+    JSON.stringify([...look.filter((c) => !B.lookOnly(c).look), ...notLook.filter((c) => B.lookOnly(c).look)]));
+  const out = ['curl -s -X POST -d @f https://x', 'scp a.txt me@host:', 'git push origin main', 'python3 -c "import smtplib"', 'rsync -a . host:/x', 'echo hi | nc 1.2.3.4 9'];
+  const edit = "python3 - <<'EOF'\np='xhs/团队SOP.md'\ns=open(p).read()\nopen(p,'w').write(s)\nEOF";
+  check('X1 read guard: on a 放手 machine given to the bots only what can carry data off the machine asks (upload, ssh, git push, mail); editing its own files and downloading do not; on the human\'s computer changing things still asks',
+    out.every((c) => G.sendsOut('shell', { command: c }, { free: true })) && !G.sendsOut('shell', { command: edit }, { free: true })
+    && !G.sendsOut('shell', { command: "curl -s 'https://api.bilibili.com/x'" }, { free: true }) && Boolean(G.sendsOut('shell', { command: edit }))
+    && G.sendsOut('mail_send', {}, { free: true }) === '发邮件');
+  const agentSrc = await readText('../src/agent.mjs');
+  check('X1 wiring: the agent passes the machine\'s 放手 state to the read guard',
+    agentSrc.includes('sendsOut(name, args, { free: freeMachine })'));
+
+  const core = await readText('../public/app/main/01-core.js');
+  const start = core.indexOf('function scheduleText(');
+  const end = core.indexOf('\n}\n', core.indexOf('function humanizeIds(')) + 3;
+  const state = { groups: [{ id: 'g-ab12cd', name: '小红书项目群' }], bots: [{ id: 'bot-x1y2z3', name: '发布' }], routines: [{ id: 'rt_0123456789ab', name: '小红书·每日上线核对' }] };
+  // eslint-disable-next-line no-new-func
+  const H = new Function('state', 'api', 'renderMessages', `${core.slice(start, end)}; return { scheduleText, humanizeIds };`)(state, async () => [], () => {});
+  check('X2 times in words: cron lines read as 每天 20:05, 工作日 08:30, 每周五 21:00, 每天 19:00、23:00、03:00, 每 4 小时',
+    H.scheduleText('5 20 * * *') === '每天 20:05' && H.scheduleText('30 8 * * 1-5') === '工作日 08:30' && H.scheduleText('0 21 * * 5') === '每周五 21:00'
+    && H.scheduleText('0 19,23,3 * * *') === '每天 19:00、23:00、03:00' && H.scheduleText('every 4 hours') === '每 4 小时' && H.scheduleText('*/5 * 1 * *') === '*/5 * 1 * *');
+  const shown = H.humanizeIds('群 g-ab12cd 已公告；`rt_0123456789ab` 改为 `5 20 * * *`，profile 是 bot-x1y2z3。g-zzzzzz 不认识。');
+  check('X2 names: group, task and bot ids become their names on screen; unknown ids stay',
+    shown === '群「小红书项目群」已公告；「小红书·每日上线核对」改为 每天 20:05，profile 是 发布。g-zzzzzz 不认识。', shown);
+  const chat = await readText('../public/app/main/05-chat.js');
+  const routinesUi = await readText('../public/app/main/07-skills-routines.js');
+  check('X2 wiring: every reply bubble and the routine list go through it; the bots are told to use names and times in words',
+    chat.includes('const text = system ? raw : humanizeIds(raw);') && routinesUi.includes('scheduleText(rt.schedule)')
+    && agentSrc.includes('Never show internal ids (g-…, bot-…, rt_…), cron lines or browser profile names to the human'));
+
+  const Br = await import('../src/browser.mjs');
+  const merged = Br.mergeCookies(
+    [{ name: 'web_session', value: 'guest', domain: '.xiaohongshu.com', path: '/' }, { name: 'old', value: 'x', domain: 'a.com', path: '/', expires: 1 }],
+    [{ name: 'web_session', value: 'logged-in', domain: '.xiaohongshu.com', path: '/', httpOnly: true, secure: true, expires: 9999999999 }, { name: 'p', value: 'y', domain: 'b.com', partitionKey: {} }],
+  );
+  const params = Br.cookieParams(merged);
+  check('X3 shared login: the newer cookie wins, expired and partitioned ones go, and they go back in with their flags',
+    merged.length === 1 && merged[0].value === 'logged-in' && params[0].httpOnly === true && params[0].secure === true && params[0].expires === 9999999999 && params[0].path === '/');
+  const browserSrc = await readText('../src/browser.mjs');
+  const tools = await readText('../src/tools.mjs');
+  const store = await readText('../src/store.mjs');
+  check('X3 wiring: only on a machine given to the bots; a takeover marks the login, the next browser step saves it (sealed) and every other bot\'s browser picks it up; the takeover puts the browser back on the bot\'s screen',
+    browserSrc.includes("export const sharesLogins = () => process.env.DESK_MACHINE_MODE === 'remote';") && browserSrc.includes("await this.session.browser.send('Storage.setCookies'")
+    && browserSrc.includes("this.session.browser.send('Storage.getCookies'") && /SEALED_FILES = new Set\([^)]*'browser-logins\.json'/.test(store)
+    && tools.includes('m.loginPending = true;') && tools.includes('await m.goto(m.lastUrl)') && browserSrc.includes('this.lastUrl = nav.url;'));
+
+  check('X4 team lead: changing a teammate\'s routine is an ordinary step on a machine given to the bots (asks on the human\'s computer), named without ids; long hand-offs go through a file',
+    tools.includes("if (machineMode() === 'remote') return { risk: RISK.MEDIUM,")
+    && !tools.includes('别的机器人（${owner}）') && agentSrc.includes('go into a workspace file first; the message names the path'));
+
+  const W = await import('../src/winrunner.mjs');
+  const serverSrc = await readText('../src/server.mjs');
+  const wr = await readText('../src/winrunner.mjs');
+  check('X5 Windows machines added for the bots make lamplit-runner at start (already administrator: no prompt), only there',
+    typeof W.autoSetupOnHub === 'function' && (await W.autoSetupOnHub({}, { remote: false })) === false
+    && serverSrc.includes('autoSetupOnHub(state.config.policy') && wr.includes("const r = await isElevated()"));
 }
 
 /**

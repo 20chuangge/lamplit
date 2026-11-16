@@ -18,6 +18,7 @@ import os from 'node:os';
 import { sandboxFor } from './sandbox.mjs';
 import { runnerFor } from './winrunner.mjs';
 import { snapshot, TRASH_DIR } from './trash.mjs';
+import { P, readJsonSync } from './store.mjs';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn } from 'node:child_process';
@@ -458,7 +459,22 @@ export function createRegistry(deps) {
       required: ['reason'],
       additionalProperties: false,
     },
-    async run(args) {
+    async run(args, ctx) {
+      // 1.5.9: the human found a black screen - the bot's screen had been closed
+      // while idle, and the browser with it. Put the browser back on the bot's
+      // screen at the page it was on; and what the human logs into is shared
+      // with the other bots on a machine given to them.
+      try {
+        const m = browserManager(ctx);
+        m.loginPending = true;
+        const { desktopSupport, ensureDesktop } = await import('./desktops.mjs');
+        if (desktopSupport().available && ctx?.bot?.id && m.lastUrl) {
+          await ensureDesktop(ctx.bot.id);
+          await m.ensureSession();
+          const here = await m.currentUrl().catch(() => '');
+          if (!here || /^about:blank/.test(here)) await m.goto(m.lastUrl).catch(() => {});
+        }
+      } catch { /* the card still shows; the human says if the page is missing */ }
       return { waiting: true, reason: String(args?.reason || '').slice(0, 300) };
     },
   });
@@ -1305,13 +1321,19 @@ export function createRegistry(deps) {
   const routineRisk = (verb) => (args, ctx) => {
     const routine = deps.getRoutines()?.get?.(String(args?.id || ''));
     if (!routine || !ctx?.bot || routine.botId === ctx.bot.id) return { risk: RISK.LOW };
-    const owner = routine.botId;
-    return { risk: RISK.HIGH, reason: `要${verb}别的机器人（${owner}）名下的定时任务「${routine.name || routine.id}」` };
+    // A machine given to the bots (1.5.9): the team lead keeps the team's
+    // schedule. On 11-16 the 主理人 could not, and had every teammate copy its
+    // own new instruction word for word instead. There it is an ordinary step
+    // (runs unasked on 放手); on the human's computer it still asks.
+    // Whose, by name (the card used to show the bot's id).
+    const owner = readJsonSync(path.join(P.botsDir, `${String(routine.botId).replace(/[^a-zA-Z0-9._-]/g, '_')}.json`), null)?.name || '另一个机器人';
+    if (machineMode() === 'remote') return { risk: RISK.MEDIUM, reason: `${verb}「${owner}」名下的定时任务「${routine.name || '未命名'}」` };
+    return { risk: RISK.HIGH, reason: `要${verb}「${owner}」名下的定时任务「${routine.name || '未命名'}」` };
   };
 
   add({
     name: 'routine_update',
-    description: 'Change a routine: its name, instruction, schedule, timezone, on/off (enabled), onlyChanges or pushFeishu. Fields you leave out stay as they are. Your own routines change at once; another bot\'s asks the human.',
+    description: 'Change a routine: its name, instruction, schedule, timezone, on/off (enabled), onlyChanges or pushFeishu. Fields you leave out stay as they are. Your own routines change at once; another bot\'s asks the human on their own computer, and is an ordinary step on a machine given to the bots.',
     risk: routineRisk('改'),
     parameters: {
       type: 'object',

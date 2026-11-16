@@ -29,7 +29,7 @@ import net from 'node:net';
 import os from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 
-import { P } from './store.mjs';
+import { P, readJsonSync, writeJsonSyncAtomic } from './store.mjs';
 import { MiniWebSocket } from './ws-client.mjs';
 import { assertPublicUrl } from './netguard.mjs';
 
@@ -611,6 +611,14 @@ class BrowserManager {
   }  // --- session lifecycle ---------------------------------------------------
 
   async ensureSession() {
+    const session = await this._ensureSession();
+    await this.syncLogins().catch(() => {});
+    // A screen with a browser on it is in use (the idle reaper must not take it).
+    if (this.key && process.platform === 'linux') import('./desktops.mjs').then((d) => d.touchDesktop?.(this.key)).catch(() => {});
+    return session;
+  }
+
+  async _ensureSession() {
     if (this.session && this.session.page && !this.session.page.closed) return this.session;
     if (this.launching) return this.launching;
 
@@ -618,6 +626,29 @@ class BrowserManager {
       this.launching = null;
     });
     return this.launching;
+  }
+
+  /**
+   * Shared logins (1.5.9): right after a takeover, what the human logged into
+   * goes to the machine's list; otherwise a newer list comes into this browser.
+   */
+  async syncLogins() {
+    if (!sharesLogins() || !this.session?.browser) return;
+    const file = loginsFile();
+    if (this.loginPending) {
+      this.loginPending = false;
+      const got = await this.session.browser.send('Storage.getCookies', {}, { timeoutMs: 8000 });
+      const jar = readJsonSync(file, null) || { cookies: [] };
+      writeJsonSyncAtomic(file, { cookies: mergeCookies(jar.cookies, got?.cookies || []), updatedAt: new Date().toISOString(), from: this.key });
+      this.loginsAt = fs.statSync(file).mtimeMs;
+      return;
+    }
+    let mtime = 0;
+    try { mtime = fs.statSync(file).mtimeMs; } catch { return; }
+    if ((this.loginsAt || 0) >= mtime) return;
+    const jar = readJsonSync(file, null);
+    if (jar?.cookies?.length) await this.session.browser.send('Storage.setCookies', { cookies: cookieParams(jar.cookies) }, { timeoutMs: 8000 });
+    this.loginsAt = mtime;
   }
 
   async _boot() {
@@ -1020,6 +1051,7 @@ class BrowserManager {
       const nav = await this.goto(url);
       if (!nav.ok) return nav;
       session.pageUrl = nav.url;
+      this.lastUrl = nav.url;
       return {
         ok: true,
         title: nav.title,
@@ -1559,6 +1591,36 @@ const managers = new Map();
  * "snapshot then click @e3" work inside a single turn. Separate bots get
  * separate browsers on separate desktops, so bot A can never see bot B's tabs.
  */
+// --- one login for the whole team (1.5.9) ------------------------------------
+// Each bot has its own browser profile, so on 11-16 the human had to log in to
+// 小红书 once for every bot ("登录信息保存好不要每次找我登录"). On a machine
+// given to the bots, a login the human makes during a takeover is copied into
+// browser-logins.json (sealed like the other key files) and every bot's
+// browser on that machine picks it up. The human's own computer keeps each
+// bot's logins to itself.
+const loginsFile = () => path.join(P.dataDir, 'browser-logins.json');
+export const sharesLogins = () => process.env.DESK_MACHINE_MODE === 'remote';
+
+/** Newer cookies replace older ones with the same name, domain and path; expired ones go. */
+export function mergeCookies(old = [], incoming = [], now = Date.now() / 1000) {
+  const byKey = new Map();
+  const keyOf = (c) => `${c.name}|${c.domain}|${c.path || '/'}`;
+  for (const c of [...old, ...incoming]) {
+    if (!c?.name || !c.domain || c.partitionKey) continue;
+    if (Number(c.expires) > 0 && Number(c.expires) < now) { byKey.delete(keyOf(c)); continue; }
+    byKey.set(keyOf(c), c);
+  }
+  return [...byKey.values()].slice(-3000);
+}
+
+/** Storage.getCookies -> Storage.setCookies parameters. */
+export function cookieParams(cookies = []) {
+  return cookies.map((c) => ({
+    name: c.name, value: c.value, domain: c.domain, path: c.path || '/', secure: Boolean(c.secure), httpOnly: Boolean(c.httpOnly),
+    ...(c.sameSite ? { sameSite: c.sameSite } : {}), ...(!c.session && Number(c.expires) > 0 ? { expires: c.expires } : {}),
+  }));
+}
+
 export function getBrowserManager(key = '') {
   if (!key) {
     if (!manager) manager = new BrowserManager();

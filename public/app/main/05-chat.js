@@ -1497,7 +1497,8 @@ function openPageViewer(name, title, machine = null) {
 
 /** Text (markdown when it looks like it) plus the images it points at. */
 /** botId: whose words these are (its voice reads them aloud); the open chat's bot when not given. */
-function fillBubble(bubble, text, system = false, botId = '') {
+function fillBubble(bubble, raw, system = false, botId = '') {
+  const text = system ? raw : humanizeIds(raw);
   if (!system && looksMarkdown(text)) {
     bubble.classList.add('md');
     bubble.innerHTML = mdToHtml(text);

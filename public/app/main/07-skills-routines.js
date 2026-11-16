@@ -119,7 +119,7 @@ function renderRoutines() {
     title.appendChild(el('span', null, rt.name));
     if (!rt.enabled) title.appendChild(el('span', 'tag', '已暂停'));
     card.appendChild(title);
-    card.appendChild(el('div', 'card-sub', `${(bot && bot.name) || rt.botId} · ${rt.schedule}`));
+    card.appendChild(el('div', 'card-sub', `${(bot && bot.name) || rt.botId} · ${scheduleText(rt.schedule)}`));
 
     const meta = el('div', 'routine-meta');
     meta.appendChild(el('span', 'tag', `下次 ${fmtWhen(rt.nextRun)}`));

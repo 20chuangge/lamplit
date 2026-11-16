@@ -350,8 +350,11 @@ export function setupRunner(policy, { workspaceDir = P.workspaceDir } = {}) {
       fs.writeFileSync(scriptFile, `\uFEFF${SETUP_SCRIPT}`);
       // The password is in this file only while the prompt is up; data/ is the human's alone.
       fs.writeFileSync(cfgFile, JSON.stringify({ user: RUNNER_USER, password, home: RUNNER_HOME, owner, result: resultFile }));
-      const ps = `Start-Process -FilePath powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','"${scriptFile}"','"${cfgFile}"')`;
-      const r = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeoutMs: 300000 });
+      // Already an administrator (a machine added for the bots, 1.5.9): run it
+      // directly - there is no screen for a UAC prompt in its service session.
+      const r = await isElevated()
+        ? await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile, cfgFile], { timeoutMs: 300000 })
+        : await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Start-Process -FilePath powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','"${scriptFile}"','"${cfgFile}"')`], { timeoutMs: 300000 });
       fs.rmSync(cfgFile, { force: true });
       let result = null;
       try { result = JSON.parse(fs.readFileSync(resultFile, 'utf8').replace(/^\uFEFF/, '')); } catch { /* none */ }
@@ -369,6 +372,25 @@ export function setupRunner(policy, { workspaceDir = P.workspaceDir } = {}) {
     }
   })();
   return status;
+}
+
+/** Is this process an administrator already (a Windows machine added remotely runs so)? */
+export async function isElevated() {
+  if (process.platform !== 'win32') return false;
+  const r = await run('net', ['session'], { timeoutMs: 10000 });
+  return r.code === 0;
+}
+
+/**
+ * A Windows machine Lamplit set up for the bots (1.5.9): its hub runs as an
+ * administrator, so the account is made at start, with no prompt and no one
+ * at the screen. Before this, the bots' commands there ran as an administrator.
+ */
+export async function autoSetupOnHub(policy, { workspaceDir = P.workspaceDir, remote = process.env.DESK_MACHINE_MODE === 'remote' } = {}) {
+  if (process.platform !== 'win32' || !remote || readRunner()) return false;
+  if (!(await isElevated())) return false;
+  setupRunner(policy, { workspaceDir });
+  return true;
 }
 
 /**

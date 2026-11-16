@@ -1,6 +1,44 @@
 'use strict';
 // Lamplit page, part 1 of 12: core - state, DOM helpers, theme, time zone, small helpers. Parts share one scope and load in order (scripts/check-page-parts.mjs).
 
+/* --- names instead of ids (1.5.9) -------------------------------------------
+   A reply may still say "群 g-ab12cd", "rt_0123456789ab" or "`5 20 * * *`":
+   on screen those become the group's, the bot's and the task's names, and the
+   time in words. */
+function scheduleText(expr) {
+  const s = String(expr || '').trim();
+  const every = /^every\s+(\d+)\s*(minutes?|mins?|m|hours?|h)$/i.exec(s);
+  if (every) return `每 ${every[1]} ${/^h/i.test(every[2]) ? '小时' : '分钟'}`;
+  const f = s.split(/\s+/);
+  if (f.length !== 5) return s;
+  const [mi, h, dom, mon, dow] = f;
+  if (!/^\d{1,2}$/.test(mi) || dom !== '*' || mon !== '*' || !h.split(',').every((x) => /^\d{1,2}$/.test(x))) return s;
+  const times = h.split(',').map((x) => `${x.padStart(2, '0')}:${mi.padStart(2, '0')}`).join('、');
+  const week = '日一二三四五六日';
+  const days = dow === '*' ? '每天'
+    : /^(1-5|mon-fri)$/i.test(dow) ? '工作日'
+      : /^(0,6|6,0|sat,sun)$/i.test(dow) ? '周末'
+        : /^[0-7](,[0-7])*$/.test(dow) ? `每周${dow.split(',').map((d) => week[Number(d)]).join('、')}` : '';
+  return days ? `${days} ${times}` : s;
+}
+
+function humanizeIds(text) {
+  let t = String(text || '');
+  if (!/\b(g-[a-z0-9]{6}|bot-[a-z0-9]{6}|rt_[0-9a-f]{12})\b|`[^`\n]*\*[^`\n]*`/.test(t)) return t;
+  const groupName = (id) => (state.groups || []).find((g) => g.id === id)?.name;
+  const botName = (id) => (state.bots || []).find((b) => b.id === id)?.name;
+  const routineName = (id) => (state.routines || []).find((r) => r.id === id)?.name;
+  if (/\brt_[0-9a-f]{12}\b/.test(t) && !state.routines && !humanizeIds.loading) {
+    humanizeIds.loading = true;
+    api('/api/routines').then((r) => { state.routines = r; if (typeof renderMessages === 'function') renderMessages(); }).catch(() => {});
+  }
+  // 「name」 needs no spaces around it ("群 g-ab12cd 已公告" -> "群「小红书项目群」已公告").
+  t = t.replace(/ ?`?\b(g-[a-z0-9]{6})\b`? ?/g, (m, id) => (groupName(id) ? `「${groupName(id)}」` : m));
+  t = t.replace(/`?\b(bot-[a-z0-9]{6})\b`?/g, (m, id) => botName(id) || m);
+  t = t.replace(/ ?`?\b(rt_[0-9a-f]{12})\b`? ?/g, (m, id) => (routineName(id) ? `「${routineName(id)}」` : m));
+  return t.replace(/`([^`\n]+)`/g, (m, inner) => { const h = scheduleText(inner); return h !== inner ? h : m; });
+}
+
 /* =====================================================================
    Desk - front end
    No framework, no build step: plain DOM + fetch + one EventSource.

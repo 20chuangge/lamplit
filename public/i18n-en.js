@@ -1985,7 +1985,6 @@ window.DESK_I18N_EN = {
   "打断": "Interrupt",
   "挂断": "Hang up",
   "手机「{0}」上{1}{2}": "Phone, {0}: {1}{2}",
-  "发消息": "send messages",
   "点同意": "tap agree",
   "发布": "publish",
   "（今天）": " (today)",

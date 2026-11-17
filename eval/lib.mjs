@@ -10,7 +10,7 @@ export const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/^(\.\/)+
  *   read(rel) -> text | null, exists(rel), list(rel) -> names directly inside,
  *   files() -> every file path, reply (the bot's answer), routines, truth.
  */
-export function memoryView({ files = {}, remove = [], routines = [], reply = '', truth = null } = {}) {
+export function memoryView({ files = {}, remove = [], routines = [], reply = '', truth = null, replies = null, rounds = [] } = {}) {
   const map = new Map();
   for (const [k, v] of Object.entries(files)) map.set(norm(k), String(v));
   for (const k of remove) map.delete(norm(k));
@@ -18,13 +18,19 @@ export function memoryView({ files = {}, remove = [], routines = [], reply = '',
     read: (rel) => (map.has(norm(rel)) ? map.get(norm(rel)) : null),
     files: () => [...map.keys()].sort(),
     routines,
-    reply,
+    reply: replies ? replies.join('\n') : reply,
     truth,
+    replies: replies || [reply],
+    rounds,
   });
 }
 
-/** The same view over any {read, files} source (the runner uses the disk). */
-export function viewOf({ read, files, routines = [], reply = '', truth = null }) {
+/**
+ * The same view over any {read, files} source (the runner uses the disk).
+ * replies: the bot's answer in each round (a hard task may answer it back);
+ * rounds: the files after each round.
+ */
+export function viewOf({ read, files, routines = [], reply = '', truth = null, replies = null, rounds = [] }) {
   const all = () => files().map(norm);
   return {
     read: (rel) => read(norm(rel)),
@@ -41,6 +47,8 @@ export function viewOf({ read, files, routines = [], reply = '', truth = null })
     routines,
     reply: String(reply || ''),
     truth,
+    replies: (replies || [reply]).map((r) => String(r || '')),
+    rounds: rounds.map((list) => list.map(norm)),
   };
 }
 
@@ -128,6 +136,7 @@ export function summarize(results) {
     passed,
     rate: total ? Math.round((passed / total) * 100) : 0,
     interventions: add('interventions'),
+    asks: add('asks'),
     tokens: add('tokens'),
     cost: Math.round(add('cost') * 10000) / 10000,
     seconds: Math.round(add('seconds')),
@@ -143,7 +152,7 @@ export function renderRecord({ version, day, model, currency = 'CNY', results, n
   const lines = [
     `## ${version} · ${day} · ${cell(model) || '（模型未知）'}`,
     '',
-    `成功 **${s.passed}/${s.total}**（${s.rate}%），人工干预 ${s.interventions} 次，${s.tokens.toLocaleString('en-US')} tokens，花费 ${s.cost ? `${money}${s.cost.toFixed(2)}` : '未定价'}，用时 ${Math.round(s.seconds / 60)} 分钟。`,
+    `成功 **${s.passed}/${s.total}**（${s.rate}%），人工干预 ${s.interventions} 次${s.asks ? `，中途问人 ${s.asks} 次` : ''}，${s.tokens.toLocaleString('en-US')} tokens，花费 ${s.cost ? `${money}${s.cost.toFixed(2)}` : '未定价'}，用时 ${Math.round(s.seconds / 60)} 分钟。`,
     ...(note ? ['', cell(note)] : []),
     '',
     '| 任务 | 内容 | 结果 | 干预 | tokens | 秒 | 说明 |',

@@ -204,16 +204,37 @@ export function describeActions(receipts, max = 30) {
   return lines.slice(-max);
 }
 
+/**
+ * The teams already set up, for the primary bot (1.5.14): which group owns
+ * which kind of work, and the rule that such work goes to that group - also
+ * later, not only right after the group was made - and that its routines
+ * belong to a member, not to the primary bot.
+ */
+export function teamsSection(groups = [], bots = [], { handover = true } = {}) {
+  const live = (groups || []).filter((g) => (g.members || []).length);
+  if (!live.length) return [];
+  const byId = new Map((bots || []).map((b) => [b.id, b]));
+  const who = (id) => byId.get(id)?.name || id;
+  const lines = live.map((g) => `- 「${g.name}」 (${g.id}), coordinator ${who(g.coordinatorId)}: ${(g.members || []).map((id) => `${who(id)} (${id}) - ${String(byId.get(id)?.role || 'no role set').slice(0, 80)}`).join('; ')}`);
+  return [
+    '',
+    '## Teams already set up',
+    ...lines,
+    `A request that falls in one of these teams' work (their roles cover it) is that team's: ${handover ? 'hand it over with group_handover to that group and finish' : 'pass it to the fitting member with bot_message'} - also when the human asks you about it directly, or says "开始" / "现在开始" on a scheduled job of theirs. Do it yourself only when it is a quick question, a small lookup, or the human says you should.`,
+    'A scheduled task (routine_create) for such work belongs to the member whose role fits - pass their botId - never to you. Set yourself as the owner only for your own work.',
+  ];
+}
+
 /** The message that starts a turn again after the step limit. */
 export function continuationText({ n, what, actions = [] }) {
   return `（系统自动发起，用户没有发新消息；第 ${n} 次自动接着做）${what}，上一轮做到单轮步数上限被打断了。先看清楚做到了哪一步（工作区的文件、你的笔记、刚才的结果），不要重做已经做完的事，也不用开场白：\n- 如果已经做完：用几句话告诉用户结果（做成了什么、在哪里、多少、有没有没做成的），不要再调用工具；\n- 如果还没做完：接着做，做完再给结果。批量的活尽量用一次能处理很多的工具，少走步数。`
     + (actions.length ? `\n\n上一轮实际做过的操作（系统记录，可信；这些都已经做了，算在你名下，不要否认，也不要重做）：\n- ${actions.join('\n- ')}` : '');
 }
 
-/** Steps per turn: 150 for a bot that works a browser or the desktop (a publish is long), else 80; its own setting up to 200. */
+/** Steps per turn: 150 for a bot that works a browser, the desktop or the phone (a publish, a job board read screen by screen), else 80; its own setting up to 200. */
 export function stepLimitFor(bot) {
   const own = Number(bot?.policy?.maxSteps) || 0;
-  const hands = (bot?.tools || []).some((t) => t === 'desktop_ui' || t === 'browser_click' || t === 'browser_type');
+  const hands = (bot?.tools || []).some((t) => t === 'desktop_ui' || t === 'browser_click' || t === 'browser_type' || t === 'phone');
   return Math.min(Math.max(own, hands ? 150 : 80), 200);
 }
 
@@ -870,7 +891,12 @@ export class AgentRuntime {
       Promise.resolve(this.registry.renderToolDigest(bot)),
     ]);
 
-    const others = (await this.bots.listBots()).filter((b) => b.id !== bot.id);
+    const allBots = await this.bots.listBots();
+    const others = allBots.filter((b) => b.id !== bot.id);
+    // The primary bot sees the teams already set up (11-17: a job the 求职组 owns,
+    // and its 08:45 routine, ran under the assistant).
+    const teams = bot.primary && this.groups?.listGroups ? await this.groups.listGroups().catch(() => []) : [];
+    const teamsLines = teamsSection(teams, allBots, { handover: this.registry.isGranted(bot, 'group_handover') });
     const teamLine = others.length
       ? others.map((b) => `${b.name} (${b.id}) - ${b.role || 'no role set'}`).join('\n')
       : '(no other bots yet)';
@@ -895,6 +921,7 @@ export class AgentRuntime {
       ...(this.registry.isGranted(bot, 'bot_message') ? ['In a pipeline (write → review → fix …): when your part is done and the next step is a teammate\'s, use bot_pass to hand it on now and finish - do not leave it for a later scheduled round. Use bot_message only when you need their result to finish your own work.'] : []),
       'When something needs the human\'s decision (publish or not, pick an option, a blocker only they can clear), say it with tell_human - also when a teammate or a routine asked you, because your reply may only reach them.',
       ...(this.registry.isGranted(bot, 'group_handover') ? ['When you have set up a team in a group for a job, hand the whole job over with group_handover and finish: its coordinator runs it in the group and the result is posted there. Do not relay between the bots yourself, and do not pass their results on to the human - the group shows them.'] : []),
+      ...teamsLines,
       '',
       ...(group ? [renderGroupSection(bot, group, groupRole), ''] : []),
       ...(!direct ? [] : task ? [

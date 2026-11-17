@@ -1254,7 +1254,7 @@ export function createRegistry(deps) {
         name: { type: 'string' },
         instruction: { type: 'string', description: 'The prompt to run each time.' },
         schedule: { type: 'string', description: 'e.g. "0 9 * * 1-5", "every 30 minutes" or "once 2026-11-17 18:05".' },
-        botId: { type: 'string', description: 'Defaults to the calling bot.' },
+        botId: { type: 'string', description: 'The bot that runs it. The primary bot must pass it once groups exist (a team\'s work goes to the member whose role fits); otherwise defaults to the calling bot.' },
         timezone: { type: 'string', description: 'IANA timezone, defaults to the assistant timezone.' },
         enabled: { type: 'boolean' },
         onlyChanges: { type: 'boolean', description: 'Tell the human only when the result changed since the last run.' },
@@ -1265,6 +1265,16 @@ export function createRegistry(deps) {
     },
     async run(args, ctx) {
       const routines = deps.getRoutines();
+      // The primary bot names an owner once teams exist (1.5.14; 11-17: the
+      // 求职组's 08:45 routine landed under the assistant by default).
+      if (!args?.botId && ctx.bot?.primary && typeof ctx.groups?.listGroups === 'function') {
+        const groups = (await ctx.groups.listGroups().catch(() => [])).filter((g) => (g.members || []).length);
+        if (groups.length) {
+          const bots = await ctx.bots.listBots();
+          const nameOf = (id) => bots.find((b) => b.id === id)?.name || id;
+          throw toolError('OWNER_REQUIRED', `say who runs this scheduled task: pass botId. Work of a team goes to the member whose role fits: ${groups.map((g) => `「${g.name}」: ${g.members.map((id) => `${nameOf(id)} (${id})`).join(', ')}`).join('; ')}. Only your own work takes your own id (${ctx.bot.id}).`);
+        }
+      }
       const routine = await routines.create({
         botId: args?.botId || ctx.bot.id,
         name: args?.name || 'Scheduled task',

@@ -3,8 +3,9 @@
  * eval.mjs - run the evaluation set (eval/tasks.mjs) on this computer's
  * Lamplit, with its real model (1.5.6, report 8.4).
  *
- *   npm run eval                     all 20 tasks
+ *   npm run eval                     all 25 tasks (20 everyday + 5 hard)
  *   npm run eval -- --only f1-sort,m2-reply
+ *   npm run eval -- --hard           only the hard ones (eval/hard.mjs)
  *   npm run eval -- --record         also write the result into docs/EVAL.md
  *   npm run eval -- --keep           leave the task folders for a look
  *
@@ -16,6 +17,11 @@
  * check looks at the folder, the bot's routines and its answer. Afterwards
  * the bots, their routines and the folders are removed.
  *
+ * Hard tasks (1.5.14) may need the human mid-way: after each reply the
+ * runner asks the task what the human says back (task.human), sends it as a
+ * new message, and waits again - up to three rounds. Each answer counts as
+ * one "问人"; the check sees every round's reply and the files after it.
+ *
  * The hub: the desktop app's (%APPDATA%/Desk/port.json), or EVAL_HUB. It must
  * be this computer: the runner reads and writes the workspace on disk.
  */
@@ -23,7 +29,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TASKS, EVAL_TOOLS } from '../eval/tasks.mjs';
+import { TASKS as EVERYDAY, EVAL_TOOLS } from '../eval/tasks.mjs';
+import { HARD_TASKS } from '../eval/hard.mjs';
 import { viewOf, norm, judgeApproval, summarize, renderRecord } from '../eval/lib.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -70,7 +77,7 @@ async function runTask(task, { runDir, wsRoot }) {
   const rel = `${runDir}/${task.id}`;
   const abs = path.join(wsRoot, ...rel.split('/'));
   const started = Date.now();
-  const result = { id: task.id, title: task.title, kind: task.kind, ok: false, why: '', interventions: 0, cards: [], tokens: 0, cost: 0, seconds: 0 };
+  const result = { id: task.id, title: task.title, kind: task.kind, ok: false, why: '', interventions: 0, asks: 0, cards: [], tokens: 0, cost: 0, seconds: 0 };
   let bot = null;
   let truth = null;
   let usageBefore = { tokens: 0, cost: 0 };
@@ -94,11 +101,17 @@ async function runTask(task, { runDir, wsRoot }) {
     usageAfter = () => usageOf(bot.id);
     for (const r of task.setupRoutines || []) await api('/api/routines', { method: 'POST', body: { ...r, botId: bot.id } });
 
-    const sent = await api(`/api/bots/${encodeURIComponent(bot.id)}/message`, { method: 'POST', body: { text: task.prompt(rel) } });
-    const turnId = sent.turnId;
     const answered = new Set();
-    let mine = [];
+    const replies = [];
+    const rounds = [];
     let status = null;
+    let say = task.prompt(rel);
+    for (let round = 0; say && round < 4; round += 1) {
+    const sent = await api(`/api/bots/${encodeURIComponent(bot.id)}/message`, { method: 'POST', body: { text: say } });
+    const turnId = sent.turnId;
+    const turnStarted = Date.now();
+    let mine = [];
+    status = null;
     while (!status) {
       await sleep(2000);
       for (const card of listOf(await api(`/api/approvals?status=pending&botId=${encodeURIComponent(bot.id)}&limit=20`), 'approvals', 'items')) {
@@ -113,13 +126,19 @@ async function runTask(task, { runDir, wsRoot }) {
       }
       mine = listOf(await api(`/api/bots/${encodeURIComponent(bot.id)}/messages?limit=200`), 'items').filter((m) => m.turnId === turnId);
       status = mine.find((m) => m.role === 'status');
-      if (!status && Date.now() - started > TURN_LIMIT_MS) {
+      if (!status && Date.now() - turnStarted > TURN_LIMIT_MS) {
         await api(`/api/turns/${encodeURIComponent(turnId)}/cancel`, { method: 'POST', body: {} }).catch(() => {});
         result.why = `超过 ${TURN_LIMIT_MS / 1000} 秒没做完`;
         break;
       }
     }
-    const reply = mine.filter((m) => m.role === 'assistant').map((m) => m.text || '').join('\n');
+    replies.push(mine.filter((m) => m.role === 'assistant').map((m) => m.text || '').join('\n'));
+    rounds.push(diskFiles(abs));
+    if (!status) break;
+    say = round < 3 && task.human ? String(task.human(replies[round], round) || '') : '';
+    if (say) result.asks += 1;
+    }
+    const reply = replies.join('\n');
     const routines = listOf(await api('/api/routines'), 'routines').filter((r) => r.botId === bot.id);
     if (status) {
       const view = viewOf({
@@ -128,6 +147,8 @@ async function runTask(task, { runDir, wsRoot }) {
         routines,
         reply,
         truth,
+        replies,
+        rounds,
       });
       const verdict = await task.check(view);
       result.ok = verdict.ok;
@@ -154,7 +175,8 @@ async function runTask(task, { runDir, wsRoot }) {
 }
 
 const only = opt('--only') ? new Set(opt('--only').split(',').map((s) => s.trim())) : null;
-const tasks = TASKS.filter((t) => !only || only.has(t.id));
+const TASKS = [...EVERYDAY, ...HARD_TASKS];
+const tasks = TASKS.filter((t) => (!only || only.has(t.id)) && (!flag('--hard') || t.kind === 'hard'));
 if (!tasks.length) { console.error('没有要跑的任务'); process.exit(1); }
 
 const health = await api('/api/health');
@@ -174,7 +196,7 @@ try {
     process.stdout.write(`- ${task.id} ${task.title} … `);
     const r = await runTask(task, { runDir, wsRoot });
     results.push(r);
-    console.log(`${r.skipped ? '跳过' : r.ok ? '✅' : '❌'} ${Math.round(r.seconds)}s，干预 ${r.interventions}${r.cards.length ? `（${r.cards.join(' ')}）` : ''}，${r.tokens} tokens${r.why ? `；${r.why}` : ''}`);
+    console.log(`${r.skipped ? '跳过' : r.ok ? '✅' : '❌'} ${Math.round(r.seconds)}s，干预 ${r.interventions}${r.asks ? `，问人 ${r.asks}` : ''}${r.cards.length ? `（${r.cards.join(' ')}）` : ''}，${r.tokens} tokens${r.why ? `；${r.why}` : ''}`);
   }
 } finally {
   if (!flag('--keep')) fs.rmSync(path.join(wsRoot, 'eval', runId), { recursive: true, force: true });
@@ -200,10 +222,10 @@ try {
 const counted = results.filter((r) => !r.skipped);
 const s = summarize(counted);
 const usage = await api('/api/usage?days=1').catch(() => null);
-console.log(`\n成功 ${s.passed}/${s.total}（${s.rate}%），人工干预 ${s.interventions} 次，${s.tokens} tokens，花费 ${s.cost || '未定价'}，用时 ${Math.round(s.seconds / 60)} 分钟`);
+console.log(`\n成功 ${s.passed}/${s.total}（${s.rate}%），人工干预 ${s.interventions} 次${s.asks ? `，中途问人 ${s.asks} 次` : ''}，${s.tokens} tokens，花费 ${s.cost || '未定价'}，用时 ${Math.round(s.seconds / 60)} 分钟`);
 if (flag('--record')) {
   const skipped = results.filter((r) => r.skipped).map((r) => r.id);
-  const note = [only ? `只跑了 ${tasks.length} 题。` : '', skipped.length ? `${skipped.join('、')} 取不到核对数据，没算。` : ''].join('');
+  const note = [only || flag('--hard') ? `只跑了 ${tasks.length} 题。` : '', skipped.length ? `${skipped.join('、')} 取不到核对数据，没算。` : ''].join('');
   const day = new Date().toLocaleDateString('sv-SE');
   const doc = path.join(REPO, 'docs', 'EVAL.md');
   const text = fs.readFileSync(doc, 'utf8');

@@ -3999,6 +3999,22 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.14: phone bots get 150 steps; the primary bot names a routine's owner once teams exist and hands a team's work to its group.
+  {
+    const A = await import('../src/agent.mjs');
+    check('S14a steps: a bot that works the phone gets 150 steps a turn, like the browser and the desktop (11-17: 投递 cut off at 80 reading BOSS screen by screen)',
+      A.stepLimitFor({ tools: ['fs_read', 'phone'], policy: { maxSteps: 80 } }) === 150 && A.stepLimitFor({ tools: ['fs_read'], policy: { maxSteps: 80 } }) === 80);
+    const bots = [{ id: 'chief', name: '助理', primary: true }, { id: 'bot-s', name: '策略', role: '求职策略：筛岗打分' }, { id: 'bot-t', name: '投递', role: '投递和回 HR' }];
+    const sec = A.teamsSection([{ id: 'g-1', name: '求职组', coordinatorId: 'bot-s', members: ['bot-s', 'bot-t'] }, { id: 'g-2', name: '空群', members: [] }], bots).join('\n');
+    check('S14b teams: the primary bot sees each team (name, coordinator, members and roles); a request in their work, or "现在开始" on their scheduled job, goes to the group; their routines belong to a member; no teams, no section',
+      sec.includes('「求职组」') && sec.includes('coordinator 策略') && sec.includes('投递 (bot-t) - 投递和回 HR') && sec.includes('group_handover') && sec.includes('"现在开始"') && sec.includes('never to you') && !sec.includes('空群')
+      && A.teamsSection([], bots).length === 0);
+    const toolsSrc = await readText('../src/tools.mjs');
+    const agSrc = await readText('../src/agent.mjs');
+    check('S14b routines: routine_create from the primary bot without botId, once groups exist, asks who runs it (lists the members); a specialist still defaults to itself',
+      toolsSrc.includes("if (!args?.botId && ctx.bot?.primary && typeof ctx.groups?.listGroups === 'function')") && toolsSrc.includes("throw toolError('OWNER_REQUIRED'")
+      && agSrc.includes("const teams = bot.primary && this.groups?.listGroups ?") && agSrc.includes('...teamsLines,'));
+  }
   // 邮箱: IMAP / SMTP against local fake servers - list, search in Chinese, read GBK mail with an attachment, reply, mark, bad code.
   {
     const net = await import('node:net');
@@ -5479,6 +5495,35 @@ async function scenarioV1506() {
   ]);
   check('V2 summary: success rate, interventions, tokens, cost and time add up',
     sum.passed === 1 && sum.total === 2 && sum.rate === 50 && sum.interventions === 2 && sum.tokens === 4000 && Math.abs(sum.cost - 0.04) < 1e-9 && sum.seconds === 40);
+  // 1.5.14: the hard tasks - several steps, the web, or the human needed mid-way.
+  {
+    const H = await import('../eval/hard.mjs');
+    const L2 = await import('../eval/lib.mjs');
+    const ids = H.HARD_TASKS.map((t) => t.id);
+    check('V3 hard set: 5 tasks (multi-step, web, asking first) with distinct ids not used by the 20, each naming its folder',
+      H.HARD_TASKS.length === 5 && new Set(ids).size === 5 && !ids.some((id) => T.TASKS.some((t) => t.id === id))
+      && H.HARD_TASKS.every((t) => t.kind === 'hard' && typeof t.check === 'function' && (!Object.keys(t.files || {}).length || t.prompt('eval/x/' + t.id).includes('eval/x/' + t.id))));
+    const viewFor = (t, g = {}) => L2.memoryView({ files: { ...(t.files || {}), ...(g.files || {}) }, remove: g.remove || [], routines: g.routines || [], truth: t.good?.truth, replies: g.replies || null, rounds: g.rounds || [Object.keys(t.files || {})] });
+    const hLazy = [];
+    const hBroken = [];
+    for (const t of H.HARD_TASKS) {
+      if ((await t.check(viewFor(t, { replies: t.good?.replies ? [''] : null }))).ok) hLazy.push(t.id);
+      const r = await t.check(viewFor(t, t.good || {}));
+      if (!r.ok) hBroken.push(`${t.id}: ${r.why}`);
+    }
+    check('V3 hard checks: none passes on the untouched folder; each passes on a correct result', !hLazy.length && !hBroken.length, [...hLazy, ...hBroken].join(' | '));
+    const venue = H.HARD_TASKS.find((t) => t.id === 'h1-venue-ask');
+    const clean = H.HARD_TASKS.find((t) => t.id === 'h4-cleanup-ask');
+    check('V3 asking first: the right result without asking fails (the venue picked by guessing; the old installer deleted before asking - obvious junk may go first); the runner\'s human answers a question once, and nothing else',
+      !(await venue.check(viewFor(venue, { ...venue.good, replies: ['定了湖畔会所。'] }))).ok
+      && !(await clean.check(viewFor(clean, { ...clean.good, rounds: [['downloads/安装包-v2.exe', 'downloads/年度报告-草稿.docx']] }))).ok
+      && venue.human('要订几个人？', 0).includes('35') && clean.human('旧版 v1 和草稿先留着，要删吗', 0) !== '' && clean.human('删好了', 0) === '' && venue.human('好的，已经写好。', 0) === '' && venue.human('还有别的吗？', 1) === '');
+    const ev = await readText('eval.mjs');
+    check('V3 runner: after each reply it asks the task what the human says back, sends it, waits again (up to four rounds), counts each as 问人, and the check sees every reply and the files after each round',
+      ev.includes("say = round < 3 && task.human ? String(task.human(replies[round], round) || '') : '';") && ev.includes('if (say) result.asks += 1;') && ev.includes('rounds.push(diskFiles(abs));')
+      && ev.includes('const TASKS = [...EVERYDAY, ...HARD_TASKS];') && L2.summarize([{ ok: true, asks: 2 }]).asks === 2
+      && L2.renderRecord({ version: '9', day: 'd', model: 'm', results: [{ id: 'h', title: 'H', ok: true, asks: 1 }] }).includes('中途问人 1 次'));
+  }
   const rec = L.renderRecord({ version: '9.9.9', day: '2026-11-16', model: 'm', currency: 'CNY', results: [{ id: 'a', title: 'A', ok: true, interventions: 0, tokens: 1000, cost: 0.01, seconds: 10, why: '' }] });
   check('V2 record: one section per version with the totals line and one row per task',
     rec.includes('## 9.9.9') && rec.includes('1/1') && rec.includes('| a |') && !/[A-Z]:\\|\/Users\/|\/home\//.test(rec));

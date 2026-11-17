@@ -194,7 +194,8 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     }
     if (!ready.length) {
       const odd = list[0];
-      throw fail(odd ? 'PHONE_NOT_READY' : 'PHONE_NOT_CONNECTED', odd ? stateHelp(odd) : 'no phone can be used from here. Ask the human to turn on 「让机器人用这部手机」 in the Lamplit app on the phone (Settings → 机器 → 手机), or to plug it into this computer with USB debugging on.');
+      const gone = typeof exec.whyGone === 'function' ? exec.whyGone() : '';
+      throw fail(odd ? 'PHONE_NOT_READY' : 'PHONE_NOT_CONNECTED', odd ? stateHelp(odd) : gone ? `no phone answers right now.${gone}` : 'no phone can be used from here. Ask the human to turn on 「让机器人用这部手机」 in the Lamplit app on the phone (Settings → 机器 → 手机), or to plug it into this computer with USB debugging on.');
     }
     if (ready.length > 1 && !ready.some((d) => d.serial === lastSerial)) {
       throw fail('PHONE_WHICH', `more than one phone is connected (${ready.map((d) => d.model || d.serial).join(', ')}); say which with device`);
@@ -211,11 +212,24 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     return parseWindow(await text(['-s', serial, 'shell', 'dumpsys', 'window'], { timeout: 10000 }));
   }
 
-  /** Every action that touches the screen first checks the phone is unlocked. */
+  /**
+   * Every action that touches the screen first checks the phone is unlocked.
+   * Screen off (1.5.17): light it once and put away a lock screen that needs no
+   * code (the phone decides: no PIN, or Smart Lock trusts it). A PIN, pattern
+   * or password stays the human's.
+   */
   async function ensureOpen(serial) {
-    const w = await windowState(serial);
+    let w = await windowState(serial);
     if (w.locked) {
-      throw fail('PHONE_LOCKED', 'The phone is locked (or its screen is off). Ask the human to unlock it, then go on when they say so. Never try to unlock it yourself and never type a PIN or password.');
+      try {
+        await run(['-s', serial, 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP']);
+        await run(['-s', serial, 'shell', 'wm', 'dismiss-keyguard']);
+        await new Promise((r) => setTimeout(r, 800));
+        w = await windowState(serial);
+      } catch { /* stays locked */ }
+    }
+    if (w.locked) {
+      throw fail('PHONE_LOCKED', 'The phone is locked: the screen was lit, but it needs the human\'s PIN, pattern, fingerprint or face. Ask the human to unlock it, then go on when they say so. Never try to unlock it yourself and never type a PIN or password. (If they want the bots to use it while they are away: Smart Lock / 智能解锁 in the phone\'s security settings keeps it unlocked at home, or no lock screen.)');
     }
     return w;
   }

@@ -175,6 +175,8 @@ public class PhoneAgentService extends AccessibilityService {
                 return new JSONObject().put("installed", installed(args.optString("pkg", "")));
             case "apps":
                 return apps();
+            case "wake":
+                return wake();
             default:
                 throw new StepError("PHONE_FAILED", "unknown step " + action);
         }
@@ -187,6 +189,39 @@ public class PhoneAgentService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         String app = root != null && root.getPackageName() != null ? root.getPackageName().toString() : "";
         return new JSONObject().put("locked", locked).put("app", app);
+    }
+
+    /**
+     * Screen off (1.5.17): light it, and when the phone itself is not locked (no
+     * PIN, or Smart Lock trusts it) put the swipe screen away. A PIN, pattern or
+     * password stays the human's: then it only says the phone is locked.
+     */
+    private JSONObject wake() throws Exception {
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        KeyguardManager km = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+        if (pm != null && !pm.isInteractive()) {
+            @SuppressWarnings("deprecation")
+            PowerManager.WakeLock lit = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP, "lamplit:wake");
+            lit.acquire(3000);
+        }
+        boolean secure = km != null && km.isDeviceLocked();
+        if (km != null && km.isKeyguardLocked() && !secure) {
+            Intent open = new Intent(this, UnlockActivity.class);
+            open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+            startActivity(open);
+        }
+        Thread.sleep(1200);
+        // ColorOS stops an activity from showing over the lock screen unless the
+        // human allowed 锁屏显示 (seen 11-17): with no code needed, swipe it up
+        // as a finger would. Never when the phone says a code is needed.
+        if (km != null && km.isKeyguardLocked() && !km.isDeviceLocked()) {
+            JSONObject s = size();
+            int w0 = s.optInt("w", 1080), h0 = s.optInt("h", 2400);
+            gesture(w0 / 2, (int) (h0 * 0.88), w0 / 2, (int) (h0 * 0.30), 300);
+            Thread.sleep(900);
+        }
+        JSONObject w = window();
+        return w.put("needsCode", secure);
     }
 
     private JSONObject size() throws Exception {

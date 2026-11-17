@@ -215,6 +215,19 @@ function renderPhoneAgentRow() {
     ? '已打开：你各台机器上的机器人可以用这部手机（不用数据线）。通知栏里有提示，点「停止」随时关掉。'
     : '还没打开。打开后，你各台机器上的机器人不用数据线也能用这部手机：看屏幕、点、输入、打开 App。付款、发送、发布、同意条款每次都会先问你；锁屏时不会解锁，也不会输入密码。';
   $('phone-agent-btn').textContent = on ? '去系统设置里关掉' : '打开「让机器人用这部手机」';
+  // 1.5.17: with the screen off the system puts Lamplit to sleep and the machines
+  // lose the phone. Ask to keep running while it is given to the bots.
+  const bat = $('phone-agent-battery');
+  if (!bat) return;
+  let free = true;
+  try { free = typeof shell.batteryUnrestricted !== 'function' || Boolean(shell.batteryUnrestricted()); } catch { /* old app */ }
+  bat.hidden = !on || free;
+  let maker = '';
+  try { maker = String(shell.manufacturer?.() || '').toLowerCase(); } catch { /* old app */ }
+  const strict = /oppo|oneplus|realme|vivo|iqoo|xiaomi|redmi|huawei|honor|meizu/.test(maker);
+  $('phone-agent-battery-note').textContent = '息屏后系统会让 Lamplit 休眠，机器就连不上这部手机了。点下面的按钮，在弹出的对话框里选「允许」，让它在后台一直运行。'
+    + (strict ? '这个牌子的手机还要在「应用信息 → 耗电管理（或电池）」里打开「允许后台运行」和「允许自启动」。' : '');
+  $('phone-agent-appinfo').hidden = !strict;
 }
 
 function bindPhoneBox() {
@@ -226,6 +239,16 @@ function bindPhoneBox() {
     });
     // Back from the system settings: show what is on now.
     document.addEventListener('visibilitychange', () => { if (!document.hidden) renderPhoneAgentRow(); });
+  }
+  if ($('phone-agent-keep') && !$('phone-agent-keep').dataset.bound) {
+    $('phone-agent-keep').dataset.bound = '1';
+    $('phone-agent-keep').addEventListener('click', () => {
+      try { window.NightshiftShell.askBatteryUnrestricted(); } catch { /* old app */ }
+    });
+    $('phone-agent-appinfo').addEventListener('click', () => {
+      try { window.NightshiftShell.openAppDetails(); } catch { /* old app */ }
+      toast('在「耗电管理」或「电池」里打开「允许后台运行」和「允许自启动」，再回来');
+    });
   }
   if (!$('phone-refresh') || $('phone-refresh').dataset.bound) return;
   $('phone-refresh').dataset.bound = '1';

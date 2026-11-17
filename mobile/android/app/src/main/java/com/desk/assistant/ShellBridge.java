@@ -201,6 +201,55 @@ public class ShellBridge {
         }
     }
 
+    /** 1.5.17: is Lamplit free of battery optimisation (keeps running with the screen off)? */
+    @JavascriptInterface
+    public boolean batteryUnrestricted() {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) activity.getSystemService(Context.POWER_SERVICE);
+            return pm == null || pm.isIgnoringBatteryOptimizations(activity.getPackageName());
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /** The system's own dialog: let Lamplit keep running (the human chooses Allow there). */
+    @JavascriptInterface
+    public boolean askBatteryUnrestricted() {
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + activity.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity.startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            try {
+                Intent list = new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                list.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                activity.startActivity(list);
+                return true;
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+    }
+
+    /** App info, where OPPO, vivo, Xiaomi and others keep 「允许后台运行」 and 「自启动」. */
+    @JavascriptInterface
+    public boolean openAppDetails() {
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + activity.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity.startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @JavascriptInterface
+    public String manufacturer() {
+        return android.os.Build.MANUFACTURER == null ? "" : android.os.Build.MANUFACTURER;
+    }
+
     /** This app's own version (1.2.166: the page compares it with the latest release). */
     @JavascriptInterface
     public String appVersion() {

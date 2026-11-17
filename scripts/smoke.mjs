@@ -3999,6 +3999,63 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.17: the phone kept dropping off - asleep with the screen off, and one machine that was off held the reports to the others back.
+  {
+    const PL = await import('../src/phonelink.mjs');
+    const link = PL.createPhoneLink({ bus: { emit() {} }, freshMs: 150000 });
+    link.register('dev-a', { enabled: true, model: 'OPPO X' });
+    const now = Date.now;
+    Date.now = () => now() + 100000;
+    const stillThere = link.list().length === 1;
+    Date.now = () => now() + 200000;
+    const gone = link.list().length === 0;
+    const stale = link.stale();
+    const exec = PL.makePhoneExec({ adbPath: () => '', link });
+    const why = exec.whyGone();
+    Date.now = now;
+    const plSrc = await readText('../src/phonelink.mjs');
+    const phSrc = await readText('../src/phone.mjs');
+    check('P17 machine: a phone counts as there for 150 s after its last report (was 90); once gone, the bot is told how long ago and why (screen off, Lamplit asleep) and what the human should do',
+      stillThere && gone && stale.length === 1 && stale[0].model === 'OPPO X' && stale[0].minutes >= 3 && why.includes('has not reported for') && why.includes('screen is probably off')
+      && plSrc.includes('freshMs = 150000') && phSrc.includes("const gone = typeof exec.whyGone === 'function' ? exec.whyGone() : '';"));
+    const J = '../mobile/android/app/src/main/';
+    const watch = await readText(`${J}java/com/desk/assistant/NightshiftWatcher.java`);
+    const bridge = await readText(`${J}java/com/desk/assistant/ShellBridge.java`);
+    const man = await readText(`${J}AndroidManifest.xml`);
+    check('P17 app: each machine gets its own report thread (an off one is asked less often, up to 5 min) so it cannot hold the others back; an off machine\'s stream is retried up to once a minute',
+      watch.includes('for (String hub : hubs) ensureReporter(hub);') && watch.includes('Math.min(300000L, 30000L * miss)') && watch.includes('Math.min(60000L, 1500L * attempt * attempt)')
+      && watch.includes('new Thread(() -> syncFleet(h), "fleet:" + hub).start();'));
+    check('P17 app: while 「让机器人用这部手机」 is on the phone keeps a partial wake lock (released when it is off), and asks once through the system dialog to run free of battery optimisation; OPPO, vivo, Xiaomi and the like are pointed to App info as well',
+      watch.includes('PowerManager.PARTIAL_WAKE_LOCK') && watch.includes('boolean want = PhoneAgentService.instance != null;') && watch.includes('releaseWake();')
+      && man.includes('android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS') && man.includes('android.permission.WAKE_LOCK')
+      && bridge.includes('ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS') && bridge.includes('isIgnoringBatteryOptimizations') && bridge.includes('ACTION_APPLICATION_DETAILS_SETTINGS'));
+    // Screen off: lit once; a lock screen that needs no code is put away; a PIN stays the human's.
+    {
+      const P2 = await import('../src/phone.mjs');
+      const calls = [];
+      let lockedNow = true;
+      const fake = async (_f, args) => {
+        calls.push(args.slice(2).join(' '));
+        if (args.includes('dumpsys') && args.includes('window')) return { stdout: `  mCurrentFocus=Window{1 u0 com.x/app}\n    isKeyguardShowing=${lockedNow ? 'true' : 'false'}\n` };
+        if (args.includes('KEYCODE_WAKEUP')) lockedNow = false;
+        if (args[0] === 'devices') return { stdout: 'List of devices attached\nlamplit:d1   device product:lamplit model:OPPO transport_id:0\n' };
+        return { stdout: '' };
+      };
+      const ph = P2.createPhone({ adb: 'adb', exec: fake, workspaceDir: (await import('node:os')).tmpdir() });
+      let woke = false;
+      try { await ph.look({}); woke = calls.includes('shell input keyevent KEYCODE_WAKEUP') && calls.includes('shell wm dismiss-keyguard'); } catch { woke = calls.includes('shell input keyevent KEYCODE_WAKEUP'); }
+      const phSrc2 = await readText('../src/phone.mjs');
+      const svc = await readText('../mobile/android/app/src/main/java/com/desk/assistant/PhoneAgentService.java');
+      const un = await readText('../mobile/android/app/src/main/java/com/desk/assistant/UnlockActivity.java');
+      check('P17 screen off: before a step the phone\'s screen is lit and a lock screen that needs no code put away (the phone decides: no PIN, or Smart Lock); with a PIN it stays locked and the bot asks the human, never typing a code',
+        woke && phSrc2.includes("it needs the human\\'s PIN, pattern, fingerprint or face") && svc.includes('case "wake":') && svc.includes('boolean secure = km != null && km.isDeviceLocked();')
+        && svc.includes('if (km != null && km.isKeyguardLocked() && !secure)') && svc.includes('if (km != null && km.isKeyguardLocked() && !km.isDeviceLocked()) {') && un.includes('if (km != null && km.isDeviceLocked()) { finish(); return; }') && un.includes('requestDismissKeyguard'), calls.join(' | '));
+    }
+    const mach = await readText('../public/app/main/11-machines.js');
+    const html = await readText('../public/index.html');
+    check('P17 settings on the phone: with the phone given to the bots and battery optimisation still on, it says why the machines lose it and offers 「允许在后台一直运行」 (and App info on strict brands)',
+      html.includes('id="phone-agent-keep"') && html.includes('id="phone-agent-appinfo"') && mach.includes('bat.hidden = !on || free;') && mach.includes('window.NightshiftShell.askBatteryUnrestricted()'));
+  }
   // 1.5.16: one answer may write more than 4096 tokens (a long fs_write was cut off), with a way back.
   {
     const Mo = await import('../src/model.mjs');
@@ -5868,7 +5925,7 @@ async function scenarioV141() {
   const serverSrc = await readText('../src/server.mjs');
   check('V2 reconnect: the phone says it is ready as soon as its stream to a machine is up (not up to 30 s later), retries come quicker, and it sends its own id',
     /Log\.i\(TAG, "watching " \+ hub\);[\s\S]{0,400}reportPhoneAgent\(hub\)/.test(watcher) && watcher.includes('body.put("phoneId", phoneId(this))')
-    && /Math\.min\(10000L, 1500L \* attempt\)/.test(watcher) && serverSrc.includes('phoneId: String(body?.phoneId'));
+    && /Math\.min\(60000L, 1500L \* attempt \* attempt\)/.test(watcher) && serverSrc.includes('phoneId: String(body?.phoneId'));
 }
 
 /**
@@ -6299,8 +6356,8 @@ async function scenarioV130() {
     let lockedCode = '';
     let lockedMsg = '';
     try { await phone.act('tap', { target: '搜索' }); } catch (err) { lockedCode = err.code; lockedMsg = err.message; }
-    check('P2 never: no typing into a password box; a locked phone is not touched - the bot asks the human to unlock it and never tries itself',
-      pw === 'PHONE_PASSWORD_FIELD' && lockedCode === 'PHONE_LOCKED' && !ran.some((c) => c.includes('input ')) && /unlock/i.test(lockedMsg) && /never|do not/i.test(lockedMsg),
+    check('P2 never: no typing into a password box; a locked phone is not touched beyond lighting its screen (1.5.17) - the bot asks the human to unlock it and never tries itself',
+      pw === 'PHONE_PASSWORD_FIELD' && lockedCode === 'PHONE_LOCKED' && !ran.some((c) => c.includes('input ') && !c.includes('KEYCODE_WAKEUP')) && /unlock/i.test(lockedMsg) && /never|do not/i.test(lockedMsg),
       JSON.stringify({ pw, lockedCode, ran }));
     window = WIN_OPEN;
 

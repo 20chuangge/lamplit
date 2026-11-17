@@ -74,6 +74,15 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.NoDisplay" />
 
+        <!-- 1.5.17: lights the screen and dismisses a lock screen that needs no code, then closes. -->
+        <activity
+            android:name=".UnlockActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -93,6 +102,11 @@
     <!-- Background watching: a foreground service keeps one SSE connection open
          so a finished task or a pending approval can reach the phone. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- 1.5.17: while the phone is given to the bots it keeps reporting with the
+         screen off: the human allows it once in the system's own dialog, and a
+         partial wake lock is held only while 「让机器人用这部手机」 is on. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

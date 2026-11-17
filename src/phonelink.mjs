@@ -21,7 +21,9 @@ function fail(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
-export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 90000 } = {}) {
+// 150 s, not 90 (1.5.17): a phone reports every 30 s, but one machine that
+// did not answer could hold its other reports back (fixed in the app too).
+export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } = {}) {
   const phones = new Map(); // deviceId -> {enabled, model, name, at}
   const waiting = new Map(); // jobId -> {deviceId, resolve, reject, timer}
   let seq = 0;
@@ -46,6 +48,16 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 90000 } =
         if (!seen || p.at >= seen.p.at) byPhone.set(key, { deviceId, p });
       }
       return [...byPhone.values()].map(({ deviceId, p }) => ({ deviceId, serial: `${PREFIX}${deviceId}`, model: p.model || p.name || '手机', name: p.name }));
+    },
+
+    /**
+     * Phones that had 「让机器人用这部手机」 on but have not reported lately:
+     * the screen went off and the system put Lamplit to sleep, or it lost the network.
+     */
+    stale() {
+      const now = Date.now();
+      return [...phones.values()].filter((p) => p.enabled && now - p.at > freshMs)
+        .map((p) => ({ model: p.model || p.name || '手机', minutes: Math.max(1, Math.round((now - p.at) / 60000)) }));
     },
 
     /** Send one step to one phone and wait for its answer. */
@@ -114,6 +126,11 @@ export function makePhoneExec({ adbPath = () => '', link, adbExec = runAdb }) {
       const w = await ask('window', {});
       return { stdout: `  mCurrentFocus=Window{1 u0 ${w.app || 'unknown'}/app}\n    isKeyguardShowing=${w.locked ? 'true' : 'false'}\n` };
     }
+    // Light the screen / put away a lock screen that needs no code (1.5.17): one step on the app.
+    if (a === 'shell' && ((b === 'input' && c === 'keyevent' && d === 'KEYCODE_WAKEUP') || (b === 'wm' && c === 'dismiss-keyguard'))) {
+      if (b === 'input') await ask('wake', {});
+      return { stdout: '' };
+    }
     if (a === 'exec-out' && b === 'uiautomator') return { stdout: String((await ask('ui', {}, { timeoutMs: 30000 })).xml || '') };
     if (a === 'exec-out' && b === 'screencap') {
       // The human's live view (1.5.0): the phone's log says "watched" once, not a line a second.
@@ -158,7 +175,7 @@ export function makePhoneExec({ adbPath = () => '', link, adbExec = runAdb }) {
     throw fail('PHONE_FAILED', `the Lamplit app cannot do "${rest.join(' ').slice(0, 60)}"`);
   }
 
-  return async function exec(_file, args, opts = {}) {
+  async function exec(_file, args, opts = {}) {
     if (args[0] === 'devices') {
       const fromAdb = await adbDevices();
       const viaApp = link.list();
@@ -176,5 +193,13 @@ export function makePhoneExec({ adbPath = () => '', link, adbExec = runAdb }) {
     const adb = adbPath();
     if (!adb) throw fail('ADB_NOT_FOUND', 'no phone on a cable here (adb is not installed) and no phone with Lamplit\'s 「让机器人用这部手机」 turned on');
     return adbExec(adb, args, opts);
+  }
+  // Why no phone answers, when one was here before (phone.mjs adds it to PHONE_NOT_CONNECTED).
+  exec.whyGone = () => {
+    const s = link.stale?.() || [];
+    if (!s.length) return '';
+    const p = s[0];
+    return ` The phone ${p.model} had 「让机器人用这部手机」 on but has not reported for ${p.minutes} min: its screen is probably off and the system put Lamplit to sleep, or it lost the network. Tell the human to open Lamplit on the phone once (and, in the app, Settings → 机器 → 手机, allow it to keep running in the background); then try again.`;
   };
+  return exec;
 }

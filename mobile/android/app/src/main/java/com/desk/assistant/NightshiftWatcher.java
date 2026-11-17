@@ -121,6 +121,7 @@ public class NightshiftWatcher extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        releaseWake();
         for (HttpURLConnection conn : connections) {
             try {
                 conn.disconnect();
@@ -145,12 +146,13 @@ public class NightshiftWatcher extends Service {
         long lastSync = 0;
         while (running) {
             java.util.List<String> hubs = hubsWithToken(prefs(this));
+            keepAwakeForBots();
             for (String hub : hubs) ensureWorker(hub);
-            // Tell every machine whether the bots may use this phone (1.4.0).
-            for (String hub : hubs) {
-                if (!running) break;
-                reportPhoneAgent(hub);
-            }
+            // Tell every machine whether the bots may use this phone (1.4.0) -
+            // each from its own thread (1.5.17): one machine that is off took
+            // 10-25 s to time out and held every other machine's report back,
+            // so a live machine heard from the phone too late and dropped it.
+            for (String hub : hubs) ensureReporter(hub);
             // Every five minutes, ask a hub we know for the machines it knows and
             // pair this phone with any that answer. That is what makes a machine
             // added later (or one that boots later) notify without anyone
@@ -159,11 +161,70 @@ public class NightshiftWatcher extends Service {
                 lastSync = System.currentTimeMillis();
                 for (String hub : hubs) {
                     if (!running) break;
-                    syncFleet(hub);
+                    final String h = hub;
+                    new Thread(() -> syncFleet(h), "fleet:" + hub).start();
                 }
             }
             sleep(30000);
         }
+        releaseWake();
+    }
+
+    private final Map<String, Thread> reporters = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Machines that did not answer the last report: they are asked less often. */
+    private final Map<String, Integer> misses = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** One report thread per machine: every 30 s, less often (up to 5 min) to one that does not answer. */
+    private void ensureReporter(String hub) {
+        Thread alive = reporters.get(hub);
+        if (alive != null && alive.isAlive()) return;
+        Thread t = new Thread(() -> {
+            try {
+                while (running && hubsWithToken(prefs(this)).contains(hub)) {
+                    boolean ok = reportPhoneAgent(hub);
+                    int miss = ok ? 0 : Math.min(misses.getOrDefault(hub, 0) + 1, 10);
+                    misses.put(hub, miss);
+                    sleep(miss == 0 ? 30000L : Math.min(300000L, 30000L * miss));
+                }
+            } finally {
+                reporters.remove(hub);
+            }
+        }, "report:" + hub);
+        t.setDaemon(true);
+        reporters.put(hub, t);
+        t.start();
+    }
+
+    private android.os.PowerManager.WakeLock wake;
+
+    /**
+     * While 「让机器人用这部手机」 is on, keep the CPU awake (screen may be off)
+     * so the reports and the event stream go on; let go as soon as it is off.
+     */
+    private synchronized void keepAwakeForBots() {
+        boolean want = PhoneAgentService.instance != null;
+        try {
+            if (want && (wake == null || !wake.isHeld())) {
+                android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (pm == null) return;
+                wake = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "lamplit:phone-agent");
+                wake.setReferenceCounted(false);
+                wake.acquire();
+            } else if (!want) {
+                releaseWake();
+            }
+        } catch (Exception err) {
+            Log.d(TAG, "wake lock: " + err.getClass().getSimpleName());
+        }
+    }
+
+    private synchronized void releaseWake() {
+        try {
+            if (wake != null && wake.isHeld()) wake.release();
+        } catch (Exception ignored) {
+            // already released
+        }
+        wake = null;
     }
 
     /**
@@ -326,9 +387,11 @@ public class NightshiftWatcher extends Service {
                 Log.i(TAG, "stream from " + hub + " ended: " + err.getClass().getSimpleName());
             }
             if (!running) return;
-            attempt = established ? 1 : Math.min(attempt + 1, 6);
-            // Quicker back after a machine restarts (an install takes ~20 s), 1.4.1.
-            sleep(Math.min(10000L, 1500L * attempt));
+            attempt = established ? 1 : Math.min(attempt + 1, 8);
+            // Quicker back after a machine restarts (an install takes ~20 s), 1.4.1;
+            // a machine that stays off is tried less and less often, up to once a
+            // minute (1.5.17: an off machine was tried every 16 s all day).
+            sleep(Math.min(60000L, 1500L * attempt * attempt));
         }
     }
 
@@ -383,10 +446,10 @@ public class NightshiftWatcher extends Service {
     }
 
     // ------------------------------------------------------------ the phone (1.4.0)
-    /** POST /api/phone/agent: may the bots on that machine use this phone now? */
-    private void reportPhoneAgent(String hub) {
+    /** POST /api/phone/agent: may the bots on that machine use this phone now? true when it answered. */
+    private boolean reportPhoneAgent(String hub) {
         String token = TokenBox.open(prefs(this).getString("desk.token:" + hub, null));
-        if (token == null) return;
+        if (token == null) return false;
         try {
             JSONObject body = new JSONObject();
             body.put("enabled", PhoneAgentService.instance != null);
@@ -395,8 +458,10 @@ public class NightshiftWatcher extends Service {
             // The same phone paired through two addresses is one phone (1.4.1).
             body.put("phoneId", phoneId(this));
             postJson(hub + "/api/phone/agent", token, body);
+            return true;
         } catch (Exception err) {
             Log.d(TAG, "phone agent report to " + hub + " failed: " + err.getClass().getSimpleName());
+            return false;
         }
     }
 

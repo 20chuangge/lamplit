@@ -117,7 +117,7 @@ export const HARD_TASKS = [
       const note = v.read('提醒.md');
       if (!note) return fail('没有 提醒.md');
       // Naming the others as under 1000 is fine; listing them as over is not.
-      const wrong = note.split('\n').filter((l) => /远帆|青禾/.test(l) && !/未|没|不|低于|以下|少于|[<≤]/.test(l));
+      const wrong = note.split('\n').filter((l) => /远帆|青禾/.test(l) && !/未|没|不|低于|以下|少于|[<≤]|只有星河|仅星河|就星河/.test(l));
       return note.includes('星河') && !wrong.length ? pass() : fail(`超过 1000 的只有星河${wrong.length ? `（多写了：${wrong[0].slice(0, 40)}）` : ''}`);
     },
     good: { files: { '对账.csv': '客户,金额\n星河,1110\n远帆,720\n青禾,360\n', '提醒.md': '本月应付超过 1000 元：星河（1110 元）。\n' } },

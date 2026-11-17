@@ -2359,7 +2359,10 @@ export class AgentRuntime {
     // Nightshift's own secrets and modules: asked every time - on a remote
     // machine, for a trusted bot, at any level. Only "deny" stays a deny.
     const secretReason = reachesSecrets(name, args, { workspaceDir: this.config.workspaceDir });
-    if (secretReason && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason }; sticky = true; }
+    // On a machine given to the bots and set to 放手 (1.5.24, the human: "让他们的权限都放开"),
+    // scripts that use Lamplit's own modules run unasked; the vault's keys and codes still ask everywhere.
+    const vaultReason = /保险箱/.test(secretReason || '');
+    if (secretReason && (vaultReason || !freeMachine) && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason }; sticky = true; }
     if (name === 'cli_agent_run' && verdict.decision !== DECISION.DENY) sticky = true;
     // adb in the shell works the phone around the phone tool's rules (1.3.1): ask every time.
     if (name === 'shell' && adbInShell(args?.command) && verdict.decision !== DECISION.DENY) {
@@ -2368,7 +2371,8 @@ export class AgentRuntime {
     }
     // The browser's control port from the shell (1.5.12): the bot's logged-in
     // browser driven around the browser tools and their checks - ask every time.
-    if (name === 'shell' && DEVTOOLS.test(String(args?.command || '')) && verdict.decision !== DECISION.DENY) {
+    // On a machine given to the bots and set to 放手 the browser holds the bots' own logins: no ask (1.5.24).
+    if (name === 'shell' && !freeMachine && DEVTOOLS.test(String(args?.command || '')) && verdict.decision !== DECISION.DENY) {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: '要绕过浏览器工具，直接通过调试端口控制浏览器（里面有你的登录状态），每次都先问你。机器人应该改用 browser_* 工具。' };
       sticky = true;
     }

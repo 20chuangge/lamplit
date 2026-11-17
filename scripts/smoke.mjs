@@ -3996,7 +3996,7 @@ async function scenarioMcp({ home, toolsMod }) {
       && ask('fs_read', { path: '/opt/desk-hub/data/vault.key' }) && ask('shell', { command: 'cat data/secrets.json' })
       && !ask('shell', { command: 'sed -n 1,20p /opt/desk-hub/src/mail.mjs' }) && !ask('fs_write', { path: 'myapp/index.mjs', content: "import { render } from './src/render-page.mjs';" })
       && !ask('shell', { command: 'python3 sort.py && node build.mjs' }) && !ask('fs_write', { path: 'notes.md', content: '整理了邮箱' })
-      && ag.includes("if (secretReason && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason }; sticky = true; }"));
+      && ag.includes("if (secretReason && (vaultReason || !freeMachine) && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason }; sticky = true; }"));
     check('M30 rules: a connected app is used only through its tools (never scripted around); bulk changes touch only what should change (never move everything out and the keepers back) - in the bot\'s rules and on the mail tools',
       ag.includes('A connected app (mail, GitHub, Notion, ...) is used only through its own tools. Never script around one') && ag.includes('Never move everything out and then move the keepers back')
       && mailSrc.includes('never move everything out and then move the keepers back') && mailSrc.includes('never delete everything and then restore the keepers'));
@@ -4013,6 +4013,16 @@ async function scenarioMcp({ home, toolsMod }) {
     check('M30b a task on the group board cut off by the step limit goes on by itself (up to the limit), told what it already did',
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
+  }
+  // 1.5.24: the bots upload files through the browser tool; a machine given to them asks less.
+  {
+    const toolsSrc = await readText('../src/tools.mjs');
+    const br = await readText('../src/browser.mjs');
+    const ag = await readText('../src/agent.mjs');
+    check('B24 browser_upload: workspace files go into the page\'s file box (input type=file, shadow DOM too) through the browser tool; files outside the workspace are refused',
+      toolsSrc.includes("name: 'browser_upload',") && toolsSrc.includes("throw toolError('OUTSIDE_WORKSPACE'") && br.includes("await page.send('DOM.setFileInputFiles', { files: absPaths, objectId }") && br.includes('if (host.shadowRoot) walk(host.shadowRoot);'));
+    check('B24 放手 machine: scripts on the browser\'s control port and scripts using Lamplit\'s modules run unasked there; the vault\'s keys still ask on every machine',
+      ag.includes("if (name === 'shell' && !freeMachine && DEVTOOLS.test(") && ag.includes('if (secretReason && (vaultReason || !freeMachine) && verdict.decision !== DECISION.DENY)') && ag.includes("const vaultReason = /保险箱/.test(secretReason || '');"));
   }
   // 1.5.23: an update push that broke off is tried again by itself.
   {
@@ -5298,7 +5308,7 @@ async function scenarioApps1512() {
   check('A3 the browser\'s debug port from the shell asks every time (curl …/json, a devtools socket, connectOverCDP), other web addresses do not; fs_write says to write long files in parts',
     B.DEVTOOLS.test('curl -s http://127.0.0.1:9222/json') && B.DEVTOOLS.test("python3 -c \"ws('ws://127.0.0.1:41233/devtools/page/AB')\"") && B.DEVTOOLS.test('node -e "chromium.connectOverCDP(u)"')
     && !B.DEVTOOLS.test('curl -s https://example.com:8443/json') && !B.DEVTOOLS.test('curl -s https://example.com/api.json')
-    && agentSrc.includes("if (name === 'shell' && DEVTOOLS.test(String(args?.command || '')) && verdict.decision !== DECISION.DENY) {")
+    && agentSrc.includes("if (name === 'shell' && !freeMachine && DEVTOOLS.test(String(args?.command || '')) && verdict.decision !== DECISION.DENY) {")
     && tools.includes('Keep each call under about 6000 characters of content'));
   // The apps' own marks (simple-icons, CC0): a file for each app that has one, the licence next to them.
   const fsMod = await import('node:fs');

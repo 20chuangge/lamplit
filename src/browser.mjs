@@ -1154,6 +1154,41 @@ class BrowserManager {
     }
   }
 
+  /**
+   * Put workspace files into a file box on the page (1.5.24). 小红书's 发布
+   * page takes its pictures this way; without this the bot scripted the
+   * browser's control port itself - asked every time, and it hung the page.
+   * absPaths are already checked to be inside the workspace.
+   */
+  async upload(args, absPaths) {
+    if (!Array.isArray(absPaths) || !absPaths.length) return errorResult('BAD_ARGS', 'browser_upload needs at least one file in "paths"');
+    try {
+      await this.ensureSession();
+      const page = await this.ensurePage();
+      const sel = String(args?.selector || 'input[type=file]');
+      const index = Math.max(0, Number(args?.index) || 0);
+      const find = `(() => {
+        const seen = [];
+        const walk = (root) => { for (const el of root.querySelectorAll(${JSON.stringify(sel)})) seen.push(el); for (const host of root.querySelectorAll('*')) if (host.shadowRoot) walk(host.shadowRoot); };
+        walk(document);
+        const boxes = seen.filter((el) => el.tagName === 'INPUT' && el.type === 'file');
+        window.__deskFileBoxes = boxes.length;
+        return boxes[${index}] || null;
+      })()`;
+      const found = await page.send('Runtime.evaluate', { expression: find, returnByValue: false });
+      const objectId = found?.result?.objectId;
+      if (!objectId) {
+        const count = await this.evaluateRaw('window.__deskFileBoxes || 0');
+        return errorResult('NO_FILE_BOX', `no file box (input type=file) #${index} on this page (found ${count?.value ?? count ?? 0}). Open the page's upload area first (browser_click on 上传), then try again.`);
+      }
+      await page.send('DOM.enable').catch(() => {});
+      await page.send('DOM.setFileInputFiles', { files: absPaths, objectId }, { timeoutMs: 60000 });
+      return { ok: true, uploaded: absPaths.length, files: absPaths.map((p) => p.split(/[\\/]/).pop()), note: 'The files were handed to the page; take a browser_screenshot to see them appear (big pictures can take a few seconds).' };
+    } catch (err) {
+      return errorResult('UPLOAD_FAILED', err.message);
+    }
+  }
+
   async type(args) {
     const text = String(args?.text ?? '');
     if (!text) return errorResult('BAD_ARGS', 'browser_type needs a non-empty "text"');

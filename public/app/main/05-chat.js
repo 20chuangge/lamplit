@@ -1657,6 +1657,7 @@ const TOOL_TEXT = {
   browser_open: { label: '打开网页', title: '想打开一个网页', impact: '只是打开，不会提交任何表单。' },
   browser_click: { label: '点击网页', title: '想点击网页上的一个位置', impact: '可能触发页面上的操作，例如提交或下载。' },
   browser_type: { label: '填写网页', title: '想在网页里输入文字', impact: '会填进当前页面获得焦点的输入框。' },
+  browser_upload: { label: '往网页上传文件', title: '想把工作区里的文件传到网页上', impact: '文件会交给当前网页，比如发笔记的配图。' },
   browser_eval: { label: '运行网页脚本', title: '想在网页里运行一段脚本', impact: '脚本能读取或改动当前页面的内容。' },
   browser_download: { label: '下载文件', title: '想下载一个文件', impact: '文件会保存到这台电脑上。' },
   browser_screenshot: { label: '网页截图', title: '想给网页截一张图', impact: '只读取当前页面，不会改动。' },

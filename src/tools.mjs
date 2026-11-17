@@ -1056,6 +1056,37 @@ export function createRegistry(deps) {
   });
 
   add({
+    name: 'browser_upload',
+    description:
+      'Put files from the workspace into a file box (input type=file) on the current page - pictures for a post, an attachment for a form. ' +
+      'Use this instead of scripting the browser. paths are workspace paths; the page\'s first file box is used unless you pass selector or index. ' +
+      'Take a browser_screenshot after it to check the files appeared. MEDIUM risk: it hands files to a website.',
+    risk: RISK.MEDIUM,
+    parameters: {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', items: { type: 'string' }, description: 'Workspace paths of the files, in order (up to 20).' },
+        selector: { type: 'string', description: 'CSS selector of the file box, when the page has more than one.' },
+        index: { type: 'integer', description: 'Which file box (0 = first) among those matching.' },
+      },
+      required: ['paths'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const list = Array.isArray(args?.paths) ? args.paths.slice(0, 20) : [];
+      if (!list.length) throw toolError('BAD_ARGS', 'browser_upload needs "paths": one or more workspace files');
+      const abs = [];
+      for (const p of list) {
+        const r = resolvePath(ctx.workspaceDir, p);
+        if (!r.inWorkspace) throw toolError('OUTSIDE_WORKSPACE', `${p}: only files inside the workspace can be uploaded`);
+        try { if (!(await fsp.stat(r.abs)).isFile()) throw new Error('not a file'); } catch { throw toolError('NOT_FOUND', `${p}: no such file in the workspace`); }
+        abs.push(r.abs);
+      }
+      return browserManager(ctx).upload(args, abs);
+    },
+  });
+
+  add({
     name: 'browser_screenshot',
     description:
       'Save a PNG of the current page to workspace/artifacts/<timestamp>.png (or a path you pass, inside the workspace) and return its relative path. ' +

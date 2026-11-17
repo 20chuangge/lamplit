@@ -1984,6 +1984,9 @@ window.DESK_I18N_EN = {
   "在说（要插话就点「打断」）": "speaking (tap Interrupt to talk)",
   "打断": "Interrupt",
   "挂断": "Hang up",
+  "往网页上传文件": "Upload files to a page",
+  "想把工作区里的文件传到网页上": "Wants to upload workspace files to a web page",
+  "文件会交给当前网页，比如发笔记的配图。": "The files go to the current page, such as pictures for a post.",
   "说完了": "Done talking",
   "太吵听不出说完时，点这里马上发出去": "Too noisy to tell you have finished? Tap to send now",
 

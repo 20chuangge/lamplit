@@ -1467,6 +1467,14 @@ async function autoUpdateMachine(machine) {
     }
   } catch (err) {
     bootLog(`update ${url} failed: ${err.message}`);
+    // The request itself broke off ("fetch failed", 11-17): the same retries as
+    // a failed answer, every 2 minutes up to 5 times (it waited for a restart before).
+    const n = (updateAttempts.get(url) || 0) + 1;
+    updateAttempts.set(url, n);
+    if (n < 5) {
+      updateChecked.delete(url);
+      setTimeout(() => autoUpdateMachine(machine), 2 * 60 * 1000);
+    }
   } finally {
     updating.delete(url);
   }

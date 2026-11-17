@@ -4014,6 +4014,14 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.23: an update push that broke off is tried again by itself.
+  {
+    const desk = await readText('../desktop/main.mjs');
+    const at = desk.indexOf("bootLog(`update ${url} failed: ${err.message}`);");
+    const tail = desk.slice(at, at + 600);
+    check('U23 update: a push whose request broke off ("fetch failed") is tried again every 2 minutes, up to 5 times, without restarting the app',
+      at > 0 && tail.includes('updateChecked.delete(url);') && tail.includes('setTimeout(() => autoUpdateMachine(machine), 2 * 60 * 1000);') && tail.includes('if (n < 5)'));
+  }
   // 1.5.22: 通话模式 - talk back and forth, answers read sentence by sentence, speaking stops the reading.
   {
     const chat = (await readText('../public/app/main/05-chat.js')) + (await readText('../public/app/main/06-live.js'));

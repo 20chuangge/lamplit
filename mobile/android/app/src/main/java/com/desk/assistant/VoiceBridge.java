@@ -35,6 +35,61 @@ public class VoiceBridge {
 
     @JavascriptInterface
     public String start() {
+        return begin(false);
+    }
+
+    /**
+     * A call (1.5.22): the "voice communication" source has the phone's echo
+     * cancellation, so Lamplit reading aloud is not heard as you talking.
+     */
+    @JavascriptInterface
+    public String startCall() {
+        return begin(true);
+    }
+
+    // ---- a call's microphone that never stops (1.5.22) ----
+    private final CallMic callMic = new CallMic();
+
+    @JavascriptInterface
+    public boolean callStart() {
+        if (activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            activity.runOnUiThread(() -> activity.requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, REQ_AUDIO));
+            return false;
+        }
+        return callMic.start();
+    }
+
+    @JavascriptInterface
+    public double callLevel() {
+        return callMic.level();
+    }
+
+    @JavascriptInterface
+    public String callTake() {
+        return callMic.take();
+    }
+
+    @JavascriptInterface
+    public void callDiscard() {
+        callMic.discard();
+    }
+
+    @JavascriptInterface
+    public void callStop() {
+        callMic.stop();
+    }
+
+    /** How loud since the last ask, 0..1 (MediaRecorder's peak). */
+    @JavascriptInterface
+    public double level() {
+        try {
+            return recorder == null ? 0 : recorder.getMaxAmplitude() / 32767.0;
+        } catch (Exception err) {
+            return 0;
+        }
+    }
+
+    private String begin(boolean forCall) {
         if (recorder != null) return ok();
         if (activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             activity.runOnUiThread(() ->
@@ -44,7 +99,7 @@ public class VoiceBridge {
         try {
             file = new File(activity.getCacheDir(), "voice-input.m4a");
             recorder = new MediaRecorder();
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            recorder.setAudioSource(forCall ? MediaRecorder.AudioSource.VOICE_COMMUNICATION : MediaRecorder.AudioSource.MIC);
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
             recorder.setAudioEncodingBitRate(96000);

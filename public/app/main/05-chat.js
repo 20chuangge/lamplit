@@ -801,18 +801,23 @@ function stopSpeaking() {
 }
 
 /** voiceOf: {botId} reads in that bot's voice, {voice} in that voice (试听). */
-async function speakText(text, button = null, voiceOf = {}) {
+/** The audio for one text (a call fetches the next sentence while one plays, 1.5.22). */
+async function speechBlob(text, voiceOf = {}) {
+  const res = await fetch('/api/voice/speak', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, ...(voiceOf.voice ? { voice: voiceOf.voice } : voiceOf.botId ? { botId: voiceOf.botId } : {}) }) });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  }
+  return res.blob();
+}
+
+async function speakText(text, button = null, voiceOf = {}, ready = null) {
   const asked = Date.now();
   speech.loading = true;
   updateSpeakBar();
   let blob;
   try {
-    const res = await fetch('/api/voice/speak', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, ...(voiceOf.voice ? { voice: voiceOf.voice } : voiceOf.botId ? { botId: voiceOf.botId } : {}) }) });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data?.error?.message || `HTTP ${res.status}`);
-    }
-    blob = await res.blob();
+    blob = await (ready || speechBlob(text, voiceOf));
   } finally {
     speech.loading = false;
     updateSpeakBar();
@@ -838,16 +843,8 @@ async function speakText(text, button = null, voiceOf = {}) {
   updateSpeakBar();
 }
 
-/** Auto-read: replies of a turn this window started play one after another. */
-async function queueSpeech(text, botId = '') {
-  speech.queue.push({ text, botId });
-  if (speech.playing) return;
-  while (speech.queue.length) {
-    const next = speech.queue.shift();
-    if (!next?.text) continue;
-    try { await speakText(next.text, null, { botId: next.botId }); } catch (err) { toast(`朗读失败：${err.message}`, true); speech.queue = []; }
-  }
-}
+
+
 
 /**
  * What the desktop app's right-click menu does with selected text (main.mjs

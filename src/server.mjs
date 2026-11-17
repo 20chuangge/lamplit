@@ -2439,6 +2439,7 @@ export function compactToolItem(item) {
   return { ...item, args, output };
 }
 
+export const VOICE_CALL_NOTE = '(The human is talking to you in a voice call inside Lamplit: this message was spoken and turned into text, and your answer is read aloud. "通话" here means this call, not a phone call. Answer in short spoken sentences: no lists, tables, headings, links or code; say file paths only when asked. If the text looks garbled, it was misheard: ask them to say it again.)';
 route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params, body, state }) => {
   const bot = await getBot(params.id);
   if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${params.id}"`);
@@ -2467,7 +2468,11 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
     return { turnId, botId: bot.id, aside: true };
   }
   state.runtime
-    .runTurn({ botId: bot.id, text: fromNote + text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}) })
+    .runTurn({
+      botId: bot.id, text: fromNote + text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}),
+      // Said in a voice call (1.5.22): the bot knows it is spoken to and answers for the ear.
+      ...(body?.voiceCall === true && !h ? { hiddenNote: VOICE_CALL_NOTE } : {}),
+    })
     .catch((err) => {
       state.bus.emit({ type: 'error', botId: bot.id, turnId, message: err.message });
     });

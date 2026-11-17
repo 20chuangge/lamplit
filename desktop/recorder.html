@@ -12,12 +12,24 @@
   let stream = null;
   let chunks = [];
 
+  let analyser = null;
+  let actx = null;
+  let buf = null;
+
   window.__start = async () => {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (err) {
       return { error: err.name || 'Error', message: err.message || '' };
     }
+    // How loud it is right now (1.5.22: a call notices when you start and stop talking).
+    try {
+      actx = new AudioContext();
+      analyser = actx.createAnalyser();
+      analyser.fftSize = 1024;
+      actx.createMediaStreamSource(stream).connect(analyser);
+      buf = new Float32Array(analyser.fftSize);
+    } catch { analyser = null; }
     const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find((t) => MediaRecorder.isTypeSupported(t)) || '';
     rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
     chunks = [];
@@ -30,7 +42,7 @@
     if (!rec) { resolve(null); return; }
     const r = rec;
     r.onstop = async () => {
-      if (stream) stream.getTracks().forEach((t) => t.stop());
+      if (stream) stream.getTracks().forEach((t) => t.stop()); if (actx) { actx.close().catch(() => {}); actx = null; analyser = null; }
       const type = (r.mimeType || 'audio/webm').split(';')[0];
       const bytes = new Uint8Array(await new Blob(chunks, { type }).arrayBuffer());
       let bin = '';
@@ -43,9 +55,17 @@
     r.stop();
   });
 
+  window.__level = () => {
+    if (!analyser) return 0;
+    analyser.getFloatTimeDomainData(buf);
+    let peak = 0;
+    for (const v of buf) peak = Math.max(peak, Math.abs(v));
+    return peak;
+  };
+
   window.__cancel = () => {
     try { if (rec) rec.stop(); } catch { /* already stopped */ }
-    if (stream) stream.getTracks().forEach((t) => t.stop());
+    if (stream) stream.getTracks().forEach((t) => t.stop()); if (actx) { actx.close().catch(() => {}); actx = null; analyser = null; }
     rec = null;
     stream = null;
     chunks = [];

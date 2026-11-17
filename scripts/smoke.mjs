@@ -4014,6 +4014,53 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.22: 通话模式 - talk back and forth, answers read sentence by sentence, speaking stops the reading.
+  {
+    const chat = (await readText('../public/app/main/05-chat.js')) + (await readText('../public/app/main/06-live.js'));
+    const live = await readText('../public/app/main/06-live.js');
+    const html = await readText('../public/index.html');
+    const rec = await readText('../desktop/recorder.html');
+    const pre = await readText('../desktop/shell-preload.cjs');
+    const vb = await readText('../mobile/android/app/src/main/java/com/desk/assistant/VoiceBridge.java');
+    const act = await readText('../mobile/android/app/src/main/java/com/desk/assistant/MainActivity.java');
+    check('C22 call: a 通话 button and bar (挂断); it listens, ends a sentence after 0.8 s of quiet, sends it, and reads every answer while the call is on',
+      html.includes('id="call-btn"') && html.includes('id="call-bar"') && html.includes('id="call-end"')
+      && chat.includes('const CALL_END_MS = 800;') && chat.includes("await send();") && live.includes('const readThis = call.on ||'));
+    check('C22 call: while it reads (and 0.7 s after) it does not listen - what was recorded then is dropped - and 「打断」 stops the reading; its own words heard back later are taken out; long answers are read sentence by sentence',
+      chat.includes('if (reading || Date.now() - call.readEnded < CALL_TAIL_MS) {') && chat.includes('try { await call.rec.restart(); } catch') && chat.includes('heardText = stripEcho(heardText);') && chat.includes('for (const part of speechParts(text)) speech.queue.push'));
+    const srvC = await readText('../src/server.mjs');
+    check('C22 call: what is said in a call reaches the bot with a note that it is a voice call (short spoken answers; 通话 means this call); the note is not shown in the chat',
+      live.includes('...(call.on ? { voiceCall: true } : {})') && srvC.includes("...(body?.voiceCall === true && !h ? { hiddenNote: VOICE_CALL_NOTE } : {})") && /not a phone call/.test(srvC));
+    check('C22 call: a pause mid-sentence is not the end: pieces are used in the order they were said, held while more is coming, and sent together',
+      chat.includes('const CALL_HOLD_MS = 400;') && chat.includes('call.pending = call.pending ? `${call.pending}${heardText}` : heardText;') && chat.includes('if (call.heard >= CALL_START_MS || call.waiting) return;')
+      && chat.includes('call.chain = call.chain.then(() => usePiece(job));') && chat.includes('if (call.waiting) return;'));
+    check('C22 call: an approval is said aloud but given only on the screen',
+      live.includes("if (call.on && voice.status?.tts?.available) queueSpeech('需要你在屏幕上确认一下。');") && !/approv[^\n]*call\.on[^\n]*decision/i.test(chat));
+    check('C22 call: the desktop app and the Android app say how loud the microphone is; Android records a call with echo cancellation',
+      rec.includes('window.__level = () =>') && pre.includes("voiceLevel: () => ipcRenderer.invoke('desk:voice-level')")
+      && vb.includes('MediaRecorder.AudioSource.VOICE_COMMUNICATION') && vb.includes('public double level()') && act.includes('d.voiceLevel=async function'));
+    // Echo: its own words heard back are taken out; the human's words stay.
+    {
+      const code = await readText('../public/app/main/06-live.js');
+      const fnSrc = code.slice(code.indexOf('const plainText ='), code.indexOf('/** Long answers are read sentence by sentence'));
+      // eslint-disable-next-line no-new-func
+      const strip = new Function('call', `${fnSrc}; return stripEcho;`)({ said: [] });
+      const said = [{ text: '1 加 1 等于 2。给你一个不太累的：周六上午去城郊的山水步道走两三小时。', at: Date.now() }];
+      const echo = strip('给你一个不太累的周六上午去城郊的山水步道走两三小时', said);
+      const mixed = strip('周六上午去城郊的山水步道走两三小时，不对，我想去海边', said);
+      const mine = strip('明天上海天气怎么样', said);
+      const native = await readText('../mobile/android/app/src/main/java/com/desk/assistant/CallMic.java');
+      check("C22 echo: what Lamplit just read, heard back, is dropped; a sentence that mixes it with the human's words keeps only theirs; the human's own sentence is kept",
+        echo === '' && /我想去海边/.test(mixed) && !/山水步道/.test(mixed) && mine === '明天上海天气怎么样', JSON.stringify({ echo, mixed, mine }));
+      check('C22 phone: the call records without stopping (16 kHz, the voice-call source with echo cancellation and noise suppression) and cuts each sentence out as WAV; a 说完了 button sends at once; the next sentence is fetched while one is read',
+        native.includes('MediaRecorder.AudioSource.VOICE_COMMUNICATION') && native.includes('AcousticEchoCanceler.create') && native.includes('NoiseSuppressor.create') && native.includes('String take()')
+        && code.includes('if (d?.callMic) {') && code.includes("speech.queue[0].ready = speechBlob(") && html.includes('id="call-done"'));
+    }
+    const C = { on: true };
+    const parts = (t) => { const out = []; for (const p of (String(t).match(/[^。！？!?；;\n]+[。！？!?；;]?/g) || [t]).map((x) => x.trim()).filter(Boolean)) { if (out.length && (out[out.length - 1].length + p.length) < 40) out[out.length - 1] += p; else out.push(p); } return out; };
+    const split = parts('好的。我去查一下航班，大概两分钟。查到三班：早上八点、中午十二点和晚上七点，最便宜的是晚上那班，六百八十元。要我订吗？');
+    check('C22 call: sentences are grouped into short parts for reading (the first one starts sooner)', C.on && split.length >= 2 && split.every((p) => p.length <= 80) && split.join('').length > 50);
+  }
   // 1.5.21: Chrome that does not open its port is tried once more (fresh port, longer wait).
   {
     const br = await readText('../src/browser.mjs');
@@ -8238,7 +8285,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const page = await readText('../public/index.html');
     check('other machines: a picture, video or page not here is looked for on the other machines', page.includes('function findElsewhere(path)') && (page.match(/findElsewhere\(file\.path\)/g) || []).length >= 3 && page.includes('openPageViewer(file.page, elsewhereTitles.get(file.path) || null, card.dataset.machine)'));
     check('read aloud: while anything is read, a bar above the message box stops it; Esc and switching chats stop it too; a stop ends the rest of that answer', page.includes('id="speak-bar"') && page.includes("$('speak-stop')?.addEventListener('click', stopSpeaking)") && page.includes("event.key === 'Escape' && (speech.playing || speech.loading)") && page.includes('if (id !== state.botId) stopSpeaking();') && page.includes('if (id !== state.groupId) stopSpeaking();') && page.includes('state.readAloudTurn = false;') && page.includes('if ((speech.stopped || 0) > asked) return;'));
-    check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text, botId || state.botId))') && page.includes("const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && !page.includes('id="tts-voice"') && page.includes('id="tts-auto"') && page.includes('每个机器人的声音在「管理助手」里选'));
+    check('read aloud: replies get a button; the answer to a spoken (or, by choice, any) question is read aloud', page.includes('bubble.appendChild(speakButton(text, botId || state.botId))') && page.includes("const readThis = call.on || mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);") && !page.includes('id="tts-voice"') && page.includes('id="tts-auto"') && page.includes('每个机器人的声音在「管理助手」里选'));
   }
   // Tailscale key on a real machine: the write must end its input (cat waits for it), and a failure is said.
   {
@@ -9247,7 +9294,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('mobile voice: a native recorder is exposed to the page and adapted onto window.desk',
       voice.includes('@JavascriptInterface') && voice.includes('MediaRecorder.AudioSource.MIC') &&
       activity.includes('addJavascriptInterface(new VoiceBridge(this), "NightshiftVoice")') &&
-      activity.includes('d.voiceStart=async function()') && activity.includes('addWebViewListener'));
+      activity.includes('d.voiceStart=async function(o)') && activity.includes('addWebViewListener'));
     check('mobile voice: the page prefers the shell recorder when the origin is not secure',
       page.includes('window.desk?.voiceStart') && page.includes('/api/voice/transcribe'));
   }

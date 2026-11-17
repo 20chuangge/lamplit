@@ -2741,6 +2741,12 @@
   .bubble.system .speak-btn { display: none; }
   .speak-bar { display: flex; align-items: center; gap: 10px; width: max-content; margin: 0 auto 8px; padding: 4px 6px 4px 12px; border: 1px solid var(--accent); border-radius: 999px; background: var(--panel, var(--bg)); color: var(--text); font-size: 13px; }
   .speak-bar[hidden] { display: none; }
+  /* 通话 (1.5.22) */
+  .call-bar { border-color: var(--ok, #2f9e5b); }
+  .call-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok, #2f9e5b); animation: call-pulse 1.4s ease-in-out infinite; }
+  @keyframes call-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .call-dot { animation: none; } }
+  .call-btn.on { color: var(--ok, #2f9e5b); }
   /* pages (page library) ---------------------------------------------- */
   .att-page { display: flex; align-items: center; gap: 10px; max-width: 320px; padding: 9px 12px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-soft, transparent); color: inherit; cursor: pointer; text-align: left; font: inherit; }
   .att-page:hover { border-color: var(--accent); }

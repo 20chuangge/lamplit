@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('desk', {
   setRemote: (on) => ipcRenderer.invoke('desk:set-remote', Boolean(on)),
   voiceStop: () => ipcRenderer.invoke('desk:voice-stop'),
   voiceCancel: () => ipcRenderer.invoke('desk:voice-cancel'),
+  voiceLevel: () => ipcRenderer.invoke('desk:voice-level'),
   // The system clipboard: a machine's page is plain http, where navigator.clipboard is absent.
   clipboardRead: () => ipcRenderer.invoke('desk:clipboard-read'),
   clipboardWrite: (text) => ipcRenderer.invoke('desk:clipboard-write', String(text ?? '')),

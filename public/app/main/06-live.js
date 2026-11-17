@@ -18,7 +18,7 @@ async function send() {
   $('send-btn').disabled = true;
   // Read the answer aloud: always, or when this question was spoken.
   const mode = readAloudMode();
-  const readThis = mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);
+  const readThis = call.on || mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);
   voice.spokeSinceSend = false;
   stopSpeaking(); // a new question: whatever was being read stops
   state.readAloudTurn = readThis;
@@ -39,7 +39,7 @@ async function send() {
     if (isGroupMode()) {
       await api(`/api/groups/${encodeURIComponent(state.groupId)}/message`, { method: 'POST', body: { text, attachments } });
     } else {
-      await api(`/api/bots/${state.botId}/message`, { method: 'POST', body: { text, attachments } });
+      await api(`/api/bots/${state.botId}/message`, { method: 'POST', body: { text, attachments, ...(call.on ? { voiceCall: true } : {}) } });
     }
   } catch (err) {
     if (err.status !== 401) toast(err.status === 404 ? '服务端还没有群组消息接口（404）' : err.message, true);
@@ -351,6 +351,8 @@ function handleEvent(ev) {
       appendApprovalCard(ev, sender);
       refreshPendingApprovals();
       toast('有一个操作在等你批准');
+      // In a call: said aloud, but given only on the screen (1.5.22).
+      if (call.on && voice.status?.tts?.available) queueSpeech('需要你在屏幕上确认一下。');
       break;
 
     case 'approval.resolved':
@@ -1029,4 +1031,270 @@ function openFileViewer(src, name, downloadUrl, view = 'frame', localPath = '') 
     }).catch(() => { doc.textContent = '没能读到这个文件。'; });
   }
   box.classList.add('show');
+}
+
+/* --- 通话模式 (1.5.22) ------------------------------------------------------
+   Talk instead of type, back and forth: it listens, notices when you have
+   finished (about 0.8 s of quiet), turns that into text and sends it, then
+   reads the answer aloud sentence by sentence. Speaking while it reads stops
+   the reading (it keeps working). Approvals are never given by voice: it says
+   one is waiting, and you tap it on the screen. */
+const call = { on: false, rec: null, timer: null, heard: 0, quiet: 0, floor: 0.02, segStart: 0, cutting: false, phase: 'listen', pending: '', waiting: 0, chain: Promise.resolve(), said: [], readEnded: 0 };
+const CALL_HOLD_MS = 400;
+const CALL_TAIL_MS = 700;    // after reading: the room's echo dies down before it listens again
+
+/** The button on the call bar: 「打断」 while it reads, 「说完了」 while it listens. */
+function callDoneLabel() {
+  const b = $('call-done');
+  if (b) b.textContent = call.deaf ? '打断' : '说完了';
+}    // after the text is back: a little more quiet before sending (a pause at a comma is not the end)
+const CALL_TICK_MS = 100;
+const CALL_START_MS = 250;   // this much sound before it counts as speech
+const CALL_END_MS = 800;     // this much quiet after speech ends a sentence
+const CALL_MAX_MS = 60000;   // one utterance at most
+const CALL_IDLE_MS = 30000;  // silence: start a fresh recording now and then
+
+/** The microphone for a call: the page's own where it may, else the app's (desktop, Android). */
+async function openCallMic() {
+  if (window.isSecureContext && navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined') {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((t) => MediaRecorder.isTypeSupported?.(t)) || '';
+    let rec = null;
+    let chunks = [];
+    const begin = () => { chunks = []; rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); }; rec.start(500); };
+    begin();
+    return {
+      level: async () => { analyser.getFloatTimeDomainData(buf); let peak = 0; for (const v of buf) peak = Math.max(peak, Math.abs(v)); return peak; },
+      take: () => new Promise((resolve) => {
+        const r = rec;
+        r.onstop = () => { const type = (r.mimeType || 'audio/webm').split(';')[0]; resolve({ blob: new Blob(chunks, { type }), type }); begin(); };
+        r.stop();
+      }),
+      restart: async () => { rec.onstop = () => begin(); rec.stop(); },
+      close: async () => { try { rec.onstop = null; rec.stop(); } catch { /* stopped */ } stream.getTracks().forEach((t) => t.stop()); ctx.close().catch(() => {}); },
+    };
+  }
+  const d = window.desk;
+  if (d?.callMic) {
+    // Android (1.5.22): one recording that never stops; each sentence is cut out as a WAV.
+    const ok = await d.callMic.start();
+    if (!ok) throw Object.assign(new Error('打不开麦克风'), { name: 'NotAllowedError' });
+    return {
+      level: async () => Number(d.callMic.level()) || 0,
+      take: async () => { const bytes = d.callMic.take(); return { blob: new Blob(bytes ? [bytes] : [], { type: 'audio/wav' }), type: 'audio/wav' }; },
+      restart: async () => { d.callMic.discard(); },
+      close: async () => { d.callMic.stop(); },
+    };
+  }
+  if (!d?.voiceStart) throw new Error('这个页面用不了麦克风（需要 https、本机地址，或者 Lamplit 应用）');
+  if (typeof d.voiceLevel !== 'function') throw new Error('通话要新版的 Lamplit 应用：先更新一下电脑或手机上的 Lamplit');
+  const started = await d.voiceStart({ call: true });
+  if (!started?.ok) throw Object.assign(new Error(started?.message || '打不开麦克风'), { name: started?.error });
+  return {
+    level: async () => Number(await d.voiceLevel()) || 0,
+    take: async () => {
+      const out = await d.voiceStop();
+      await d.voiceStart({ call: true });
+      if (!out?.bytes) return { blob: new Blob([]), type: 'audio/webm' };
+      const type = out.mime || 'audio/webm';
+      return { blob: new Blob([out.bytes], { type }), type };
+    },
+    restart: async () => { await d.voiceCancel(); await d.voiceStart({ call: true }); },
+    close: async () => { await d.voiceCancel().catch(() => null); },
+  };
+}
+
+function setCallPhase(phase) {
+  call.phase = phase;
+  const label = { listen: '在听', send: '听到了，正在转成文字', think: '在想', speak: '在说（要插话就点「打断」）' }[phase] || phase;
+  if ($('call-state')) $('call-state').textContent = label;
+}
+
+async function startCall() {
+  if (call.on) return;
+  let status = voice.status;
+  try { status = await loadVoice(); } catch { /* use what we have */ }
+  if (!status?.available) { toast('通话要先配置语音转文字（一个硅基流动的免费密钥就行）', true); openSettings('sec-model'); return; }
+  if (!status?.tts?.available) { toast('通话要能朗读：语音服务选硅基流动或 OpenAI 并填密钥', true); openSettings('sec-model'); return; }
+  if (voice.recorder) stopRecording(true);
+  try {
+    call.rec = await openCallMic();
+  } catch (err) {
+    toast(err.name === 'NotAllowedError' ? '麦克风被拒绝了：请在系统设置里允许 Lamplit 使用麦克风' : err.message, true);
+    return;
+  }
+  Object.assign(call, { on: true, heard: 0, quiet: 0, floor: 0.02, segStart: Date.now(), cutting: false, pending: '', waiting: 0, chain: Promise.resolve(), said: [], readEnded: 0 });
+  $('call-bar').hidden = false;
+  $('call-btn').classList.add('on');
+  setCallPhase('listen');
+  call.timer = setInterval(callTick, CALL_TICK_MS);
+}
+
+async function endCall() {
+  if (!call.on) return;
+  call.on = false;
+  call.pending = '';
+  clearInterval(call.timer);
+  stopSpeaking();
+  await call.rec?.close().catch(() => {});
+  call.rec = null;
+  $('call-bar').hidden = true;
+  $('call-btn').classList.remove('on');
+}
+
+function toggleCall() { if (call.on) endCall(); else startCall(); }
+
+async function callTick() {
+  if (!call.on || call.cutting || !call.rec) return;
+  let lv = 0;
+  try { lv = await call.rec.level(); } catch { return; }
+  // While it reads aloud, and a moment after, the microphone hears mostly itself
+  // (1.5.22: its words came back misheard - "手机原证tm0不猥琐" - and were sent
+  // as the human's). So it does not listen then; 「打断」 stops the reading.
+  const reading = speech.playing || speech.loading || speech.queue.length > 0;
+  if (reading || Date.now() - call.readEnded < CALL_TAIL_MS) {
+    call.heard = 0;
+    call.quiet = 0;
+    call.deaf = true;
+    callDoneLabel();
+    return;
+  }
+  if (call.deaf) {
+    call.deaf = false;
+    callDoneLabel();
+    call.cutting = true;
+    try { await call.rec.restart(); } catch { /* next tick */ }
+    call.segStart = Date.now();
+    call.cutting = false;
+    return;
+  }
+  const bar = Math.max(0.04, call.floor * 3);
+  if (lv > bar) { call.heard += CALL_TICK_MS; call.quiet = 0; }
+  else call.quiet += CALL_TICK_MS;
+  // The background: follows quiet quickly, rises slowly under a steady noise (a fan, a TV),
+  // so that noise stops counting as speech and a sentence can end.
+  call.floor = lv < call.floor ? call.floor * 0.8 + lv * 0.2 : call.floor * 0.995 + lv * 0.005;
+  if (call.heard && call.heard < CALL_START_MS && call.quiet >= CALL_END_MS) call.heard = 0; // a cough, a click
+  const long = call.heard && Date.now() - call.segStart > CALL_MAX_MS;
+  if ((call.heard >= CALL_START_MS && call.quiet >= CALL_END_MS) || long) { cutUtterance(); return; }
+  if (!call.heard && Date.now() - call.segStart > CALL_IDLE_MS) {
+    call.cutting = true;
+    try { await call.rec.restart(); } catch { /* next tick */ }
+    call.segStart = Date.now();
+    call.cutting = false;
+  }
+}
+
+async function cutUtterance() {
+  call.cutting = true;
+  call.heard = 0;
+  call.quiet = 0;
+  setCallPhase('send');
+  let taken;
+  try { taken = await call.rec.take(); } catch (err) { toast(err.message, true); }
+  call.segStart = Date.now();
+  call.cutting = false;
+  if (!call.on || !taken?.blob?.size) { if (!call.waiting) setCallPhase('listen'); return; }
+  // Pieces are turned into text at once, but used in the order they were said
+  // (1.5.22, seen: a short second piece came back first and was sent first).
+  const job = fetch('/api/voice/transcribe', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': taken.type }, body: taken.blob })
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+      return String(data.text || '').trim();
+    });
+  call.waiting += 1;
+  call.chain = call.chain.then(() => usePiece(job));
+}
+
+/** One piece of what was said, in order: held while more is coming, then sent as one message. */
+async function usePiece(job) {
+  let heardText = '';
+  try { heardText = await job; } catch (err) { toast(`没转成文字：${err.message}`, true); }
+  call.waiting -= 1;
+  if (!call.on) return;
+  // Its own voice heard back is not the human talking (1.5.22).
+  heardText = stripEcho(heardText);
+  // Something real said while it reads: that is an interruption - stop reading.
+  if (heardText && (speech.playing || speech.loading)) stopSpeaking();
+  if (heardText) call.pending = call.pending ? `${call.pending}${heardText}` : heardText;
+  if (!call.pending) { if (!call.waiting) setCallPhase('listen'); return; }
+  // A later piece is on its way: it carries this one (a pause at a comma is not the end).
+  if (call.waiting) return;
+  const held = Date.now();
+  while (call.on && Date.now() - held < CALL_HOLD_MS) {
+    if (call.heard >= CALL_START_MS || call.waiting) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!call.on || call.heard >= CALL_START_MS || call.waiting) return;
+  const text = call.pending;
+  call.pending = '';
+  try {
+    // Wait for a send in flight (a sentence right after another).
+    for (let i = 0; i < 50 && state.sending; i += 1) await new Promise((r) => setTimeout(r, 200));
+    const input = $('composer');
+    input.value = input.value.trim() ? `${input.value.trim()} ${text}` : text;
+    voice.spokeSinceSend = true;
+    setCallPhase('think');
+    await send();
+  } catch (err) {
+    toast(err.message, true);
+    setCallPhase('listen');
+  }
+}
+
+/** Auto-read: replies of a turn this window started play one after another; the next part's audio is fetched while one plays. */
+async function queueSpeech(text, botId = '') {
+  for (const part of speechParts(text)) speech.queue.push({ text: part, botId });
+  if (speech.playing || speech.draining) return;
+  speech.draining = true;
+  while (speech.queue.length) {
+    const next = speech.queue.shift();
+    if (!next?.text) continue;
+    if (call.on) { setCallPhase('speak'); call.said.push({ text: next.text, at: Date.now() }); }
+    const ready = next.ready || speechBlob(next.text, { botId: next.botId });
+    ready.catch(() => {});
+    if (speech.queue[0]?.text && !speech.queue[0].ready) { speech.queue[0].ready = speechBlob(speech.queue[0].text, { botId: speech.queue[0].botId }); speech.queue[0].ready.catch(() => {}); }
+    try { await speakText(next.text, null, { botId: next.botId }, ready); } catch (err) { toast(`朗读失败：${err.message}`, true); speech.queue = []; }
+  }
+  speech.draining = false;
+  if (call.on) { call.readEnded = Date.now(); if (call.phase === 'speak') setCallPhase('listen'); }
+}
+
+const plainText = (t) => String(t || '').toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+
+/**
+ * Take out of what was heard what Lamplit itself just read aloud (1.5.22: its
+ * own voice came back through the microphone and was sent as the human's
+ * words). Pieces of 4+ characters that appear in what it read in the last
+ * 90 s are dropped; what is left is the human's. '' when it was all echo.
+ */
+function stripEcho(heard, said = call.said) {
+  const recent = said.filter((s) => Date.now() - s.at < 90000).map((s) => plainText(s.text)).join('|');
+  const t = plainText(heard);
+  if (!recent || !t) return String(heard || '').trim();
+  let kept = '';
+  for (let i = 0; i < t.length;) {
+    let k = 0;
+    while (i + k < t.length && recent.includes(t.slice(i, i + k + 1))) k += 1;
+    if (k >= 4) i += k; else { kept += t[i]; i += 1; }
+  }
+  if (kept.length <= 2 || kept.length < t.length * 0.25) return '';
+  return kept.length === t.length ? String(heard).trim() : kept;
+}
+
+/** Long answers are read sentence by sentence, so the first one starts sooner (calls only). */
+function speechParts(text) {
+  if (!call.on) return [text];
+  const parts = String(text || '').match(/[^。！？!?；;\n]+[。！？!?；;]?/g) || [String(text || '')];
+  const out = [];
+  for (const p of parts.map((x) => x.trim()).filter(Boolean)) {
+    if (out.length && (out[out.length - 1].length + p.length) < 40) out[out.length - 1] += p; else out.push(p);
+  }
+  return out.slice(0, 12);
 }

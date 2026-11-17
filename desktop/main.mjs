@@ -1298,6 +1298,11 @@ handle('desk:voice-start', async () => {
     return { error: 'Error', message: err.message };
   }
 });
+// How loud the microphone is right now (1.5.22, calls).
+handle('desk:voice-level', async () => {
+  if (!recorderWin || recorderWin.isDestroyed()) return 0;
+  return recorderWin.webContents.executeJavaScript('window.__level ? window.__level() : 0').catch(() => 0);
+});
 handle('desk:voice-stop', async () => {
   if (!recorderWin || recorderWin.isDestroyed()) return null;
   const out = await recorderWin.webContents.executeJavaScript('window.__stop()').catch(() => null);

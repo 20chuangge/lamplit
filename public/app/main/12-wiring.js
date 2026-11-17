@@ -340,6 +340,15 @@ function wireChrome() {
   $('composer').addEventListener('click', updateMention);
   $('composer').addEventListener('blur', () => setTimeout(closeMention, 150));
   $('mic-btn').addEventListener('click', toggleVoice);
+  $('call-btn').addEventListener('click', toggleCall);
+  $('call-end').addEventListener('click', endCall);
+  // Too noisy to hear the end: send what was said now.
+  // While it reads: 「打断」 stops the reading and it listens at once. Otherwise: send what was said now.
+  $('call-done').addEventListener('click', () => {
+    if (!call.on || call.cutting) return;
+    if (call.deaf) { stopSpeaking(); call.readEnded = 0; setCallPhase('listen'); return; }
+    if (call.heard) cutUtterance();
+  });
   // Every key and password box: hidden by default, a button shows what was typed.
   addRevealButtons(document);
   new MutationObserver((records) => {

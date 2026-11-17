@@ -386,3 +386,53 @@ function cssEscape(value) {
   return String(value).replace(/["\\]/g, '\\$&');
 }
 
+/**
+ * Long words fold (1.5.28): a reply longer than a few lines shows its start and
+ * a 「展开」; a message one bot sent another shows two lines. Nothing is cut -
+ * the whole text is there behind the button.
+ * mode: 'long' (a reply), 'line' (between bots), false (never).
+ */
+const FOLD_LONG_AT = 260;
+const FOLD_LINE_AT = 70;
+function foldBubble(bubble, text, mode = 'long') {
+  if (!mode || !bubble) return;
+  const size = String(text || '').replace(/[*#>`_\-|]/g, '').replace(/\s+/g, ' ').trim().length;
+  if (size <= (mode === 'line' ? FOLD_LINE_AT : FOLD_LONG_AT)) return;
+  const body = el('div', 'bubble-body');
+  while (bubble.firstChild) body.appendChild(bubble.firstChild);
+  bubble.appendChild(body);
+  bubble.classList.add('folded', mode === 'line' ? 'fold-line' : 'fold-long');
+  const btn = el('button', 'fold-btn', '展开');
+  btn.type = 'button';
+  btn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const open = bubble.classList.toggle('unfolded');
+    btn.textContent = open ? '收起' : '展开';
+  });
+  bubble.appendChild(btn);
+}
+
+/**
+ * The last messages of each chat, kept in this browser (1.5.28): switching to
+ * a chat shows them at once, then the machine's answer replaces them. Per
+ * address, so each machine has its own; at most 12 chats, 80 messages each.
+ */
+const CHAT_CACHE = 'lamplit.chats.v1';
+function chatCacheAll() {
+  try { return JSON.parse(localStorage.getItem(CHAT_CACHE) || '{}') || {}; } catch { return {}; }
+}
+function chatCacheGet(key) {
+  const hit = chatCacheAll()[key];
+  return Array.isArray(hit?.items) ? hit.items : null;
+}
+/** Keep `items` for `key`; false when they are the same as what was kept (nothing to redraw). */
+function chatCachePut(key, items) {
+  const list = Array.isArray(items) ? items.slice(-80) : [];
+  const all = chatCacheAll();
+  if (all[key] && JSON.stringify(all[key].items) === JSON.stringify(list) && list.length === (items || []).length) return false;
+  all[key] = { at: Date.now(), items: list };
+  const keys = Object.keys(all).sort((a, b) => (all[b].at || 0) - (all[a].at || 0));
+  for (const k of keys.slice(12)) delete all[k];
+  try { localStorage.setItem(CHAT_CACHE, JSON.stringify(all)); } catch { /* full or private: no cache */ }
+  return true;
+}

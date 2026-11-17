@@ -61,7 +61,7 @@ import {
 import { computerSnapshot, captureScreen } from './computer.mjs';
 import { createRegistry } from './tools.mjs';
 import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern, invalidDenyPatterns } from './approvals.mjs';
-import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay } from './usage.mjs';
+import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay, forgetSpent } from './usage.mjs';
 import { normalizeRule } from './rules.mjs';
 import { RoutineStore } from './routines.mjs';
 import { AgentRuntime, recoverInterruptedTurns } from './agent.mjs';
@@ -352,6 +352,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
             text: routine.instruction,
             hiddenNote: changeNote(strict),
             source: 'routine',
+            routineId: routine.id,
             unattended: !attended,
             turnId,
           });
@@ -1276,7 +1277,7 @@ async function fromEveryPeer(state, apiPath) {
 route('GET', /^\/api\/peers\/usage$/, async (_req, _res, { state, query }) => {
   const days = Math.min(Math.max(Number(query.get('days')) || 7, 1), 365);
   const { machines, missing } = await fromEveryPeer(state, `/api/usage?days=${days}`);
-  return { machines: machines.map((m) => ({ machine: m.machine, currency: m.currency, totals: m.totals, byBot: m.byBot, byModel: m.byModel, byDay: m.byDay })), missing };
+  return { machines: machines.map((m) => ({ machine: m.machine, currency: m.currency, totals: m.totals, byBot: m.byBot, byModel: m.byModel, byDay: m.byDay, byRoutine: m.byRoutine || [] })), missing };
 });
 // The names of the other machines' groups, bots and scheduled tasks (1.5.19):
 // a reply here may name one by its id ("交给了 g-ab12cd"), and the page shows
@@ -1295,10 +1296,21 @@ const asList = (x, key) => (Array.isArray(x) ? x : Array.isArray(x?.[key]) ? x[k
 route('GET', /^\/api\/peers\/names$/, async (_req, _res, { state }) => {
   const now = Date.now();
   if (state.peerNames && now - state.peerNames.at < 5 * 60 * 1000) return state.peerNames.value;
+  // Older names are better than a wait (1.5.28: a machine that is off made this take 16 s):
+  // answer with them at once and fetch new ones behind.
+  if (state.peerNames) {
+    if (!state.peerNamesLoading) state.peerNamesLoading = fetchPeerNames(state).finally(() => { state.peerNamesLoading = null; });
+    return state.peerNames.value;
+  }
+  return fetchPeerNames(state);
+});
+async function fetchPeerNames(state) {
+  const now = Date.now();
   const missing = [];
   const lists = await Promise.all(state.peers.list().map(async ({ name }) => {
     const peer = state.peers.find(name);
-    const get = (p) => state.peers.json(peer, 'GET', p, { timeoutMs: 8000 });
+    // Names only: a machine that does not answer in 2.5 s is reported missing.
+    const get = (p) => state.peers.json(peer, 'GET', p, { timeoutMs: 2500 });
     try {
       const [groups, bots, routines] = await Promise.all([get('/api/groups'), get('/api/bots'), get('/api/routines').catch(() => [])]);
       return { groups: asList(groups, 'groups'), bots: asList(bots, 'bots'), routines: asList(routines, 'routines') };
@@ -1307,6 +1319,34 @@ route('GET', /^\/api\/peers\/names$/, async (_req, _res, { state }) => {
   const value = { ...namesFrom(lists), missing };
   state.peerNames = { at: now, value };
   return value;
+}
+
+// How fast this machine reaches each of the others (1.5.28, 网络诊断): three
+// small requests each, the middle time. A proxy that sends Tailscale abroad
+// shows up here as hundreds of milliseconds between machines in one city.
+//   GET /api/peers/latency -> {machines:[{machine, ms, via:'lan'|'tailscale', error?}]}
+export function middle(times) {
+  const s = times.filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
+  return s.length ? s[Math.floor((s.length - 1) / 2)] : null;
+}
+route('GET', /^\/api\/peers\/latency$/, async (_req, _res, { state }) => {
+  const machines = await Promise.all(state.peers.list().map(async ({ name }) => {
+    const peer = state.peers.find(name);
+    const times = [];
+    let via = '';
+    let error = '';
+    for (let i = 0; i < 3; i += 1) {
+      const started = Date.now();
+      try {
+        const res = await state.peers.call(peer, 'GET', '/api/health', { timeoutMs: 3000 });
+        await res.text().catch(() => '');
+        times.push(Date.now() - started);
+        via = res.url && peer.tailnetUrl && res.url.startsWith(String(peer.tailnetUrl).replace(/\/+$/, '')) ? 'tailscale' : 'lan';
+      } catch (err) { error = err.message; break; }
+    }
+    return { machine: name, ms: middle(times), via, ...(times.length ? {} : { error }) };
+  }));
+  return { machines };
 });
 
 route('GET', /^\/api\/peers\/pages$/, async (_req, _res, { state }) => {
@@ -3233,7 +3273,8 @@ route('POST', /^\/api\/runner\/setup$/, async (req, _res, { state }) => {
 // --- usage / cost -----------------------------------------------------------
 //
 //   GET /api/usage?days=30  -> today + window totals, by bot / day / model
-//   PUT /api/usage {currency?, prices?, dailyAlert?} -> saved settings
+//   PUT /api/usage {currency?, prices?, dailyAlert?, botDailyBudget?} -> saved settings
+//   (prices: {model: {in, out, cached?}}; the budget is the human's: local key, 1.5.28)
 //
 // Prices are per million tokens and optional: an unpriced model counts tokens
 // but no money. The daily threshold is audited once per day (src/usage.mjs).
@@ -3249,7 +3290,8 @@ route('GET', /^\/api\/usage$/, async (_req, _res, { query }) => {
 
 route('PUT', /^\/api\/usage$/, async (_req, _res, { body, state }) => {
   const settings = await saveUsageSettings(body || {});
-  await audit({ kind: 'usage.settings', currency: settings.currency, models: Object.keys(settings.prices), dailyAlert: settings.dailyAlert });
+  forgetSpent();
+  await audit({ kind: 'usage.settings', currency: settings.currency, models: Object.keys(settings.prices), dailyAlert: settings.dailyAlert, botDailyBudget: settings.botDailyBudget });
   state.bus.emit({ type: 'settings.changed', section: 'usage' });
   return { settings };
 });

@@ -12,6 +12,14 @@
  * because a non-streamed Claude turn on a big tool schema just feels dead.
  */
 
+/** Claude's input_tokens leave out cache reads and writes; the ledger counts all input, cached part apart (1.5.28). */
+function claudeUsage(usage = {}) {
+  const read = Number(usage.cache_read_input_tokens) || 0;
+  const prompt = (Number(usage.input_tokens) || 0) + read + (Number(usage.cache_creation_input_tokens) || 0);
+  const completion = Number(usage.output_tokens) || 0;
+  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion, prompt_tokens_details: { cached_tokens: read } };
+}
+
 function env(name, fallback = '') {
   const v = process.env[name];
   return v === undefined || v === '' ? fallback : v;
@@ -111,11 +119,7 @@ function toOurResult(payload) {
     content: text,
     toolCalls,
     finishReason: payload.stop_reason === 'tool_use' ? 'tool_calls' : (payload.stop_reason || 'stop'),
-    usage: {
-      prompt_tokens: usage.input_tokens || 0,
-      completion_tokens: usage.output_tokens || 0,
-      total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
-    },
+    usage: claudeUsage(usage),
   };
 }
 
@@ -166,6 +170,8 @@ async function streamMessages(cfg, body, { signal, timeoutMs, onDelta }) {
 
     if (type === 'message_start') {
       usage.input_tokens = payload.message?.usage?.input_tokens || 0;
+      usage.cache_read_input_tokens = payload.message?.usage?.cache_read_input_tokens || 0;
+      usage.cache_creation_input_tokens = payload.message?.usage?.cache_creation_input_tokens || 0;
     } else if (type === 'content_block_start') {
       const block = payload.content_block || {};
       blocks.set(payload.index, {
@@ -219,11 +225,7 @@ async function streamMessages(cfg, body, { signal, timeoutMs, onDelta }) {
     content: text,
     toolCalls,
     finishReason: stopReason === 'tool_use' ? 'tool_calls' : stopReason,
-    usage: {
-      prompt_tokens: usage.input_tokens,
-      completion_tokens: usage.output_tokens,
-      total_tokens: usage.input_tokens + usage.output_tokens,
-    },
+    usage: claudeUsage(usage),
   };
 }
 

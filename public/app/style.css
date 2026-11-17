@@ -503,6 +503,21 @@
     mask-image: linear-gradient(180deg, #000 55%, transparent 100%);
   }
   .block-expand { margin-top: 6px; }
+  /* Long replies and bot-to-bot messages fold (1.5.28). */
+  .bubble.folded .bubble-body { overflow: hidden; -webkit-mask-image: linear-gradient(#000 55%, transparent); mask-image: linear-gradient(#000 55%, transparent); }
+  .bubble.fold-long .bubble-body { max-height: 9.2em; }
+  .bubble.fold-line .bubble-body { max-height: 3.3em; }
+  .bubble.folded.unfolded .bubble-body { max-height: none; -webkit-mask-image: none; mask-image: none; }
+  .bubble.md .bubble-body > *:first-child { margin-top: 0; }
+  .bubble.md .bubble-body > *:last-child { margin-bottom: 0; }
+  .fold-btn { display: block; margin-top: 4px; padding: 2px 0; border: 0; background: none; color: var(--accent, #6b8afd); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .fold-btn:hover { text-decoration: underline; }
+  /* 网络诊断 (1.5.28) */
+  .net-check { margin-top: 10px; display: grid; gap: 6px; }
+  .net-line { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 13px; }
+  .net-line b { font-weight: 600; }
+  .net-line.bad b { color: var(--danger, #e5484d); }
+  .net-check code { font-family: var(--mono); font-size: 12px; }
   .chip .fail-mark { color: var(--red); }
   .chip .ok-mark { color: var(--green); }
 

@@ -78,6 +78,7 @@
       <li>Each assistant can use its own model: a cheap one for simple work, a strong one for hard work.</li>
     </ol>
     <div class="tip"><p>DeepSeek is a good first choice: cheap, good at Chinese and English, good with tools. Add a SiliconFlow key and voice input, image understanding, drawing and video all work too.</p></div>
+    <p><strong>What it costs, and a limit</strong>: Settings → Cost lists use per assistant, model, machine and scheduled task. Prices are per million tokens; fill in the "cached price" (the low price providers such as DeepSeek charge for repeated input) and the estimate comes close to the bill. "Daily budget per assistant": when an assistant has spent that much today it stops and asks - a card when you are there; a scheduled run with nobody there just stops.</p>
 
     <h2 id="chat">Working with the assistants</h2>
     <p>Say what you need as you would to a person: "file the screenshots on my desktop by month", "how much disk is left on this machine", "give this poster a new title and make three versions". It decides which tools to use: commands, files, the browser, desktop apps, image generation…</p>
@@ -259,6 +260,8 @@
     <p>Since 1.5.26 each assistant's browser opens on its own screen: take over from the chat of the assistant that asked. After the update, sign in once on that assistant's screen for each site.</p>
     <h3>I cannot approve in a browser at 127.0.0.1</h3>
     <p>Since 1.5.27 approving and changing permissions work only in the Lamplit app or on a paired device. Use the desktop app or the phone app.</p>
+    <h3>Switching machines or assistants is slow, the phone reaches the computer slowly</h3>
+    <p>Open <strong>Settings → Machines → Network check</strong>. Hundreds of milliseconds between machines in one country usually means a proxy on the computer (Clash, V2Ray and the like) sends Tailscale's traffic abroad and back. Put <code>PROCESS-NAME,tailscaled.exe,DIRECT</code> first in the proxy rules, exclude the local networks in its TUN settings (<code>route-exclude-address</code>: 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12), then close all connections in the proxy. Do not exclude 100.64.0.0/10: that is Tailscale's own range.</p>
     <h3>Still stuck</h3>
     <p>Open an issue on <a href="https://github.com/20chuangge/lamplit/issues">GitHub</a> with a screenshot of the error.</p>
   </article>

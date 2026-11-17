@@ -4900,9 +4900,21 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
       const msgs = [{ role: 'system', content: 's' }];
       for (let i = 0; i < 9; i += 1) msgs.push({ role: 'assistant', content: '', tool_calls: [] }, { role: 'tool', tool_call_id: `c${i}`, content: `out${i} ` + 'x'.repeat(3000) });
       A.trimOldToolOutputs(msgs);
+      const early = msgs.filter((m) => m.role === 'tool').every((m) => m.content.length > 3000);
+      for (let i = 9; i < 12; i += 1) msgs.push({ role: 'assistant', content: '', tool_calls: [] }, { role: 'tool', tool_call_id: `c${i}`, content: `out${i} ` + 'x'.repeat(3000) });
+      A.trimOldToolOutputs(msgs);
       const tools = msgs.filter((m) => m.role === 'tool');
-      check('M16 tokens: in a long turn only the last 6 tool outputs stay whole; older ones shrink to a head with a note (the calls stay)',
-        tools.length === 9 && tools.slice(0, 3).every((m) => m.content.length < 800 && /earlier output trimmed/.test(m.content) && m.content.startsWith('out')) && tools.slice(3).every((m) => m.content.length > 3000) && msgs.length === 19);
+      check('M16 tokens: in a long turn only the last 6 tool outputs stay whole; older ones shrink to a head with a note (the calls stay), trimmed 5 at a time so the cached start of the prompt does not change every step (1.5.28)',
+        early && tools.length === 12 && tools.slice(0, 6).every((m) => m.content.length < 800 && /earlier output trimmed/.test(m.content) && m.content.startsWith('out')) && tools.slice(6).every((m) => m.content.length > 3000) && msgs.length === 25);
+      const sc = [{ role: 'system', content: 's' }];
+      for (let i = 0; i < 7; i += 1) {
+        const look = i < 5;
+        sc.push({ role: 'assistant', content: '', tool_calls: [{ id: `p${i}`, type: 'function', function: { name: look ? 'phone' : 'fs_read', arguments: JSON.stringify(look ? { action: 'look' } : { path: 'a' }) } }] }, { role: 'tool', tool_call_id: `p${i}`, content: 'screen ' + 'y'.repeat(3000) });
+      }
+      A.trimOldToolOutputs(sc, { batch: 1 });
+      const st = sc.filter((m) => m.role === 'tool');
+      check('M16 tokens (1.5.28): an old screen read is stale once the screen was read again - only the last 2 looks stay whole, other recent outputs too',
+        st.slice(0, 3).every((m) => /earlier output trimmed/.test(m.content)) && st.slice(3).every((m) => m.content.length > 3000));
       const agentSrcT = await readText('../src/agent.mjs');
       check('M16 hand-offs: as many as there are other members; handing a task back to someone who passed it on stops it (no ping-pong)',
         agentSrcT.includes('const handoffLimit = Math.max(3, (group.members || []).length - 1);') && agentSrcT.includes('(task.handedBy || []).includes(res.board.handoff.to)') && agentSrcT.includes('trimOldToolOutputs(messages);'));
@@ -8431,7 +8443,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('video progress: the chat asks how its videos are going, with a typical time from recent ones', jobs.status === 200 && Array.isArray(jobs.json?.jobs) && 'typicalSec' in (jobs.json || {}) && page.includes('async function renderVideoJobs()') && page.includes("'通常 3–15 分钟'"), `status ${jobs.status} ${JSON.stringify(jobs.json).slice(0,160)}`);
     const srv = await readText('../src/server.mjs');
     check('other machines: a page found there keeps its own title', srv.includes("find((x) => x.name === page)?.title") && page.includes('elsewhereTitles.get(file.path)'));
-    check('switching chats: a slow machine\'s late answer for a chat already left is not shown in the new one', page.includes('if (state.botId !== botId || isGroupMode()) return;\n  state.messages = messages;'));
+    check('switching chats: a slow machine\'s late answer for a chat already left is not shown in the new one', page.includes('if (state.botId !== botId || isGroupMode()) return;\n  if (!chatCachePut(cacheKey, messages) && cached && cached.length === messages.length) return;\n  state.messages = messages;'));
     const fsSrc = await readText('../src/feishu.mjs');
     check('feishu: the bot is told the channel carries pictures, videos and voice (it said "only text")', fsSrc.includes('飞书这条通道能收文字、图片和语音') && fsSrc.includes('所以别说飞书只能发文字'));
   }
@@ -8996,6 +9008,61 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       pageSrc.includes('id="usage-bots"') && pageSrc.includes('id="usage-models"') &&
       pageSrc.includes('id="usage-prices"') && pageSrc.includes('id="usage-alert"'));
     await api('/api/usage', { method: 'PUT', body: { prices: {}, dailyAlert: 0 } });
+
+    // 1.5.28: cached input has its own price, routines have their own line, and each assistant a daily budget.
+    {
+      const cachedUsage = { prompt_tokens: 10000, completion_tokens: 100, total_tokens: 10100, prompt_cache_hit_tokens: 9000 };
+      const priceC = { in: 2, out: 8, cached: 0.2 };
+      const rec = { prompt: 10000, completion: 100, total: 10100, cached: 9000 };
+      check('U28 cost: the provider\'s cached input is read (DeepSeek and OpenAI shapes) and billed at the cached price; without one, at the input price',
+        usageMod.cachedTokensOf(cachedUsage) === 9000 && usageMod.cachedTokensOf({ prompt_tokens_details: { cached_tokens: 5 } }) === 5
+        && Math.abs(usageMod.recordCost(rec, priceC) - (1000 * 2 + 9000 * 0.2 + 100 * 8) / 1e6) < 1e-12
+        && Math.abs(usageMod.recordCost(rec, { in: 2, out: 8 }) - (10000 * 2 + 100 * 8) / 1e6) < 1e-12);
+      const sum = usageMod.summarizeUsage([
+        { day: 'd', botId: 'a', model: 'm', prompt: 1000, completion: 0, total: 1000, cached: 800, routineId: 'rt_1' },
+        { day: 'd', botId: 'a', model: 'm', prompt: 1000, completion: 0, total: 1000, cached: 0 },
+      ], { prices: { m: { in: 1, out: 1, cached: 0.1 } } });
+      check('U28 cost: totals carry the cached share, and each scheduled task its own cost',
+        sum.totals.cached === 800 && sum.totals.hitRate === 0.4 && sum.byRoutine.length === 1 && sum.byRoutine[0].key === 'rt_1' && Math.abs(sum.byRoutine[0].cost - 0.0003) < 1e-9);
+      const noKeyBudget = await rawFetch(`${base}/api/usage`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ botDailyBudget: 1000 }) });
+      check('U28 budget: only the human\'s app may change it (a bot\'s command on this computer is refused)', noKeyBudget.status === 403);
+      const setB = await api('/api/usage', { method: 'PUT', body: { prices: { 'scripted-planner': { in: 1000, out: 2000, cached: 100 } }, botDailyBudget: 0.0001 } });
+      check('U28 budget: the daily budget and a cached price save', setB.json?.settings?.botDailyBudget === 0.0001 && setB.json?.settings?.prices?.['scripted-planner']?.cached === 100);
+      const stream = await openStream('chief');
+      try {
+        const post = await api('/api/bots/chief/message', { method: 'POST', body: { text: '预算验证' } });
+        const ask = await stream.waitFor((e) => e.type === 'approval.request' && e.tool === 'budget_extend' && e.turnId === post.json.turnId, 10000, 'budget approval');
+        await api(`/api/approvals/${ask.approvalId}`, { method: 'POST', body: { decision: 'deny' } });
+        const end = await stream.waitFor((e) => e.type === 'turn.end' && e.turnId === post.json.turnId, 10000, 'turn.end after budget');
+        const said = stream.events.filter((e) => e.turnId === post.json.turnId && e.type === 'message' && e.system).map((e) => e.text).join(' ');
+        check('U28 budget: over its daily budget an assistant asks on a card before the next call; no = it stops and says why',
+          end.status === 'budget' && /每日预算/.test(ask.reason || '') && /没有放行/.test(said));
+        const post2 = await api('/api/bots/chief/message', { method: 'POST', body: { text: '预算验证二' } });
+        const ask2 = await stream.waitFor((e) => e.type === 'approval.request' && e.tool === 'budget_extend' && e.turnId === post2.json.turnId, 10000, 'budget approval 2');
+        await api(`/api/approvals/${ask2.approvalId}`, { method: 'POST', body: { decision: 'approve' } });
+        const end2 = await stream.waitFor((e) => e.type === 'turn.end' && e.turnId === post2.json.turnId, 15000, 'turn.end after allow');
+        check('U28 budget: yes = one more budget for today and the work goes on', end2.status !== 'budget' && usageMod.budgetAllowance('chief') > 0);
+      } finally { stream.close(); }
+      await api('/api/usage', { method: 'PUT', body: { prices: {}, botDailyBudget: 0 } });
+      const G = await import('../src/groups.mjs');
+      check('U28 cache: the replayed history moves in steps of half its size, so the prompt start stays put for several turns',
+        G.historyStart(10, 16) === 0 && G.historyStart(17, 16) === 0 && G.historyStart(23, 16) === 0 && G.historyStart(24, 16) === 8 && G.historyStart(31, 16) === 8);
+      const chatSrc = await readText('../public/app/main/05-chat.js');
+      const coreSrc = await readText('../public/app/main/01-core.js');
+      const groupSrc = await readText('../public/app/main/03-groups.js');
+      check('U28 replies: long replies fold behind 展开, bot-to-bot messages show two lines',
+        coreSrc.includes('function foldBubble(') && chatSrc.includes('foldBubble(bubble, text, fold);') && groupSrc.includes("fillBubble(bubble, item.text || '', false, sender?.id, 'line');")
+        && chatSrc.includes("fillBubble(bubble, item.text || '', false, sender.id, 'line');"));
+      check('U28 switching: a chat shows what this browser had at once, then the machine\'s answer',
+        coreSrc.includes('function chatCachePut(') && chatSrc.includes('const cached = chatCacheGet(cacheKey);') && groupSrc.includes('const cached = chatCacheGet(cacheKey);'));
+      const lat = await api('/api/peers/latency');
+      const machinesSrc = await readText('../public/app/main/11-machines.js');
+      check('U28 network check: the hub times each other machine, the page times itself and says what a slow path usually is',
+        lat.status === 200 && Array.isArray(lat.json?.machines) && machinesSrc.includes('async function runNetCheck()') && machinesSrc.includes('PROCESS-NAME,tailscaled.exe,DIRECT') && pageSrc.includes('id="net-check"'));
+      const peersSrc = await readText('../src/peers.mjs');
+      check('U28 machines: the address that answered last is tried first (an unreachable LAN address no longer waits out its timeout every call)',
+        peersSrc.includes('const lastGood = new Map();') && peersSrc.includes('lastGood.set(peer.name, candidate)'));
+    }
   }
   // Per-bot abilities: switching one off is remembered through edits and migrations.
   {

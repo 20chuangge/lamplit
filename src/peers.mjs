@@ -42,11 +42,18 @@ export function createPeers({ file, fetchImpl = fetch } = {}) {
       || null;
   }
 
-  /** One request to a peer: its LAN address first, then its Tailscale address.
+  // The address that answered last, per machine (1.5.28): tried first next
+  // time. A LAN address that cannot be reached from here (another network) made
+  // every call wait for its timeout before trying the Tailscale one.
+  const lastGood = new Map();
+
+  /** One request to a peer: the address that worked last, else its LAN address, then its Tailscale address.
    *  `base` forces a single address (the machine list probes both in parallel). */
   async function call(peer, method, path, { body, raw, headers = {}, timeoutMs = 20000, signal, base } = {}) {
     let lastErr = null;
-    const bases = base ? [base] : [peer.url, peer.tailnetUrl].filter(Boolean);
+    const known = [peer.url, peer.tailnetUrl].filter(Boolean);
+    const good = lastGood.get(peer.name);
+    const bases = base ? [base] : (good && known.includes(good) ? [good, ...known.filter((b) => b !== good)] : known);
     for (const candidate of bases) {
       try {
         const res = await fetchImpl(`${clean(candidate)}${path}`, {
@@ -56,6 +63,7 @@ export function createPeers({ file, fetchImpl = fetch } = {}) {
           signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         });
         if (res.status === 401 || res.status === 403) throw Object.assign(new Error(`「${peer.name}」不认这台机器的凭据（需要在 Lamplit 客户端里重新配对那台机器）`), { code: 'PEER_UNAUTHORIZED' });
+        if (known.includes(candidate)) lastGood.set(peer.name, candidate);
         return res;
       } catch (err) {
         if (err.code === 'PEER_UNAUTHORIZED' || signal?.aborted) throw err;

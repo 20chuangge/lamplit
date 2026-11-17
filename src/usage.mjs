@@ -2,7 +2,8 @@
  * Token usage ledger and cost estimates.
  *
  * One JSONL line per model call, aggregated on read. Prices are per million
- * tokens and live in data/usage-settings.json; an unpriced model still counts
+ * tokens and live in data/usage-settings.json (1.5.28: input that hit the
+ * provider's prompt cache has its own, much lower price - `cached`); an unpriced model still counts
  * tokens but contributes no money, so the UI can say what is missing instead
  * of inventing a number. A daily money threshold writes one audit entry per
  * day (data/usage-alert.json remembers the day, so it cannot spam).
@@ -13,6 +14,7 @@ import { P, nowIso, readJsonl, readJsonSync, appendJsonl, writeJsonSyncAtomic } 
 const ledgerFile = () => path.join(P.dataDir, 'usage.jsonl');
 const settingsFile = () => path.join(P.dataDir, 'usage-settings.json');
 const alertFile = () => path.join(P.dataDir, 'usage-alert.json');
+const budgetFile = () => path.join(P.dataDir, 'usage-budget.json');
 
 const round = (n, digits = 4) => Math.round(n * 10 ** digits) / 10 ** digits;
 
@@ -31,13 +33,17 @@ function cleanSettings(raw) {
     const inPrice = Number(value?.in);
     const outPrice = Number(value?.out);
     if (!Number.isFinite(inPrice) || !Number.isFinite(outPrice) || inPrice < 0 || outPrice < 0) continue;
-    prices[name] = { in: round(inPrice), out: round(outPrice) };
+    const cachedPrice = value?.cached === '' || value?.cached == null ? NaN : Number(value.cached);
+    prices[name] = { in: round(inPrice), out: round(outPrice), ...(Number.isFinite(cachedPrice) && cachedPrice >= 0 ? { cached: round(cachedPrice) } : {}) };
   }
   const limit = Number(raw?.dailyAlert);
+  const budget = Number(raw?.botDailyBudget);
   return {
     currency: raw?.currency === 'USD' ? 'USD' : 'CNY',
     prices,
     dailyAlert: Number.isFinite(limit) && limit > 0 ? limit : 0,
+    // 1.5.28: what one assistant may spend in a day before it stops and asks (0 = no limit).
+    botDailyBudget: Number.isFinite(budget) && budget > 0 ? round(budget, 4) : 0,
   };
 }
 
@@ -57,9 +63,20 @@ export async function saveUsageSettings(patch = {}) {
     currency: patch.currency ?? current.currency,
     prices: patch.prices ?? current.prices,
     dailyAlert: patch.dailyAlert ?? current.dailyAlert,
+    botDailyBudget: patch.botDailyBudget ?? current.botDailyBudget,
   });
   writeJsonSyncAtomic(settingsFile(), next);
   return next;
+}
+
+/**
+ * Input tokens the provider served from its prompt cache: DeepSeek reports
+ * prompt_cache_hit_tokens, OpenAI-style gateways prompt_tokens_details.cached_tokens.
+ */
+export function cachedTokensOf(usage) {
+  if (!usage) return 0;
+  const n = Number(usage.prompt_cache_hit_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function normalizeUsage(usage) {
@@ -67,7 +84,17 @@ function normalizeUsage(usage) {
   const prompt = Math.max(0, Number(usage.prompt_tokens) || 0);
   const completion = Math.max(0, Number(usage.completion_tokens) || 0);
   const total = Math.max(prompt + completion, Number(usage.total_tokens) || 0);
-  return total ? { prompt, completion, total } : null;
+  const cached = Math.min(prompt, cachedTokensOf(usage));
+  return total ? { prompt, completion, total, cached } : null;
+}
+
+/** Money for one record at a price; cached input at its own price (the input price when none is set). */
+export function recordCost(r, price) {
+  if (!price || !Number.isFinite(r?.total)) return null;
+  const prompt = Number(r.prompt) || 0;
+  const cached = Math.min(prompt, Number(r.cached) || 0);
+  const cachedPrice = Number.isFinite(price.cached) ? price.cached : price.in;
+  return ((prompt - cached) * price.in + cached * cachedPrice + (Number(r.completion) || 0) * price.out) / 1_000_000;
 }
 
 /**
@@ -75,7 +102,7 @@ function normalizeUsage(usage) {
  * null tokens: the call happened, but inventing a token count would make the
  * estimate a lie. Returns the record.
  */
-export async function recordUsage({ botId = '', provider = '', model = '', usage = null, source = '' } = {}) {
+export async function recordUsage({ botId = '', provider = '', model = '', usage = null, source = '', routineId = '' } = {}) {
   const counts = normalizeUsage(usage);
   const record = {
     ts: nowIso(),
@@ -86,7 +113,9 @@ export async function recordUsage({ botId = '', provider = '', model = '', usage
     prompt: counts ? counts.prompt : null,
     completion: counts ? counts.completion : null,
     total: counts ? counts.total : null,
+    cached: counts ? counts.cached : null,
     source: String(source || '').slice(0, 20),
+    ...(routineId ? { routineId: String(routineId).slice(0, 40) } : {}),
   };
   await appendJsonl(ledgerFile(), record);
   return record;
@@ -109,16 +138,18 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
   const byBot = new Map();
   const byDay = new Map();
   const byModel = new Map();
-  const totals = { tokens: 0, prompt: 0, completion: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
+  const byRoutine = new Map();
+  const totals = { tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
   const bump = (map, key, r, cost, tokens) => {
     const entry = map.get(key) || {
-      key, tokens: 0, prompt: 0, completion: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0,
+      key, tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0,
     };
     entry.calls += 1;
     if (tokens == null) entry.callsWithoutUsage += 1;
     else {
       entry.tokens += tokens;
       entry.prompt += Number(r.prompt) || 0;
+      entry.cached += Number(r.cached) || 0;
       entry.completion += Number(r.completion) || 0;
       if (cost == null) entry.unpricedTokens += tokens;
       else entry.cost += cost;
@@ -128,14 +159,13 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
   for (const r of records) {
     const tokens = Number.isFinite(r.total) ? Number(r.total) : null;
     const price = settings.prices?.[r.model];
-    const cost = price && tokens != null
-      ? ((Number(r.prompt) || 0) * price.in + (Number(r.completion) || 0) * price.out) / 1_000_000
-      : null;
+    const cost = tokens != null ? recordCost(r, price) : null;
     totals.calls += 1;
     if (tokens == null) totals.callsWithoutUsage += 1;
     else {
       totals.tokens += tokens;
       totals.prompt += Number(r.prompt) || 0;
+      totals.cached += Number(r.cached) || 0;
       totals.completion += Number(r.completion) || 0;
       if (cost == null) totals.unpricedTokens += tokens;
       else totals.cost += cost;
@@ -143,14 +173,73 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
     bump(byBot, r.botId || '—', r, cost, tokens);
     bump(byDay, r.day, r, cost, tokens);
     bump(byModel, r.model || '(未知)', r, cost, tokens);
+    if (r.routineId) bump(byRoutine, r.routineId, r, cost, tokens);
   }
-  const finish = (entry) => ({ ...entry, cost: round(entry.cost) });
+  // hitRate: the share of input served from the prompt cache (null before 1.5.28 records).
+  const finish = (entry) => ({ ...entry, cost: round(entry.cost), hitRate: entry.prompt && entry.cached ? round(entry.cached / entry.prompt, 3) : 0 });
   return {
     totals: finish(totals),
     byBot: [...byBot.values()].map(finish).sort((a, b) => b.tokens - a.tokens),
     byDay: [...byDay.values()].map(finish).sort((a, b) => (a.key < b.key ? -1 : 1)),
     byModel: [...byModel.values()].map(finish).sort((a, b) => b.tokens - a.tokens),
+    byRoutine: [...byRoutine.values()].map(finish).sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
   };
+}
+
+/**
+ * Today's spend per assistant, kept in memory (1.5.28): read from the ledger
+ * once a day, then added to as calls are recorded, so the budget check before
+ * every step does not reread the whole file.
+ */
+let spent = { day: '', byBot: null };
+async function spentMap() {
+  const day = localDay();
+  if (spent.day === day && spent.byBot) return spent.byBot;
+  const settings = readUsageSettings();
+  const byBot = new Map();
+  for (const r of await readUsageRecords()) {
+    if (r.day !== day) continue;
+    byBot.set(r.botId, (byBot.get(r.botId) || 0) + (recordCost(r, settings.prices?.[r.model]) || 0));
+  }
+  spent = { day, byBot };
+  return byBot;
+}
+function addSpent(record) {
+  if (!spent.byBot || spent.day !== record.day) return;
+  const cost = recordCost(record, readUsageSettings().prices?.[record.model]) || 0;
+  spent.byBot.set(record.botId, (spent.byBot.get(record.botId) || 0) + cost);
+}
+/** Prices changed: count today again with the new ones. */
+export function forgetSpent() { spent = { day: '', byBot: null }; }
+
+/** One assistant's estimated spend today (priced models only). */
+export async function botCostToday(botId) {
+  return round((await spentMap()).get(botId) || 0, 4);
+}
+
+/** What the human let this assistant spend today beyond the budget (each "再放行" adds one budget). */
+export function budgetAllowance(botId) {
+  const saved = readJsonSync(budgetFile(), null);
+  return saved && saved.day === localDay() ? Number(saved.extra?.[botId]) || 0 : 0;
+}
+export function allowMore(botId, amount) {
+  const day = localDay();
+  const saved = readJsonSync(budgetFile(), null);
+  const extra = saved && saved.day === day ? { ...(saved.extra || {}) } : {};
+  extra[botId] = round((Number(extra[botId]) || 0) + Math.max(0, Number(amount) || 0), 4);
+  writeJsonSyncAtomic(budgetFile(), { day, extra });
+  return extra[botId];
+}
+
+/**
+ * Is this assistant over its daily budget? -> null, or {spent, limit, budget}.
+ * No budget set, or no prices to count money with: never over.
+ */
+export async function overBudget(botId, settings = readUsageSettings()) {
+  if (!settings.botDailyBudget) return null;
+  const used = await botCostToday(botId);
+  const limit = settings.botDailyBudget + budgetAllowance(botId);
+  return used >= limit ? { spent: round(used, 4), limit: round(limit, 4), budget: settings.botDailyBudget, currency: settings.currency } : null;
 }
 
 /**
@@ -160,6 +249,7 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
 export async function noteUsage(entry, { audit = async () => {}, bus = null } = {}) {
   const record = await recordUsage(entry);
   if (!record) return null;
+  addSpent(record);
   const settings = readUsageSettings();
   if (!settings.dailyAlert) return record;
   const records = recentRecords(await readUsageRecords(), 1).filter((r) => r.day === record.day);

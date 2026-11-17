@@ -299,10 +299,16 @@ function openBotDm(id) {
 async function loadGroupMessages() {
   if (!state.groupId) return;
   const groupId = state.groupId;
+  // What this browser had for the group, at once (1.5.28); the machine's answer replaces it.
+  const cacheKey = `group:${groupId}`;
+  const cached = chatCacheGet(cacheKey);
+  if (cached) { state.groupMessages = cached; renderMessages(); }
   try {
     const items = await api(`/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`);
     if (state.groupId !== groupId) return;
-    state.groupMessages = Array.isArray(items) ? items : (items && items.messages) || [];
+    const fresh = Array.isArray(items) ? items : (items && items.messages) || [];
+    if (!chatCachePut(cacheKey, fresh) && cached && cached.length === fresh.length) return;
+    state.groupMessages = fresh;
   } catch (err) {
     if (err.status === 401) return;
     if (err.status === 404) {
@@ -527,7 +533,8 @@ function renderGroupItem(item) {
     // One bot giving another a piece of the work (1.2.164): "数据匠 → 图表师".
     const target = item.to ? (botById(item.to) || groupMemberById(item.to) || { id: item.to, name: item.to }) : null;
     const bubble = el('div', 'bubble');
-    fillBubble(bubble, item.text || '', false, sender?.id);
+    // Work between bots folds to two lines (1.5.28): the human reads the answers.
+    fillBubble(bubble, item.text || '', false, sender?.id, 'line');
     const row = groupSenderRow(sender, bubble);
     row.classList.add('handoff');
     const label = row.querySelector('.g-name');

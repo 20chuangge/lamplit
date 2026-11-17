@@ -584,7 +584,7 @@
 
       <section class="dsec" id="sec-usage">
         <div class="dsec-head">成本</div>
-        <div class="row-note" id="usage-note">按模型的 token 用量估算花费。单价按「每百万 tokens」填写；没设单价的模型显示「未设单价」。</div>
+        <div class="row-note" id="usage-note">按模型的 token 用量估算花费。单价按「每百万 tokens」填写；没设单价的模型显示「未设单价」。重复发送的开头部分（缓存命中）按缓存价算，通常便宜很多。</div>
         <div class="usage-range" id="usage-range">
           <button type="button" data-days="1">今天</button>
           <button type="button" data-days="7" class="on">近 7 天</button>
@@ -619,7 +619,16 @@
             <tbody></tbody>
           </table>
         </div>
-        <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">模型单价（每百万 tokens）</div>
+        <div id="usage-routines-wrap" hidden>
+          <div class="dsec-head" style="font-size:13px;margin:16px 0 6px">按定时任务</div>
+          <div class="perm-table-wrap">
+            <table class="perm-table usage-table" id="usage-routines" aria-label="按定时任务用量">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">模型单价（每百万 tokens：输入 · 缓存命中的输入 · 输出）</div>
         <div class="usage-prices" id="usage-prices"></div>
         <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">每日花费提醒</div>
         <div class="deny-add">
@@ -631,6 +640,11 @@
           <button class="btn" id="usage-save" type="button">保存</button>
         </div>
         <div class="row-note">超过阈值会写进操作记录（每天只记一次）。提醒只按已定价模型的估算费用计算；改单价会重算历史估算。</div>
+        <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">每个助手的每日预算</div>
+        <div class="deny-add">
+          <input class="field" id="usage-budget" placeholder="每个助手每天最多花多少，0 = 不限" inputmode="decimal" autocomplete="off" />
+        </div>
+        <div class="row-note">某个助手今天花到这个数，就先停下来问你：你在时弹一张卡片，点同意今天再放行一份；定时任务没人在时直接停下，等你说继续。点上面的「保存」一起保存。</div>
       </section>
 
       <section class="dsec" id="sec-feishu">
@@ -760,7 +774,9 @@
         <div class="machine-list" id="set-machines-list"></div>
         <div class="row-actions" style="margin-top:10px">
           <button class="btn primary tiny" id="set-add-machine" type="button">添加机器</button>
+          <button class="btn tiny" id="net-check" type="button">网络诊断</button>
         </div>
+        <div class="net-check" id="net-check-out" hidden></div>
         <div id="desktop-mode-box" hidden>
           <label class="lbl" for="desktop-mode">这台机器上机器人的桌面</label>
           <select class="field" id="desktop-mode">

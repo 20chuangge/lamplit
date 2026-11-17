@@ -1404,3 +1404,60 @@ function setupViewport() {
   normalizeOverlays();
 }
 
+/* ---------------------------------------------------------------------
+   网络诊断 (1.5.28): how fast this device reaches the machine on screen, and
+   that machine the others. Hundreds of milliseconds inside one country almost
+   always means a proxy (Clash and the like) sends Tailscale abroad.
+   --------------------------------------------------------------------- */
+const NET_SLOW_MS = 150;
+async function pingHub(times = 3) {
+  const out = [];
+  for (let i = 0; i < times; i += 1) {
+    const started = performance.now();
+    try { await api('/api/health'); out.push(Math.round(performance.now() - started)); } catch { /* counted as missing */ }
+  }
+  out.sort((a, b) => a - b);
+  return out.length ? out[Math.floor((out.length - 1) / 2)] : null;
+}
+function netVerdict(ms) {
+  if (ms == null) return ['连不上', 'bad'];
+  if (ms < 80) return ['正常', 'ok'];
+  if (ms < NET_SLOW_MS) return ['有点慢', 'ok'];
+  return ['很慢', 'bad'];
+}
+async function runNetCheck() {
+  const box = $('net-check-out');
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = '<div class="row-note">正在测…</div>';
+  const here = await pingHub();
+  const peers = await api('/api/peers/latency').catch(() => ({ machines: [] }));
+  const line = (from, to, ms, extra = '') => {
+    const [word, cls] = netVerdict(ms);
+    return `<div class="net-line ${cls}"><span>${escapeHtml(from)} → ${escapeHtml(to)}</span><b>${ms == null ? '—' : `${ms} 毫秒`} · ${word}</b>${extra ? `<span class="row-note">${escapeHtml(extra)}</span>` : ''}</div>`;
+  };
+  const current = machineDisplayName();
+  const rows = [line(isMobile() ? '这部手机' : '这台设备', current, here)];
+  for (const m of peers.machines || []) rows.push(line(current, m.machine, m.ms, m.error ? '没连上' : (m.via === 'tailscale' ? '走 Tailscale' : '')));
+  const slow = here == null || here >= NET_SLOW_MS || (peers.machines || []).some((m) => m.ms != null && m.ms >= NET_SLOW_MS);
+  if (slow) {
+    rows.push(`<div class="row-note warn-note">超过 ${NET_SLOW_MS} 毫秒，多半是网络在绕道：电脑上开着代理软件（Clash、V2Ray 等）时，Tailscale 的流量会被送到国外再绕回来。在代理规则的最前面加一条 <code>PROCESS-NAME,tailscaled.exe,DIRECT</code>，在 TUN（虚拟网卡）设置里排除局域网网段（192.168.0.0/16、10.0.0.0/8、172.16.0.0/12），然后在代理软件里关闭全部连接。手机和电脑在同一个 Wi-Fi 却很慢，也是这个原因。</div>`);
+  } else {
+    rows.push('<div class="row-note">都正常。</div>');
+  }
+  box.innerHTML = rows.join('');
+}
+document.addEventListener('click', (event) => {
+  if (event.target.closest('#net-check')) runNetCheck();
+});
+/** Once a day at most: say so when the machine on screen answers slowly. */
+setTimeout(async () => {
+  let last = '';
+  try { last = localStorage.getItem('lamplit.netwarn') || ''; } catch { /* no storage */ }
+  const today = new Date().toDateString();
+  if (last === today) return;
+  const ms = await pingHub();
+  if (ms == null || ms < 250) return;
+  try { localStorage.setItem('lamplit.netwarn', today); } catch { /* no storage */ }
+  toast(`连到这台机器很慢（约 ${ms} 毫秒）。打开「设置 → 机器 → 网络诊断」看看原因`, true);
+}, 20000);

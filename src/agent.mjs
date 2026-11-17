@@ -37,7 +37,8 @@ import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 import { checkBoundary, DEVTOOLS } from './boundary.mjs';
 import { PHONE_KIND_LABEL } from './phone.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
-import { noteUsage } from './usage.mjs';
+import { historyStart } from './groups.mjs';
+import { noteUsage, overBudget, allowMore } from './usage.mjs';
 
 const MAX_TOOL_OUTPUT = 12000;
 
@@ -47,13 +48,43 @@ const MAX_TOOL_OUTPUT = 12000;
  * dulls the model. Keep the last KEEP results whole; older ones shrink to a
  * short head with a note. The call records (what was done) stay intact.
  */
-export function trimOldToolOutputs(messages, { keep = 6, head = 600 } = {}) {
+const TRIM_NOTE = '…(earlier output trimmed; read the file or run it again if you need it)';
+const SCREEN_TOOLS = new Set(['browser_snapshot', 'browser_screenshot', 'image_view']);
+/**
+ * A long turn piles up tool output: only the latest results stay whole.
+ *
+ * 1.5.28, for the provider's prompt cache: everything before the first changed
+ * byte is billed at the cache price, so trimming one old output every step made
+ * each call pay full price from that point on. Old outputs are now trimmed
+ * `batch` at a time - between trims the start of the conversation does not
+ * change. A screen read (phone look, page snapshot, screenshot) is stale once
+ * the screen was read again: only the last `keepScreens` stay whole.
+ */
+export function trimOldToolOutputs(messages, { keep = 6, head = 600, batch = 5, keepScreens = 2 } = {}) {
+  const calls = new Map();
+  for (const m of messages) {
+    if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) for (const c of m.tool_calls) calls.set(c.id, c.function || {});
+  }
+  const isScreen = (m) => {
+    const c = calls.get(m.tool_call_id);
+    if (!c) return false;
+    if (SCREEN_TOOLS.has(c.name)) return true;
+    return (c.name === 'phone' || c.name === 'desktop_ui') && /"action"\s*:\s*"(look|read|tree|snapshot|screen)"/.test(String(c.arguments || ''));
+  };
+  const whole = (i) => {
+    const c = String(messages[i].content || '');
+    return c.length > head + 80 && !c.endsWith(TRIM_NOTE);
+  };
   const toolIdx = [];
   for (let i = 0; i < messages.length; i += 1) if (messages[i]?.role === 'tool') toolIdx.push(i);
-  for (const i of toolIdx.slice(0, Math.max(0, toolIdx.length - keep))) {
+  const stale = new Set(toolIdx.slice(0, Math.max(0, toolIdx.length - keep)));
+  const screens = toolIdx.filter((i) => isScreen(messages[i]));
+  for (const i of screens.slice(0, Math.max(0, screens.length - keepScreens))) stale.add(i);
+  const due = [...stale].filter(whole);
+  if (due.length < batch) return messages;
+  for (const i of due) {
     const c = String(messages[i].content || '');
-    if (c.length <= head + 80 || c.endsWith('…(earlier output trimmed; read the file or run it again if you need it)')) continue;
-    messages[i] = { ...messages[i], content: `${c.slice(0, head)} …(earlier output trimmed; read the file or run it again if you need it)` };
+    messages[i] = { ...messages[i], content: `${c.slice(0, head)} ${TRIM_NOTE}` };
   }
   return messages;
 }
@@ -471,7 +502,9 @@ export const REPLY_STYLE = [
   '- Keep what matters, drop the rest. Always keep numbers and facts the human relies on, decisions, risks, what is not done or not verified, and what they must do - one line each. Leave out how you got there (your steps, the checks you ran, which tools), what they already know, restating their question, openers ("好的，", "以下是…") and closing offers.',
   '- Long material (a full report, logs, tables, a step-by-step account, verification details) goes into a workspace file; name the path in one line instead of pasting it.',
   '- No headings in a chat reply. A list only when the items are really separate (at most about 5 short lines). Bold at most a word or two.',
-  '- To a teammate (a bot_message reply, bot_pass, a group task report): what is done, the files (paths), what is next, any problem - facts only, no prose.',
+  '- To a teammate (a bot_message reply, bot_pass, a group task report): what is done, the files (paths), what is next, any problem - facts only, no prose, at most about 5 short lines; details go in a file.',
+  // 1.5.28: the human wrote 15 characters and got three screens back; group replies read like internal memos.
+  '- To the human, talk like a person in a chat app: answer what they asked in the first sentence, in everyday words. No internal shorthand of your own work (plan codes, "路径 A", slot names, step numbers) unless they used it first. When you could say it in two sentences, do not write ten.',
   // 1.5.9: a long bot_message was cut off mid-call (ARGS_TRUNCATED).
   '- Long instructions for a teammate (more than about 1500 characters, a full routine text, a list of edits) go into a workspace file first; the message names the path and says what to do with it.',
   // 1.5.9: the human saw "群 g-ab12cd", "rt_0123456789ab", "`5 20 * * *`", "profile bot-x1y2z3".
@@ -1024,6 +1057,40 @@ export class AgentRuntime {
   // history
   // -------------------------------------------------------------------------
 
+  /**
+   * The daily budget (1.5.28): '' to go on, or what to tell the human when it stops.
+   * With the human there it asks on a card (同意 = one more budget for today);
+   * a scheduled run with nobody there stops and says so.
+   */
+  async budgetGate(bot, { unattended, turnId, baseEvent }) {
+    const over = await overBudget(bot.id).catch(() => null);
+    if (!over) return '';
+    const money = (n) => `${over.currency === 'USD' ? '$' : '¥'}${Number(n).toFixed(2)}`;
+    const said = `今天「${bot.name}」已经花了约 ${money(over.spent)}，到了每日预算（${money(over.limit)}）。`;
+    if (unattended) {
+      await audit({ kind: 'usage.budget', botId: bot.id, turnId, spent: over.spent, limit: over.limit, unattended: true });
+      return `${said}没人在，我先停下了。要接着做，跟我说一声，或在「设置 → 成本」里调高每日预算。`;
+    }
+    const pending = this.approvals.request({
+      turnId,
+      botId: bot.id,
+      toolName: 'budget_extend',
+      args: { spent: money(over.spent), budget: money(over.budget) },
+      risk: 'medium',
+      reason: `${said}同意就从现在起今天再放行 ${money(over.budget)}。`,
+    });
+    this.bus.emit({ type: 'approval.request', ...baseEvent, approvalId: pending.record?.id || null, tool: 'budget_extend', args: pending.record?.args || {}, risk: 'medium', reason: pending.record?.reason || said });
+    const resolution = await pending;
+    this.bus.emit({ type: 'approval.resolved', ...baseEvent, approvalId: pending.record?.id || null, tool: 'budget_extend', decision: resolution.decision, note: resolution.note || '' });
+    await audit({ kind: 'usage.budget', botId: bot.id, turnId, spent: over.spent, limit: over.limit, decision: resolution.decision });
+    if (resolution.decision === 'approve' || resolution.decision === 'approved') {
+      // One more budget from what is spent now (spent may already be past the line).
+      allowMore(bot.id, Math.max(0, over.spent - over.limit) + over.budget);
+      return '';
+    }
+    return `${said}你没有放行，我先停在这里。`;
+  }
+
   async loadHistory(botId, limit = 16) {
     const records = await readJsonl(sessionFile(botId));
     const usable = [];
@@ -1034,7 +1101,7 @@ export class AgentRuntime {
       if (prev && r.kind === 'assistant' && prev.kind === 'assistant' && r.turnId && prev.turnId === r.turnId) prev.text = `${prev.text}\n\n${r.text}`;
       else usable.push({ kind: r.kind, text: String(r.text), turnId: r.turnId });
     }
-    return usable.slice(-limit).map((r) => ({ role: r.kind, content: r.text }));
+    return usable.slice(historyStart(usable.length, limit)).map((r) => ({ role: r.kind, content: r.text }));
   }
 
   async record(botId, record) {
@@ -1093,6 +1160,8 @@ export class AgentRuntime {
     hiddenNote = '',
     // A new group's round of introductions (not a request from the human).
     kickoff = false,
+    // The scheduled task this turn runs for (its cost is shown per task, 1.5.28).
+    routineId = '',
     // Group coordinator turns that must not plan again (introductions, the final summary).
     noPlan = false,
     // A turn that continues one cut off by the step limit: what that one really did.
@@ -1299,6 +1368,16 @@ export class AgentRuntime {
           deltaOffset += chunk.length;
         };
 
+        // Over the assistant's daily budget (1.5.28): ask before spending more.
+        const budgetStop = await this.budgetGate(bot, { unattended, turnId, baseEvent });
+        if (budgetStop) {
+          status = 'budget';
+          summary = budgetStop;
+          await this.record(bot.id, { kind: 'assistant', text: budgetStop, turnId, source, system: true });
+          this.bus.emit({ type: 'message', ...baseEvent, text: budgetStop, final: true, system: true });
+          break;
+        }
+
         // A long turn piles up tool output: only the latest results stay whole.
         trimOldToolOutputs(messages);
 
@@ -1326,7 +1405,7 @@ export class AgentRuntime {
 
         // Cost accounting is a side ledger: a write failure must not fail a turn.
         noteUsage(
-          { botId: bot.id, provider: turnModel.provider || '', model: turnModel.model || '', usage: response.usage, source: baseEvent.source },
+          { botId: bot.id, provider: turnModel.provider || '', model: turnModel.model || '', usage: response.usage, source: baseEvent.source, routineId },
           { audit, bus: this.bus },
         ).catch(() => {});
 
@@ -2687,6 +2766,8 @@ function statusText(status) {
       return 'Cancelled.';
     case 'max_steps':
       return 'Stopped: hit the step limit.';
+    case 'budget':
+      return '已停下：到了今天的预算。';
     default:
       return 'Finished.';
   }

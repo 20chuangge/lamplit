@@ -1017,7 +1017,7 @@ async function loadUsage(days = state.usageDays || 7) {
 function mergeUsage(own, peers = { machines: [] }) {
   const others = (peers.machines || []).filter((m) => m.totals);
   const sumRows = (rows) => {
-    const out = { tokens: 0, prompt: 0, completion: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
+    const out = { tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
     for (const r of rows) for (const k of Object.keys(out)) out[k] += Number(r?.[k]) || 0;
     out.cost = Math.round(out.cost * 10000) / 10000;
     return out;
@@ -1035,6 +1035,7 @@ function mergeUsage(own, peers = { machines: [] }) {
     totals: sumRows([own.totals, ...others.map((m) => m.totals)]),
     byModel: byKey([own.byModel || [], ...others.map((m) => m.byModel || [])]),
     byBot: [...(own.byBot || []), ...others.flatMap((m) => (m.byBot || []).map((b) => ({ ...b, machine: m.machine })))].sort((a, b) => b.tokens - a.tokens),
+    byRoutine: [...(own.byRoutine || []), ...others.flatMap((m) => (m.byRoutine || []).map((b) => ({ ...b, machine: m.machine })))].sort((a, b) => b.cost - a.cost),
     byMachine: others.length ? [{ key: here, ...sumRows([own.totals]) }, ...others.map((m) => ({ key: m.machine, ...sumRows([m.totals]) }))] : [],
     otherCurrencies: [...new Set(others.map((m) => m.currency).filter((c) => c && c !== own.currency))],
   };
@@ -1093,7 +1094,9 @@ function renderUsage(data) {
     [`${label}估算`, usageCostText({ tokens: totals.tokens, cost: totals.cost, unpricedTokens: totals.unpricedTokens }, currency), Boolean(totals.unpricedTokens && !totals.cost)],
     ['未设单价 tokens', fmtTokens(totals.unpricedTokens), Boolean(totals.unpricedTokens)],
     ['调用', `${totals.calls || 0} 次${totals.callsWithoutUsage ? ` · ${totals.callsWithoutUsage} 次无用量` : ''}`, false],
+    ['缓存命中', totals.prompt && totals.cached ? `${Math.round((totals.cached / totals.prompt) * 100)}% 的输入` : '还没有记录', false],
     ['每日提醒', settings.dailyAlert ? moneyText(settings.dailyAlert, currency) : '关闭', false],
+    ['每个助手每日预算', settings.botDailyBudget ? moneyText(settings.botDailyBudget, currency) : '不限', false],
   ];
   if (data.alert) chips.push(['今日已超提醒线', moneyText(data.alert.cost, currency), true]);
   summary.innerHTML = '';
@@ -1130,6 +1133,17 @@ function renderUsage(data) {
     }).catch(() => {});
   }
   renderUsageTable($('usage-models'), data.byModel, currency, (row) => row.key || '—', '还没有用量。');
+  // What each scheduled task cost (1.5.28): a task that runs every hour adds up.
+  const routineWrap = $('usage-routines-wrap');
+  if (routineWrap) routineWrap.hidden = !(data.byRoutine || []).length;
+  if ((data.byRoutine || []).length && !state.routines && !state.usageRoutinesAsked) {
+    state.usageRoutinesAsked = true;
+    api('/api/routines').then((r) => { state.routines = r; renderUsage(state.usage); }).catch(() => {});
+  }
+  renderUsageTable($('usage-routines'), data.byRoutine, currency, (row) => {
+    const name = (state.routines || []).find((r) => r.id === row.key)?.name || (typeof humanizeIds === 'function' ? humanizeIds(row.key) : row.key);
+    return row.machine ? `${name} · ${row.machine}` : name;
+  }, '');
 
   const priceBox = $('usage-prices');
   if (priceBox) {
@@ -1148,8 +1162,14 @@ function renderUsage(data) {
       outInput.placeholder = '输出价';
       outInput.inputMode = 'decimal';
       outInput.value = price ? String(price.out) : '';
+      const cachedInput = el('input', 'field cached-input');
+      cachedInput.placeholder = '缓存命中价';
+      cachedInput.title = '命中缓存的输入的单价；不填按输入价算';
+      cachedInput.inputMode = 'decimal';
+      cachedInput.value = price && price.cached != null ? String(price.cached) : '';
       row.appendChild(nameInput);
       row.appendChild(inInput);
+      row.appendChild(cachedInput);
       row.appendChild(outInput);
       if (missing) row.appendChild(el('span', 'tag', '未设单价'));
       if (removable) {
@@ -1168,6 +1188,7 @@ function renderUsage(data) {
   }
   if ($('usage-currency')) $('usage-currency').value = currency;
   if ($('usage-alert')) $('usage-alert').value = settings.dailyAlert || '';
+  if ($('usage-budget')) $('usage-budget').value = settings.botDailyBudget || '';
   if ($('usage-range')) {
     $('usage-range').querySelectorAll('button').forEach((btn) => {
       btn.classList.toggle('on', Number(btn.dataset.days) === days);
@@ -1181,16 +1202,18 @@ async function saveUsageForm() {
     const name = row.querySelector('.name-input')?.value.trim();
     const inRaw = row.querySelector('.in-input')?.value.trim();
     const outRaw = row.querySelector('.out-input')?.value.trim();
+    const cachedRaw = row.querySelector('.cached-input')?.value.trim();
     // An untouched row (name only, no numbers) is not a price: saving it as
     // 0/0 would silently turn "no price" into "free".
     if (!name || (!inRaw && !outRaw)) return;
-    prices[name] = { in: Number(inRaw) || 0, out: Number(outRaw) || 0 };
+    prices[name] = { in: Number(inRaw) || 0, out: Number(outRaw) || 0, ...(cachedRaw ? { cached: Number(cachedRaw) || 0 } : {}) };
   });
   const dailyAlert = Number($('usage-alert')?.value) || 0;
+  const botDailyBudget = Number($('usage-budget')?.value) || 0;
   try {
     await api('/api/usage', {
       method: 'PUT',
-      body: { currency: $('usage-currency')?.value || 'CNY', prices, dailyAlert },
+      body: { currency: $('usage-currency')?.value || 'CNY', prices, dailyAlert, botDailyBudget },
     });
     toast('成本设置已保存');
     loadUsage();

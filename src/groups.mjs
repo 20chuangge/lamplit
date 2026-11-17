@@ -375,12 +375,24 @@ export async function hasAssistantMessage(groupId, turnId, botId) {
  * a [Name] prefix in an assistant message, because a chat-completions transcript
  * has no "third party" role; v1 accepts that approximation.
  */
+/**
+ * Where the replayed history starts (1.5.28): the window moves in steps of half
+ * its size, not one message per turn, so the start of the prompt stays the same
+ * for several turns and the provider bills it at the cache price.
+ * Keeps between `limit` and 1.5 x `limit` messages.
+ */
+export function historyStart(length, limit) {
+  if (length <= limit) return 0;
+  const step = Math.max(1, Math.floor(limit / 2));
+  return Math.floor((length - limit) / step) * step;
+}
+
 export async function loadGroupHistory(groupId, { limit = 16, names = new Map() } = {}) {
   const records = await readJsonl(groupMessagesFile(groupId));
   const usable = records.filter(
     (record) => (record.kind === 'user' || record.kind === 'assistant' || record.kind === 'handoff') && record.text,
   );
-  return usable.slice(-limit).map((record) => {
+  return usable.slice(historyStart(usable.length, limit)).map((record) => {
     if (record.kind === 'user') return { role: 'user', content: String(record.text) };
     // Work one bot gave another in the group: who to whom, as context.
     if (record.kind === 'handoff') return { role: 'user', content: `[${names.get(record.from) || record.from} → ${names.get(record.to) || record.to}] ${record.text}` };

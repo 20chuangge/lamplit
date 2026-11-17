@@ -177,8 +177,16 @@ export function profileDir(key = '') {
   return path.join(P.dataDir, 'browser-profiles', safe || 'bot');
 }
 
-function stateFile() {
-  return path.join(P.dataDir, 'browser-state.json');
+/**
+ * Where a bot's running browser is noted (port, pid), so a restarted hub
+ * picks it up again. One per bot (1.5.26): with one file for all, every bot
+ * took over whichever browser another bot had started - one Chrome, on that
+ * other bot's screen, for everyone (11-17: 「接管屏幕」 showed an empty desktop,
+ * logins seemed lost, two bots asked to log in to the same page).
+ */
+function stateFile(key = '') {
+  const safe = String(key || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  return path.join(P.dataDir, safe ? `browser-state-${safe}.json` : 'browser-state.json');
 }
 
 function installHint() {
@@ -710,7 +718,7 @@ class BrowserManager {
             };
             this.inFlight = 0;
             this.lastActivity = Date.now();
-            await fsp.writeFile(stateFile(), JSON.stringify({ port, pid: 0, executable: executable.path, headless: false, onDesktop: true, startedAt: new Date().toISOString() }, null, 2), 'utf8');
+            await fsp.writeFile(stateFile(this.key), JSON.stringify({ port, pid: 0, executable: executable.path, headless: false, onDesktop: true, startedAt: new Date().toISOString() }, null, 2), 'utf8');
             return this.session;
           }
         }
@@ -830,7 +838,7 @@ class BrowserManager {
 
     await fsp.mkdir(P.dataDir, { recursive: true });
     await fsp.writeFile(
-      stateFile(),
+      stateFile(this.key),
       JSON.stringify({ port, pid: child.pid ?? 0, executable: executable.path, headless, startedAt: new Date().toISOString() }, null, 2),
       'utf8',
     );
@@ -842,7 +850,7 @@ class BrowserManager {
   async tryAdopt() {
     let state;
     try {
-      state = JSON.parse(await fsp.readFile(stateFile(), 'utf8'));
+      state = JSON.parse(await fsp.readFile(stateFile(this.key), 'utf8'));
     } catch {
       return null;
     }
@@ -937,7 +945,7 @@ class BrowserManager {
           /* leave it running */
         }
       }
-      await fsp.rm(stateFile(), { force: true }).catch(() => {});
+      await fsp.rm(stateFile(this.key), { force: true }).catch(() => {});
     }
   }
 
@@ -1549,7 +1557,7 @@ class BrowserManager {
     } catch {
       /* ignore */
     }
-    await fsp.rm(stateFile(), { force: true }).catch(() => {});
+    await fsp.rm(stateFile(this.key), { force: true }).catch(() => {});
     return { ok: true, closed: true, pid };
   }
 
@@ -1568,7 +1576,7 @@ class BrowserManager {
       ok: true,
       running,
       pid: running ? session.pid : null,
-      profileDir: profileDir(),
+      profileDir: session?.profile || profileDir(this.key),
       cdpUrl: running ? `http://127.0.0.1:${session.port}` : null,
       headless: running ? session.headless : process.env.BROWSER_HEADLESS === '1',
       adopted: running ? session.adopted : false,

@@ -1065,10 +1065,9 @@ function onActionRequest(ev) {
   const takeover = ev.name === 'request_takeover';
   const args = safeArgs(ev.args) || {};
   const looking = key === currentChatKey() && document.hasFocus();
-  if (looking) {
-    if (takeover) popupTakeover();
-    return;
-  }
+  // The card says what to do; the screen opens when the human taps 「接管屏幕」 (1.5.26:
+  // it went full screen on its own, before they had read why).
+  if (looking) return;
   notifyHuman({
     title: takeover ? `${chatName(key)} 需要你接管屏幕` : `${chatName(key)} 需要你填写登录信息`,
     body: takeover ? String(args.reason || '点这里接管') : String(args.name || args.site || '点这里填写'),

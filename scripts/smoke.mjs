@@ -3395,7 +3395,7 @@ function shanghaiWeekday(ts) {
       check(`takeover/offline control ${id} is wired`, html.includes(`id="${id}"`) && html.includes(`$('${id}')?.addEventListener`));
     }
     check('offline: only silence counts (an HTTP error means the machine answered)', /if \(!err\.status\) setConnected\(false\)/.test(html) && /setConnected\(true\)/.test(html));
-    check('takeover: a request in the open chat pops the full-window takeover, elsewhere it notifies', /if \(takeover\) popupTakeover\(\)/.test(html) && /notifyHuman\(\{/.test(html) && /onActionRequest\(ev\)/.test(html));
+    check('takeover: a request in the open chat shows its card (the screen opens on 「接管屏幕」, 1.5.26), elsewhere it notifies', /if \(looking\) return;/.test(html) && /notifyHuman\(\{/.test(html) && /onActionRequest\(ev\)/.test(html));
     const main = await readText('../desktop/main.mjs');
     const preload = await readText('../desktop/shell-preload.cjs');
     check('notifications: the shell shows them and a click comes back to the page', /handle\('desk:notify'/.test(main) && /deskNotificationClick/.test(main) && /setAppUserModelId\('com\.desk\.assistant'\)/.test(main) && /flashFrame\(true\)/.test(main) && /notify: \(note\) => ipcRenderer\.invoke\('desk:notify'/.test(preload));
@@ -4013,6 +4013,18 @@ async function scenarioMcp({ home, toolsMod }) {
     check('M30b a task on the group board cut off by the step limit goes on by itself (up to the limit), told what it already did',
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
+  }
+  // 1.5.26: each bot has its own browser on its own screen; a takeover card waits for the tap.
+  {
+    const br = await readText('../src/browser.mjs');
+    const st = await readText('../public/app/main/08-settings.js');
+    const ag = await readText('../src/agent.mjs');
+    check('O26 browser: each bot notes its own running browser (browser-state-<bot>.json) and never takes over another bot\'s, so it opens on its own screen with its own profile',
+      br.includes("return path.join(P.dataDir, safe ? `browser-state-${safe}.json` : 'browser-state.json');") && !br.includes('stateFile()') && br.includes('stateFile(this.key)'));
+    check('O26 takeover: the card does not open the screen by itself; it opens when the human taps 「接管屏幕」',
+      st.includes('if (looking) return;') && !/if \(looking\) \{\s*if \(takeover\) popupTakeover\(\);/.test(st));
+    check('O26 team: a job handed to a teammate is theirs - the bot does not open the same page or ask for a takeover too',
+      ag.includes('Once you have handed a job to a teammate, it is theirs: do not do it yourself as well'));
   }
   // 1.5.25: phone steps the human lets through, per bot and app, on a card; paying never.
   {

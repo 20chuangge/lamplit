@@ -55,6 +55,44 @@ function env(name, fallback = '') {
 // Public factory
 // ---------------------------------------------------------------------------
 
+/**
+ * How much one answer in a bot's turn may write (1.5.16). The old 4096 cut
+ * long fs_write calls off mid-way (ARGS_TRUNCATED: the bot wrote the file
+ * again in parts, a wasted round) and a thinking model could spend it all
+ * thinking. Each provider's documented ceiling, kept modest; a provider that
+ * refuses it gets 4096 again (see withOutputFallback).
+ */
+const OUTPUT_TOKENS = {
+  openai: 16384, anthropic: 16384, gemini: 16384, xai: 16384, moonshot: 16384, zhipu: 16384, openrouter: 16384,
+  deepseek: 8192, qwen: 8192, minimax: 8192, hunyuan: 8192, siliconflow: 8192, groq: 8192, together: 8192, mistral: 8192, spark: 8192,
+};
+export function turnOutputTokens(provider) {
+  return OUTPUT_TOKENS[String(provider || '').toLowerCase()] || 4096;
+}
+
+/** A 400 that says the output budget is too big: worth one more try at 4096. */
+export function outputTooBig(err) {
+  const m = String(err?.message || '');
+  return /HTTP 400/.test(m) && /max_tokens|max_completion_tokens|max_output|maximum.{0,40}tokens|tokens.{0,40}(exceed|range|limit|too large|at most|less than)/i.test(m);
+}
+
+/**
+ * Ask with the wider budget; when the provider refuses it, ask again with 4096
+ * and remember that for this client (one wasted request per model, not per step).
+ */
+export async function withOutputFallback(client, opts, call) {
+  const wanted = opts.maxTokens;
+  if (!wanted || wanted <= 4096) return call(opts);
+  if (client.outputCap && wanted > client.outputCap) return call({ ...opts, maxTokens: client.outputCap });
+  try {
+    return await call(opts);
+  } catch (err) {
+    if (!outputTooBig(err)) throw err;
+    client.outputCap = 4096;
+    return call({ ...opts, maxTokens: 4096 });
+  }
+}
+
 export function createModel({ provider, baseUrl, apiKey, model, timeoutMs } = {}) {
   const chosen = (provider || env('ASSIST_MODEL_PROVIDER', 'mock')).toLowerCase();
   const cfg = {
@@ -91,15 +129,21 @@ export function createModel({ provider, baseUrl, apiKey, model, timeoutMs } = {}
   // be OpenAI-compatible, which is what nearly every gateway exposes.
   const kind = providerKind(chosen);
   if (kind === 'anthropic') {
-    return createAnthropicClient({ baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, timeoutMs: cfg.timeoutMs });
+    const claude = createAnthropicClient({ baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, timeoutMs: cfg.timeoutMs });
+    const plain = claude.complete;
+    claude.turnOutputTokens = turnOutputTokens('anthropic');
+    claude.complete = (messages, opts = {}) => withOutputFallback(claude, opts, (o) => plain.call(claude, messages, o));
+    return claude;
   }
 
-  return {
+  const client = {
     ...cfg,
+    turnOutputTokens: turnOutputTokens(chosen),
     async complete(messages, opts = {}) {
-      return openAiComplete(cfg, messages, opts);
+      return withOutputFallback(client, opts, (o) => openAiComplete(cfg, messages, o));
     },
   };
+  return client;
 }
 
 // ---------------------------------------------------------------------------

@@ -3999,6 +3999,25 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.16: one answer may write more than 4096 tokens (a long fs_write was cut off), with a way back.
+  {
+    const Mo = await import('../src/model.mjs');
+    const ag = await readText('../src/agent.mjs');
+    check('T16 output: a bot\'s step may write 8192 tokens on DeepSeek, Qwen and the like and 16384 on OpenAI, Claude, Kimi, GLM; unknown and local stay at 4096; the turn passes it',
+      Mo.turnOutputTokens('deepseek') === 8192 && Mo.turnOutputTokens('qwen') === 8192 && Mo.turnOutputTokens('openai') === 16384 && Mo.turnOutputTokens('anthropic') === 16384
+      && Mo.turnOutputTokens('moonshot') === 16384 && Mo.turnOutputTokens('ollama') === 4096 && Mo.turnOutputTokens('custom') === 4096
+      && ag.includes('...(turnModel.turnOutputTokens ? { maxTokens: turnModel.turnOutputTokens } : {}),')
+      && Mo.createModel({ provider: 'deepseek', apiKey: 'x', model: 'm' }).turnOutputTokens === 8192);
+    const seen = [];
+    const client = {};
+    const call = async (o) => { seen.push(o.maxTokens); if (o.maxTokens > 4096) throw new Error('model HTTP 400: {"error":{"message":"Invalid max_tokens value, the valid range of max_tokens is [1, 8192]"}}'); return { content: 'ok' }; };
+    const r1 = await Mo.withOutputFallback(client, { maxTokens: 16384 }, call);
+    const r2 = await Mo.withOutputFallback(client, { maxTokens: 16384 }, call);
+    let other = '';
+    try { await Mo.withOutputFallback({}, { maxTokens: 8192 }, async () => { throw new Error('model HTTP 401: bad key'); }); } catch (err) { other = err.message; }
+    check('T16 fallback: a provider that refuses the bigger budget is asked again at 4096 once, and the client remembers it; other errors pass through',
+      r1.content === 'ok' && r2.content === 'ok' && JSON.stringify(seen) === '[16384,4096,4096]' && client.outputCap === 4096 && other.includes('401'), JSON.stringify(seen));
+  }
   // 1.5.15: a deleted bot's history and memory are put away, so a new bot with the same name starts clean.
   {
     const B = await import('../src/bots.mjs');
@@ -5096,7 +5115,7 @@ async function scenarioApps1512() {
     B.DEVTOOLS.test('curl -s http://127.0.0.1:9222/json') && B.DEVTOOLS.test("python3 -c \"ws('ws://127.0.0.1:41233/devtools/page/AB')\"") && B.DEVTOOLS.test('node -e "chromium.connectOverCDP(u)"')
     && !B.DEVTOOLS.test('curl -s https://example.com:8443/json') && !B.DEVTOOLS.test('curl -s https://example.com/api.json')
     && agentSrc.includes("if (name === 'shell' && DEVTOOLS.test(String(args?.command || '')) && verdict.decision !== DECISION.DENY) {")
-    && tools.includes('Keep each call under about 2500 characters of content'));
+    && tools.includes('Keep each call under about 6000 characters of content'));
   // The apps' own marks (simple-icons, CC0): a file for each app that has one, the licence next to them.
   const fsMod = await import('node:fs');
   const withIcon = mcp.MCP_CATALOG.filter((e) => e.icon);

@@ -1295,6 +1295,8 @@ export class AgentRuntime {
             tools: [...this.registry.schemasFor(bot), ...groupToolSchemas(boardTools)],
             signal: controller.signal,
             onDelta,
+            // Room for a long file in one fs_write (1.5.16; was the client's 4096).
+            ...(turnModel.turnOutputTokens ? { maxTokens: turnModel.turnOutputTokens } : {}),
           });
         } catch (err) {
           if (controller.signal.aborted) {

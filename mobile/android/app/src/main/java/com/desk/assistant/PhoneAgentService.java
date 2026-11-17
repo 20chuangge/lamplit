@@ -58,6 +58,8 @@ public class PhoneAgentService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
+        // The human wants it on (1.5.20): kept until they turn it off themselves.
+        AgentKeeper.setWanted(this, true);
         showNotice();
         // The system starts this service by itself (after the phone restarts or
         // Lamplit is updated) without opening Lamplit; the connection to the
@@ -77,6 +79,9 @@ public class PhoneAgentService extends AccessibilityService {
     public boolean onUnbind(Intent intent) {
         instance = null;
         hideNotice();
+        // Told while Lamplit runs: the human turned it off in the system settings.
+        // (An update or a stop kills Lamplit first, so this is not called then.)
+        AgentKeeper.setWanted(this, false);
         return super.onUnbind(intent);
     }
 
@@ -99,6 +104,7 @@ public class PhoneAgentService extends AccessibilityService {
 
     /** The human pressed 停止 on the notice. */
     void stopByHuman() {
+        AgentKeeper.setWanted(this, false);
         hideNotice();
         disableSelf();
     }

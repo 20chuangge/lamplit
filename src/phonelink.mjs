@@ -60,6 +60,13 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } 
         .map((p) => ({ model: p.model || p.name || '手机', minutes: Math.max(1, Math.round((now - p.at) / 60000)) }));
     },
 
+    /** Phones heard from lately with 「让机器人用这部手机」 off (1.5.20: an update or a cleaner turns it off). */
+    off() {
+      const now = Date.now();
+      const on = new Set([...phones.values()].filter((p) => p.enabled && now - p.at <= freshMs).map((p) => p.phoneId || p.model));
+      return [...phones.values()].filter((p) => !p.enabled && now - p.at <= freshMs && !on.has(p.phoneId || p.model)).map((p) => ({ model: p.model || p.name || '手机' }));
+    },
+
     /** Send one step to one phone and wait for its answer. */
     request(deviceId, action, args = {}, { timeoutMs = jobTimeoutMs } = {}) {
       const jobId = `job_${Date.now().toString(36)}_${(seq += 1)}`;
@@ -197,7 +204,10 @@ export function makePhoneExec({ adbPath = () => '', link, adbExec = runAdb }) {
   // Why no phone answers, when one was here before (phone.mjs adds it to PHONE_NOT_CONNECTED).
   exec.whyGone = () => {
     const s = link.stale?.() || [];
-    if (!s.length) return '';
+    if (!s.length) {
+      const o = link.off?.() || [];
+      return o.length ? ` The phone ${o[0].model} is connected but 「让机器人用这部手机」 is off on it (an update of Lamplit or a cleaner app turns it off). Tell the human to turn it on again in the phone's settings (Lamplit shows a notice that opens the right page).` : '';
+    }
     const p = s[0];
     return ` The phone ${p.model} had 「让机器人用这部手机」 on but has not reported for ${p.minutes} min: its screen is probably off and the system put Lamplit to sleep, or it lost the network. Tell the human to open Lamplit on the phone once (and, in the app, Settings → 机器 → 手机, allow it to keep running in the background); then try again.`;
   };

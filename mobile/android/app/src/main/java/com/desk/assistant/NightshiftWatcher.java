@@ -146,6 +146,8 @@ public class NightshiftWatcher extends Service {
         long lastSync = 0;
         while (running) {
             java.util.List<String> hubs = hubsWithToken(prefs(this));
+            // 「让机器人用这部手机」 turned off by an update or a cleaner: back on (1.5.20).
+            AgentKeeper.ensure(this);
             keepAwakeForBots();
             for (String hub : hubs) ensureWorker(hub);
             // Tell every machine whether the bots may use this phone (1.4.0) -
@@ -644,7 +646,8 @@ public class NightshiftWatcher extends Service {
     private void notifyApproval(String hub, String approvalId, String botId, String botName,
                                 String tool, JSONObject args, String reason) {
         int id = eventSeq++;
-        if (id > 4199) eventSeq = 4110;
+        // At most 8 notices kept (ids reused), not 90 (1.5.20: 100 posted, the system dropped new ones).
+        if (eventSeq > 4117) eventSeq = 4110;
         String title = approvalTitle(tool);
         String detail = approvalDetail(tool, args);
         String why = reason == null || reason.trim().isEmpty()
@@ -821,7 +824,8 @@ public class NightshiftWatcher extends Service {
 
     private void notify(String title, String body, String hub, String approvalId, String botId, String botName) {
         int id = eventSeq++;
-        if (id > 4199) eventSeq = 4110;
+        // At most 8 notices kept (ids reused), not 90 (1.5.20: 100 posted, the system dropped new ones).
+        if (eventSeq > 4117) eventSeq = 4110;
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_EVENTS)
                 : new Notification.Builder(this);

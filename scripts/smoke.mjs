@@ -4014,6 +4014,30 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.20: 「让机器人用这部手机」 turned off by an update or a cleaner comes back on; the bot says why when it is off.
+  {
+    const PL2 = await import('../src/phonelink.mjs');
+    const link2 = PL2.createPhoneLink({ bus: { emit() {} } });
+    link2.register('dev-off', { enabled: false, model: 'OPPO X', phoneId: 'ph1' });
+    const why = PL2.makePhoneExec({ adbPath: () => '', link: link2 }).whyGone();
+    link2.register('dev-on', { enabled: true, model: 'OPPO X', phoneId: 'ph1' });
+    const whenOn = link2.off().length;
+    const J2 = '../mobile/android/app/src/main/';
+    const keeper = await readText(`${J2}java/com/desk/assistant/AgentKeeper.java`);
+    const svc = await readText(`${J2}java/com/desk/assistant/PhoneAgentService.java`);
+    const watch = await readText(`${J2}java/com/desk/assistant/NightshiftWatcher.java`);
+    const start = await readText(`${J2}java/com/desk/assistant/StartupReceiver.java`);
+    const man = await readText(`${J2}AndroidManifest.xml`);
+    check('K20 machine: a phone that reports the switch off is named as off (not "not connected"), with what the human should do; once it is on again it is not',
+      why.includes('is off on it') && why.includes('turn it on again') && whenOn === 0);
+    check('K20 app: what the human wants is kept (on when connected; off on 停止 or when turned off while Lamplit runs); wanted but off, it adds only its own service back (with the permission granted from a computer) or posts a notice that opens the setting',
+      svc.includes('AgentKeeper.setWanted(this, true);') && (svc.match(/AgentKeeper\.setWanted\(this, false\);/g) || []).length === 2
+      && keeper.includes('if (!wanted(c) || PhoneAgentService.instance != null || isOn(c))') && keeper.includes('Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, next)') && keeper.includes('showOffNotice(c);')
+      && watch.includes('AgentKeeper.ensure(this);') && man.includes('android.permission.WRITE_SECURE_SETTINGS'));
+    check('K20 app: after an update or a restart Lamplit starts by itself (connection and switch); event notices are capped at 8',
+      start.includes('Intent.ACTION_MY_PACKAGE_REPLACED') && start.includes('AgentKeeper.ensure(context);') && man.includes('android.intent.action.MY_PACKAGE_REPLACED') && man.includes('android.intent.action.BOOT_COMPLETED')
+      && (watch.match(/if \(eventSeq > 4117\) eventSeq = 4110;/g) || []).length === 2);
+  }
   // 1.5.19: a rebuild under the same version reaches the other machines too.
   {
     const SU = await import('../src/selfupdate.mjs');

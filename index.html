@@ -6,25 +6,27 @@
 <title>Lamplit</title>
 <meta name="description" content="Lamplit 是一个有自己电脑的 AI 助理：说一句要做什么，它在你的电脑、闲置的旧电脑或云主机上把事情办完，要你点头的事先问你。开源免费，模型用你自己的。" />
 <meta name="theme-color" content="#0A0A0A" />
-<link rel="icon" href="icon.svg?v=152" type="image/svg+xml" />
+<link rel="icon" href="icon.svg?v=1513" type="image/svg+xml" />
 <meta property="og:title" content="Lamplit" />
 <meta property="og:description" content="你休息时，灯还亮着。一个有自己电脑的 AI 助理。" />
+<link rel="alternate" hreflang="en" href="en/" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=152" />
+<link rel="stylesheet" href="style.css?v=1513" />
 </head>
-<body>
+<body data-lang="zh" data-other="en/">
 
 <header class="top">
   <div class="wrap bar">
-    <a class="brand" href="./"><img src="icon.svg?v=152" alt="" width="26" height="26" /><span>Lamplit</span></a>
+    <a class="brand" href="./"><img src="icon.svg?v=1513" alt="" width="26" height="26" /><span>Lamplit</span></a>
     <nav>
       <a class="hide-sm" href="#what">能做什么</a>
       <a class="hide-sm" href="#safe">安全</a>
       <a class="hide-sm" href="#start">开始</a>
       <a href="docs.html">文档</a>
       <a class="hide-xs" href="https://github.com/20chuangge/lamplit">GitHub</a>
+      <a class="lang" href="en/" hreflang="en" data-lang-switch="en">EN</a>
       <button class="theme" id="theme" type="button" aria-label="切换深浅色"><span></span></button>
     </nav>
   </div>
@@ -108,13 +110,13 @@
       <p class="sub">不是只会聊天。它会把一件事拆成步骤，一步一步做完，再告诉你结果放在哪。</p>
       <dl class="list">
         <div><dt>长任务，自己接着做</dt><dd>几十步的活会列成清单，做完一步勾一步，不用你一直回「继续」。说一句「停下」，它就真的停。</dd></div>
-        <div><dt>闲置电脑，一键接入</dt><dd>旧笔记本、家里的台式机、云主机，填上地址和账号自动装好。Ubuntu、Debian、Rocky、Windows 都行，之后跟着本机自动更新。</dd></div>
+        <div><dt>闲置电脑，一键接入</dt><dd>旧笔记本、家里的台式机、云主机，填上地址和账号自动装好。Ubuntu、Debian、Rocky、Windows 都行，云服务器走加密的 Tailscale，之后跟着本机自动更新。<a href="docs.html#machines">照着做的教程 →</a></dd></div>
         <div><dt>看得见，随时接管</dt><dd>每台机器的屏幕实时可看，多块屏幕一次看一块。接管后鼠标键盘都是你的，弄好了点一下，它接着做。</dd></div>
-        <div><dt>连接你常用的应用</dt><dd>邮箱（QQ、163、Gmail 等）、GitHub、GitLab、Notion 等一键连接；整理邮件、提 Issue，都通过应用自己的接口，每一步可审批。</dd></div>
+        <div><dt>连接你常用的应用</dt><dd>邮箱（QQ、163、Gmail 等）、GitHub、Notion、钉钉、飞书、高德地图、Home Assistant 等，按分类挑选、照着说明连上；整理邮件、提 Issue、开关家里的灯，都通过应用自己的接口，每一步可审批。</dd></div>
         <div><dt>编程交给你的订阅</dt><dd>写程序、改项目这类大活，交给这台电脑上已登录的 Claude Code、Codex、Cursor 或 Qoder，用你订阅的额度，还能选模型。</dd></div>
         <div><dt>看图、画图、做视频</dt><dd>发截图它能看懂；海报、插画、短视频直接生成在对话里。通义万相、豆包、智谱、MiniMax、OpenAI 等主流服务都能选。</dd></div>
         <div><dt>手机上也在</dt><dd>安卓 App 扫码连接，在外面经 Tailscale 也能连回家里；不想装 App，就在飞书里给它发消息。</dd></div>
-        <div><dt>记忆、技能、定时任务</dt><dd>记得你的习惯，把做过的流程存成技能；每天的简报、定期的检查，到点自己跑。</dd></div>
+        <div><dt>记忆、技能、定时任务</dt><dd>记得你的习惯，把做过的流程存成技能；每天的简报、定期的检查，到点自己跑。它做出来的文件、PDF、表格，在对话里点开就能看。</dd></div>
       </dl>
     </div>
   </section>
@@ -150,7 +152,7 @@
       <details><summary>要钱吗？</summary><p>Lamplit 本身开源免费。花钱的只有你自己接的模型服务（按用量计费，DeepSeek 日常使用每月几块到几十块），以及可选的生图、生视频服务。</p></details>
       <details><summary>能用我的 Claude / ChatGPT 订阅吗？</summary><p>写代码可以：把活交给这台电脑上已登录的 Claude Code、Codex、Cursor 或 Qoder，用的就是你的订阅额度。日常对话用的是你填的模型密钥——订阅账号不允许被第三方软件当接口调用，Lamplit 也不读取任何订阅的登录信息。</p></details>
       <details><summary>我的数据会传到哪里？</summary><p>Lamplit 运行在你自己的电脑和机器上，没有我们的服务器。对话发给你自己选的模型服务商；密码和授权码存在本机加密的保险箱里，不会发给模型。</p></details>
-      <details><summary>它会不会乱动我的电脑？</summary><p>删除文件、执行命令、发消息这类操作默认先问你；它只能碰工作区和你开放的文件夹；格式化、删系统这类危险命令永远拦下。这些都能在「设置 → 权限」里调。</p></details>
+      <details><summary>它会不会乱动我的电脑？</summary><p>删除文件、执行命令、发消息这类操作默认先问你；它只能碰工作区和你开放的文件夹；格式化、删系统这类危险命令永远拦下。这些都能在「设置 → 审批」和「设置 → 边界」里调。</p></details>
       <details><summary>升级会丢数据吗？以前叫 Evenlight、Nightshift 的版本呢？</summary><p>不会。直接安装新版即可，助手、记忆、设置都保留；已添加的远程机器会自动更新。Lamplit 以前叫 Evenlight，更早叫 Nightshift，数据都在同一个位置，直接覆盖安装就行。</p></details>
       <details><summary>支持 Mac 吗？</summary><p>电脑端目前只有 Windows；Linux 机器可以作为远程机器接入干活。手机端有安卓 App，iPhone 可以用浏览器打开电脑上的地址。</p></details>
     </div>
@@ -159,17 +161,18 @@
 
 <footer>
   <div class="wrap foot">
-    <a class="brand" href="./"><img src="icon.svg?v=152" alt="" width="20" height="20" /><span>Lamplit</span></a>
+    <a class="brand" href="./"><img src="icon.svg?v=1513" alt="" width="20" height="20" /><span>Lamplit</span></a>
     <nav>
       <a href="docs.html">文档</a>
       <a href="https://github.com/20chuangge/lamplit">GitHub</a>
       <a href="https://github.com/20chuangge/lamplit/releases">更新说明</a>
       <a href="https://github.com/20chuangge/lamplit/blob/main/LICENSE">MIT 许可证</a>
+      <a href="en/" hreflang="en" data-lang-switch="en">English</a>
     </nav>
     <span class="was">formerly Evenlight, Nightshift</span>
   </div>
 </footer>
 
-<script src="site.js?v=152"></script>
+<script src="site.js?v=1513"></script>
 </body>
 </html>

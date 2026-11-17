@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Documentation · Lamplit</title>
+<meta name="description" content="Lamplit documentation: install, connect a model, work with the assistants, add machines (a computer at home, a cloud server) and the usual pitfalls, approvals and the vault, connected apps, coding assistants, phone and Feishu." />
+<meta name="theme-color" content="#0A0A0A" />
+<link rel="icon" href="../icon.svg?v=1513" type="image/svg+xml" />
+<link rel="alternate" hreflang="zh-CN" href="../docs.html" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../style.css?v=1513" />
+</head>
+<body data-lang="en" data-other="../docs.html">
+
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./"><img src="../icon.svg?v=1513" alt="" width="26" height="26" /><span>Lamplit</span></a>
+    <nav>
+      <a class="hide-sm" href="./">Home</a>
+      <a href="docs.html">Docs</a>
+      <a class="hide-xs" href="https://github.com/20chuangge/lamplit/releases">Download</a>
+      <a class="hide-xs" href="https://github.com/20chuangge/lamplit">GitHub</a>
+      <a class="lang" href="../docs.html" hreflang="zh-CN" data-lang-switch="zh">中文</a>
+      <button class="theme" id="theme" type="button" aria-label="Switch light and dark"><span></span></button>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap docs">
+  <nav class="toc" aria-label="Contents">
+    <p>Contents</p>
+    <a href="#install">Install</a>
+    <a href="#model">Connect a model</a>
+    <a href="#chat">Working with the assistants</a>
+    <a href="#tasks">Long jobs and stopping</a>
+    <a href="#workspace">Workspace and files</a>
+    <a href="#machines">Add machines</a>
+    <a href="#machine-home">· A computer at home</a>
+    <a href="#machine-cloud">· A cloud server</a>
+    <a href="#pitfalls">· Common pitfalls</a>
+    <a href="#screen">Watching and taking over</a>
+    <a href="#safety">Approvals and boundaries</a>
+    <a href="#vault">Sign-ins and the vault</a>
+    <a href="#apps">Connected apps</a>
+    <a href="#coding">Coding assistants</a>
+    <a href="#media">Images, video, voice</a>
+    <a href="#phone">Phone and Feishu</a>
+    <a href="#more">Memory, skills, routines</a>
+    <a href="#update">Updates and data</a>
+    <a href="#trouble">Troubleshooting</a>
+  </nav>
+
+  <article class="doc">
+    <h1>Documentation</h1>
+    <p class="intro">Lamplit is an AI assistant with a computer of its own. This guide goes from installing it to every feature; ten minutes of reading and you can hand it work with confidence. Menu names below are as they appear with the app set to English (Settings → Appearance).</p>
+
+    <h2 id="install">Install</h2>
+    <p>Pick one from the <a href="https://github.com/20chuangge/lamplit/releases/latest">download page</a>:</p>
+    <div class="table"><table>
+      <tr><th>You want</th><th>Download</th><th>Notes</th></tr>
+      <tr><td>Everyday use on Windows</td><td><code>Lamplit-Setup-version.exe</code></td><td>Installer with desktop and Start menu shortcuts; no admin rights needed</td></tr>
+      <tr><td>No install, from a USB stick</td><td><code>Lamplit-Portable-version.exe</code></td><td>Runs as is</td></tr>
+      <tr><td>Android phone</td><td><code>Lamplit-Android-version.apk</code></td><td>Allow "install unknown apps", then install</td></tr>
+      <tr><td>iPhone / just trying</td><td>A browser</td><td>Open the computer's address and enter the pairing code</td></tr>
+    </table></div>
+    <div class="tip"><p>The Windows installer is not code-signed yet, so Windows says it "protected your PC": click "More info → Run anyway". All the code is on GitHub, and the release page lists every file's SHA-256.</p></div>
+    <p>The first launch walks you through connecting a model, meeting the assistants and trying a first request. Data lives in <code>%APPDATA%\Lamplit</code> (computers that had it before: <code>%APPDATA%\Desk</code>); uninstalling keeps it, and upgrading is just installing the new version.</p>
+    <p>The Android app is release-signed since 1.5.8. If your phone has 1.5.7 or older, uninstall it once, install the new one, and pair again.</p>
+
+    <h2 id="model">Connect a model</h2>
+    <p>Lamplit has no model of its own; it uses your key and talks straight to the provider you choose.</p>
+    <ol>
+      <li>Open <strong>Settings → Model</strong> and pick a provider: DeepSeek, Qwen, Kimi, Zhipu, Doubao, SiliconFlow, OpenAI, Claude and more are listed; any other OpenAI-compatible service goes under "Custom".</li>
+      <li>Enter the key and click "Test connection". One key can add several of its models at once.</li>
+      <li>Each assistant can use its own model: a cheap one for simple work, a strong one for hard work.</li>
+    </ol>
+    <div class="tip"><p>DeepSeek is a good first choice: cheap, good at Chinese and English, good with tools. Add a SiliconFlow key and voice input, image understanding, drawing and video all work too.</p></div>
+
+    <h2 id="chat">Working with the assistants</h2>
+    <p>Say what you need as you would to a person: "file the screenshots on my desktop by month", "how much disk is left on this machine", "give this poster a new title and make three versions". It decides which tools to use: commands, files, the browser, desktop apps, image generation…</p>
+    <ul>
+      <li><strong>Several assistants</strong>, each with its own role, memory and chat; put them in a group to share work, and hand work over just by name.</li>
+      <li><strong>It asks for tools it lacks</strong>: if it needs the command line and does not have it, a card asks whether to give it.</li>
+      <li><strong>Files it mentions open right in the chat</strong>: pictures show inline; PDFs, Word, Excel, PowerPoint, Markdown and the like are cards that preview in the app (PDF, md, txt, csv), download, or open with a program on this computer.</li>
+      <li>You can ask how it is going while it works; that does not interrupt it.</li>
+    </ul>
+
+    <h2 id="tasks">Long jobs and stopping</h2>
+    <p>A job of more than a few steps becomes a checklist it ticks off as it goes. When a turn reaches its step limit it <strong>carries on by itself</strong>; if it makes no progress for a while, it stops and tells you where it is stuck.</p>
+    <ul>
+      <li>Where you have to decide (which option, a sign-in, something only you know), the checklist waits at that step for your answer.</li>
+      <li>After a restart, unfinished jobs pick up where they were.</li>
+      <li>To stop it: click <strong>Stop</strong> next to the message box, or just say "stop" or "cancel". The current step and the whole job stop; files already made stay.</li>
+    </ul>
+
+    <h2 id="workspace">Workspace and files</h2>
+    <p>The workspace is the folder the assistants share: what they write, the pictures and videos they make, what they download. Everyone, you included, can see it. By default it is <code>%APPDATA%\Lamplit\workspace</code>.</p>
+    <ul>
+      <li><strong>Move it</strong>: <strong>Settings → Boundaries → Workspace → Change location</strong>, enter a folder (say <code>D:\Lamplit</code>); Lamplit restarts. Files are not moved for you; copy them over if you need them.</li>
+      <li><strong>Undo</strong>: before it rewrites or deletes a file in the workspace it keeps a copy; under each turn a line lists the files changed with an undo button, good for 7 days.</li>
+      <li>Beyond the workspace you can open other folders to it for reading (or writing); see "Approvals and boundaries".</li>
+    </ul>
+
+    <h2 id="machines">Add machines</h2>
+    <p>An old laptop, a desktop at home or a cloud server can all become computers it works on. Each machine has its own assistants, memory, workspace and desktop; switch between them at the top left. Added machines <strong>update with this computer</strong>, and one that was off updates when it comes back.</p>
+    <p>Go to <strong>Settings → Machines → Add machine</strong>. You enter only a name, the IP address, the SSH user, port and password. "Connect and set up" then installs what is needed over SSH, deploys Lamplit, gives each assistant a desktop, pairs, and adds the machine to the list. The password is used this once and not kept.</p>
+
+    <h3 id="machine-home">A computer at home (same network)</h3>
+    <ol>
+      <li><strong>Prepare it</strong>:
+        <ul>
+          <li><strong>Linux</strong> (Ubuntu, Debian, Rocky…): you can log in over SSH, and the account has sudo.</li>
+          <li><strong>Windows 10 / 11</strong>: install and start <strong>OpenSSH Server</strong> under Settings → System → Optional features; use an administrator account.</li>
+          <li>Keep it plugged in and turn off sleep; a sleeping machine cannot be reached.</li>
+        </ul>
+      </li>
+      <li><strong>Find its IP</strong>: <code>ip addr</code> on Linux, <code>ipconfig</code> on Windows; usually <code>192.168.x.x</code>. For a virtual machine, set its network to "bridged" so it sits on the same network as your computer.</li>
+      <li><strong>Add it in Lamplit</strong>: IP, user, password. On Linux pick the desktop: "Light" (windows only, saves memory, recommended) or "Full" (XFCE).</li>
+      <li><strong>Wait for setup</strong>: the bar shows the step. A first Linux setup takes a few minutes (desktop packages take longest); the assistants' desktop and browser keep installing in the background, and you can give it work before that finishes.</li>
+      <li><strong>Switch and try</strong>: click "Switch to this machine" and say "list the files in the workspace". It works only on that machine.</li>
+    </ol>
+    <div class="tip"><p>On an added Windows machine, the assistants' commands run as a separate low-privilege account, <code>lamplit-runner</code>, which cannot touch Lamplit's own data; setup creates it.</p></div>
+
+    <h3 id="machine-cloud">A cloud server</h3>
+    <p>A cloud server has a public address, and the one rule that matters: <strong>do not open Lamplit's port (4390) to the internet</strong>. Its connection is not encrypted, so the pairing credentials could be seen. Use <a href="https://tailscale.com/">Tailscale</a> to join the server and your devices into a private network:</p>
+    <ol>
+      <li><strong>Get a Tailscale key</strong>: install Tailscale on your computer and phone and sign in; in the Tailscale admin console open <a href="https://login.tailscale.com/admin/settings/keys">Settings → Keys</a> and click "Generate auth key". You want an Auth key starting with <code>tskey-auth-</code>, not an API access token.</li>
+      <li><strong>The server's security group</strong>: allow only SSH (port 22 by default) from your computer, for this one-time setup; <strong>do not open 4390</strong>.</li>
+      <li><strong>Add it in Lamplit</strong>: the public IP, the SSH user (often <code>ubuntu</code> on Ubuntu images, <code>root</code> on some clouds) and password; open "Reach it from outside too (optional, Tailscale)" and paste the key. Lamplit points to this step when you enter a public IP.</li>
+      <li><strong>Done</strong>: Lamplit installs Tailscale on the server and joins your network; from then on it uses the encrypted Tailscale address (<code>100.x.x.x</code>). The key is used once and deleted from the server.</li>
+    </ol>
+    <div class="tip"><p>Cloud servers usually have no screen; the assistants' browser and desktop run on a virtual display. When a site needs a QR scan to sign in, the assistant asks you to take over in the Computer panel.</p></div>
+
+    <h3 id="pitfalls">Common pitfalls</h3>
+    <div class="table"><table>
+      <tr><th>What you see</th><th>Why</th><th>What to do</th></tr>
+      <tr><td>With a proxy such as Clash on, Tailscale addresses (<code>100.x.x.x</code>) do not load, or say HTTP 502</td><td>System proxies usually skip <code>192.168.*</code> and <code>10.*</code> but not Tailscale's <code>100.64.0.0/10</code>, so requests go to the proxy</td><td>The Lamplit desktop app already goes direct; in a browser, add <code>100.64.0.0/10</code> to the proxy's bypass / direct list</td></tr>
+      <tr><td>Adding a cloud server sits on "connecting", then times out</td><td>The security group or firewall does not allow the SSH port</td><td>Allow port 22 (or your SSH port) in the cloud console's security group; still keep 4390 closed</td></tr>
+      <tr><td>On Ubuntu the command sandbox does not work: "the system does not let ordinary users make a sandbox"</td><td>Since Ubuntu 23.10, AppArmor stops ordinary programs from making user namespaces, which blocks the sandbox program bwrap</td><td>Setup writes an AppArmor rule for bwrap only; if it did not get installed, run the one line the message gives you with sudo, then restart Lamplit</td></tr>
+      <tr><td>The phone or browser says the pairing code is wrong</td><td>The pairing code is 8 digits and <strong>changes every day</strong></td><td>On a device already connected to that machine, open <strong>Settings → Phone &amp; away</strong> for today's code; devices already paired are not affected</td></tr>
+      <tr><td>A Windows user name in Chinese breaks the command account or some paths</td><td>Early versions read a settings file in the system code page, so non-English paths came out garbled</td><td>Fixed in 1.5.7; update to the latest. You can also keep the workspace on a plain English path such as <code>D:\Lamplit</code></td></tr>
+      <tr><td>A Windows machine cannot be added; SSH does not connect</td><td>OpenSSH Server is not installed or not running, or the account is not an administrator</td><td>Install OpenSSH Server in Optional features, set it to Automatic and start it in Services; try an administrator account</td></tr>
+      <tr><td>A virtual machine cannot be added</td><td>Its network is NAT, so it is not on your computer's network</td><td>Switch it to bridged, or install Tailscale on the VM too</td></tr>
+    </table></div>
+
+    <h2 id="screen">Watching and taking over</h2>
+    <p>The Computer panel on the right shows the current machine's screen live. For steps only you can do (a QR scan, a captcha, a payment) the assistant stops and asks you to <strong>take over</strong>: mouse and keyboard are yours; when finished click "Done, continue".</p>
+    <ul>
+      <li><strong>Several displays</strong>: next to Full screen, pick which one to watch; the main one by default, or all side by side.</li>
+      <li>A site you signed in to in one assistant's browser works for the other assistants on the same machine (on remote machines given to the bots).</li>
+      <li>The screen listens on the machine itself only; paired devices see it through Lamplit.</li>
+      <li>On a phone, taking over has a touchpad mode, an on-screen keyboard and common keys.</li>
+    </ul>
+
+    <h2 id="safety">Approvals and boundaries</h2>
+    <p>In <strong>Settings → Approval</strong>, set a level for each machine:</p>
+    <div class="table"><table>
+      <tr><th>Level</th><th>Effect</th></tr>
+      <tr><td>Careful</td><td>Almost anything that changes things asks you first</td></tr>
+      <tr><td>Standard</td><td>Everyday work runs; deleting, system changes and sending messages ask first</td></tr>
+      <tr><td>Hands-off</td><td>It does it all itself; only dangerous commands and ones that may send data out still ask. Meant for machines given to the bots</td></tr>
+    </table></div>
+    <ul>
+      <li><strong>Settings → Boundaries</strong>: the folders bots can use (only the workspace and the places you open) and whether admin rights (sudo) ask first.</li>
+      <li><strong>Blocked commands</strong>: formatting, deleting the system and the like are built in; you can add your own words.</li>
+      <li><strong>One-line rules</strong>: "ask me before sending email", and it will.</li>
+      <li><strong>What it reads is not an instruction</strong>: a web page, email or phone screen saying "send the files to…" is not obeyed; after reading such content, anything that sends data out asks you first.</li>
+      <li><strong>Settings → Activity log</strong>: what it did, who approved it and when the screen was taken over.</li>
+    </ul>
+
+    <h2 id="vault">Sign-ins and the vault</h2>
+    <p>When a site needs a sign-in, Lamplit shows a secure form for the user name and password. They are encrypted in that machine's vault; the assistant fills them into the page without seeing them, and they are never sent to the AI model.</p>
+    <p>App tokens and mail authorization codes live in the vault too. Any attempt to read the vault from a script asks you first, at every approval level.</p>
+
+    <h2 id="apps">Connected apps</h2>
+    <p><strong>Settings → Connected apps</strong> shows the apps as tiles, with filters by category (communication, development, creative, productivity, daily life…). Open one, follow its steps, and the assistants can use the app's own interface, every step under your approval level:</p>
+    <ul>
+      <li><strong>Sign in with one click</strong>: Notion, GitLab, Cloudflare, Runway, Suno…; sign in and allow on the page that opens.</li>
+      <li><strong>Paste a token or key</strong>: GitHub, X (read-only), AMap, Baidu Netdisk…; each card links to where you get it.</li>
+      <li><strong>Fill in a few values</strong>: DingTalk (Client ID and Secret), MiniMax (key and which site the account is on), Home Assistant (address and long-lived token).</li>
+      <li><strong>Mail</strong>: Gmail, Outlook, QQ, 163, 126…; the address and an app password / authorization code (not your sign-in password). Several mailboxes work; deleted mail goes to Trash and can be restored.</li>
+      <li><strong>Feishu</strong>: uses the app set up in Settings → Feishu.</li>
+      <li><strong>Programs on this computer</strong>: Obsidian, Docker, Godot and Kubernetes talk to local programs, so they are connected on this machine only.</li>
+    </ul>
+    <div class="tip"><p>Except for local programs, connecting once connects it on all your machines. For an app not in the list, use "Add one yourself" at the bottom (a command or an address).</p></div>
+
+    <h2 id="coding">Coding assistants (on your subscription)</h2>
+    <p>For writing programs or changing a project, Lamplit can hand the work to the official coding tool already signed in on this computer, on your own plan rather than per-call API fees:</p>
+    <div class="table"><table>
+      <tr><th>Tool</th><th>Subscription</th><th>Sign in after installing</th></tr>
+      <tr><td>Claude Code</td><td>Claude Pro / Max</td><td><code>claude</code></td></tr>
+      <tr><td>Codex CLI</td><td>ChatGPT</td><td><code>codex login</code></td></tr>
+      <tr><td>Cursor</td><td>Cursor</td><td><code>agent login</code></td></tr>
+      <tr><td>Qoder</td><td>Qoder</td><td><code>qoder login</code> (China edition: <code>qodercn login</code>)</td></tr>
+    </table></div>
+    <ul>
+      <li><strong>Settings → Model → Coding assistants on your subscription</strong> shows which are installed and signed in, and the default model for each.</li>
+      <li>For a big coding job the assistant offers to hand it over; every handover asks you first.</li>
+      <li>They change files only in the task folder, and run commands only if "run commands" is ticked.</li>
+      <li>Lamplit never reads or touches these tools' sign-in data.</li>
+    </ul>
+
+    <h2 id="media">Images, video, voice</h2>
+    <ul>
+      <li><strong>Seeing</strong>: send a screenshot or photo and it understands it. Settings → Model → Image understanding.</li>
+      <li><strong>Drawing</strong>: SiliconFlow (Kolors, Qwen-Image, FLUX), Doubao Seedream, Wanxiang, Zhipu CogView, MiniMax, OpenAI, Google Imagen.</li>
+      <li><strong>Video</strong>: SiliconFlow (Wanxiang), Doubao Seedance, Wanxiang, MiniMax Hailuo, Zhipu CogVideoX. Videos are made in the background; it tells you when they are ready.</li>
+      <li><strong>Voice</strong>: hold to talk and it becomes text; replies can be read aloud, each assistant with its own voice.</li>
+    </ul>
+
+    <h2 id="phone">Phone and Feishu</h2>
+    <ol>
+      <li>On the computer open <strong>Settings → Phone &amp; away</strong> and turn on "Allow phone connections".</li>
+      <li>Install the Android app and scan the code on the computer. Without scanning, open the address shown there in the phone's browser and enter the pairing code.</li>
+      <li>Away from home: install <a href="https://tailscale.com/">Tailscale</a> on the phone and the computer; when the home network is out of reach it switches to Tailscale without pairing again.</li>
+      <li>In the Android app, turn on "Let bots use this phone" and the bots can see the screen, tap, type and open apps; paying, sending, publishing and agreeing to terms always ask you first, and a locked phone is never unlocked.</li>
+    </ol>
+    <p>No app: connect a Feishu bot in <strong>Settings → Feishu</strong> and message the assistants from Feishu; results, pictures and videos come back there, and you approve by replying.</p>
+
+    <h2 id="more">Memory, skills, routines</h2>
+    <ul>
+      <li><strong>Memory</strong>: it keeps your habits and preferences; each assistant has its own, and there is one they share.</li>
+      <li><strong>Skills</strong>: a workflow it has done can be saved as a skill and reused with one sentence.</li>
+      <li><strong>Routines</strong>: daily briefings and regular checks run on time, whether or not you are there. In the chat each run takes one line, "⏱ time · task · how often"; "Show instruction" lets you edit it, pause it or run it again now. A run that found nothing new does not disturb you.</li>
+    </ul>
+
+    <h2 id="update">Updates and data</h2>
+    <ul>
+      <li>It tells you when a new version is out; install it and assistants, memory and settings all stay. Added machines update to the same version, and update packages are signature-checked.</li>
+      <li>Lamplit was called <strong>Evenlight</strong>, and before that <strong>Nightshift</strong>; the data is in the same place, so installing over it is all it takes.</li>
+      <li>Where data lives: <code>%APPDATA%\Lamplit</code> on the computer (<code>%APPDATA%\Desk</code> on computers that had 1.2.151 or older); under <code>data</code> in the install folder on Linux machines.</li>
+    </ul>
+
+    <h2 id="trouble">Troubleshooting</h2>
+    <h3>It does not answer, or answers slowly</h3>
+    <p>Look for a notice at the top such as "this machine is running out of memory"; then click "Test connection" in Settings → Model to check the key and balance.</p>
+    <h3>The phone does not connect</h3>
+    <p>Check "Allow phone connections" is on and the phone is on the same network; away from home, use Tailscale. The pairing code changes daily; see <a href="#pitfalls">Common pitfalls</a>.</p>
+    <h3>The screen says it cannot connect to the server</h3>
+    <p>Click Refresh in the Computer panel. Right after start-up or a display switch, the screen service needs a few seconds.</p>
+    <h3>Still stuck</h3>
+    <p>Open an issue on <a href="https://github.com/20chuangge/lamplit/issues">GitHub</a> with a screenshot of the error.</p>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap foot">
+    <a class="brand" href="./"><img src="../icon.svg?v=1513" alt="" width="20" height="20" /><span>Lamplit</span></a>
+    <nav>
+      <a href="./">Home</a>
+      <a href="https://github.com/20chuangge/lamplit">GitHub</a>
+      <a href="https://github.com/20chuangge/lamplit/releases">Releases</a>
+      <a href="https://github.com/20chuangge/lamplit/blob/main/LICENSE">MIT license</a>
+      <a href="../docs.html" hreflang="zh-CN" data-lang-switch="zh">中文</a>
+    </nav>
+    <span class="was">formerly Evenlight, Nightshift</span>
+  </div>
+</footer>
+
+<script src="../site.js?v=1513"></script>
+</body>
+</html>

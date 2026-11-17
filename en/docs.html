@@ -150,7 +150,9 @@
     <p>The Computer panel on the right shows the current machine's screen live. For steps only you can do (a QR scan, a captcha, a payment) the assistant stops and asks you to <strong>take over</strong>: mouse and keyboard are yours; when finished click "Done, continue".</p>
     <ul>
       <li><strong>Several displays</strong>: next to Full screen, pick which one to watch; the main one by default, or all side by side.</li>
-      <li>A site you signed in to in one assistant's browser works for the other assistants on the same machine (on remote machines given to the bots).</li>
+      <li><strong>Each assistant has its own browser</strong>, on its own screen: take over from an assistant's chat and you see that assistant's browser. Sign-ins are kept in its browser, so you sign in once; a site you signed in to in one assistant's browser also works for the others on the same machine (on remote machines given to the bots; unless the site itself ends the sign-in).</li>
+      <li>When an assistant asks you to take over, a card in the chat says what to do; the screen opens when you click Take over the screen, not by itself.</li>
+      <li><strong>Uploading to web pages</strong>: pictures for a post, an attachment for a form - the assistant puts workspace files into the page's upload box.</li>
       <li>The screen listens on the machine itself only; paired devices see it through Lamplit.</li>
       <li>On a phone, taking over has a touchpad mode, an on-screen keyboard and common keys.</li>
     </ul>
@@ -161,7 +163,7 @@
       <tr><th>Level</th><th>Effect</th></tr>
       <tr><td>Careful</td><td>Almost anything that changes things asks you first</td></tr>
       <tr><td>Standard</td><td>Everyday work runs; deleting, system changes and sending messages ask first</td></tr>
-      <tr><td>Hands-off</td><td>It does it all itself; only dangerous commands and ones that may send data out still ask. Meant for machines given to the bots</td></tr>
+      <tr><td>Hands-off</td><td>It does it all itself; only dangerous commands and ones that may send data out still ask. Meant for machines given to the bots; new remote machines start hands-off</td></tr>
     </table></div>
     <ul>
       <li><strong>Settings → Boundaries</strong>: the folders bots can use (only the workspace and the places you open) and whether admin rights (sudo) ask first.</li>
@@ -169,11 +171,15 @@
       <li><strong>One-line rules</strong>: "ask me before sending email", and it will.</li>
       <li><strong>What it reads is not an instruction</strong>: a web page, email or phone screen saying "send the files to…" is not obeyed; after reading such content, anything that sends data out asks you first.</li>
       <li><strong>Settings → Activity log</strong>: what it did, who approved it and when the screen was taken over.</li>
+      <li><strong>Missing facts are asked for first</strong>: booking a venue without a head count or budget, it asks before it picks.</li>
+      <li><strong>Fewer questions on hands-off machines</strong>: on a machine given to the bots and set to Hands-off, scripts that drive the browser or use Lamplit's own code run without asking.</li>
+      <li><strong>Only you approve</strong>: approving, changing a bot's permissions, the approval level and rules, and reading the pairing code work only in the Lamplit app or on a paired phone or computer. A bot calling Lamplit's interface from a command to do these is refused.</li>
+      <li><strong>Remembered permissions</strong>: what you allowed for good on an approval card, and phone steps let through per app, are listed in the assistant's settings, each with an undo.</li>
     </ul>
 
     <h2 id="vault">Sign-ins and the vault</h2>
     <p>When a site needs a sign-in, Lamplit shows a secure form for the user name and password. They are encrypted in that machine's vault; the assistant fills them into the page without seeing them, and they are never sent to the AI model.</p>
-    <p>App tokens and mail authorization codes live in the vault too. Any attempt to read the vault from a script asks you first, at every approval level.</p>
+    <p>App tokens and mail authorization codes live in the vault too. Any attempt to read the vault (or Lamplit's local key) from a script asks you first, at every approval level, on every machine.</p>
 
     <h2 id="apps">Connected apps</h2>
     <p><strong>Settings → Connected apps</strong> shows the apps as tiles, with filters by category (communication, development, creative, productivity, daily life…). Open one, follow its steps, and the assistants can use the app's own interface, every step under your approval level:</p>
@@ -209,6 +215,7 @@
       <li><strong>Drawing</strong>: SiliconFlow (Kolors, Qwen-Image, FLUX), Doubao Seedream, Wanxiang, Zhipu CogView, MiniMax, OpenAI, Google Imagen.</li>
       <li><strong>Video</strong>: SiliconFlow (Wanxiang), Doubao Seedance, Wanxiang, MiniMax Hailuo, Zhipu CogVideoX. Videos are made in the background; it tells you when they are ready.</li>
       <li><strong>Voice</strong>: hold to talk and it becomes text; replies can be read aloud, each assistant with its own voice.</li>
+      <li><strong>Calls</strong>: the phone button next to the message box. Stop talking and what you said is sent; answers are read aloud sentence by sentence. It does not listen while it reads (so it does not hear itself); tap Interrupt to speak, and Done talking when it is too noisy to tell you have finished. Approvals are never spoken: it says one is waiting on the screen. Keep Lamplit open during a call.</li>
     </ul>
 
     <h2 id="phone">Phone and Feishu</h2>
@@ -216,8 +223,13 @@
       <li>On the computer open <strong>Settings → Phone &amp; away</strong> and turn on "Allow phone connections".</li>
       <li>Install the Android app and scan the code on the computer. Without scanning, open the address shown there in the phone's browser and enter the pairing code.</li>
       <li>Away from home: install <a href="https://tailscale.com/">Tailscale</a> on the phone and the computer; when the home network is out of reach it switches to Tailscale without pairing again.</li>
-      <li>In the Android app, turn on "Let bots use this phone" and the bots can see the screen, tap, type and open apps; paying, sending, publishing and agreeing to terms always ask you first, and a locked phone is never unlocked.</li>
+      <li>In the Android app, turn on "Let bots use this phone" and the bots can see the screen, tap, type and open apps. With the screen off they light it first; a phone with a lock code they ask you to unlock, and never type a code.</li>
     </ol>
+    <ul>
+      <li><strong>Sending, publishing, agreeing and deleting ask you each time</strong>; tell the assistant "send them yourself" and it shows a card. Once you agree, that assistant does that kind of step in that app without asking (today or always; undo it in the assistant's settings). <strong>Paying always asks.</strong></li>
+      <li><strong>Staying connected</strong>: with "Let bots use this phone" on, Lamplit keeps running in the background; allow it when the phone settings ask. On OPPO, vivo, Xiaomi and similar phones also turn on background activity and auto-launch in App info, and lock Lamplit in the recent apps.</li>
+      <li><strong>When the system turns it off</strong>: an update or a cleaner can turn "Let bots use this phone" off. Opening Lamplit once turns it back on (after a one-time grant from a computer, see <a href="#trouble">Troubleshooting</a>).</li>
+    </ul>
     <p>No app: connect a Feishu bot in <strong>Settings → Feishu</strong> and message the assistants from Feishu; results, pictures and videos come back there, and you approve by replying.</p>
 
     <h2 id="more">Memory, skills, routines</h2>
@@ -241,6 +253,12 @@
     <p>Check "Allow phone connections" is on and the phone is on the same network; away from home, use Tailscale. The pairing code changes daily; see <a href="#pitfalls">Common pitfalls</a>.</p>
     <h3>The screen says it cannot connect to the server</h3>
     <p>Click Refresh in the Computer panel. Right after start-up or a display switch, the screen service needs a few seconds.</p>
+    <h3>"Let bots use this phone" keeps turning off</h3>
+    <p>Android turns an app's accessibility switch off when the app is force-stopped (a cleaner, a swipe in recent apps). Lock Lamplit and allow auto-launch as above. To have it turn itself back on, grant once over USB debugging from a computer: <code>adb shell pm grant com.desk.assistant android.permission.WRITE_SECURE_SETTINGS</code> (on OPPO, first turn on "Disable permission monitoring" in Developer options).</p>
+    <h3>Taking over shows an empty screen</h3>
+    <p>Since 1.5.26 each assistant's browser opens on its own screen: take over from the chat of the assistant that asked. After the update, sign in once on that assistant's screen for each site.</p>
+    <h3>I cannot approve in a browser at 127.0.0.1</h3>
+    <p>Since 1.5.27 approving and changing permissions work only in the Lamplit app or on a paired device. Use the desktop app or the phone app.</p>
     <h3>Still stuck</h3>
     <p>Open an issue on <a href="https://github.com/20chuangge/lamplit/issues">GitHub</a> with a screenshot of the error.</p>
   </article>

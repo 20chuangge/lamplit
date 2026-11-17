@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lamplit</title>
+<meta name="description" content="Lamplit is an AI assistant with a computer of its own: say what you need, and it gets it done on your PC, a spare old computer or a cloud server, asking you first when it should. Open source and free; you bring your own model." />
+<meta name="theme-color" content="#0A0A0A" />
+<link rel="icon" href="../icon.svg?v=1513" type="image/svg+xml" />
+<meta property="og:title" content="Lamplit" />
+<meta property="og:description" content="While you rest, the lamp stays lit. An AI assistant with a computer of its own." />
+<link rel="alternate" hreflang="zh-CN" href="../" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../style.css?v=1513" />
+</head>
+<body data-lang="en" data-other="../">
+
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./"><img src="../icon.svg?v=1513" alt="" width="26" height="26" /><span>Lamplit</span></a>
+    <nav>
+      <a class="hide-sm" href="#what">What it does</a>
+      <a class="hide-sm" href="#safe">Safety</a>
+      <a class="hide-sm" href="#start">Start</a>
+      <a href="docs.html">Docs</a>
+      <a class="hide-xs" href="https://github.com/20chuangge/lamplit">GitHub</a>
+      <a class="lang" href="../" hreflang="zh-CN" data-lang-switch="zh">中文</a>
+      <button class="theme" id="theme" type="button" aria-label="Switch light and dark"><span></span></button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="glow" aria-hidden="true"></div>
+    <div class="wrap">
+      <p class="kicker">Lamplit</p>
+      <h1>While you rest,<br class="br-sm" /> <em>the lamp stays lit.</em></h1>
+      <p class="lead">An AI assistant with a computer of its own. Say what you need, and it gets it done on your PC, a spare old computer at home or a cloud server. Anything that needs your OK, it asks first.</p>
+      <div class="cta">
+        <a class="btn primary" id="dl-setup" href="https://github.com/20chuangge/lamplit/releases/latest">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
+          Download for Windows<span id="dl-version"></span>
+        </a>
+        <a class="btn" id="dl-apk" href="https://github.com/20chuangge/lamplit/releases/latest">Android app</a>
+        <a class="btn ghost" href="docs.html">Read the docs →</a>
+      </div>
+      <p class="meta"><span id="dl-size">Windows 10 / 11 · 64-bit</span><i></i>Android<i></i>Free and open source · MIT</p>
+
+      <div class="stage" aria-label="A sketch of the Lamplit chat (demo content)">
+        <div class="win">
+          <div class="win-bar"><span></span><span></span><span></span><b>Lamplit · This computer</b></div>
+          <div class="win-body">
+            <aside class="win-side">
+              <div class="who on"><i class="av a1"></i><div><b>Assistant</b><small>Tidying Downloads</small></div></div>
+              <div class="who"><i class="av a2"></i><div><b>Design</b><small>Poster ready</small></div></div>
+              <div class="who"><i class="av a3"></i><div><b>Research</b><small>Weekly report at 08:30</small></div></div>
+              <div class="who"><i class="av a4"></i><div><b>Ubuntu box</b><small>Online · idle</small></div></div>
+            </aside>
+            <div class="win-chat">
+              <div class="msg me">Clean up installers older than three months in Downloads. Show me before deleting anything.</div>
+              <div class="msg bot">Sure. I'll make a list first and wait for your OK.</div>
+              <div class="card task">
+                <div class="card-h"><span class="dot"></span>Task · Tidy Downloads</div>
+                <ol>
+                  <li class="done">Find installers older than three months <em>37 files · 4.2 GB</em></li>
+                  <li class="done">Group by app, mark the ones still in use</li>
+                  <li class="now">Wait for you to check the list</li>
+                  <li>Move to the Recycle Bin, report back</li>
+                </ol>
+              </div>
+              <div class="card ask">
+                <div class="card-h"><span class="dot warm"></span>Wants to move 37 files to the Recycle Bin</div>
+                <p>They can be restored from there. The list is in <code>downloads-cleanup.md</code>.</p>
+                <div class="ask-b"><span class="b ok">Approve</span><span class="b">Deny</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="stage-note">An illustration with demo content. The app itself is in Chinese and English.</p>
+    </div>
+  </section>
+
+  <section class="pillars">
+    <div class="wrap three">
+      <div>
+        <span class="num">01</span>
+        <h3>It has its own computer</h3>
+        <p>It runs commands, drives the browser and desktop apps, and reads and writes files. You can watch the screen any time; for a QR code or a captcha it stops and hands you the controls.</p>
+      </div>
+      <div>
+        <span class="num">02</span>
+        <h3>It asks before acting</h3>
+        <p>Each machine has its own approval level. It only touches the folders you open to it, and passwords and app tokens stay in a local vault that even it cannot read.</p>
+      </div>
+      <div>
+        <span class="num">03</span>
+        <h3>Your own model</h3>
+        <p>DeepSeek, Qwen, Kimi, Zhipu, Doubao, OpenAI, Claude and more, with your own key. Big coding jobs go to the coding assistant you already subscribe to.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="what" class="what">
+    <div class="wrap">
+      <h2>Hand it the work on your computer</h2>
+      <p class="sub">Not just chat. It breaks a job into steps, works through them, and tells you where the results are.</p>
+      <dl class="list">
+        <div><dt>Long jobs, carried through</dt><dd>A job of dozens of steps becomes a checklist it ticks off as it goes; no need to keep typing "continue". Say "stop" and it really stops.</dd></div>
+        <div><dt>Spare computers, added in one go</dt><dd>An old laptop, a desktop at home, a cloud server: enter the address and an account and it sets itself up. Ubuntu, Debian, Rocky and Windows all work; cloud servers go over encrypted Tailscale, and every machine updates with this one. <a href="docs.html#machines">Step-by-step guide →</a></dd></div>
+        <div><dt>Watch, and take over</dt><dd>See each machine's screen live, one display at a time. When you take over, mouse and keyboard are yours; click once and it carries on.</dd></div>
+        <div><dt>The apps you use</dt><dd>Mail (Gmail, Outlook, QQ, 163…), GitHub, Notion, DingTalk, Feishu, AMap, Home Assistant and more, picked by category and connected by following the steps on each card. Every step goes through the app's own interface and can be approved.</dd></div>
+        <div><dt>Coding on your subscription</dt><dd>Writing programs or changing a project goes to the Claude Code, Codex, Cursor or Qoder already signed in on this computer, on your own plan, with the model you pick.</dd></div>
+        <div><dt>Pictures, drawings, video</dt><dd>Send a screenshot and it understands it; posters, illustrations and short videos appear right in the chat, from Wanxiang, Doubao, Zhipu, MiniMax, OpenAI and others.</dd></div>
+        <div><dt>On your phone too</dt><dd>Scan a code with the Android app; away from home it reaches back over Tailscale. No app? Message it on Feishu.</dd></div>
+        <div><dt>Memory, skills, schedules</dt><dd>It remembers your habits and keeps workflows as skills; daily briefings and regular checks run on time. Files, PDFs and sheets it makes open right in the chat.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="safe" class="safe">
+    <div class="wrap">
+      <blockquote>Adding an old computer<br />does not hand its files to a bot.</blockquote>
+      <div class="four">
+        <div><h4>Approval levels</h4><p>Careful, standard or hands-off, set per machine; dangerous commands are always stopped.</p></div>
+        <div><h4>Folders it may touch</h4><p>Only the workspace and the places you open. Anywhere else it asks, or is simply not allowed.</p></div>
+        <div><h4>Passwords stay out of the chat</h4><p>Sign-ins use a secure form; they are encrypted in that machine's vault and never sent to the AI model.</p></div>
+        <div><h4>Every step is logged</h4><p>What it did, who approved it and when the screen was taken over are all in the activity log.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="start" class="start">
+    <div class="wrap">
+      <h2>Three steps to start</h2>
+      <p class="sub">Up and running in minutes; adding a remote machine takes about half a minute of typing.</p>
+      <ol class="steps">
+        <li><h3>Download and install</h3><p>Get the Windows installer, or the portable version that runs as is. The installer is not code-signed yet: when Windows warns you, choose "More info → Run anyway".</p></li>
+        <li><h3>Add a model key</h3><p>Open Settings → Model, pick a provider and enter your own key. DeepSeek is cheap and good; add a SiliconFlow key too and voice, image understanding and drawing all work.</p></li>
+        <li><h3>Say what you need</h3><p>For example "file the screenshots on my desktop by month". To put a spare computer to work: Settings → Machines → Add machine.</p></li>
+      </ol>
+      <p class="more"><a href="docs.html">Full documentation →</a></p>
+    </div>
+  </section>
+
+  <section id="faq" class="faq">
+    <div class="wrap narrow">
+      <h2>Questions</h2>
+      <details><summary>Does it cost anything?</summary><p>Lamplit itself is free and open source. You pay only for the model service you connect (by usage; everyday use of DeepSeek is a few dollars a month or less) and any optional image or video services.</p></details>
+      <details><summary>Can I use my Claude or ChatGPT subscription?</summary><p>For coding, yes: the work goes to the Claude Code, Codex, Cursor or Qoder signed in on this computer, on your own plan. Everyday chat uses the model key you enter. Subscriptions do not allow third-party apps to use them as an API, and Lamplit never reads any subscription's sign-in data.</p></details>
+      <details><summary>Where does my data go?</summary><p>Lamplit runs on your own computers; there is no server of ours. Conversations go to the model provider you choose; passwords and tokens stay in the encrypted local vault and are never sent to the model.</p></details>
+      <details><summary>Will it mess with my computer?</summary><p>Deleting files, running commands and sending messages ask you first by default; it only touches the workspace and the folders you open; formatting a disk or deleting system files is always stopped. All of this is in Settings → Approval and Settings → Boundaries.</p></details>
+      <details><summary>Is the app in English?</summary><p>Yes. In Settings → Appearance pick English, Chinese or "follow the system"; the assistants then reply in that language too.</p></details>
+      <details><summary>Does it run on a Mac?</summary><p>The desktop app is Windows only for now; Linux machines can join as remote machines that do the work. On phones there is an Android app, and an iPhone can open the computer's address in a browser.</p></details>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <a class="brand" href="./"><img src="../icon.svg?v=1513" alt="" width="20" height="20" /><span>Lamplit</span></a>
+    <nav>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/20chuangge/lamplit">GitHub</a>
+      <a href="https://github.com/20chuangge/lamplit/releases">Releases</a>
+      <a href="https://github.com/20chuangge/lamplit/blob/main/LICENSE">MIT license</a>
+      <a href="../" hreflang="zh-CN" data-lang-switch="zh">中文</a>
+    </nav>
+    <span class="was">formerly Evenlight, Nightshift</span>
+  </div>
+</footer>
+
+<script src="../site.js?v=1513"></script>
+</body>
+</html>

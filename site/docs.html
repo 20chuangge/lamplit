@@ -4,24 +4,26 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>使用文档 · Lamplit</title>
-<meta name="description" content="Lamplit（Lamplit）使用文档：安装、接模型、和助手一起做事、添加机器、权限与保险箱、连接应用、编程助手、手机与飞书。" />
+<meta name="description" content="Lamplit 使用文档：安装、接模型、和助手一起做事、添加机器（家里的电脑、云服务器）和常见的坑、权限与保险箱、连接应用、编程助手、手机与飞书。" />
 <meta name="theme-color" content="#0A0A0A" />
-<link rel="icon" href="icon.svg?v=152" type="image/svg+xml" />
+<link rel="icon" href="icon.svg?v=1513" type="image/svg+xml" />
+<link rel="alternate" hreflang="en" href="en/docs.html" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="style.css?v=152" />
+<link rel="stylesheet" href="style.css?v=1513" />
 </head>
-<body>
+<body data-lang="zh" data-other="en/docs.html">
 
 <header class="top">
   <div class="wrap bar">
-    <a class="brand" href="./"><img src="icon.svg?v=152" alt="" width="26" height="26" /><span>Lamplit</span></a>
+    <a class="brand" href="./"><img src="icon.svg?v=1513" alt="" width="26" height="26" /><span>Lamplit</span></a>
     <nav>
       <a class="hide-sm" href="./">首页</a>
       <a href="docs.html">文档</a>
       <a class="hide-xs" href="https://github.com/20chuangge/lamplit/releases">下载</a>
       <a class="hide-xs" href="https://github.com/20chuangge/lamplit">GitHub</a>
+      <a class="lang" href="en/docs.html" hreflang="en" data-lang-switch="en">EN</a>
       <button class="theme" id="theme" type="button" aria-label="切换深浅色"><span></span></button>
     </nav>
   </div>
@@ -34,8 +36,11 @@
     <a href="#model">接一个模型</a>
     <a href="#chat">和助手一起做事</a>
     <a href="#tasks">长任务与停下</a>
-    <a href="#workspace">工作区</a>
+    <a href="#workspace">工作区与文件</a>
     <a href="#machines">添加机器</a>
+    <a href="#machine-home">· 家里的电脑</a>
+    <a href="#machine-cloud">· 云服务器</a>
+    <a href="#pitfalls">· 常见的坑</a>
     <a href="#screen">看屏幕与接管</a>
     <a href="#safety">权限与审批</a>
     <a href="#vault">登录与保险箱</a>
@@ -61,14 +66,15 @@
       <tr><td>安卓手机</td><td><code>Lamplit-Android-版本.apk</code></td><td>允许「安装未知来源应用」后安装</td></tr>
       <tr><td>iPhone / 临时用</td><td>浏览器</td><td>打开电脑上的地址，输入配对码</td></tr>
     </table></div>
-    <div class="tip"><p>安装包还没有做代码签名，Windows 会提示「已保护你的电脑」：点「更多信息 → 仍要运行」。代码全部公开在 GitHub。</p></div>
-    <p>数据放在 <code>%APPDATA%\Lamplit</code>（以前装过的电脑是 <code>%APPDATA%\Desk</code>），卸载不会删除；升级直接装新版，什么都不会丢。</p>
+    <div class="tip"><p>Windows 安装包还没有做代码签名，Windows 会提示「已保护你的电脑」：点「更多信息 → 仍要运行」。代码全部公开在 GitHub，发布页列出了每个文件的 SHA-256。</p></div>
+    <p>第一次打开会有一个简短的引导：接模型、认识助手、试一句话。数据放在 <code>%APPDATA%\Lamplit</code>（以前装过的电脑是 <code>%APPDATA%\Desk</code>），卸载不会删除；升级直接装新版，什么都不会丢。</p>
+    <p>安卓 App 从 1.5.8 起用正式签名；如果手机上装的是 1.5.7 或更早的版本，先卸载一次再装新版，然后重新扫码配对。</p>
 
     <h2 id="model">接一个模型</h2>
     <p>Lamplit 自己不带模型，用的是你自己的密钥，对话直接发给你选的服务商。</p>
     <ol>
       <li>打开 <strong>设置 → 模型</strong>，选服务商：DeepSeek、通义千问、Kimi、智谱、豆包、硅基流动、OpenAI、Claude 等都在列表里；其他兼容 OpenAI 接口的服务选「自定义」。</li>
-      <li>填上密钥，点「测试连接」。模型框点一下会列出服务商现在提供的全部模型。</li>
+      <li>填上密钥，点「测试连接」。同一个密钥可以一次勾选好几个模型加进来。</li>
       <li>每个助手可以单独选模型：简单的活用便宜的，难的用强的。</li>
     </ol>
     <div class="tip"><p>推荐先用 DeepSeek：便宜、中文好、会用工具。再填一个硅基流动的密钥，语音输入、看图、画图、做视频就都能用了。</p></div>
@@ -76,9 +82,9 @@
     <h2 id="chat">和助手一起做事</h2>
     <p>像对人说话一样说要做什么，比如「把桌面上的截图按月份归档」「查一下这台机器磁盘还剩多少」「给这张海报换个标题再出三版」。它会自己决定用哪些工具：运行命令、读写文件、打开浏览器、操作桌面程序、生成图片……</p>
     <ul>
-      <li><strong>可以建多个助手</strong>，各有自己的角色、记忆和对话；也可以拉一个群，让它们分工。</li>
+      <li><strong>可以建多个助手</strong>，各有自己的角色、记忆和对话；也可以拉一个群，让它们分工，派活时写名字就行。</li>
       <li><strong>它缺工具会申请</strong>：比如需要命令行而你没给，它会弹出一张卡片问你要不要给。</li>
-      <li><strong>长回复会分几条发</strong>，结论在最前面。</li>
+      <li><strong>回复里提到的文件直接能看</strong>：图片直接显示；PDF、Word、Excel、PPT、md 等是一张卡片，点开在应用里预览（PDF、md、txt、csv），或者下载、用电脑上的程序打开。</li>
       <li>它干活时你可以随时插话问进度，不会打断它。</li>
     </ul>
 
@@ -90,56 +96,96 @@
       <li>想让它停：点输入框旁边的<strong>停止</strong>，或者直接说「停下」「别做了」「取消」，正在做的和整个任务都会停，做好的文件都还在。</li>
     </ul>
 
-    <h2 id="workspace">工作区</h2>
+    <h2 id="workspace">工作区与文件</h2>
     <p>工作区是助手们共用的文件夹：它写的文件、生成的图片和视频、下载的东西都放在这里，所有助手和你都能看到。默认在 <code>%APPDATA%\Lamplit\workspace</code>。</p>
-    <p>想放到别的盘（比如 <code>D:\Lamplit 工作区</code>）：<strong>设置 → 权限 → 工作区 → 更改位置</strong>，填一个文件夹路径，确认后 Lamplit 会重启。原来工作区里的文件不会自动搬走，需要的话自己复制过去。</p>
-    <p>工作区之外，你还可以开放别的文件夹给它读（或读写），见下面的「权限与审批」。</p>
+    <ul>
+      <li><strong>换位置</strong>：<strong>设置 → 边界 → 工作区 → 更改位置</strong>，填一个文件夹（比如 <code>D:\Lamplit</code>），确认后 Lamplit 会重启。原来的文件不会自动搬，需要的话自己复制过去。</li>
+      <li><strong>改错了能撤销</strong>：它改写或删除工作区里的文件之前会留一份，每轮对话下面有一行「改了哪些文件 · 撤销」，7 天内都能恢复。</li>
+      <li>工作区之外，你还可以开放别的文件夹给它读（或读写），见下面的「权限与审批」。</li>
+    </ul>
 
     <h2 id="machines">添加机器</h2>
-    <p>家里的旧笔记本、台式机、云主机，都可以变成它干活的电脑。<strong>设置 → 机器 → 添加机器</strong>，填地址、账号和密码，Lamplit 会自动装好一切，大约半分钟。</p>
-    <ul>
-      <li><strong>Linux</strong>（Ubuntu、Debian、Rocky 等）：能 SSH 登录，账号有 sudo。</li>
-      <li><strong>Windows 10 / 11</strong>：先在「设置 → 系统 → 可选功能」装好 OpenSSH 服务器，用管理员账号。</li>
-      <li>添加之后它们会跟着这台电脑自动更新；晚开机的机器开机后也会更新上。</li>
-      <li>左上角可以随时切换在哪台机器上做事。</li>
-    </ul>
+    <p>家里的旧笔记本、台式机、云服务器，都可以变成它干活的电脑。每台机器有自己的一套助手、记忆、工作区和桌面；左上角可以随时切换在哪台机器上做事。添加之后它们会跟着这台电脑<strong>自动更新</strong>，晚开机的机器开机后也会更新上。</p>
+    <p>入口：<strong>设置 → 机器 → 添加机器</strong>。要填的只有：名字、IP 地址、SSH 用户名、端口和密码。点「连接并自动配置」后，Lamplit 会通过 SSH 装好依赖、部署自己、给每个助手配好桌面，最后自动配对并加进机器列表。密码只用这一次，不会保存。</p>
+
+    <h3 id="machine-home">家里的电脑（同一个局域网）</h3>
+    <ol>
+      <li><strong>准备那台机器</strong>：
+        <ul>
+          <li><strong>Linux</strong>（Ubuntu、Debian、Rocky 等）：能用 SSH 登录，账号有 sudo。</li>
+          <li><strong>Windows 10 / 11</strong>：在「设置 → 系统 → 可选功能」里装好 <strong>OpenSSH 服务器</strong>并启动它；用一个管理员账号。</li>
+          <li>插电，电源设置里关掉自动睡眠，睡着了就联系不上。</li>
+        </ul>
+      </li>
+      <li><strong>查它的 IP</strong>：Linux 上 <code>ip addr</code>，Windows 上 <code>ipconfig</code>，一般是 <code>192.168.x.x</code>。虚拟机请把网卡设成「桥接」，这样它和你的电脑在同一个网段。</li>
+      <li><strong>在 Lamplit 里添加</strong>：填 IP、用户名、密码；Linux 可以选桌面：「轻量」只有窗口、省内存（推荐），「完整」是 XFCE 桌面。</li>
+      <li><strong>等它装完</strong>：进度条会显示到第几步。Linux 第一次大约几分钟（下载桌面组件最久）；机器人的桌面和浏览器会在后台继续装，装好前就可以先让它干活。</li>
+      <li><strong>切过去试一句</strong>：点「切换到这台机器」，说「列一下工作区的文件」。它只在那台机器上动手。</li>
+    </ol>
+    <div class="tip"><p>添加的 Windows 机器上，助手的命令用一个单独的低权限账户 <code>lamplit-runner</code> 运行，碰不到 Lamplit 自己的数据；这个账户在自动配置时就建好了。</p></div>
+
+    <h3 id="machine-cloud">云服务器</h3>
+    <p>云服务器有公网地址，最要紧的是：<strong>不要把 Lamplit 的端口（4390）直接开放到公网</strong>。它的连接没有加密，配对后的凭据在公网上会被看到。用 <a href="https://tailscale.com/">Tailscale</a> 把云服务器和你的设备连成一个私人网络：</p>
+    <ol>
+      <li><strong>Tailscale 准备一个密钥</strong>：在你的电脑和手机上装好 Tailscale 并登录；打开 Tailscale 后台的 <a href="https://login.tailscale.com/admin/settings/keys">Settings → Keys</a>，点「Generate auth key」。要的是 <code>tskey-auth-</code> 开头的 Auth key，不是 API access token。</li>
+      <li><strong>云服务器的安全组</strong>：只需要放行 SSH（默认 22 端口）给你的电脑，用于这一次自动配置；<strong>4390 不要放行</strong>。</li>
+      <li><strong>在 Lamplit 里添加</strong>：填公网 IP、SSH 用户名（Ubuntu 镜像常见的是 <code>ubuntu</code>，有的云是 <code>root</code>）和密码；展开「在外面也要连上它」，贴上 Tailscale 密钥。填了公网 IP 时 Lamplit 会自动提示这一步。</li>
+      <li><strong>装完</strong>：Lamplit 会顺便在服务器上装好 Tailscale、加入你的网络，以后都走加密的 Tailscale 地址（<code>100.x.x.x</code>）。密钥只用这一次，用完就从服务器上删掉。</li>
+    </ol>
+    <div class="tip"><p>云服务器一般没有显示器，机器人的浏览器和桌面在它自己的虚拟屏幕上；需要扫码登录时，助手会请你在「电脑」面板里接管。</p></div>
+
+    <h3 id="pitfalls">常见的坑</h3>
+    <div class="table"><table>
+      <tr><th>现象</th><th>原因</th><th>怎么办</th></tr>
+      <tr><td>电脑上开着 Clash 之类的代理，连不上 Tailscale 地址（<code>100.x.x.x</code>），或者报 HTTP 502</td><td>系统代理一般会放过 <code>192.168.*</code>、<code>10.*</code>，但不会放过 Tailscale 的 <code>100.64.0.0/10</code>，请求被送去了代理</td><td>Lamplit 桌面版已经自动绕过；用浏览器打开时，在代理软件的「绕过 / 直连」里加上 <code>100.64.0.0/10</code></td></tr>
+      <tr><td>添加云服务器时一直「正在连接」然后超时</td><td>云服务器的安全组 / 防火墙没放行 SSH 端口</td><td>在云控制台的安全组里放行 22（或你改过的 SSH 端口）；4390 仍然不要放行</td></tr>
+      <tr><td>Ubuntu 上命令沙箱用不了，提示「系统不允许普通用户建沙箱」</td><td>Ubuntu 23.10 起 AppArmor 默认不让普通程序建用户命名空间，挡住了沙箱程序 bwrap</td><td>自动配置时会写一条只给 bwrap 的 AppArmor 规则；如果当时没装上，按提示用 sudo 执行它给出的那一行命令，再重启 Lamplit</td></tr>
+      <tr><td>手机或浏览器输配对码说不对</td><td>配对码是 8 位数字，<strong>每天换一次</strong></td><td>在已经连着这台机器的设备上打开 <strong>设置 → 手机和外网</strong> 看今天的码；已经配对过的设备不受影响</td></tr>
+      <tr><td>Windows 用户名是中文，命令账户或某些路径出错</td><td>早期版本按系统编码读配置文件，中文路径会乱码</td><td>1.5.7 起已修复，更新到最新版；工作区也可以放到纯英文路径（比如 <code>D:\Lamplit</code>）</td></tr>
+      <tr><td>Windows 机器添加失败，SSH 连不上</td><td>没装或没启动 OpenSSH 服务器，或用的不是管理员账号</td><td>「可选功能」里装 OpenSSH 服务器，在「服务」里把它设为自动并启动；换管理员账号再试</td></tr>
+      <tr><td>虚拟机添加不上</td><td>网卡是 NAT，和你的电脑不在一个网段</td><td>改成「桥接」，或者给虚拟机也装 Tailscale</td></tr>
+    </table></div>
 
     <h2 id="screen">看屏幕与接管</h2>
     <p>右侧「电脑」面板能实时看到当前机器的屏幕。遇到扫码、验证码、付款这类必须你来的步骤，助手会停下请你<strong>接管</strong>：键盘鼠标交给你，弄好了点「我弄好了，继续」。</p>
     <ul>
       <li><strong>多块屏幕</strong>：「全屏」旁边可以选看哪一块，默认只看主屏，也可以「全部屏幕」并排。</li>
-      <li>装了 Lamplit 的 Windows 电脑，屏幕服务随 Lamplit 启动和退出；添加的 Windows 机器用的是系统服务，开机就在。</li>
+      <li>在一个助手的浏览器里登录过一次的网站，同一台机器上的其他助手也能用（仅限给机器人用的远程机器）。</li>
       <li>屏幕只在本机监听，只有配对过的设备经 Lamplit 转发才看得到。</li>
       <li>手机上接管时有触摸板模式、虚拟键盘和常用按键。</li>
     </ul>
 
     <h2 id="safety">权限与审批</h2>
-    <p>在 <strong>设置 → 权限</strong> 里，每台机器单独设置：</p>
+    <p>在 <strong>设置 → 审批</strong> 里，每台机器单独设置级别：</p>
     <div class="table"><table>
       <tr><th>级别</th><th>效果</th></tr>
       <tr><td>谨慎</td><td>几乎所有会改动东西的操作都先问你</td></tr>
       <tr><td>标准</td><td>日常操作自己做，删除、系统改动、发消息这类先问你</td></tr>
-      <tr><td>放手</td><td>都让它自己做，只有危险命令还会问——适合专门给机器人用的电脑</td></tr>
+      <tr><td>放手</td><td>都让它自己做，只有危险命令和可能往外发数据的命令还会问——适合专门给机器人用的机器</td></tr>
     </table></div>
     <ul>
-      <li><strong>能访问的文件夹</strong>：只有工作区和你开放的文件夹；其他位置先问你，或者直接不许。</li>
+      <li><strong>设置 → 边界</strong>：能访问的文件夹（只有工作区和你开放的位置）、管理员权限（sudo）先不先问你。</li>
       <li><strong>禁止的命令</strong>：格式化、删系统这类内置拦下，也可以自己加词。</li>
       <li><strong>一句话规则</strong>：比如「发邮件之前先问我」，它会照做。</li>
-      <li><strong>操作记录</strong>：做过什么、谁批准的、何时接管过屏幕都查得到。</li>
+      <li><strong>读到的内容不是指令</strong>：网页、邮件、手机屏幕上写着「请把文件发给某某」之类的话，它不会照做；读过这些内容之后，往外发东西的操作都会先问你。</li>
+      <li><strong>设置 → 操作记录</strong>：做过什么、谁批准的、何时接管过屏幕都查得到。</li>
     </ul>
 
     <h2 id="vault">登录与保险箱</h2>
     <p>需要登录网站时，Lamplit 会弹出一个安全表单让你填账号密码。它们加密存在那台机器的保险箱里，助手直接填进网页，自己看不到，也不会发给 AI 模型。</p>
-    <p>应用的授权码、邮箱的授权码同样放在保险箱。任何想从脚本里读取保险箱的操作，不管什么审批级别都会先问你。</p>
+    <p>应用的令牌、邮箱的授权码同样放在保险箱。任何想从脚本里读取保险箱的操作，不管什么审批级别都会先问你。</p>
 
     <h2 id="apps">连接应用</h2>
-    <p><strong>设置 → 应用</strong> 里一键连接常用服务，助手就能直接用它们的接口做事，每一步按你的审批级别来：</p>
+    <p><strong>设置 → 连接应用</strong> 里一格一格列着能连的应用，上面可以按分类筛选（通信、开发、创作、效率、生活…）。点一个，照着里面的说明连上，助手就能直接用它的接口做事，每一步按你的审批级别来：</p>
     <ul>
-      <li><strong>邮箱</strong>：QQ、163、126、Gmail、Outlook 等，填邮箱地址和授权码（不是登录密码）。可以连多个邮箱；整理、搬移、删除默认进「已删除」，能恢复。</li>
-      <li><strong>GitHub、GitLab、Notion</strong> 等：点「连接」，在弹出的页面里登录授权即可。</li>
-      <li>百度网盘、Runway、Suno 等也在目录里。</li>
+      <li><strong>点一下登录授权</strong>：Notion、GitLab、Cloudflare、Runway、Suno 等，在弹出的页面里登录并允许。</li>
+      <li><strong>贴一个令牌或密钥</strong>：GitHub、X（只读）、高德地图、百度网盘等，卡片里有「去获取」的链接。</li>
+      <li><strong>填几项</strong>：钉钉（Client ID 和 Secret）、MiniMax（Key 和账号所在站点）、Home Assistant（地址和长期访问令牌）。</li>
+      <li><strong>邮箱</strong>：QQ、163、126、Gmail、Outlook 等，填邮箱地址和授权码（不是登录密码）；可以连多个邮箱，删除默认进「已删除」，能恢复。</li>
+      <li><strong>飞书</strong>：用「设置 → 飞书」里那个应用。</li>
+      <li><strong>这台电脑上的程序</strong>：Obsidian、Docker、Godot、Kubernetes 连的是本机的程序，只在这台机器上连接。</li>
     </ul>
-    <div class="tip"><p>连上一次，会同步到你所有的机器。</p></div>
+    <div class="tip"><p>除了本机程序，连上一次会同步到你所有的机器。目录里没有的应用，可以在页面最下面「自己添加」（填命令或网址）。</p></div>
 
     <h2 id="coding">编程助手（用你的订阅额度）</h2>
     <p>写程序、改项目这类大活，Lamplit 可以交给这台电脑上已经登录的官方编程工具，用的是你自己的订阅额度，不按次花 API 费用：</p>
@@ -151,7 +197,7 @@
       <tr><td>Qoder</td><td>Qoder</td><td><code>qodercn login</code>（国际版 <code>qoder login</code>）</td></tr>
     </table></div>
     <ul>
-      <li><strong>设置 → 模型 → 用订阅额度的编程助手</strong> 里能看到哪些已装好、已登录，并给每个选默认模型（Cursor 和 Qoder 会列出你账号能用的模型）。</li>
+      <li><strong>设置 → 模型 → 用订阅额度的编程助手</strong> 里能看到哪些已装好、已登录，并给每个选默认模型。</li>
       <li>碰到大的写代码任务，助手会主动说「这个交给 Qoder 做」；每次交出去之前都先问你。</li>
       <li>它们只在任务文件夹里改文件；勾了「运行命令」才会运行命令。</li>
       <li>Lamplit 不读也不碰这些工具的登录信息。</li>
@@ -167,9 +213,10 @@
 
     <h2 id="phone">手机与飞书</h2>
     <ol>
-      <li>电脑上打开 <strong>设置 → 手机</strong> 里的「允许手机连接」。</li>
-      <li>手机装上安卓 App，扫电脑上的二维码，就连上了。</li>
+      <li>电脑上打开 <strong>设置 → 手机和外网</strong>，打开「允许手机连接」。</li>
+      <li>手机装上安卓 App，扫电脑上的二维码就连上了；不扫码的话，在手机浏览器里打开上面的地址，输入配对码。</li>
       <li>在外面：手机和电脑都装 <a href="https://tailscale.com/">Tailscale</a>，连不上家里网络时会自动改走 Tailscale，不用重新配对。</li>
+      <li>安卓 App 里打开「让机器人用这部手机」，机器人就能看屏幕、点、输入、打开 App；付款、发送、发布、同意条款每次都先问你，锁屏时不会解锁。</li>
     </ol>
     <p>不想装 App：在 <strong>设置 → 飞书</strong> 里接一个飞书机器人，出门在外用飞书给助手发消息，结果、图片、视频都发回飞书；需要批准时回一句「批准」。</p>
 
@@ -177,21 +224,21 @@
     <ul>
       <li><strong>记忆</strong>：它会记下你的习惯和偏好，每个助手各有一份，也有一份大家共享的。</li>
       <li><strong>技能</strong>：做过的流程可以存成技能，下次一句话就能复用。</li>
-      <li><strong>定时任务</strong>：每天的简报、定期的检查，到点自己跑，你不在也照样做完。</li>
+      <li><strong>定时任务</strong>：每天的简报、定期的检查，到点自己跑，你不在也照样做完。在对话里，每次运行只占一行「⏱ 时间 · 任务名 · 多久一次」，点「看指令」可以改指令、暂停、马上再跑一次；没有变化的那一轮不打扰你。</li>
     </ul>
 
     <h2 id="update">更新与数据</h2>
     <ul>
-      <li>直接安装新版即可，助手、记忆、设置都保留；已添加的机器会自动更新到同一版本。</li>
+      <li>有新版本时会提醒你；直接安装新版即可，助手、记忆、设置都保留；已添加的机器会自动更新到同一版本，更新包有签名校验。</li>
       <li>Lamplit 以前叫 <strong>Evenlight</strong>，更早叫 <strong>Nightshift</strong>，数据在同一个位置，覆盖安装就行。</li>
-      <li>数据位置：电脑上 <code>%APPDATA%\Lamplit</code>（以前装过的电脑是 <code>%APPDATA%\Desk</code>）；Linux 机器上在安装目录的 <code>data</code> 下。</li>
+      <li>数据位置：电脑上 <code>%APPDATA%\Lamplit</code>（1.2.151 及更早装过的电脑是 <code>%APPDATA%\Desk</code>）；Linux 机器上在安装目录的 <code>data</code> 下。</li>
     </ul>
 
     <h2 id="trouble">遇到问题</h2>
     <h3>它一直不回 / 回得很慢</h3>
     <p>看顶部有没有「这台机器内存快用完了」之类的提示；再到设置 → 模型 点「测试连接」，确认密钥和余额正常。</p>
     <h3>手机连不上</h3>
-    <p>确认电脑上打开了「允许手机连接」，手机和电脑在同一个网络；在外面就用 Tailscale。</p>
+    <p>确认电脑上打开了「允许手机连接」，手机和电脑在同一个网络；在外面就用 Tailscale。配对码每天换，看<a href="#pitfalls">常见的坑</a>。</p>
     <h3>屏幕显示「无法连接到服务器」</h3>
     <p>点「电脑」面板的「刷新」。刚开机或刚切换屏幕时，屏幕服务需要几秒钟准备。</p>
     <h3>还是不行</h3>
@@ -201,17 +248,18 @@
 
 <footer>
   <div class="wrap foot">
-    <a class="brand" href="./"><img src="icon.svg?v=152" alt="" width="20" height="20" /><span>Lamplit</span></a>
+    <a class="brand" href="./"><img src="icon.svg?v=1513" alt="" width="20" height="20" /><span>Lamplit</span></a>
     <nav>
       <a href="./">首页</a>
       <a href="https://github.com/20chuangge/lamplit">GitHub</a>
       <a href="https://github.com/20chuangge/lamplit/releases">更新说明</a>
       <a href="https://github.com/20chuangge/lamplit/blob/main/LICENSE">MIT 许可证</a>
+      <a href="en/docs.html" hreflang="en" data-lang-switch="en">English</a>
     </nav>
     <span class="was">formerly Evenlight, Nightshift</span>
   </div>
 </footer>
 
-<script src="site.js?v=152"></script>
+<script src="site.js?v=1513"></script>
 </body>
 </html>

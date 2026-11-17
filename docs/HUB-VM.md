@@ -1,5 +1,7 @@
 # 用一台 Windows 虚拟机当 Hub
 
+> 普通用户请看官网的[添加机器教程](https://20chuangge.github.io/lamplit/docs.html#machines)（[English](https://20chuangge.github.io/lamplit/en/docs.html#machines)）：在 Lamplit 里「设置 → 机器 → 添加机器」就能自动装好。这份是手动部署的开发者参考，写于改名之前，文中的 Desk 就是现在的 Lamplit。
+
 目标：**Bot 在 VM 里干活**（开网页、跑命令、存文件），你在**自己的电脑和手机**上发消息、看结果。
 这台 VM 就是"闲置电脑/云主机"的替身；将来换成真机器，步骤一模一样。
 

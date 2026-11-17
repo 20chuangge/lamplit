@@ -179,6 +179,7 @@ async function main() {
     await stage('1.5.10: settings and models', scenarioSettings1510);
     await stage('1.5.11: the files a reply names can be seen and saved', scenarioFiles1511);
     await stage('1.5.12: connected apps, long writes, the browser debug port', scenarioApps1512);
+    await stage('1.5.13: the website and the docs in Chinese and English', scenarioDocs1513);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -3985,6 +3986,19 @@ async function scenarioMcp({ home, toolsMod }) {
       ag.includes('A connected app (mail, GitHub, Notion, ...) is used only through its own tools. Never script around one') && ag.includes('Never move everything out and then move the keepers back')
       && mailSrc.includes('never move everything out and then move the keepers back') && mailSrc.includes('never delete everything and then restore the keepers'));
   }
+  // 11-17 on the cloud machine: reading the app's data with python3 asked five times while 放手; a board task cut off at 80 steps said "我接着做" and was marked 没做成.
+  {
+    const { reachesSecrets } = await import('../src/agent.mjs');
+    const ask = (c) => Boolean(reachesSecrets('shell', { command: c }));
+    const ag = await readText('../src/agent.mjs');
+    check('M30b reading the app\'s data or config with a script (python3 import json + /opt/desk-hub/data, config/bots) does not ask; loading its code from src/ still does',
+      !ask(`python3 - <<'EOF'\nimport json\nd=json.load(open('/opt/desk-hub/config/bots/bot-x.json'))\nEOF`)
+      && !ask(`python3 -c "import json;print(json.load(open('/opt/desk-hub/data/routines.json')))"`)
+      && ask(`python3 -c "import sys; sys.path.insert(0,'/opt/desk-hub/src'); import vault"`) && ask(`node -e "import('/opt/desk-hub/src/mail.mjs')"`));
+    check('M30b a task on the group board cut off by the step limit goes on by itself (up to the limit), told what it already did',
+      /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
+      && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
+  }
   // 邮箱: IMAP / SMTP against local fake servers - list, search in Chinese, read GBK mail with an attachment, reply, mark, bad code.
   {
     const net = await import('node:net');
@@ -4972,6 +4986,46 @@ async function scenarioV167() {
       && /route\(\s*'PUT',\s*\/\^\\\/api\\\/workspace\\\/file\$\//.test(serverSrc) && serverSrc.includes("route('POST', /^\\/api\\/tasks\\/import$/") && serverSrc.includes('function fromAnotherMachine(req, state)')
       && plans.includes("moved: '已搬走'"));
   }
+}
+
+/**
+ * 1.5.13: the website and the docs in Chinese and English (the roadmap, 11-16).
+ * Each page has its twin and a switch; the add-machine guide (a computer at
+ * home, a cloud server) and its pitfalls are in both; the English docs name
+ * menus as the app's English UI does; the app links to the docs in its language.
+ */
+async function scenarioDocs1513() {
+  const page = (rel) => readText(`../site/${rel}`);
+  const [zhHome, enHome, zhDocs, enDocs, siteJs] = await Promise.all([page('index.html'), page('en/index.html'), page('docs.html'), page('en/docs.html'), page('site.js')]);
+  check('D1 site: every page has its twin in the other language (data-other, hreflang, a 中文 / EN switch); a choice is kept; a browser that reads no Chinese goes to English once',
+    zhHome.includes('data-other="en/"') && enHome.includes('data-other="../"') && zhDocs.includes('data-other="en/docs.html"') && enDocs.includes('data-other="../docs.html"')
+    && [zhHome, zhDocs].every((p) => p.includes('data-lang-switch="en"') && p.includes('hreflang="en"')) && [enHome, enDocs].every((p) => p.includes('data-lang-switch="zh"') && p.includes('lang="en"'))
+    && enHome.includes('../style.css?v=1513') && siteJs.includes("localStorage.setItem(LANG, a.dataset.langSwitch)") && siteJs.includes('if (!chosen && lang === \'zh\' && !readsChinese'));
+  const ids = ['machines', 'machine-home', 'machine-cloud', 'pitfalls'];
+  check('D2 add-machine guide in both languages: home computer, cloud server (Tailscale auth key, 4390 kept closed), and the pitfalls: proxy vs 100.64.0.0/10, security group, AppArmor, the daily pairing code, Chinese user names, OpenSSH, bridged VMs',
+    ids.every((id) => zhDocs.includes(`id="${id}"`) && enDocs.includes(`id="${id}"`))
+    && [zhDocs, enDocs].every((d) => d.includes('100.64.0.0/10') && d.includes('tskey-auth-') && d.includes('AppArmor') && d.includes('1.5.7') && d.includes('OpenSSH') && /4390/.test(d))
+    && zhDocs.includes('每天换一次') && enDocs.includes('changes every day') && zhDocs.includes('安全组') && enDocs.includes('security group') && zhDocs.includes('桥接') && enDocs.includes('bridged'));
+  const en = await readText('../public/i18n-en.js');
+  // eslint-disable-next-line no-new-func
+  const dict = new Function(`const window = {}; ${en}; return window.DESK_I18N_EN;`)();
+  const uiWords = new Set(Object.values(dict));
+  const named = ['Model', 'Approval', 'Boundaries', 'Activity log', 'Machines', 'Phone & away', 'Feishu', 'Connected apps', 'Appearance', 'Add machine', 'Connect and set up',
+    'Reach it from outside too (optional, Tailscale)', 'Switch to this machine', 'Change location', 'Test connection', 'Coding assistants on your subscription', 'Allow phone connections', 'Done, continue', 'Stop', 'Image understanding'];
+  const enText = enDocs.replace(/&amp;/g, '&');
+  check('D3 the English docs call menus and buttons what the English app calls them', named.every((w) => uiWords.has(w) && enText.includes(w)), named.filter((w) => !uiWords.has(w) || !enText.includes(w)).join(', '));
+  const html = await readText('../public/index.html');
+  const wiring = await readText('../public/app/main/12-wiring.js');
+  const readmeEn = await readText('../README.en.md');
+  const readme = await readText('../README.md');
+  check('D4 the app links to the docs (About, and the add-machine dialog to the guide) in its own language; README has an English twin',
+    html.includes('data-docs="#machines"') && html.includes('data-docs=""') && wiring.includes("a.href = `https://20chuangge.github.io/lamplit/${en ? 'en/' : ''}docs.html${a.dataset.docs || ''}`;")
+    && readme.includes('[English](README.en.md)') && readmeEn.includes('[中文](README.md)') && readmeEn.includes('en/docs.html#machines'));
+  const site = [zhHome, enHome, zhDocs, enDocs, readmeEn].join('\n');
+  // Generic on purpose: no real name or address is written here (the file is public).
+  const ips = [...site.matchAll(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g)].map((m) => m[0]);
+  const exampleIp = (ip) => /^(127\.0\.0\.1|0\.0\.0\.0|192\.168\.1\.\d+|100\.64\.0\.0)$/.test(ip);
+  check('D5 nothing private on the site or in the README: only example addresses, no one\'s home folder', ips.every(exampleIp) && !/[A-Z]:\\Users\\/i.test(site), ips.filter((ip) => !exampleIp(ip)).join(', '));
 }
 
 /**
@@ -7190,7 +7244,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       pageA.includes('.messages .approval.pending {\n      position: sticky; bottom: 8px;') && pageA.includes('.sidebar.open .bot.is-primary { flex-direction: row;')
       && pageA.includes('max-width: calc(100% - 20px); box-sizing: border-box;') && pageA.includes('.sidebar.open .home-search { min-width: 0; flex: 1 1 0; height: 48px; }'));
     const siteL4 = await readText('../site/index.html');
-    check('L4 site: the icon, stylesheet and script URLs carry the version, so an update never shows a cached old look', siteL4.includes('src="icon.svg?v=152"') && siteL4.includes('href="icon.svg?v=152"') && siteL4.includes('href="style.css?v=152"') && siteL4.includes('src="site.js?v=152"'));
+    check('L4 site: the icon, stylesheet and script URLs carry the version, so an update never shows a cached old look', /src="icon\.svg\?v=\d+"/.test(siteL4) && /href="icon\.svg\?v=\d+"/.test(siteL4) && /href="style\.css\?v=\d+"/.test(siteL4) && /src="site\.js\?v=\d+"/.test(siteL4));
     const cssL6 = await readText('../site/style.css');
     check('L6 site: one violet (紫气东来) on the black / white / gray site - #8B7CF6 on dark, #6A5AE0 on light; demo avatars use the app palette',
       cssL6.includes('--accent: #8B7CF6;') && (cssL6.match(/--accent: #6A5AE0;/g) || []).length === 2 && cssL6.includes('.a1 { background: linear-gradient(160deg, #9a8ef5, #7c6cf0); }'));

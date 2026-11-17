@@ -9,6 +9,22 @@
     try { localStorage.setItem(KEY, root.dataset.theme); } catch { /* not kept */ }
   });
 
+  // 中文 / English (1.5.13): each page has its twin (data-other). A choice made
+  // with the switch is kept; with none, a browser that reads no Chinese goes to
+  // the English page once.
+  const LANG = 'lamplit.lang';
+  const lang = document.body.dataset.lang || 'zh';
+  document.querySelectorAll('[data-lang-switch]').forEach((a) => a.addEventListener('click', () => {
+    try { localStorage.setItem(LANG, a.dataset.langSwitch); } catch { /* not kept */ }
+  }));
+  let chosen = '';
+  try { chosen = localStorage.getItem(LANG) || ''; } catch { /* private window */ }
+  const readsChinese = (navigator.languages || [navigator.language || '']).some((l) => /^zh/i.test(l));
+  if (!chosen && lang === 'zh' && !readsChinese && document.body.dataset.other) {
+    location.replace(document.body.dataset.other + location.hash);
+    return;
+  }
+
   // Point the buttons straight at the newest files; the release page stays the fallback.
   // Installers were named Nightshift-* before 1.2.146 and Evenlight-* until 1.2.149.
   (async () => {
@@ -24,7 +40,7 @@
       if (setup && a) {
         a.href = setup.browser_download_url;
         document.getElementById('dl-version').textContent = ` ${rel.tag_name}`;
-        document.getElementById('dl-size').textContent = `Windows 10 / 11 · 64 位 · ${mb(setup.size)}`;
+        document.getElementById('dl-size').textContent = `Windows 10 / 11 · ${lang === 'en' ? '64-bit' : '64 位'} · ${mb(setup.size)}`;
       }
       const b = document.getElementById('dl-apk');
       if (apk && b) b.href = apk.browser_download_url;
@@ -51,6 +67,6 @@
         byId.get(e.target.id)?.classList.add('on');
       }
     }, { rootMargin: '-20% 0px -70% 0px' });
-    document.querySelectorAll('.doc h2[id]').forEach((h) => spy.observe(h));
+    document.querySelectorAll('.doc h2[id], .doc h3[id]').forEach((h) => spy.observe(h));
   }
 })();

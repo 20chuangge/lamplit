@@ -68,6 +68,7 @@ code { font-family: var(--mono); font-size: .88em; background: var(--accent-soft
 .top nav { margin-left: auto; display: flex; align-items: center; gap: 26px; font-size: 14.5px; }
 .top nav a { color: var(--muted); transition: color .2s; }
 .top nav a:hover { color: var(--text); }
+.top nav a.lang { font-size: 12.5px; font-weight: 600; letter-spacing: .04em; border: 1px solid var(--line-2); border-radius: 999px; padding: 3px 9px; }
 .theme { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--line-2); background: transparent; cursor: pointer; display: grid; place-items: center; padding: 0; }
 .theme span { width: 12px; height: 12px; border-radius: 50%; background: linear-gradient(90deg, var(--text) 50%, transparent 50%); border: 1.5px solid var(--text); }
 @media (max-width: 760px) { .hide-sm { display: none; } .top nav { gap: 18px; } }

@@ -3,8 +3,17 @@
 /* ---------------------------------------------------------------------
    wiring
    --------------------------------------------------------------------- */
+/** Links to the website's docs: the English pages when the app is in English (1.5.13). */
+function pointDocsLinks() {
+  const en = window.deskI18n?.lang === 'en';
+  for (const a of document.querySelectorAll('a[data-docs]')) {
+    a.href = `https://20chuangge.github.io/lamplit/${en ? 'en/' : ''}docs.html${a.dataset.docs || ''}`;
+  }
+}
+
 function wireChrome() {
   $('auth-url').value = location.origin;
+  pointDocsLinks();
 
   // Inside the desktop shell there is no OS title bar; we draw it.
   if (window.deskShell) {

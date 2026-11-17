@@ -422,7 +422,10 @@ const HUB_MODULES = (() => {
   try { return fsSync.readdirSync(HUB_SRC_DIR).filter((f) => f.endsWith('.mjs')).map((f) => escRe(f.slice(0, -4))); } catch { return ['agent', 'mail', 'mcp', 'vault', 'tools', 'server']; }
 })();
 const HUB_ROOTS = ['desk-hub', ...(HUB_SRC_DIR ? [path.dirname(HUB_SRC_DIR), path.dirname(HUB_SRC_DIR).replace(/\\/g, '/')] : [])].map(escRe);
-const HUB_MODULE = new RegExp(String.raw`\b(import|require)\b[\s\S]{0,400}?(${HUB_ROOTS.join('|')}|[\\/]src[\\/](${HUB_MODULES.join('|')})\.mjs)`, 'i');
+// The app's code, not its folder: reading data/ or config/ with a script
+// (python3 -c "import json; json.load(open('/opt/desk-hub/data/routines.json'))")
+// is not calling Lamplit (11-17 on the cloud machine: five asks while 放手).
+const HUB_MODULE = new RegExp(String.raw`\b(import|require)\b[\s\S]{0,400}?((${HUB_ROOTS.join('|')})[\\/]+(app[\\/]+)?src\b|[\\/]src[\\/](${HUB_MODULES.join('|')})\.mjs)`, 'i');
 
 /**
  * How replies read (1.2.165): like a colleague in a chat, not a report. On
@@ -2028,6 +2031,15 @@ export class AgentRuntime {
     else {
       res = await this.runTurn({ botId: owner.id, text: prompt, source: 'group', group, groupRole: 'task', recordUser: false })
         .catch((err) => ({ status: 'failed', summary: err.message }));
+      // Cut off by the step limit: the owner goes on, told what it already did,
+      // as a group member does (11-17: "我接着做" on the board, then 没做成).
+      for (let n = 1; res?.status === 'max_steps' && res.continueGroup && plan.status !== 'stopped'; n += 1) {
+        res = await this.runTurn({
+          botId: owner.id,
+          text: continuationText({ n, what: `任务板上交给你的「${task.title}」`, actions: describeActions(res.receipts) }),
+          source: 'group', group, groupRole: 'task', recordUser: false, priorReceipts: res.receipts || [], groupContinuation: n,
+        }).catch((err) => ({ status: 'failed', summary: err.message }));
+      }
     }
     task.endedAt = nowIso();
     // Hand-offs: as many as there are other members (each may take it once);

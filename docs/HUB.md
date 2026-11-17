@@ -1,5 +1,7 @@
 # 把 Lamplit 跑在另一台机器上（Hub 模式）
 
+> 普通用户请看官网的[添加机器教程](https://20chuangge.github.io/lamplit/docs.html#machines)（[English](https://20chuangge.github.io/lamplit/en/docs.html#machines)）：在 Lamplit 里「设置 → 机器 → 添加机器」就能自动装好。这份是手动部署的开发者参考，写于改名之前，文中的 Desk 就是现在的 Lamplit。
+
 你要的形态：
 
 ```

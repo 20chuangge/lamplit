@@ -3999,6 +3999,28 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.15: a deleted bot's history and memory are put away, so a new bot with the same name starts clean.
+  {
+    const B = await import('../src/bots.mjs');
+    const S = await import('../src/store.mjs');
+    const fsx = await import('node:fs');
+    const pth = await import('node:path');
+    const made = await B.createBot({ name: 'leftover-check', role: 'x', tools: [] });
+    fsx.mkdirSync(S.P.sessionsDir, { recursive: true });
+    fsx.writeFileSync(pth.join(S.P.sessionsDir, `${made.id || made.bot?.id}.jsonl`), '{"role":"user","text":"35 人"}\n');
+    const mem = pth.join(S.P.memoryDir, made.id || made.bot?.id);
+    fsx.mkdirSync(mem, { recursive: true });
+    fsx.writeFileSync(pth.join(mem, 'MEMORY.md'), '- 35 人，每人 200 元');
+    await B.deleteBot(made.id || made.bot?.id);
+    const gone = !fsx.existsSync(pth.join(S.P.sessionsDir, 'leftover-check.jsonl')) && !fsx.existsSync(mem);
+    const kept = fsx.readdirSync(pth.join(S.P.dataDir, 'deleted-bots')).some((d) => d.startsWith('leftover-check-'));
+    fsx.writeFileSync(pth.join(S.P.sessionsDir, 'leftover-check.jsonl'), '{"role":"user","text":"old"}\n');
+    const again = await B.createBot({ name: 'leftover-check', role: 'x', tools: [] });
+    const clean = !fsx.existsSync(pth.join(S.P.sessionsDir, 'leftover-check.jsonl'));
+    await B.deleteBot(again.id || again.bot?.id);
+    check('B15 deleting a bot puts its chat history and own memory away (data/deleted-bots), and a new bot with the same name starts clean - also over what an older version left behind',
+      gone && kept && clean, JSON.stringify({ gone, kept, clean }));
+  }
   // 1.5.14: phone bots get 150 steps; the primary bot names a routine's owner once teams exist and hands a team's work to its group.
   {
     const A = await import('../src/agent.mjs');

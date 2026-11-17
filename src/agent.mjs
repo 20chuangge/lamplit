@@ -988,6 +988,9 @@ export class AgentRuntime {
           '- One turn = at most one short message, delivered when you have the result or need a decision. If you must ask something, ask it in that message and stop.',
         ]),
       '- Read the workspace before assuming what is in it.',
+      // 1.5.15: the eval's venue task - "pick a venue" with no head count or budget
+      // was answered with the cheapest one, 3 runs out of 3.
+      ...(direct ? ['- Missing facts that decide the result: when the request leaves out something that changes what the right answer is (how many people, a budget, a date or deadline, which one of several) and it is not in the request, the workspace or your memory, look at what you have first, then ask for all of it in one short message and stop - do not pick a default and go on. Things with an obvious default (a file name, a format, the order of a list) need no question.'] : []),
       '- A connected app (mail, GitHub, Notion, ...) is used only through its own tools. Never script around one: do not import Nightshift\'s own modules or read its vault, secrets or codes - that skips the human\'s approval. If a tool is too slow for a big job, use it in batches.',
       '- Bulk changes to someone\'s data (mail, files, records): change only what should change. Never move everything out and then move the keepers back; check the list of what you will touch first.',
       '- Save durable facts with memory_write (scope "shared" for things the whole team should know).',

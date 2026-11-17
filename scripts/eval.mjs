@@ -6,6 +6,7 @@
  *   npm run eval                     all 25 tasks (20 everyday + 5 hard)
  *   npm run eval -- --only f1-sort,m2-reply
  *   npm run eval -- --hard           only the hard ones (eval/hard.mjs)
+ *   npm run eval -- --verbose        print each round's reply of a task that failed
  *   npm run eval -- --record         also write the result into docs/EVAL.md
  *   npm run eval -- --keep           leave the task folders for a look
  *
@@ -139,6 +140,7 @@ async function runTask(task, { runDir, wsRoot }) {
     if (say) result.asks += 1;
     }
     const reply = replies.join('\n');
+    result.replies = replies;
     const routines = listOf(await api('/api/routines'), 'routines').filter((r) => r.botId === bot.id);
     if (status) {
       const view = viewOf({
@@ -169,6 +171,11 @@ async function runTask(task, { runDir, wsRoot }) {
         if (r.botId === bot.id) await api(`/api/routines/${encodeURIComponent(r.id)}`, { method: 'DELETE' }).catch(() => {});
       }
       await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'DELETE' }).catch((err) => console.warn(`  ! 机器人 ${bot.id} 没删掉：${err.message}`));
+      // Deleting a bot keeps its history in data/deleted-bots (1.5.15); an evaluation bot's is not worth keeping.
+      try {
+        const kept = path.join(DATA_DIR, 'deleted-bots');
+        for (const d of fs.readdirSync(kept)) if (d.startsWith(`${bot.id}-`)) fs.rmSync(path.join(kept, d), { recursive: true, force: true });
+      } catch { /* none */ }
     }
   }
   return result;
@@ -180,6 +187,7 @@ const tasks = TASKS.filter((t) => (!only || only.has(t.id)) && (!flag('--hard') 
 if (!tasks.length) { console.error('没有要跑的任务'); process.exit(1); }
 
 const health = await api('/api/health');
+const DATA_DIR = health?.dataDir || '';
 const settings = await api('/api/settings');
 const model = settings?.model?.model || '';
 const ws = await api('/api/workspace');
@@ -196,6 +204,7 @@ try {
     process.stdout.write(`- ${task.id} ${task.title} … `);
     const r = await runTask(task, { runDir, wsRoot });
     results.push(r);
+    if (flag('--verbose') && !r.ok && r.replies) r.replies.forEach((t, i) => console.log(`    第 ${i + 1} 轮回复：${String(t).replace(/\s+/g, ' ').slice(0, 600)}`));
     console.log(`${r.skipped ? '跳过' : r.ok ? '✅' : '❌'} ${Math.round(r.seconds)}s，干预 ${r.interventions}${r.asks ? `，问人 ${r.asks}` : ''}${r.cards.length ? `（${r.cards.join(' ')}）` : ''}，${r.tokens} tokens${r.why ? `；${r.why}` : ''}`);
   }
 } finally {

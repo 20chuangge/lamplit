@@ -617,6 +617,8 @@ export async function createBot(input = {}) {
 
   const existing = await readJson(botFile(id), null);
   if (existing) throw httpError(409, 'BOT_EXISTS', `a bot with id "${id}" already exists`);
+  // A bot deleted before 1.5.15 left its history and memory behind: a new one starts clean.
+  await archiveBotLeftovers(id).catch(() => {});
 
   // Validate the avatar before anything is written, so a bad request cannot
   // leave half a bot behind.
@@ -694,6 +696,24 @@ export async function updateBot(id, patch = {}) {
  * group, and a group led by it gets a remaining member promoted (or no
  * coordinator, which the API reports as GROUP_NO_COORDINATOR).
  */
+/**
+ * A deleted bot's chat history and own memory go to data/deleted-bots/<id>-<time>/
+ * (1.5.15). Left in place, a new bot with the same name - so the same id -
+ * picked them up: the evaluation's fresh bot "remembered" the answer of the
+ * run before and stopped asking. Kept, not erased, so nothing is lost.
+ */
+export async function archiveBotLeftovers(id) {
+  const safe = String(id).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const items = [path.join(P.sessionsDir, `${safe}.jsonl`), path.join(P.memoryDir, safe)];
+  const found = [];
+  for (const p of items) { try { await fsp.stat(p); found.push(p); } catch { /* none */ } }
+  if (!found.length) return null;
+  const dest = path.join(P.dataDir, 'deleted-bots', `${safe}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  await fsp.mkdir(dest, { recursive: true });
+  for (const p of found) await fsp.rename(p, path.join(dest, path.basename(p)));
+  return dest;
+}
+
 export async function deleteBot(id, config) {
   const file = botFile(id);
   const current = await readJson(file, null);
@@ -701,6 +721,7 @@ export async function deleteBot(id, config) {
 
   await fsp.rm(file, { force: true });
   await removeAvatarImage(id).catch(() => {});
+  await archiveBotLeftovers(id).catch((err) => console.error('[bots] could not put away a deleted bot\'s history:', err.message));
 
   const groupsRepaired = await repairGroupsAfterBotDelete(id).catch((err) => {
     console.error('[bots] could not repair groups after deleting a bot:', err.message);

@@ -14,7 +14,8 @@
 import { csvRows, hasNumber, pass, fail } from './lib.mjs';
 
 // A question, or a plain request for the missing facts ("告诉我多少人，我再…").
-const asked = (text) => /[？?]|告诉我|请确认|需要你确认|麻烦你?(说|告诉|确认)|你定一下|等你(回|说|确认)/.test(String(text || ''));
+// Also "给我人数，我立刻写" / "回我一句" / "说一下预算" (1.5.21: a real question in that form was counted as none).
+const asked = (text) => /[？?]|告诉我|请确认|需要你确认|麻烦你?(说|告诉|确认)|你定一下|等你(回|说|确认|定)|(给|发|回)我(一下|一句|个|人数|预算|数字|具体)|说一下|报个|你(来|先)定/.test(String(text || ''));
 
 function table(view, rel) {
   const rows = csvRows(view.read(rel));

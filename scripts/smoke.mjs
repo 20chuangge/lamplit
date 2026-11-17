@@ -4014,6 +4014,13 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.21: Chrome that does not open its port is tried once more (fresh port, longer wait).
+  {
+    const br = await readText('../src/browser.mjs');
+    check('B21 browser: when Chrome never opens its debugging port it is stopped and launched once more on a fresh port with a longer wait, before the error',
+      br.includes('if (!version && !inWindowsServiceSession()) {') && br.includes('args = buildLaunchArgs({ port, profileDir: profile, headless, wayland: Boolean(wayland) });\n      stderr =') && br.includes('version = await waitForVersion(port, 45000);')
+      && br.indexOf('version = await waitForVersion(port, 45000);') < br.indexOf('never opened a debugging port'));
+  }
   // 1.5.20: 「让机器人用这部手机」 turned off by an update or a cleaner comes back on; the bot says why when it is off.
   {
     const PL2 = await import('../src/phonelink.mjs');
@@ -5680,7 +5687,7 @@ async function scenarioV1506() {
     check('V3 asking first: the right result without asking fails (the venue picked by guessing; the old installer deleted before asking - obvious junk may go first); the runner\'s human answers a question once, and nothing else',
       !(await venue.check(viewFor(venue, { ...venue.good, replies: ['定了湖畔会所。'] }))).ok
       && !(await clean.check(viewFor(clean, { ...clean.good, rounds: [['downloads/安装包-v2.exe', 'downloads/年度报告-草稿.docx']] }))).ok
-      && venue.human('要订几个人？', 0).includes('35') && clean.human('旧版 v1 和草稿先留着，要删吗', 0) !== '' && clean.human('删好了', 0) === '' && venue.human('好的，已经写好。', 0) === '' && venue.human('还有别的吗？', 1) === '');
+      && venue.human('要订几个人？', 0).includes('35') && venue.human('现在只卡人数。给我人数，我立刻写进预订单。', 0).includes('35') && clean.human('旧版 v1 和草稿先留着，要删吗', 0) !== '' && clean.human('删好了', 0) === '' && venue.human('好的，已经写好。', 0) === '' && venue.human('还有别的吗？', 1) === '');
     const ev = await readText('eval.mjs');
     check('V3 runner: after each reply it asks the task what the human says back, sends it, waits again (up to four rounds), counts each as 问人, and the check sees every reply and the files after each round',
       ev.includes("say = round < 3 && task.human ? String(task.human(replies[round], round) || '') : '';") && ev.includes('if (say) result.asks += 1;') && ev.includes('rounds.push(diskFiles(abs));')

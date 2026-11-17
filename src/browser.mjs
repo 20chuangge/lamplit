@@ -685,7 +685,7 @@ class BrowserManager {
       return adopted;
     }
 
-    const port = await findFreePort();
+    let port = await findFreePort();
     let headless = process.env.BROWSER_HEADLESS === '1';
     const profile = profileDir(this.key);
     await fsp.mkdir(profile, { recursive: true });
@@ -734,7 +734,7 @@ class BrowserManager {
       } catch { /* desktops unavailable: fall back to the inherited display */ }
     }
 
-    const args = buildLaunchArgs({ port, profileDir: profile, headless, wayland: Boolean(wayland) });
+    let args = buildLaunchArgs({ port, profileDir: profile, headless, wayland: Boolean(wayland) });
     let launchEnv = process.env;
     if (wayland) {
       launchEnv = { ...process.env, ...wayland };
@@ -779,6 +779,18 @@ class BrowserManager {
         child = launch();
         version = await waitForVersion(port, 25000);
       }
+    }
+    if (!version && !inWindowsServiceSession()) {
+      // One more try (1.5.21): a cold machine (seen on the Windows CI runner)
+      // can take longer than 25 s, or the port can be taken meanwhile. Stop
+      // the silent one, take a fresh port, and wait longer.
+      try { child.kill(); } catch { /* ignore */ }
+      await new Promise((r) => setTimeout(r, 1500));
+      port = await findFreePort();
+      args = buildLaunchArgs({ port, profileDir: profile, headless, wayland: Boolean(wayland) });
+      stderr = '';
+      child = launch();
+      version = await waitForVersion(port, 45000);
     }
     if (!version) {
       try {

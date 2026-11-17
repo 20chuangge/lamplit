@@ -49,10 +49,32 @@ function renderAllowed(bot) {
   const box = $('botedit-allowed');
   if (!box) return;
   const list = Array.isArray(bot.policy?.allowed) ? bot.policy.allowed : [];
+  const grants = Array.isArray(bot.policy?.phoneGrants) ? bot.policy.phoneGrants.filter((g) => !g.until || Date.parse(g.until) > Date.now()) : [];
   box.innerHTML = '';
-  box.hidden = !list.length;
-  if (!list.length) return;
+  box.hidden = !list.length && !grants.length;
+  if (!list.length && !grants.length) return;
   box.appendChild(el('div', 'be-allowed-title', '已记住的权限（不再问你）'));
+  // 手机上放开的操作 (1.5.25), each with 撤销.
+  const KIND = { send: '发消息', publish: '发布', agree: '点同意', delete: '删除' };
+  for (const g of grants) {
+    const row = el('div', 'be-allowed-row');
+    row.appendChild(el('span', 'be-allowed-label', `手机「${g.app}」上${KIND[g.kind] || g.kind}${g.until ? '（今天）' : ''}`));
+    const undo = el('button', 'btn small be-allowed-undo', '撤销');
+    undo.type = 'button';
+    undo.addEventListener('click', async () => {
+      undo.disabled = true;
+      try {
+        const phoneGrants = (bot.policy?.phoneGrants || []).filter((x) => !(x.app === g.app && x.kind === g.kind));
+        const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { policy: { ...(bot.policy || {}), phoneGrants } } });
+        const updated = (res && res.bot) || { ...bot, policy: { ...(bot.policy || {}), phoneGrants } };
+        const index = state.bots.findIndex((b) => b.id === bot.id);
+        if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
+        renderAllowed(state.bots[index] || updated);
+      } catch (err) { undo.disabled = false; toast(err.message, true); }
+    });
+    row.appendChild(undo);
+    box.appendChild(row);
+  }
   for (const item of list) {
     const row = el('div', 'be-allowed-row');
     row.appendChild(el('span', 'be-allowed-label', item.label || item.key));

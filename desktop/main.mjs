@@ -1448,7 +1448,9 @@ async function autoUpdateMachine(machine) {
         notifyPage(L(`「${name}」已更新到 ${out.to}`, `"${name}" is now on ${out.to}`));
       }
     } else if (out.busy) {
-      // A bot is working there; try again in a few minutes.
+      // A bot is working there; try again in a few minutes (said in the log, 1.5.25:
+      // without it a waiting update looked stuck).
+      bootLog(`update ${url}: a bot is working there, trying again in 5 minutes`);
       updateChecked.delete(url);
       setTimeout(() => autoUpdateMachine(machine), 5 * 60 * 1000);
     } else {

@@ -53,6 +53,20 @@ export const DEFAULT_ASSISTANT_CONFIG = {
   },
 };
 
+/** 手机上放开的操作 (1.5.25): {app, kind, until (ISO or ''), at}; payments are never kept. */
+function normalizePhoneGrants(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const g of list) {
+    const app = String(g?.app || '').trim().slice(0, 60);
+    const kind = String(g?.kind || '');
+    if (!app || !['send', 'publish', 'agree', 'delete'].includes(kind)) continue;
+    if (out.some((x) => x.app === app && x.kind === kind)) continue;
+    out.push({ app, kind, until: g?.until ? String(g.until) : '', at: String(g?.at || nowIso()) });
+  }
+  return out.slice(-50);
+}
+
 function normalizeAllowed(list) {
   if (!Array.isArray(list)) return [];
   const seen = new Set();
@@ -421,6 +435,7 @@ function normalizeBot(raw, index) {
       maxTurnMs: Number(policy.maxTurnMs || 30 * 60 * 1000),
       // "以后都允许": what the human allowed this bot for good ({key, label, at}).
       allowed: normalizeAllowed(policy.allowed),
+      phoneGrants: normalizePhoneGrants(policy.phoneGrants),
     },
     createdAt: raw.createdAt || nowIso(),
   };

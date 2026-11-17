@@ -38,6 +38,22 @@ for (const pkg of ['com.android.launcher', 'com.android.launcher3', 'com.oppo.la
 export const appLabel = (pkg) => APP_NAMES[pkg] || pkg || '';
 
 /** Taps that pay, send, publish or delete: always asked, every time. */
+/**
+ * What a sensitive tap would do (1.5.25): paying always asks; sending,
+ * publishing, agreeing and deleting can be let through per bot and app once
+ * the human said so on a card (phone_allow).
+ */
+export function phoneStepKind(words) {
+  const w = String(words || '');
+  if (/支付|付款|转账|买单|购买|下单|提交订单|充值|\b(pay|buy|purchase|confirm payment)\b/i.test(w)) return 'pay';
+  if (/删除|清空|卸载|注销|退出登录|\b(delete|remove|uninstall)\b/i.test(w)) return 'delete';
+  if (/发布|发表|\b(post|publish)\b/i.test(w)) return 'publish';
+  if (/授权|同意|接受|允许|\b(agree|accept|allow)\b/i.test(w)) return 'agree';
+  if (/发送|评论|回复|\bsend\b/i.test(w)) return 'send';
+  return 'pay'; // unknown: treated like the strictest
+}
+export const PHONE_KIND_LABEL = { send: '发消息', publish: '发布', agree: '点同意', delete: '删除', pay: '付款' };
+
 export const SENSITIVE_TAP = /支付|付款|转账|买单|购买|下单|提交订单|充值|发布|发送|发表|评论|回复|删除|清空|卸载|注销|退出登录|授权|同意|接受|允许|\b(pay|buy|purchase|send|post|publish|delete|remove|uninstall|confirm payment|agree|accept|allow)\b/i;
 
 /** A box for searching: pressing enter there looks things up, it sends nothing. */

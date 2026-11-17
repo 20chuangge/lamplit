@@ -42,7 +42,21 @@ const copy = (from, to, filter) => fs.cpSync(path.join(REPO, from), path.join(ST
 copy('src', 'src', (p) => fs.statSync(p).isDirectory() || /\.(mjs|cjs)$|LICENSE$/.test(p));
 for (const dir of ['public', 'config', 'skills', 'hub']) copy(dir, dir);
 for (const m of MODULES) copy(path.join('node_modules', m), path.join('node_modules', m));
-fs.copyFileSync(path.join(REPO, 'package.json'), path.join(STAGE, 'package.json'));
+// The build (1.5.19): a fingerprint of the code, so a rebuild under the same
+// version still reaches the other machines (11-17: the cloud machine kept the
+// first 1.5.17 build, as updates compared version numbers only).
+const fingerprint = crypto.createHash('sha256');
+const walk = (dir) => {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walk(p);
+    else fingerprint.update(path.relative(STAGE, p).replace(/\\/g, '/')).update(fs.readFileSync(p));
+  }
+};
+for (const dir of ['src', 'public', 'config', 'skills', 'hub']) walk(path.join(STAGE, dir));
+const build = fingerprint.digest('hex').slice(0, 12);
+const pkgJson = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
+fs.writeFileSync(path.join(STAGE, 'package.json'), `${JSON.stringify({ ...pkgJson, build }, null, 2)}\n`);
 
 const packed = await packApp({ root: STAGE, outDir: os.tmpdir() });
 const bytes = fs.readFileSync(packed.file);
@@ -58,5 +72,5 @@ const version = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, 'lamplit-update.tar.gz'), bytes);
-fs.writeFileSync(path.join(OUT, 'lamplit-update.json'), `${JSON.stringify({ version, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), signature }, null, 2)}\n`);
-console.log(`[sign-update] ${version}: ${Math.round(bytes.length / 1024)} KB signed`);
+fs.writeFileSync(path.join(OUT, 'lamplit-update.json'), `${JSON.stringify({ version, build, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), signature }, null, 2)}\n`);
+console.log(`[sign-update] ${version} (build ${build}): ${Math.round(bytes.length / 1024)} KB signed`);

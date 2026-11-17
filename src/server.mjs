@@ -96,7 +96,7 @@ import { checkSandbox, sandboxStatus } from './sandbox.mjs';
 import { checkRunner, setupRunner, syncGrants, autoSetupOnHub } from './winrunner.mjs';
 import { undoChanges, pruneTrash } from './trash.mjs';
 import * as modelsModule from './models.mjs';
-import { applyUpdate, compareVersions, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES, verifyUpdate, readSignedPackage } from './selfupdate.mjs';
+import { applyUpdate, compareVersions, currentBuild, isUpdate, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES, verifyUpdate, readSignedPackage } from './selfupdate.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
 import {
   evaluateAuth,
@@ -131,6 +131,8 @@ const VERSION = (() => {
     return '0.0.0';
   }
 })();
+// The build of this code (1.5.19): set by the release build, '' when running from the repository.
+const BUILD = currentBuild(VERSION);
 const HOST = process.env.HOST || '127.0.0.1';
 const DEFAULT_PORT = Number(process.env.PORT ?? 4390);
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -969,6 +971,7 @@ route('GET', /^\/api\/health$/, async (_req, _res, { state }) => {
     setupVersion: installedSetupVersion(),
     shippedSetupVersion: shippedSetupVersion(),
     selfUpdate: true,
+    build: BUILD,
   };
 });
 
@@ -1261,6 +1264,37 @@ route('GET', /^\/api\/peers\/usage$/, async (_req, _res, { state, query }) => {
   const { machines, missing } = await fromEveryPeer(state, `/api/usage?days=${days}`);
   return { machines: machines.map((m) => ({ machine: m.machine, currency: m.currency, totals: m.totals, byBot: m.byBot, byModel: m.byModel, byDay: m.byDay })), missing };
 });
+// The names of the other machines' groups, bots and scheduled tasks (1.5.19):
+// a reply here may name one by its id ("交给了 g-ab12cd"), and the page shows
+// names, not ids. Ids and names only; kept five minutes.
+//   GET /api/peers/names -> {groups:{id:name}, bots:{id:name}, routines:{id:name}, missing:[machine]}
+export function namesFrom(lists) {
+  const out = { groups: {}, bots: {}, routines: {} };
+  for (const { groups = [], bots = [], routines = [] } of lists) {
+    for (const g of groups) if (g?.id && g?.name) out.groups[g.id] = String(g.name).slice(0, 80);
+    for (const b of bots) if (b?.id && b?.name) out.bots[b.id] = String(b.name).slice(0, 80);
+    for (const r of routines) if (r?.id && r?.name) out.routines[r.id] = String(r.name).slice(0, 120);
+  }
+  return out;
+}
+const asList = (x, key) => (Array.isArray(x) ? x : Array.isArray(x?.[key]) ? x[key] : []);
+route('GET', /^\/api\/peers\/names$/, async (_req, _res, { state }) => {
+  const now = Date.now();
+  if (state.peerNames && now - state.peerNames.at < 5 * 60 * 1000) return state.peerNames.value;
+  const missing = [];
+  const lists = await Promise.all(state.peers.list().map(async ({ name }) => {
+    const peer = state.peers.find(name);
+    const get = (p) => state.peers.json(peer, 'GET', p, { timeoutMs: 8000 });
+    try {
+      const [groups, bots, routines] = await Promise.all([get('/api/groups'), get('/api/bots'), get('/api/routines').catch(() => [])]);
+      return { groups: asList(groups, 'groups'), bots: asList(bots, 'bots'), routines: asList(routines, 'routines') };
+    } catch { missing.push(name); return {}; }
+  }));
+  const value = { ...namesFrom(lists), missing };
+  state.peerNames = { at: now, value };
+  return value;
+});
+
 route('GET', /^\/api\/peers\/pages$/, async (_req, _res, { state }) => {
   const { machines, missing } = await fromEveryPeer(state, '/api/pages');
   return { machines: machines.map((m) => ({ machine: m.machine, pages: m.pages || [] })), missing };
@@ -2258,7 +2292,7 @@ route(
     // Only Lamplit's own releases (1.5.5, SEC-06 step 2): a paired phone or a
     // stolen token can no longer put code here.
     if (!verifyUpdate(bytes, String(req.headers['x-nightshift-signature'] || ''))) throw httpError(400, 'UPDATE_BAD_SIGNATURE', '更新包没有 Lamplit 发版签名，或签名不对：这台机器只装正式发布的版本');
-    const result = await applyUpdate({ bytes, currentVersion: VERSION, log: (line) => console.error(line) });
+    const result = await applyUpdate({ bytes, currentVersion: VERSION, currentBuild: BUILD, log: (line) => console.error(line) });
     if (process.env.ASSIST_UPDATE_NO_EXIT !== '1') {
       setTimeout(() => process.exit(0), 800).unref?.();
     }
@@ -2284,7 +2318,7 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state })
     return res.json();
   };
   const before = await health().catch((err) => { throw httpError(502, 'MACHINE_UNREACHABLE', `连不上这台机器：${err.message}`); });
-  if (compareVersions(before.version, VERSION) >= 0) return { ok: true, updated: false, version: before.version };
+  if (!isUpdate({ version: VERSION, build: BUILD }, before)) return { ok: true, updated: false, version: before.version };
   if (!before.selfUpdate) {
     // Installed before self-update existed: one last manual add, automatic after that.
     return { ok: false, needsSetup: true, version: before.version, message: `这台机器还是 ${before.version}，不支持自动更新：重新添加一次，以后就会自动更新了` };
@@ -2318,7 +2352,7 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state })
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2000));
     const now = await health().catch(() => null);
-    if (now && compareVersions(now.version, VERSION) >= 0) return { ok: true, updated: true, from: before.version, to: now.version };
+    if (now && (compareVersions(now.version, VERSION) > 0 || (now.version === VERSION && (!BUILD || now.build === BUILD)))) return { ok: true, updated: true, from: before.version, to: now.version };
   }
   return { ok: false, version: before.version, message: '新版本已经装上，但 90 秒内没有重新连上，稍后再看' };
 });

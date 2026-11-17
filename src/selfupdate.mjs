@@ -78,6 +78,31 @@ export function verifyUpdate(bytes, signatureB64, keys = UPDATE_PUBLIC_KEYS) {
 }
 
 /**
+ * Is `next` (version, build) an update for a machine on `current`? A newer
+ * version is; the same version is when both builds are known and differ (a
+ * rebuild that never got a new number, 1.5.19).
+ */
+export function isUpdate(next, current) {
+  const c = compareVersions(next?.version, current?.version);
+  if (c !== 0) return c > 0;
+  return Boolean(next?.build && current?.build && next.build !== current.build);
+}
+
+/** This code's build (1.5.19): package.json, else the signed package that came with the installer. */
+export function currentBuild(version, root = appRoot()) {
+  try {
+    const own = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).build;
+    if (own) return String(own);
+  } catch { /* none */ }
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(root, 'update', 'lamplit-update.json'), 'utf8'));
+    return meta.version === version && meta.build ? String(meta.build) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * The signed package that came with this build's installer
  * (resources/server/update), or null in a build without one.
  */
@@ -176,7 +201,7 @@ async function mergeSkills(fromDir, toDir) {
  * Validate, test-start and install a package. Returns {from, to} once the code
  * on disk is the new one; the caller then exits so the supervisor restarts it.
  */
-export async function applyUpdate({ bytes, currentVersion, root = appRoot(), log = () => {} }) {
+export async function applyUpdate({ bytes, currentVersion, currentBuild: build = '', root = appRoot(), log = () => {} }) {
   if (!bytes?.length) throw updateError('UPDATE_EMPTY', '没有收到更新包');
   const work = path.join(root, '.update', new Date().toISOString().replace(/[:.]/g, '-'));
   const newRoot = path.join(work, 'new');
@@ -195,7 +220,7 @@ export async function applyUpdate({ bytes, currentVersion, root = appRoot(), log
     if (!(await exists(path.join(newRoot, 'src', 'server.mjs'))) || !(await exists(path.join(newRoot, 'public')))) {
       throw updateError('UPDATE_BAD_PACKAGE', '更新包不完整');
     }
-    if (compareVersions(next.version, currentVersion) <= 0) {
+    if (!isUpdate({ version: next.version, build: next.build }, { version: currentVersion, build })) {
       throw updateError('UPDATE_NOT_NEWER', `这台机器已经是 ${currentVersion}，不用更新`, 409);
     }
     const needSetup = shippedSetupVersion(newRoot);

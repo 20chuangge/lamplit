@@ -3999,6 +3999,32 @@ async function scenarioMcp({ home, toolsMod }) {
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
+  // 1.5.19: a rebuild under the same version reaches the other machines too.
+  {
+    const SU = await import('../src/selfupdate.mjs');
+    const sign = await readText('sign-update.mjs');
+    const srv = await readText('../src/server.mjs');
+    const desk = await readText('../desktop/main.mjs');
+    check('U19 update: a newer version is an update; the same version is one only when both builds are known and differ; an older version or an unknown build is not',
+      SU.isUpdate({ version: '1.5.19' }, { version: '1.5.18' }) && !SU.isUpdate({ version: '1.5.18' }, { version: '1.5.19' })
+      && SU.isUpdate({ version: '1.5.18', build: 'b' }, { version: '1.5.18', build: 'a' }) && !SU.isUpdate({ version: '1.5.18', build: 'a' }, { version: '1.5.18', build: 'a' })
+      && !SU.isUpdate({ version: '1.5.18', build: 'b' }, { version: '1.5.18', build: '' }) && !SU.isUpdate({ version: '1.5.18', build: '' }, { version: '1.5.18', build: 'a' }));
+    check('U19 build: the release build stamps a fingerprint of the code into the package and its meta; health reports it; the push, the machine\'s install and the desktop\'s check all compare it with the version',
+      sign.includes("fs.writeFileSync(path.join(STAGE, 'package.json'), `${JSON.stringify({ ...pkgJson, build }, null, 2)}\\n`);") && sign.includes('JSON.stringify({ version, build, sha256')
+      && srv.includes('build: BUILD,') && srv.includes('if (!isUpdate({ version: VERSION, build: BUILD }, before))') && srv.includes('currentBuild: BUILD, log:')
+      && desk.includes('sameVersion && !(myBuild && health.build && health.build !== myBuild)'));
+  }
+  // 1.5.19: ids from another machine show as names too.
+  {
+    const S = await import('../src/server.mjs');
+    const n = S.namesFrom([{ groups: [{ id: 'g-abc123', name: '求职组' }], bots: [{ id: 'bot-xyz789', name: '投递' }], routines: [{ id: 'rt_0123456789ab', name: '每日筛岗' }] }, {}]);
+    const core = await readText('../public/app/main/01-core.js');
+    const srv = await readText('../src/server.mjs');
+    check("N19 names: every machine can give the names of the other machines' groups, bots and scheduled tasks (ids and names only, kept 5 min); the page falls back to them for an id it does not know here",
+      n.groups['g-abc123'] === '求职组' && n.bots['bot-xyz789'] === '投递' && n.routines.rt_0123456789ab === '每日筛岗'
+      && srv.includes("route('GET', /^\\/api\\/peers\\/names$/") && srv.includes('now - state.peerNames.at < 5 * 60 * 1000')
+      && core.includes("api('/api/peers/names').then((n) => { state.peerNames = n;") && core.includes('|| far.groups[id]'));
+  }
   // 1.5.17: the phone kept dropping off - asleep with the screen off, and one machine that was off held the reports to the others back.
   {
     const PL = await import('../src/phonelink.mjs');

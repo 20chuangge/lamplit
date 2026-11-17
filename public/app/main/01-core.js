@@ -25,12 +25,20 @@ function scheduleText(expr) {
 function humanizeIds(text) {
   let t = String(text || '');
   if (!/\b(g-[a-z0-9]{6}|bot-[a-z0-9]{6}|rt_[0-9a-f]{12})\b|`[^`\n]*\*[^`\n]*`/.test(t)) return t;
-  const groupName = (id) => (state.groups || []).find((g) => g.id === id)?.name;
-  const botName = (id) => (state.bots || []).find((b) => b.id === id)?.name;
-  const routineName = (id) => (state.routines || []).find((r) => r.id === id)?.name;
+  // This machine's lists first; then the other machines' names (1.5.19): a reply
+  // here may name a group, bot or task that lives on another machine.
+  const far = state.peerNames || { groups: {}, bots: {}, routines: {} };
+  const groupName = (id) => (state.groups || []).find((g) => g.id === id)?.name || far.groups[id];
+  const botName = (id) => (state.bots || []).find((b) => b.id === id)?.name || far.bots[id];
+  const routineName = (id) => (state.routines || []).find((r) => r.id === id)?.name || far.routines[id];
   if (/\brt_[0-9a-f]{12}\b/.test(t) && !state.routines && !humanizeIds.loading) {
     humanizeIds.loading = true;
     api('/api/routines').then((r) => { state.routines = r; if (typeof renderMessages === 'function') renderMessages(); }).catch(() => {});
+  }
+  const unknown = [...t.matchAll(/\b(g-[a-z0-9]{6}|bot-[a-z0-9]{6}|rt_[0-9a-f]{12})\b/g)].some(([, id]) => !groupName(id) && !botName(id) && !routineName(id));
+  if (unknown && !state.peerNames && !humanizeIds.farLoading) {
+    humanizeIds.farLoading = true;
+    api('/api/peers/names').then((n) => { state.peerNames = n; if (typeof renderMessages === 'function') renderMessages(); }).catch(() => {});
   }
   // 「name」 needs no spaces around it ("群 g-ab12cd 已公告" -> "群「小红书项目群」已公告").
   t = t.replace(/ ?`?\b(g-[a-z0-9]{6})\b`? ?/g, (m, id) => (groupName(id) ? `「${groupName(id)}」` : m));

@@ -1404,7 +1404,10 @@ async function autoUpdateMachine(machine) {
     // Remember where this machine can be reached from outside (Tailscale).
     const known = readMachines().find((m) => m.url === url)?.tailnetUrl || '';
     if ((health.tailnetUrl || '') !== known) patchMachine(url, { tailnetUrl: health.tailnetUrl || '' });
-    if (versionCmp(health.version, mine) >= 0) { updateAttempts.delete(url); return; }
+    // Same version, other build (1.5.19): a rebuild under the same number goes out too.
+    const myBuild = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/health`).then((r) => r.json()).then((h) => h.build || '').catch(() => '');
+    const sameVersion = versionCmp(health.version, mine) === 0;
+    if (versionCmp(health.version, mine) > 0 || (sameVersion && !(myBuild && health.build && health.build !== myBuild))) { updateAttempts.delete(url); return; }
     if (!health.selfUpdate) {
       notifyPage(L(`「${name}」还是 ${health.version}：重新添加一次这台机器就能更新到 ${mine}，之后会自动更新`, `"${name}" is still on ${health.version}: add it again once to update it to ${mine}; after that it updates on its own`), true);
       return;

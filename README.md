@@ -1,5 +1,7 @@
 # Lamplit
 
+**中文** · [English](README.en.md)
+
 > 现在叫 Lamplit（以前叫 Evenlight，更早叫 Nightshift）；数据和自动更新都不受影响。网站与使用文档：https://20chuangge.github.io/lamplit/
 
 你休息时，灯还亮着。一个有自己电脑的 AI 助理：说一句要做什么，它在电脑上把事情办完。
@@ -7,7 +9,7 @@
 **官网和下载：https://20chuangge.github.io/lamplit/**
 
 - **一个助理就够**：默认的「助理」什么都能做，也能自己建 Bot、拉群分工。
-- **多台机器**：闲置电脑或云主机填上 IP、账号、密码，自动装好；切换机器，整个界面跟着切。支持 Ubuntu、Rocky、Windows。
+- **多台机器**：闲置电脑或云主机填上 IP、账号、密码，自动装好；切换机器，整个界面跟着切。支持 Ubuntu、Debian、Rocky、Windows。照着做的教程和常见的坑：[添加机器](https://20chuangge.github.io/lamplit/docs.html#machines)。
 - **看得见、能接管**：每台机器的屏幕实时可看，随时接管鼠标键盘。
 - **本机先问你，远程机自主**：在你自己的电脑上，删文件、发消息这类操作会先问；远程机器放手干，危险命令一律拦下。
 - **记忆、技能、定时任务**：记住你的习惯，把做过的流程存成技能，按时自动跑。
@@ -43,7 +45,7 @@ npm run desktop:build    # 出 Windows 安装包 → desktop/dist/
 ```bash
 # 1) 起后端 + 浏览器打开
 npm start                      # http://127.0.0.1:4390
-npm run smoke                  # 1376 assertions, boots the real server on a free port
+npm run smoke                  # 1383 assertions, boots the real server on a free port
 npm run eval -- --record       # 20 real tasks on this computer's real model -> docs/EVAL.md
 
 # 2) 桌面应用（Electron 壳）

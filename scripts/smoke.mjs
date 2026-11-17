@@ -5366,7 +5366,8 @@ async function scenarioDocs1513() {
   const site = [zhHome, enHome, zhDocs, enDocs, readmeEn].join('\n');
   // Generic on purpose: no real name or address is written here (the file is public).
   const ips = [...site.matchAll(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g)].map((m) => m[0]);
-  const exampleIp = (ip) => /^(127\.0\.0\.1|0\.0\.0\.0|192\.168\.1\.\d+|100\.64\.0\.0)$/.test(ip);
+  // The private ranges themselves (192.168.0.0/16 ...) name no machine: the network check tells people to exclude them (1.5.28).
+  const exampleIp = (ip) => /^(127\.0\.0\.1|0\.0\.0\.0|192\.168\.1\.\d+|100\.64\.0\.0|192\.168\.0\.0|10\.0\.0\.0|172\.16\.0\.0)$/.test(ip);
   check('D5 nothing private on the site or in the README: only example addresses, no one\'s home folder', ips.every(exampleIp) && !/[A-Z]:\\Users\\/i.test(site), ips.filter((ip) => !exampleIp(ip)).join(', '));
 }
 

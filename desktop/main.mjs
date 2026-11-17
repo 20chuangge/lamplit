@@ -802,6 +802,25 @@ function localUrl() {
 }
 
 /**
+ * The local key (1.5.27): the hub writes it to data/local-key; this app sends
+ * it with its own requests to this computer's hub, so approvals, rules and keys
+ * work here and not from a bot's command.
+ */
+let localKeyValue = '';
+function readLocalKey() {
+  try { localKeyValue = fs.readFileSync(path.join(HOME, 'data', 'local-key'), 'utf8').trim(); } catch { /* not written yet */ }
+  return localKeyValue;
+}
+function sendLocalKey() {
+  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['http://127.0.0.1/*', 'http://127.0.0.1:*/*', 'http://localhost/*', 'http://localhost:*/*'] }, (details, done) => {
+    const key = localKeyValue || readLocalKey();
+    let ownHub = false;
+    try { ownHub = Number(new URL(details.url).port) === Number(serverPort); } catch { /* not a url */ }
+    done({ requestHeaders: ownHub && key ? { ...details.requestHeaders, 'x-lamplit-local': key } : details.requestHeaders });
+  });
+}
+
+/**
  * Another machine's pairing screen covers the whole window, title bar
  * included. 1.5.6 pages bring their own way out; a machine still on an older
  * version (and it cannot be updated while this app is not paired with it)
@@ -820,8 +839,8 @@ function rescuePairingScreen(target) {
     ways: [
       L('配对码是 8 位数字，每天换一次。在已经连着这台机器的手机或浏览器上，打开 设置 → 手机和外网 就能看到。',
         'The code is 8 digits and changes every day. On a phone or browser already connected to this machine, open Settings → Phone & remote.'),
-      L('在这台机器上打开终端运行下面这行，结果里的 code 就是（Windows 上用 curl.exe）：',
-        'On that machine, open a terminal and run this; the code in the result is the one (curl.exe on Windows):'),
+      L('在这台机器上打开终端运行下面这行，结果里的 code 就是（要带上 Lamplit 数据文件夹里的 local-key；Windows 上在安装目录的 data 文件夹里，用 curl.exe）：',
+        'On that machine, open a terminal and run this; the code in the result is the one (it needs the local-key from the Lamplit data folder; on Windows it is in the data folder of the install directory, use curl.exe):'),
       L('这台机器是 Lamplit 帮你装的：回到这台电脑，在 设置 → 机器 → 添加机器 里用同样的地址再连一次，会重新配对，已经装好的部分不会重做。',
         'If Lamplit installed it: go back to this computer and add it again under Settings → Machines → Add machine with the same address. It pairs again and skips what is installed.'),
     ],
@@ -858,7 +877,7 @@ function rescuePairingScreen(target) {
       const li = help.querySelectorAll('li');
       li[0].textContent = t.ways[0];
       li[1].querySelector('span').textContent = t.ways[1];
-      li[1].querySelector('code').textContent = 'curl -s http://127.0.0.1:' + port + '/api/pairing';
+      li[1].querySelector('code').textContent = 'curl -s -H "x-lamplit-local: $(sudo cat /opt/desk-hub/data/local-key)" http://127.0.0.1:' + port + '/api/pairing';
       li[2].textContent = t.ways[2];
       const foot = screen.querySelector('.auth-foot');
       if (foot) foot.replaceWith(help); else screen.querySelector('.auth-card')?.appendChild(help);
@@ -1615,6 +1634,8 @@ if (!gotLock) {
   };
 
   app.whenReady().then(async () => {
+    // The app's own requests to this computer's hub carry the local key (1.5.27).
+    sendLocalKey();
     // Microphone, clipboard and notifications for hub pages only (SEC-09).
     const PAGE_PERMISSIONS = new Set(['media', 'clipboard-read', 'clipboard-sanitized-write', 'notifications', 'fullscreen', 'pointerLock', 'openExternal']);
     session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {

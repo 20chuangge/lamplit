@@ -51,8 +51,14 @@ function hubUrl() {
   }
 }
 const HUB = hubUrl();
+// The runner stands in for the human: it answers approval cards, which takes the
+// local key the desktop app sends (1.5.27). It lives next to port.json.
+const LOCAL_KEY = (() => {
+  if (process.env.EVAL_LOCAL_KEY) return process.env.EVAL_LOCAL_KEY;
+  try { return fs.readFileSync(path.join(process.env.APPDATA || path.join(os.homedir(), '.config'), 'Desk', 'data', 'local-key'), 'utf8').trim(); } catch { return ''; }
+})();
 const api = async (p, { method = 'GET', body } = {}) => {
-  const res = await fetch(HUB + p, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const res = await fetch(HUB + p, { method, headers: { 'content-type': 'application/json', ...(LOCAL_KEY ? { 'x-lamplit-local': LOCAL_KEY } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }

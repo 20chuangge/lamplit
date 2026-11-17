@@ -479,7 +479,7 @@ export const REPLY_STYLE = [
 ];
 
 export function reachesSecrets(name, args = {}, { workspaceDir = '' } = {}) {
-  const SECRET_FILES = /(vault\.(key|json|mjs)|secrets\.json|\brevealVault\b|\bputVault\b)/i;
+  const SECRET_FILES = /(vault\.(key|json|mjs)|secrets\.json|local-key\b|x-lamplit-local|\brevealVault\b|\bputVault\b)/i;
   let text = name === 'shell' ? String(args.command || '')
     : name === 'fs_write' ? `${args.path || ''}\n${args.content || ''}`
       : name === 'fs_read' || name === 'fs_list' ? String(args.path || '')

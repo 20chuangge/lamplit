@@ -19,6 +19,8 @@
  * client can authenticate, otherwise you could never pair.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import fsp from 'node:fs/promises';
@@ -336,6 +338,52 @@ export function isPublicShellPath(pathname) {
 }
 
 /** /api/auth tells the client whether it needs to pair; /api/pair is how it does. */
+/**
+ * The local key (1.5.27): a random secret in data/local-key that the hub and
+ * the desktop app know and the bots' commands do not (the sandbox hides the
+ * data folder; on Windows they run as another account). A request from this
+ * computer is still the local user, but only one carrying the key may do what
+ * gives power - decide an approval, change a bot's or the machine's rules,
+ * keys and pairing. A bot's own `curl http://127.0.0.1:4390/...` cannot.
+ */
+export const LOCAL_KEY_HEADER = 'x-lamplit-local';
+let localKeyCache = null;
+export function localKey(dir) {
+  if (localKeyCache && localKeyCache.dir === dir) return localKeyCache.key;
+  const file = path.join(dir, 'local-key');
+  let key = '';
+  try { key = fs.readFileSync(file, 'utf8').trim(); } catch { /* none yet */ }
+  if (!/^[a-f0-9]{64}$/.test(key)) {
+    key = crypto.randomBytes(32).toString('hex');
+    try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(file, key, { mode: 0o600 }); } catch { /* read-only: per-process key */ }
+  }
+  localKeyCache = { dir, key };
+  return key;
+}
+
+/** Is this local request the human's own app (it carries the local key)? Paired clients always are. */
+export function carriesLocalKey(req, auth, dir) {
+  if (!auth || auth.mode !== 'local') return Boolean(auth?.authorized);
+  const sent = String(req?.headers?.[LOCAL_KEY_HEADER] || '');
+  return Boolean(sent) && safeEqual(sent, localKey(dir));
+}
+
+/**
+ * What only the human may do (1.5.27). Bots do these through their own tools,
+ * which go through approvals; the HTTP routes are for the human's app.
+ */
+export function isAuthorityRequest(method, pathname, body = {}) {
+  const m = String(method || 'GET').toUpperCase();
+  const p = String(pathname || '');
+  if (m === 'GET') return p === '/api/pairing';
+  if (/^\/api\/approvals\/[^/]+$/.test(p) && m === 'POST') return true;
+  if (p === '/api/policy' || p === '/api/settings' || p === '/api/cliagents' || p === '/api/pairing/link') return true;
+  if (/^\/api\/(vault|mcp|feishu|devices)(\/|$)/.test(p) && !/\/test$/.test(p)) return true;
+  if (/^\/api\/bots\/[^/]+\/primary$/.test(p)) return true;
+  if (/^\/api\/bots(\/[^/]+)?$/.test(p) && (m === 'POST' || m === 'PATCH') && body && (body.policy !== undefined || (m === 'PATCH' && body.tools !== undefined))) return true;
+  return false;
+}
+
 export function isAuthExemptPath(method, pathname) {
   const verb = String(method || 'GET').toUpperCase();
   const value = String(pathname || '');

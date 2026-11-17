@@ -102,6 +102,9 @@ import {
   evaluateAuth,
   isSameOriginRequest,
   isAuthExemptPath,
+  isAuthorityRequest,
+  carriesLocalKey,
+  localKey,
   isPublicShellPath,
   isLoopbackHost,
   isSecureRequest,
@@ -292,6 +295,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 
   // The human's phone on this computer (1.3.0): adb where they said, else found.
   // ...and, without the cable, the phone whose Lamplit app has 「让机器人用这部手机」 on (1.4.0).
+  // The local key for the human's own app (1.5.27), made before anything listens.
+  localKey(P.dataDir);
   refs.phoneLink = createPhoneLink({ bus });
   const adbHere = () => findAdb({ configured: phoneConfig().adbPath });
   refs.phone = createPhone({ adb: () => adbHere() || 'lamplit', exec: makePhoneExec({ adbPath: adbHere, link: refs.phoneLink }), workspaceDir });
@@ -897,6 +902,15 @@ async function dispatchApi(req, res, state, pathname, url) {
         body = await readJsonBody(req, entry.maxBody || MAX_BODY_BYTES);
       } catch (err) {
         return errorResponse(res, err.status || 400, err.code || 'BAD_BODY', err.message);
+      }
+    }
+
+    // What gives power needs the human's own app or a paired device (1.5.27):
+    // a bot's command on this computer reaches loopback too.
+    if (isAuthorityRequest(method, pathname, body)) {
+      const auth = req.auth || evaluateAuth(req, state.security, state.devices);
+      if (!carriesLocalKey(req, auth, P.dataDir)) {
+        return errorResponse(res, 403, 'LOCAL_KEY_REQUIRED', 'only the Lamplit app (or a paired device) can do this: approvals, rules, keys and pairing are the human\'s');
       }
     }
 

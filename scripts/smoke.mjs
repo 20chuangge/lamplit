@@ -12,6 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import fsp from 'node:fs/promises';
+import fsSync from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -102,6 +103,22 @@ async function stage(name, fn) {
 let child = null;
 let home = null;
 let base = '';
+// The harness stands for the human's own app (1.5.27): requests to the hub under
+// test carry the local key, like the desktop app's. rawFetch goes without it.
+const rawFetch = globalThis.fetch;
+let keyDir = ''; // the data folder of the hub under test when it is not ASSIST_DATA_DIR's (a second hub)
+const localKeyOf = () => { try { return fsSync.readFileSync(path.join(keyDir || process.env.ASSIST_DATA_DIR || '', 'local-key'), 'utf8').trim(); } catch { return ''; } };
+globalThis.fetch = (input, init = {}) => {
+  const url = typeof input === 'string' ? input : input?.url || '';
+  if (base && url.startsWith(base) && (keyDir || process.env.ASSIST_DATA_DIR)) {
+    const key = localKeyOf();
+    const h = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined) || {});
+    if (key && !h.has('x-lamplit-local') && !h.has('x-no-local-key')) h.set('x-lamplit-local', key);
+    h.delete('x-no-local-key');
+    return rawFetch(input, { ...init, headers: h });
+  }
+  return rawFetch(input, init);
+};
 let publicBase = '';
 
 async function main() {
@@ -2284,7 +2301,7 @@ async function scenarioCrossSite({ auth }) {
   check('SEC-01: a text/plain body (no CORS preflight) is refused with 415 and adds no connected app', plain.status === 415 && before === after, `${plain.status} ${plain.text.slice(0, 120)}`);
   const rebind = await rawHttp('/api/pairing', { headers: { host: `evil.example:${port}` } });
   check('SEC-02: DNS rebinding (Host evil.example) cannot read the pairing code (401)', rebind.status === 401 && !/"code":"\d{8}"/.test(rebind.text), `${rebind.status} ${rebind.text.slice(0, 80)}`);
-  const same = await rawHttp('/api/pairing', { headers: { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` } });
+  const same = await rawHttp('/api/pairing', { headers: { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}`, 'x-lamplit-local': localKeyOf() } });
   const none = await rawHttp('/api/health', { headers: { host: `localhost:${port}` } });
   check('SEC-01: the hub page (same origin) and the desktop app (no Origin) still work', same.status === 200 && none.status === 200, `${same.status} ${none.status}`);
   const okJson = await rawHttp('/api/bots/nobody-here/message', { method: 'POST', headers: { host: `127.0.0.1:${port}`, 'content-type': 'application/json; charset=utf-8' }, body: msg });
@@ -2647,6 +2664,7 @@ async function scenarioPairingLink() {
       ASSIST_WORKSPACE_DIR: path.join(remoteHome, 'workspace'),
     });
     base = started.url;
+    keyDir = path.join(remoteHome, 'data');
 
     const info = await api('/api/pairing');
     check(
@@ -2744,6 +2762,7 @@ async function scenarioPairingLink() {
     check('the device list is empty after removing the phone', (await api('/api/devices')).json?.devices?.length === 0);
   } finally {
     base = savedBase;
+    keyDir = '';
     if (started) await stopProcess(started.child);
     await fsp.rm(remoteHome, { recursive: true, force: true }).catch(() => {});
   }
@@ -4013,6 +4032,28 @@ async function scenarioMcp({ home, toolsMod }) {
     check('M30b a task on the group board cut off by the step limit goes on by itself (up to the limit), told what it already did',
       /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
+  }
+  // 1.5.27: a bot's own command on this computer cannot decide approvals or change rules, keys or pairing.
+  {
+    const A = await import('../src/auth.mjs');
+    const noKey = (p, o = {}) => rawFetch(`${base}${p}`, { ...o, headers: { 'content-type': 'application/json', ...(o.headers || {}) } });
+    const patchBot = await noKey('/api/bots/chief', { method: 'PATCH', body: JSON.stringify({ policy: { phoneGrants: [{ app: '支付宝', kind: 'send' }], autoApproveMedium: true } }) });
+    const policy = await noKey('/api/policy', { method: 'PUT', body: JSON.stringify({ level: 'auto' }) });
+    const decide = await noKey('/api/approvals/ap_nothing', { method: 'POST', body: JSON.stringify({ decision: 'approve' }) });
+    const pairing = await noKey('/api/pairing');
+    const settings = await noKey('/api/settings', { method: 'PUT', body: JSON.stringify({ model: 'x' }) });
+    const reads = await noKey('/api/bots');
+    const rename = await noKey('/api/bots/chief', { method: 'PATCH', body: JSON.stringify({ role: '助理' }) });
+    check('K27 local key: without it, a request from this computer cannot change a bot\'s permissions, the approval level, settings, decide an approval or read the pairing code; ordinary reads and edits still work',
+      [patchBot, policy, decide, pairing, settings].every((r) => r.status === 403) && reads.status === 200 && rename.status === 200,
+      JSON.stringify([patchBot, policy, decide, pairing, settings, reads, rename].map((r) => r.status)));
+    const withKey = await api('/api/policy');
+    check('K27 local key: the human\'s app (with the key) and paired devices still can; the key file is a secret a bot\'s command asks for',
+      withKey.status === 200 && A.isAuthorityRequest('PATCH', '/api/bots/x', { tools: [] }) && !A.isAuthorityRequest('PATCH', '/api/bots/x', { role: 'r' })
+      && A.carriesLocalKey({ headers: {} }, { mode: 'token', authorized: true }, '.') === true
+      && (await import('../src/agent.mjs')).reachesSecrets('shell', { command: 'cat /opt/desk-hub/data/local-key' }) !== '');
+    const desk3 = await readText('../desktop/main.mjs');
+    check('K27 desktop: the app sends the key with its own requests to this computer\'s hub only', desk3.includes("'x-lamplit-local': key") && desk3.includes('ownHub = Number(new URL(details.url).port) === Number(serverPort)') && desk3.includes('sendLocalKey();'));
   }
   // 1.5.26: each bot has its own browser on its own screen; a takeover card waits for the tap.
   {
@@ -9424,7 +9465,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const eight = await fetch(`${pubBase}/api/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: '12345678' }) });
       const eightJson = await eight.json().catch(() => ({}));
       check('public port: the 8-digit code is refused there', eight.status === 403 && eightJson?.error?.code === 'PAIR_CODE_NOT_ALLOWED_PUBLIC');
-      const made = await fetch(`${normalBase}/api/pairing/link`, { method: 'POST' }).then((r) => r.json());
+      const pubKey = (() => { for (const d of [path.join(pubHome, 'data'), process.env.ASSIST_DATA_DIR]) { try { return fsSync.readFileSync(path.join(d, 'local-key'), 'utf8').trim(); } catch { /* next */ } } return ''; })();
+      const made = await fetch(`${normalBase}/api/pairing/link`, { method: 'POST', headers: { 'x-lamplit-local': pubKey } }).then((r) => r.json());
       const link = (made.links || []).find((l) => l.kind === 'lan') || (made.links || [])[0];
       const token = new URL(link.url).searchParams.get('pair');
       const paired = await fetch(`${pubBase}/api/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: token, client: 'app' }) });

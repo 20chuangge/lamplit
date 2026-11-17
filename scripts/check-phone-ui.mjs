@@ -163,6 +163,10 @@ const main = async () => {
       }
     });
 
+    // Like the desktop app: this computer's page carries the local key (1.5.27).
+    let localKeyValue = '';
+    try { localKeyValue = (await fsp.readFile(path.join(home, 'data', 'local-key'), 'utf8')).trim(); } catch { /* none */ }
+    if (localKeyValue) { await page.send('Network.enable'); await page.send('Network.setExtraHTTPHeaders', { headers: { 'x-lamplit-local': localKeyValue } }); }
     await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
     await sleep(2500);
 

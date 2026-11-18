@@ -14,8 +14,9 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = path.join(REPO, '.uiv1-shots');
-const PORT = 14399;
-const CDP = 9333;
+// Override with CHECK_HUB_PORT / CHECK_CDP_PORT when another program holds these.
+const PORT = Number(process.env.CHECK_HUB_PORT) || 14399;
+const CDP = Number(process.env.CHECK_CDP_PORT) || 9333;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function seed(home) {
@@ -119,6 +120,10 @@ class Cdp {
 }
 
 const main = async () => {
+  // Something else already answers on the debug port (another app's browser):
+  // driving it would test the wrong window and type into someone else's page.
+  const taken = await fetch(`http://127.0.0.1:${CDP}/json/version`, { signal: AbortSignal.timeout(1500) }).then(() => true, () => false);
+  if (taken) throw new Error(`port ${CDP} is already a debug port of another program: set CHECK_CDP_PORT to a free one`);
   await fsp.mkdir(OUT, { recursive: true });
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'desk-phone-ui-'));
   await seed(home);

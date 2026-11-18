@@ -45,8 +45,19 @@ function throughPhoneRelay(origin = location.origin) {
 
 function machineDisplayName() {
   if (onLocalMachine()) return '本机';
-  const row = machineBridge?.machines?.find((m) => m.url === location.origin || m.tailnetUrl === location.origin);
+  // The machine the desktop app switched to, whatever address this page came on
+  // (through the relay it is a loopback door, 127.0.0.N: 1.5.37).
+  const row = machineBridge?.machines?.find((m) => m.url === location.origin || m.tailnetUrl === location.origin)
+    || (machineBridge?.current ? machineBridge.machines?.find((m) => m.url === machineBridge.current) : null);
   return row?.name || selfMachineName || state.computer?.host?.hostname || location.hostname;
+}
+
+/** How this page reached its machine, in words: 中转 (the desktop's door 127.0.0.N or the phone's forwarder), Tailscale (100.x), else the host name. */
+function pageRouteWords() {
+  const h = location.hostname;
+  if (throughPhoneRelay() || (/^127\.0\.0\.\d+$/.test(h) && h !== '127.0.0.1')) return '中转';
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return 'Tailscale';
+  return h;
 }
 
 /** Everything that names "where am I": switcher, account chip, About. */
@@ -58,7 +69,7 @@ function syncMachineBranding() {
   if ($('machine-name')) $('machine-name').textContent = name;
   if ($('pc-title')) $('pc-title').textContent = `${name}的屏幕`;
   if ($('machine-sub')) {
-    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local ? '这台电脑' : [os, location.hostname].filter(Boolean).join(' · '))}`;
+    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local ? '这台电脑' : [os, pageRouteWords()].filter(Boolean).join(' · '))}`;
   }
   if ($('about-origin')) $('about-origin').textContent = location.origin;
   if ($('timezone-pill')) $('timezone-pill').textContent = timezoneLabel(effectiveTimezone());
@@ -205,7 +216,8 @@ function renderMachineMenu() {
   }
   const rows = [{ url: '', name: '本机', sub: '这台电脑', current: machineBridge.local }]
     .concat((machineBridge.machines || []).map((m) => ({
-      url: m.url, name: m.name, sub: m.url.replace(/^https?:\/\//, ''), current: m.url === machineBridge.current,
+      // The one on screen says how it is reached now (中转 / Tailscale / its address), not the address it was added with.
+      url: m.url, name: m.name, sub: m.url === machineBridge.current ? pageRouteWords() : m.url.replace(/^https?:\/\//, ''), current: m.url === machineBridge.current,
     })));
   menu.innerHTML = rows.map((m) => `
     <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" data-machine="${escapeHtml(m.url)}">

@@ -1001,6 +1001,9 @@ function saveMachineFromModal() {
  * belong to a remote machine, which would install its own older copy and
  * restart itself mid-way when it is the target).
  */
+/** A job poll answers with the job itself (GET /api/remote/provision/:id); keep the last one when it fails. */
+const jobFrom = (res, last) => (res?.id ? res : res?.job?.id ? res.job : last);
+
 async function provisionApi(path, options = {}) {
   if (!window.desk?.localProvision || machineBridge?.local) return api(path, options);
   const res = await window.desk.localProvision({ method: options.method || 'GET', path, body: options.body });
@@ -1550,7 +1553,7 @@ async function startRelay() {
     for (let i = 0; i < 120 && job?.state === 'running'; i += 1) {
       say(job.message || '正在连接…');
       await new Promise((r) => setTimeout(r, 1500));
-      job = (await provisionApi(`/api/remote/provision/${encodeURIComponent(job.id)}`).catch(() => null))?.job || job;
+      job = jobFrom(await provisionApi(`/api/remote/provision/${encodeURIComponent(job.id)}`).catch(() => null), job);
     }
     say(job?.message || '', job?.state === 'error');
     if (job?.state === 'done') setTimeout(renderRelays, 5000);
@@ -1728,7 +1731,7 @@ async function startTunnel() {
     for (let i = 0; i < 160 && job?.state === 'running'; i += 1) {
       tunnelSay(job.message || '正在连接…');
       await new Promise((r) => setTimeout(r, 1500));
-      job = (await provisionApi(`/api/remote/provision/${encodeURIComponent(job.id)}`).catch(() => null))?.job || job;
+      job = jobFrom(await provisionApi(`/api/remote/provision/${encodeURIComponent(job.id)}`).catch(() => null), job);
     }
     // Said once, here, until the next action: done, or what is left (the port).
     tunnelSay(job?.message || '', job?.state !== 'done');

@@ -425,6 +425,7 @@ export class MuxStream extends Duplex {
 
   _final(cb) {
     if (!this.remoteGone) this.mux._send(frame(T.END, this.id));
+    this.endSent = true;
     cb();
   }
 
@@ -445,21 +446,53 @@ export class MuxStream extends Duplex {
   _incoming(data) {
     this.bytesIn += data.length;
     this.mux.bytesIn += data.length;
-    this.unread += data.length;
-    if (this.unread > WINDOW * 2) { this.destroy(new Error('peer ignored flow control')); return; }
+    // Credit is given back only as data is consumed: more than that waiting
+    // here means the other side ignores flow control.
+    if (this.readableLength > WINDOW * 2) { this.destroy(new Error('peer ignored flow control')); return; }
     const more = this.push(data);
-    this.unread -= data.length;
     this.owed += data.length;
     if (more) this._credit();
   }
 
   _destroy(err, cb) {
-    if (!this.remoteGone && !this.mux.closed) this.mux._send(frame(T.RST, this.id));
+    // Both sides said END: a clean close, nothing to reset. Anything else
+    // (an error, a side that went away) resets the other end.
+    const clean = this.endSent && this.endReceived && !err;
+    if (!clean && !this.remoteGone && !this.mux.closed) this.mux._send(frame(T.RST, this.id));
     this.remoteGone = true;
     this.mux.streams.delete(this.id);
     if (this.pending) { const job = this.pending; this.pending = null; job.cb(err || new Error('stream closed')); }
     cb(err);
   }
+}
+
+/**
+ * What a TLS socket wraps instead of the stream itself. A TLSSocket that is
+ * destroyed destroys the stream under it, and a MuxStream destroyed with bytes
+ * still waiting for credit drops them - the tail of a response that ended with
+ * "Connection: close" (seen on the first real relay). Through the shield, a
+ * destroy becomes "send what is left, then close".
+ */
+export function shieldStream(stream, { lingerMs = 30000 } = {}) {
+  const shield = new Duplex({
+    allowHalfOpen: true,
+    read() { stream.resume(); },
+    write(chunk, _enc, cb) { stream.write(chunk, (err) => cb(err && !stream.destroyed ? err : null)); },
+    final(cb) { stream.end(); cb(); },
+    destroy(err, cb) {
+      if (!stream.destroyed) {
+        stream.end();
+        stream.resume();
+        setTimeout(() => stream.destroy(), lingerMs).unref?.();
+      }
+      cb(err);
+    },
+  });
+  stream.on('data', (d) => { if (!shield.push(d)) stream.pause(); });
+  stream.on('end', () => shield.push(null));
+  stream.on('close', () => shield.destroy());
+  stream.on('error', () => {});
+  return shield;
 }
 
 /** A tunnel's streams over one WsConn. 'stream'(MuxStream) on the side that accepts; 'control'(obj); 'close'. */
@@ -522,7 +555,7 @@ export class Mux extends EventEmitter {
     const stream = this.streams.get(id);
     if (!stream) return;
     if (type === T.DATA) stream._incoming(body);
-    else if (type === T.END) stream.push(null);
+    else if (type === T.END) { stream.endReceived = true; stream.push(null); }
     else if (type === T.RST) { stream.remoteGone = true; stream.destroy(); }
     else if (type === T.WIN && body.length >= 4) { stream.credit += body.readUInt32BE(0); stream._flushOut(); }
   }
@@ -788,9 +821,14 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
     socket.pipe(stream);
     stream.pipe(socket);
     socket.resume();
-    const done = () => { socket.destroy(); stream.destroy(); };
-    socket.on('close', done);
-    stream.on('close', done);
+    // The phone went away: drop the stream. The stream ended: let the phone
+    // socket send what it still holds first (a response cut short otherwise).
+    socket.on('close', () => stream.destroy());
+    stream.on('close', () => {
+      if (socket.destroyed) return;
+      if (stream.readableEnded) socket.end(); else socket.destroy();
+      setTimeout(() => socket.destroy(), 30000).unref?.();
+    });
     stream.on('error', () => {});
   }
 

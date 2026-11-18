@@ -27,7 +27,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import tls from 'node:tls';
 
-import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel } from '../hub/relay/relay.mjs';
+import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, shieldStream } from '../hub/relay/relay.mjs';
 
 export const RELAY_SNI_SUFFIX = 'relay.lamplit';
 const FP_RE = /^[0-9a-f]{64}$/;
@@ -184,7 +184,7 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
     const ip = String(stream.meta?.ip || '');
     // Never loopback: whatever the relay says, this is somebody remote.
     const shown = net.isIP(ip) && !isLoopbackIp(ip) ? ip : 'relay';
-    const sock = new tls.TLSSocket(stream, { isServer: true, secureContext, ALPNProtocols: ['http/1.1'] });
+    const sock = new tls.TLSSocket(shieldStream(stream), { isServer: true, secureContext, ALPNProtocols: ['http/1.1'] });
     const timer = setTimeout(() => sock.destroy(), 15000);
     sock.on('error', () => sock.destroy());
     stream.on('error', () => {});
@@ -195,7 +195,8 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
       sock.viaRelay = true;
       server.emit('connection', sock);
     });
-    sock.once('close', () => { clearTimeout(timer); stream.destroy(); });
+    // The hub is done with this connection: the shield sends what is left, then closes.
+    sock.once('close', () => clearTimeout(timer));
   }
 
   function schedule(ms) {

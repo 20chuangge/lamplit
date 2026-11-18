@@ -452,7 +452,7 @@
   }
   /** {host, port, id, fp} -> the local address for it ('' without the app's bridge or a bad address). */
   function relayLocal(relay) {
-    const shell = window.NightshiftShell;
+    const shell = globalThis.NightshiftShell;
     if (!relay || !shell || typeof shell.relayLocal !== 'function') return '';
     try {
       return String(shell.relayLocal(String(relay.host || ''), Number(relay.port) || 0, String(relay.id || ''), String(relay.fp || '')) || '');
@@ -472,7 +472,9 @@
   function linkKind(raw) {
     let host = '';
     try { host = new URL(raw).hostname; } catch { return raw; }
-    if (isRelayLocal(raw)) return '中转';
+    // 127.0.0.1:14440-14499 is the app's own relay forwarder (RelayLinks).
+    const port = Number(new URL(raw).port);
+    if (host === '127.0.0.1' && port >= 14440 && port <= 14499) return '中转';
     if (/\.ts\.net$/i.test(host)) return raw.startsWith('https:') ? '外网' : 'Tailscale';
     const m = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
     if (m) {

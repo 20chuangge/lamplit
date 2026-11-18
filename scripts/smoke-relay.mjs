@@ -218,6 +218,42 @@ export async function relayChecks({ check }) {
     check('relay: the relay sees no plaintext (no body, no token)', all.length > 0 && !all.includes(Buffer.from(marker)) && !all.includes(Buffer.from('POST /echo')));
     check('relay: everything it passed on, both ways, is TLS records', records('up') && records('down'));
 
+    // A tunnel with real-world delay (60 ms each way), and a response that ends
+    // with "Connection: close": the computer closes as soon as it has written,
+    // while the tail still waits for flow-control credit. Seen on the first
+    // real relay (a stylesheet came back cut at 160 KB).
+    const delay = net.createServer((inner) => {
+      const outer = net.connect(relayPort, '127.0.0.1');
+      const later = (to) => (d) => setTimeout(() => { if (!to.destroyed) to.write(d); }, 60);
+      inner.on('data', later(outer));
+      outer.on('data', later(inner));
+      const end = (to) => () => setTimeout(() => to.end(), 80);
+      inner.on('end', end(outer));
+      outer.on('end', end(inner));
+      inner.on('error', () => outer.destroy());
+      outer.on('error', () => inner.destroy());
+    });
+    const delayPort = await listen(delay);
+    cleanup.push(() => delay.close());
+    const far = makeComputer(path.join(tmp, 'far'));
+    cleanup.push(() => far.link.stop());
+    far.link.configure({ enabled: true, host: '127.0.0.1', port: delayPort, relayFingerprint: relayId.fingerprint, join });
+    await until(() => far.link.view().state === 'online', 8000);
+    const farDesc = { ...far.link.descriptor(), host: '127.0.0.1', port: relayPort };
+    const whole = await new Promise((resolve) => {
+      connectViaRelay(farDesc).then((s) => {
+        const parts = [];
+        s.on('data', (d) => parts.push(d));
+        s.on('close', () => resolve(Buffer.concat(parts)));
+        s.on('error', () => {});
+        s.write('GET /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+      }, () => resolve(Buffer.alloc(0)));
+    });
+    const bodyAt = whole.indexOf('\r\n\r\n') + 4;
+    check('relay: over a slow tunnel, a response that closes at once arrives whole (4 MB)', bodyAt > 4 && crypto.createHash('sha256').update(whole.subarray(bodyAt)).digest('hex') === far.bigHash, `${whole.length} bytes`);
+    far.link.stop();
+    await until(() => relay.tunnels.size === 1, 3000);
+
     // A wrong fingerprint: the client stops before sending anything.
     check('relay: a different certificate on the computer is refused by the client', (await errorCode(connectViaRelay({ ...target, fp: 'a'.repeat(64) }))) === 'RELAY_CERT_MISMATCH');
 

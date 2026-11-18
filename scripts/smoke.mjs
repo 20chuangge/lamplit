@@ -3394,7 +3394,7 @@ function shanghaiWeekday(ts) {
     {
       const srvSrc = await readText('../src/server.mjs');
       const page = await readText('../public/index.html');
-      check('switching machines hands over every address and the phone opens the first it can reach (a VM Tailscale address when its LAN one is internal to the computer)', srvSrc.includes('return { ok: true, machine: peer.name, url: made.url, links, qr: made.qr || null, expiresAt: made.expiresAt };') && page.includes('for (const url of candidates) {') && page.includes('const next = new URL(target);'));
+      check('switching machines hands over every address and the phone opens the first it can reach (a VM Tailscale address when its LAN one is internal to the computer)', srvSrc.includes('return { ok: true, machine: peer.name, url: made.url || made.qr, links, qr: made.qr || null,') && page.includes('for (const url of candidates) {') && page.includes('const next = new URL(target);'));
       check('a long toast stays a rounded box, not an oval', /.toast {[^}]*border-radius: 16px;/.test(page));
     }
     check('opening a machine keeps the phone on the address it already uses (LAN, Tailscale) and takes the public one last', launcher.includes('return { lan: 1, tailnet: 2, public: 3 }[l.kind] ?? 2;') && launcher.includes('await pickReachableLink(links, safeOrigin(hub))') && !launcher.includes('await pickReachableLink(links)'));
@@ -9099,7 +9099,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
           { name: 'Rocky', url: 'http://rocky-lan.test:4390', tailnetUrl: 'http://rocky-ts.test:4390' },
           { name: 'win11', url: 'http://win11-lan.test:4390', tailnetUrl: 'http://win11-ts.test:4390' },
         ] }) });
-        const merge = new Function('store', 'KEYS', 'fetch', 'renderMachines', [grab('hostLabel'), grab('readHubs'), grab('withPublic'), grab('mergePeerMachines')].join('\n') + '\nreturn mergePeerMachines();');
+        const merge = new Function('store', 'KEYS', 'fetch', 'renderMachines', [grab('hostLabel'), grab('readHubs'), grab('withPublic'), grab('relayLocal'), grab('mergePeerMachines')].join('\n') + '\nreturn mergePeerMachines();');
         await merge(store, KEYS, fakeFetch, async () => {});
         const rows = JSON.parse(mem.get('desk.hubs'));
         check('phone list: one row per machine with its other address kept, the hub names win, stale addresses go', rows.length === 3 && rows.map((r) => r.name).join(',') === 'LAPTOP,Rocky,win11' && rows.find((r) => r.name === 'Rocky').alt?.length === 1 && !rows.some((r) => r.name === 'localhost.localdomain'));

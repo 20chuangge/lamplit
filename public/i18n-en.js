@@ -2304,4 +2304,5 @@ window.DESK_I18N_EN = {
   "中转装好了（{0}，TCP {1}）。还差一步：在云服务器控制台的「安全组 / 防火墙」里放行 TCP {2}，然后打开「通过中转连接」。": "The relay is installed ({0}, TCP {1}). One more step: allow TCP {2} in the cloud console's security group / firewall, then turn on \"Connect through the relay\".",
   "没能装好中转": "Could not install the relay",
   "中转端口要在 1024–65535 之间": "The relay port must be between 1024 and 65535",
+  "已经通过中转连接：手机 App 扫码以后，在外面用流量也能连上。": "Connected through the relay: once the phone app scans the code, it can connect from outside on mobile data too.",
 };

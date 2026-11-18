@@ -216,10 +216,11 @@ public final class RelayLinks {
             inner.setTcpNoDelay(true);
             final Socket a = inner;
             final SSLSocket b = outer;
-            Thread up = new Thread(() -> pump(a, b), "relay-up:" + local);
+            final java.util.concurrent.atomic.AtomicInteger open = new java.util.concurrent.atomic.AtomicInteger(2);
+            Thread up = new Thread(() -> pump(a, b, open), "relay-up:" + local);
             up.setDaemon(true);
             up.start();
-            pump(b, a);
+            pump(b, a, open);
         } catch (Exception err) {
             Log.d(TAG, "relay connection failed: " + err.getClass().getSimpleName() + " " + err.getMessage());
             closeQuietly(inner);
@@ -247,8 +248,15 @@ public final class RelayLinks {
         }
     }
 
-    private static void pump(Socket from, Socket to) {
+    /**
+     * One direction. The end of one direction is passed on as a half close
+     * (a client that sends its request and then closes its sending side still
+     * gets the answer); both sockets close when both directions are done, or
+     * at once on an error.
+     */
+    private static void pump(Socket from, Socket to, java.util.concurrent.atomic.AtomicInteger open) {
         byte[] buffer = new byte[32 * 1024];
+        boolean clean = false;
         try {
             InputStream in = from.getInputStream();
             OutputStream out = to.getOutputStream();
@@ -257,11 +265,19 @@ public final class RelayLinks {
                 out.write(buffer, 0, n);
                 out.flush();
             }
+            clean = true;
+            try {
+                if (!(to instanceof SSLSocket)) to.shutdownOutput();
+            } catch (Exception ignored) {
+                // already closed
+            }
         } catch (Exception ignored) {
             // one side is gone
         } finally {
-            closeQuietly(from);
-            closeQuietly(to);
+            if (!clean || open.decrementAndGet() <= 0) {
+                closeQuietly(from);
+                closeQuietly(to);
+            }
         }
     }
 

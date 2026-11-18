@@ -1091,7 +1091,8 @@ function pairingInfo(state) {
   }
   // A code older than a day is replaced before anyone sees it (SEC-15).
   if (pairingCodeExpired(state.security)) void renewPairingCode(state.security);
-  return { url, code: state.security.code, urls, remote: Boolean(state.lanUrl || publicUrl) };
+  const relay = Boolean(state.relayLink?.descriptor());
+  return { url, code: state.security.code, urls, remote: Boolean(state.lanUrl || publicUrl || relay), relay };
 }
 
 route('GET', /^\/api\/settings$/, async (req, _res, { state }) => ({

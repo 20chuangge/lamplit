@@ -190,10 +190,14 @@ function renderPairing() {
   const connectBtn = $('phone-connect');
   if (connectBtn) connectBtn.disabled = false;
   const hint = $('phone-connect-hint');
+  // Through the relay only (第 1 步原型): no LAN address, and still reachable.
+  const relayOn = Boolean(s.pairing?.relay);
   if (hint) {
     hint.textContent = remoteOn
       ? '电脑上显示一个二维码，手机扫一下就进去了。'
-      : (deskCanRebind
+      : relayOn
+        ? '已经通过中转连接：手机 App 扫码以后，在外面用流量也能连上。'
+        : (deskCanRebind
         ? '先打开上面的「允许手机连接」，再点这里出二维码。'
         : '这台机器现在只监听本机，手机连不进来。在跑 Lamplit 的那台电脑上打开「允许手机连接」。');
   }

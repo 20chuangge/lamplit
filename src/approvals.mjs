@@ -175,13 +175,25 @@ export function mediumRunsUnasked({ careful = false, autonomous = false, trusted
  *   others     - the tool
  * -> {key, label} or null (nothing to remember).
  */
+// Programs that run whatever code they are given (1.5.33). 「以后都允许」 stays by
+// program for them too - a bot must be able to finish a job on its own - and what
+// a command does decides the rest: the danger list, places outside the workspace
+// and Lamplit's own keys keep asking. With the bots' commands not isolated, the
+// card says so for these (agent.mjs adds remember.warn).
+export const CODE_RUNNERS = new Set(['node', 'nodejs', 'python', 'python3', 'py', 'pythonw', 'powershell', 'pwsh', 'cmd', 'bash', 'sh', 'zsh', 'dash', 'fish', 'ksh', 'perl', 'ruby', 'php', 'deno', 'bun', 'npx', 'bunx', 'wscript', 'cscript', 'mshta', 'rundll32', 'regsvr32', 'osascript', 'java', 'lua', 'rscript', 'tclsh', 'start', 'invoke-expression', 'iex', 'xargs', 'awk', 'gawk']);
+const PIPE_FILTERS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'sort', 'uniq', 'head', 'tail', 'wc', 'cut', 'tr', 'column', 'nl', 'findstr', 'select-object', 'select', 'where-object', 'where', 'sort-object', 'measure-object', 'format-table', 'ft', 'format-list', 'fl', 'out-string', 'jq', 'cat', 'echo', 'printf', 'true', 'q']);
 const FILE_VERBS = { fs_write: '写文件', fs_mkdir: '建文件夹', fs_delete: '删文件', fs_read: '读文件', fs_list: '查看文件', fs_move: '移动文件', fs_copy: '复制文件' };
 export function permissionKey(toolName, args = {}, { workspaceDir = '', phoneApp = null } = {}) {
   const name = String(toolName || '');
   if (!name) return null;
   if (name === 'shell') {
-    const program = mainProgram(String(args?.command || ''));
-    return program ? { key: `shell:${program}`, label: `用 ${program} 运行命令` } : null;
+    const command = String(args?.command || '').trim();
+    const program = mainProgram(command);
+    if (!program) return null;
+    // `git status && node x.js` runs node too: it goes by only when every program in it was allowed.
+    // (Filters on a pipe - grep, sort, head, findstr… - do not count: they only shape the output.)
+    const also = [...new Set(allPrograms(command))].filter((p) => p !== program && !PIPE_FILTERS.has(p)).map((p) => `shell:${p}`);
+    return { key: `shell:${program}`, label: `用 ${program} 运行命令`, ...(also.length ? { also } : {}), ...(CODE_RUNNERS.has(program) ? { runsCode: true } : {}) };
   }
   // The phone (1.3.0): allowed for good per app ("在手机的小红书里点、滑、输入").
   if (name === 'phone') {
@@ -196,6 +208,20 @@ export function permissionKey(toolName, args = {}, { workspaceDir = '', phoneApp
     return { key: `${name}:${dir.toLowerCase()}`, label: `在 ${dir} 里${FILE_VERBS[name]}` };
   }
   return { key: name, label: name };
+}
+
+/** Every program a command line runs (each part of a chain or pipe), past cd and wrappers. */
+export function allPrograms(command) {
+  const out = [];
+  // A heredoc's body and quoted text are data, not commands (python3 - <<EOF … EOF, node -e "a; b").
+  const bare = String(command || '')
+    .replace(/<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2\b/g, '<<HEREDOC')
+    .replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, 'Q');
+  for (const part of bare.split(/&&|\|\||[;|\n]/)) {
+    const p = mainProgram(part);
+    if (p) out.push(p);
+  }
+  return out;
 }
 
 /** The program a command line is really about: past cd, env settings, sudo/env/nohup. */

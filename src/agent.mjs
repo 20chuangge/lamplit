@@ -35,6 +35,7 @@ import {
 import { effectivePolicy, classify, DECISION, machineMode, mediumRunsUnasked, permissionKey, isRemembered } from './approvals.mjs';
 import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 import { checkBoundary, DEVTOOLS } from './boundary.mjs';
+import { sandboxStatus } from './sandbox.mjs';
 import { PHONE_KIND_LABEL } from './phone.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
 import { historyStart } from './groups.mjs';
@@ -423,6 +424,8 @@ GROUP_TOOLS.task_end = {
   parameters: { type: 'object', properties: { done: { type: 'boolean' }, note: { type: 'string' } }, required: ['done'] },
 };
 const SOLO_TASK_TOOLS = ['task_plan', 'task_step', 'task_end'];
+/** Said to the model when a scheduled task runs (1.5.33; demo mode keys off it too). */
+export const ROUTINE_TURN_LINE = 'This turn runs one of your scheduled tasks (a routine): do what its instruction says.';
 // Turns that wait while their bot is busy (1.2.161): hand-offs, routines, continuations.
 const QUEUED_SOURCES = new Set(['bot', 'routine', 'task']);
 const groupToolSchemas = (names) => names.map((n) => ({ type: 'function', function: { name: GROUP_TOOLS[n].name, description: GROUP_TOOLS[n].description, parameters: GROUP_TOOLS[n].parameters } }));
@@ -831,6 +834,8 @@ export class AgentRuntime {
       const task = this.activeTask(bot.id);
       if (task) { task.status = 'stopped'; task.endNote = '用户让停下'; await this.taskChanged(task); }
       running?.controller?.abort();
+      // A card it was waiting on goes too (1.5.33): "停下" left it up, and 允许 still ran the command.
+      this.approvals.cancelForTurn(busy.turnId, '已取消：你让它停下了');
       const answer = `好，停下了${task ? `，任务「${task.goal}」不会再自动接着做` : ''}。已经做好的文件都还在；要接着做就跟我说。`;
       const ev = { botId: bot.id, botName: bot.name, turnId, source, depth: 0, parentTurnId: null, unattended: false, aside: true };
       await this.record(bot.id, { kind: 'user', text: said, turnId, source });
@@ -899,7 +904,7 @@ export class AgentRuntime {
     const entry = this.active.get(turnId);
     if (!entry) return false;
     entry.controller.abort();
-    this.approvals.cancelForTurn(turnId, 'turn cancelled by the user');
+    this.approvals.cancelForTurn(turnId, '已取消：你让它停下了');
     return true;
   }
 
@@ -1290,7 +1295,8 @@ export class AgentRuntime {
         const waiting = task.tasks.find((t) => t.status === 'waiting_human');
         if (waiting && !waiting.answer) { waiting.answer = String(text).slice(0, 1000); await this.taskChanged(task); }
       }
-      const systemPrompt = await this.buildSystemPrompt(bot, { unattended, group: groupContext, groupRole, depth, task });
+      const systemPrompt = (await this.buildSystemPrompt(bot, { unattended, group: groupContext, groupRole, depth, task }))
+        + (source === 'routine' ? `\n\n${ROUTINE_TURN_LINE}` : '');
       // A group turn replays the group transcript (not the bot's 1:1 history), so
       // the coordinator can follow the conversation it is answering.
       const history = coordinatorTurn
@@ -2441,7 +2447,11 @@ export class AgentRuntime {
     if (verdict.decision !== DECISION.DENY && !trusted) {
       const fence = checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {}, remote: machineMode() === 'remote', autonomous: machine.autonomous });
       if (fence?.decision === 'deny') verdict = { ...verdict, decision: DECISION.DENY, risk: 'HIGH', reason: fence.reason, code: fence.code };
-      else if (fence) verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: fence.reason, code: fence.code };
+      else if (fence) {
+        verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: fence.reason, code: fence.code };
+        // A command reaching past the workspace asks even after 「以后都允许」 for its program (1.5.33).
+        if (name === 'shell') sticky = true;
+      }
     }
 
     // Handing work to Claude Code / Codex: another program that changes files on
@@ -2505,7 +2515,9 @@ export class AgentRuntime {
 
     // "以后都允许": the human said yes to this kind of step for this bot for good.
     const remember = sticky ? null : permissionKey(name, args, { workspaceDir: this.config.workspaceDir, phoneApp: riskInfo.app });
-    if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key)) {
+    // A program that runs any code, with the bots' commands not isolated: the card says what that means.
+    if (remember?.runsCode && sandboxStatus(this.config.policy).state !== 'on') remember.warn = '没开命令隔离：选「以后都允许」后，它用这个程序跑的脚本也能读到你个人文件夹里的东西。到 设置 → 通用 → 体检 → 命令隔离 打开更安全。';
+    if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key) && (remember.also || []).every((k) => isRemembered(bot, k))) {
       verdict = { ...verdict, decision: DECISION.AUTO, reason: `你之前选了「以后都允许」：${remember.label}` };
     }
 

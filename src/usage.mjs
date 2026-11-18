@@ -109,7 +109,7 @@ export function isPeakTime(ts) {
   return (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
 }
 
-/** The prices on DeepSeek's site (November 2026, peak; off-peak is half) - offered, never applied by themselves. */
+/** The prices on DeepSeek's site (November 2026, peak; off-peak is half). Used when no price is set (1.5.33: 「未设单价」 until 填官网价 was clicked); a price set by hand wins. */
 export const KNOWN_PRICES = [
   { match: /^deepseek-(v[\d.]+-)?flash/i, price: { in: 2, cached: 0.04, out: 8, peak: true } },
   { match: /^deepseek-(v[\d.]+-)?pro/i, price: { in: 9, cached: 0.3, out: 27, peak: true } },
@@ -117,6 +117,15 @@ export const KNOWN_PRICES = [
 export function knownPrice(model) {
   return KNOWN_PRICES.find((k) => k.match.test(String(model || '')))?.price || null;
 }
+
+/** The price a record is counted at: the one set by hand, else the provider's own (KNOWN_PRICES). */
+export function priceOf(settings, model) {
+  return settings?.prices?.[model] || knownPrice(model);
+}
+
+/** Demo mode's scripted answers cost nothing and are not counted (1.5.33: 326K "tokens" looked like money spent). */
+// The self-test runs on the demo model and counts it on purpose (ASSIST_COUNT_DEMO_USAGE=1).
+export const isDemoRecord = (r) => process.env.ASSIST_COUNT_DEMO_USAGE !== '1' && (r?.provider === 'mock' || r?.model === 'scripted-planner');
 
 /** Money for one record at a price; cached input at its own price (the input price when none is set). */
 export function recordCost(r, price) {
@@ -191,8 +200,9 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
     map.set(key, entry);
   };
   for (const r of records) {
+    if (isDemoRecord(r)) continue; // older demo-mode lines
     const tokens = Number.isFinite(r.total) ? Number(r.total) : null;
-    const price = settings.prices?.[r.model];
+    const price = priceOf(settings, r.model);
     const cost = tokens != null ? recordCost(r, price) : null;
     totals.calls += 1;
     if (tokens == null) totals.callsWithoutUsage += 1;
@@ -233,14 +243,14 @@ async function spentMap() {
   const byBot = new Map();
   for (const r of await readUsageRecords()) {
     if (r.day !== day) continue;
-    byBot.set(r.botId, (byBot.get(r.botId) || 0) + (recordCost(r, settings.prices?.[r.model]) || 0));
+    byBot.set(r.botId, (byBot.get(r.botId) || 0) + (recordCost(r, priceOf(settings, r.model)) || 0));
   }
   spent = { day, byBot };
   return byBot;
 }
 function addSpent(record) {
   if (!spent.byBot || spent.day !== record.day) return;
-  const cost = recordCost(record, readUsageSettings().prices?.[record.model]) || 0;
+  const cost = recordCost(record, priceOf(readUsageSettings(), record.model)) || 0;
   spent.byBot.set(record.botId, (spent.byBot.get(record.botId) || 0) + cost);
 }
 /** Prices changed: count today again with the new ones. */
@@ -257,7 +267,7 @@ export function spendRate(records, settings = readUsageSettings(), now = new Dat
   const byDay = new Map();
   for (const r of records) {
     if (r.cached == null) continue;
-    const cost = recordCost(r, settings.prices?.[r.model]);
+    const cost = recordCost(r, priceOf(settings, r.model));
     if (cost == null) continue;
     byDay.set(r.day, (byDay.get(r.day) || 0) + cost);
   }
@@ -305,6 +315,7 @@ export async function overBudget(botId, settings = readUsageSettings()) {
  * estimate first crosses the threshold. Money only counts for priced models.
  */
 export async function noteUsage(entry, { audit = async () => {}, bus = null } = {}) {
+  if (isDemoRecord(entry)) return null;
   const record = await recordUsage(entry);
   if (!record) return null;
   addSpent(record);

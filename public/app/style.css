@@ -3435,3 +3435,14 @@
 .isolation-ask b { font-size: 13.5px; font-weight: 600; }
 .isolation-ask .btn-row { margin: 0; }
 @media (max-width: 760px) { .isolation-ask { margin-left: 0; } }
+
+/* The stop button while the bot works (1.5.33): in place of 📞, only when the box is empty. */
+.composer-box .stop-btn { display: none; }
+.composer-box.working:not(.has-text) .stop-btn { display: inline-flex; align-items: center; justify-content: center; }
+.composer-box.working:not(.has-text) .call-btn:not(.on) { display: none; }
+
+/* The bot sheet (1.5.33): a long name no longer pushes ✕ off the screen; the error sits by 保存. */
+#botedit-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#botedit-close { flex: none; }
+.be-foot .modal-note { margin: 0 0 8px; }
+#botedit-primary { margin-bottom: 8px; }

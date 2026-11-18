@@ -257,6 +257,7 @@ function pointEnvAt(target) {
   process.env.ASSIST_DATA_DIR = path.join(target, 'data');
   process.env.ASSIST_WORKSPACE_DIR = path.join(target, 'workspace');
   process.env.ASSIST_MODEL_PROVIDER = 'mock';
+  process.env.ASSIST_COUNT_DEMO_USAGE = '1'; // the usage checks run on the demo model (1.5.33: it is not counted for people)
   delete process.env.ASSIST_API_KEY;
   // The browser tools auto-detect Chrome/Edge, so a *missing* binary is simulated
   // by pointing CHROME_PATH at a file that does not exist: that keeps the
@@ -3256,7 +3257,7 @@ async function unitAsync({ toolsMod, registry, routines, skillsMod, memoryMod, b
   // --- skills frontmatter -------------------------------------------------
   const skill = await skillsMod.readSkill('release-check');
   check('frontmatter parser reads name/steps/validation', skill?.name === 'release-check' && skill.steps.length >= 4 && Boolean(skill.validation));
-  check('frontmatter parser keeps approval_notes', String(skill?.approval_notes || '').includes('HIGH'));
+  check('frontmatter parser keeps approval_notes', String(skill?.approval_notes || '').includes('高风险'));
   const digest = await skillsMod.renderSkillsDigest(['release-check']);
   check('skills digest only includes granted skills', digest.includes('release-check') && !digest.includes('workspace-sweep'), digest.slice(0, 120));
 
@@ -3928,7 +3929,7 @@ async function scenarioMcp({ home, toolsMod }) {
     check('M26 slow links: with steps hidden the chat comes compact (the steps it does not show are left out, the two cards the human acts on stay; long tool output and arguments cut to a preview); showing steps loads it whole; a phone shows its home page at once and loads the chat behind it; settings, voices and groups load together',
       c.args.path === 'a.md' && /…（共 5000 字）$/.test(c.args.content) && c.output.cut === true && c.output.length > 9000 && c.output.preview.length === 1500
       && small.output.waiting === true && user.text.length === 5000 && full.status === 200 && compact.status === 200 && Array.isArray(compact.json)
-      && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name)) && srcSrv.includes("items.filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name))")
+      && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name) && !m.output?.undo) && srcSrv.includes(".filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo)")
       && pg.includes("messages?limit=200${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
       && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);'));
   }
@@ -4041,7 +4042,7 @@ async function scenarioMcp({ home, toolsMod }) {
     const policy = await noKey('/api/policy', { method: 'PUT', body: JSON.stringify({ level: 'auto' }) });
     const decide = await noKey('/api/approvals/ap_nothing', { method: 'POST', body: JSON.stringify({ decision: 'approve' }) });
     const pairing = await noKey('/api/pairing');
-    const settings = await noKey('/api/settings', { method: 'PUT', body: JSON.stringify({ model: 'x' }) });
+    const settings = await noKey('/api/settings', { method: 'PUT', body: JSON.stringify({ timezone: 'UTC' }) });
     const reads = await noKey('/api/bots');
     const rename = await noKey('/api/bots/chief', { method: 'PATCH', body: JSON.stringify({ role: '助理' }) });
     check('K27 local key: without it, a request from this computer cannot change a bot\'s permissions, the approval level, settings, decide an approval or read the pairing code; ordinary reads and edits still work',
@@ -4146,7 +4147,7 @@ async function scenarioMcp({ home, toolsMod }) {
       && plans.every((p) => /这是演示脚本/.test(said(p))), JSON.stringify(tools));
     const hello = M.demoPlan('你好');
     check('K32 demo mode: 「你好」 says what can be tried; a group asked in Chinese answers in Chinese',
-      /整理下载文件夹/.test(said(hello)) && /每天提醒我/.test(said(hello)) && (await readText('../src/model.mjs')).includes("say(`收到：${shortQuote(text, 60)}。我问问大家。`"));
+      /整理下载文件夹/.test(said(hello)) && /每天提醒我/.test(said(hello)) && (await readText('../src/model.mjs')).includes("say(`收到：${shortQuote(text, 60).replace(/[。.！!？?…]+$/, '')}。我问问大家。`"));
   }
   // 1.5.32: the bots' own Windows account is asked about once at the end of getting started, and the checkup keeps saying so.
   {
@@ -4173,6 +4174,98 @@ async function scenarioMcp({ home, toolsMod }) {
       && deny('reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v x /d a.exe') && !deny('schtasks /query')
       && page.includes('>一键最严</button>') && !page.includes('一键 strict') && !page.includes('一套 Bot') && page.includes('https://wj.qq.com/s2/28728882/7epm/')
       && pkg.description.startsWith('Lamplit - a personal'), JSON.stringify([bad.status, zero.status]));
+  }
+  // 1.5.33 (the beginner's report, A1-A5)
+  {
+    const AP = await import('../src/approvals.mjs');
+    const BD = await import('../src/boundary.mjs');
+    const live = await readText('../public/app/main/06-live.js');
+    const ag = await readText('../src/agent.mjs');
+    check('K33 A1 「以后都允许」 stays by program (a bot finishes a job on its own); what a command does still asks: the danger list, a place outside the workspace, Lamplit\'s keys; the card and the toast say so; without command isolation a program that runs code gets a warning; a chain needs every program allowed; a reloaded card keeps the button',
+      AP.permissionKey('shell', { command: 'node --version' }).key === AP.permissionKey('shell', { command: 'node -e "x"' }).key
+      && ag.includes("if (name === 'shell') sticky = true;") && ag.includes("let sticky = verdict.decision === DECISION.ASK && /danger denylist/.test(verdict.reason || '');")
+      && ag.includes("&& (remember.also || []).every((k) => isRemembered(bot, k))") && ag.includes("if (remember?.runsCode && sandboxStatus(this.config.policy).state !== 'on') remember.warn =")
+      && live.includes("'（危险操作和工作区外的改动照样会问）'") && live.includes("...(approval.remember?.key ? { remember: approval.remember } : {}),"));
+    const look = (c) => BD.lookOnly(c).look;
+    check('K33 A5 「看看这台电脑」 on Windows: systeminfo | findstr, wmic … get, Get-CimInstance inside powershell, cmd /c ipconfig are just looking; wmic … call, powershell -File, -EncodedCommand, Remove-Item, > file are not',
+      look('systeminfo | findstr /C:"OS Name"') && look('wmic logicaldisk get size,freespace,caption') && look('powershell -NoProfile -Command "Get-CimInstance Win32_Processor | Select-Object Name"')
+      && look('cmd /c "ipconfig | findstr IPv4"') && !look('wmic process call create notepad.exe') && !look('powershell -File x.ps1') && !look('powershell -EncodedCommand AAAA')
+      && !look('powershell -Command "Remove-Item x"') && !look('powershell -Command "Get-ChildItem > out.txt"'));
+    const srv = await readText('../src/server.mjs');
+    const chat = await readText('../public/app/main/05-chat.js');
+    check('K33 A2 the line 「这一轮改了 N 个文件 · 撤销」 shows with steps hidden (a slim row per file change), and names the file on Windows too',
+      srv.includes("? { id: m.id, role: 'tool', name: m.name, ok: true, turnId: m.turnId, ts: m.ts, output: { undo: m.output.undo, path: m.output.path || '' } }")
+      && chat.includes('c.path.split(/[\\\\/]/).pop()'));
+    const page = await readText('../public/index.html');
+    check('K33 A3 a stop button while the bot works (it says 「停下」); 「停下」 and the stop close the turn\'s waiting cards',
+      page.includes('id="stop-btn"') && live.includes("box.classList.toggle('working', Boolean(state.working && !isGroupMode()));") && live.includes("$('composer').value = '停下';")
+      && ag.includes("this.approvals.cancelForTurn(busy.turnId, '已取消：你让它停下了');"));
+    const q = new AP.ApprovalQueue({ timeoutMs: 60000 });
+    const waiting = q.request({ turnId: 'tq', botId: 'b', toolName: 'shell', args: {}, risk: 'MEDIUM', reason: 'x' });
+    q.cancelForTurn('tq', '已取消：你让它停下了');
+    const answer = await waiting;
+    check('K33 A3 a cancelled turn\'s card is answered at once (the turn does not wait on it)', answer && q.list({ status: 'pending' }).length === 0, JSON.stringify(answer).slice(0, 200));
+    const noKey = (p, o = {}) => rawFetch(`${base}${p}`, { ...o, headers: { 'content-type': 'application/json', ...(o.headers || {}) } });
+    const before = (await api('/api/settings')).json?.model || {};
+    const other = await noKey('/api/settings', { method: 'PUT', body: JSON.stringify({ timezone: 'UTC' }) });
+    const bots = await readText('../public/app/main/04-bots.js');
+    check('K33 A4 getting started in a browser here: with no model set yet the model may be saved without the app\'s key (the model fields only); anything else still needs it; a wrong pairing code stays in the dialog; the code asked for is this address\'s',
+      srv.includes("if (auth?.mode !== 'local' || method !== 'PUT' || pathname !== '/api/settings') return false;") && srv.includes("if (state.apiKey || (state.settings?.provider && state.settings.provider !== 'mock')) return false;")
+      && other.status === 403 && bots.includes("if (res.status === 401 && path !== '/api/pair') enterAuth(") && page.includes('id="local-pair-host"')
+      && bots.includes('state.afterPair = { path, options };'), JSON.stringify({ other: other.status, provider: before.provider }));
+  }
+  // 1.5.33 (the beginner's report, B and C items; what was queued)
+  {
+    const page = await readText('../public/index.html');
+    const bots = await readText('../public/app/main/04-bots.js');
+    const core = await readText('../public/app/main/01-core.js');
+    const rts = await readText('../public/app/main/07-skills-routines.js');
+    const apps = await readText('../public/app/main/09-apps.js');
+    const srv = await readText('../src/server.mjs');
+    const css = await readText('../public/app/style.css');
+    check('K33 B5 the bot sheet: the error sits by 保存, a long name does not push ✕ away, 「删除」 in the ⋯ menu asks once; 「设为主助理」 is there for the others; the role takes 200 characters',
+      /<div class="be-foot">\s*<div class="modal-note" id="botedit-note"/.test(page) && css.includes('#botedit-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }')
+      && bots.includes("const delItem = mkItem('删除', () => confirmDeleteBot(bot), 'danger');") && page.includes('id="botedit-primary"') && page.includes('maxlength="200" aria-label="职责"'));
+    const RT = await import('../src/routines.mjs');
+    const zh = (s) => RT.chineseSchedule(s);
+    check('K33 B7 a time said in Chinese: 每天早上9点半, 工作日 8:30, 每周一、三、五 晚上8点, 每月 1 号 10:00, 每 30 分钟, 每小时; anything else gets the examples without English',
+      zh('每天早上9点半') === '30 9 * * *' && zh('工作日 8:30') === '30 8 * * 1-5' && zh('每周一、三、五 晚上8点') === '0 20 * * 1,3,5' && zh('每月 1 号 10:00') === '0 10 1 * *'
+      && zh('每 30 分钟') === 'every 30 minutes' && zh('每小时') === 'every 1 hours' && zh('明天下午') === null
+      && (() => { try { RT.parseSchedule('随便什么时候'); return false; } catch (e) { return e.status === 400 && /每天 9:00/.test(e.message) && !/cron needs/.test(e.message); } })());
+    const made = await api('/api/routines', { method: 'POST', body: { name: 'K33中文时间', instruction: '看看磁盘', schedule: '工作日 8:30', enabled: false } });
+    const rid = made.json?.id || made.json?.routine?.id;
+    const moved = rid ? await api(`/api/routines/${encodeURIComponent(rid)}`, { method: 'PATCH', body: { schedule: '每周五 18:00' } }) : { status: 0 };
+    if (rid) await api(`/api/routines/${encodeURIComponent(rid)}`, { method: 'DELETE' });
+    check('K33 B7 + C11 a routine takes a Chinese time and its time can be changed in the panel (改时间); deleting asks first; a deleted bot\'s routine says 「助手已删除」 and can go to the main assistant',
+      [200, 201].includes(made.status) && moved.status === 200 && (moved.json?.schedule || moved.json?.routine?.schedule) === '0 18 * * 5'
+      && rts.includes("el('button', 'btn tiny', '改时间')") && rts.includes("await askConfirm({ title: `删除定时任务「${rt.name}」？`") && rts.includes("'助手已删除'") && rts.includes("'交给主助理'")
+      && core.includes('每月 ${dom} 号 ${times}'), JSON.stringify([made.status, moved.status, moved.json?.schedule]));
+    check('K33 B6 a deleted bot keeps its name in the activity log (「名字（已删除）」); cards Lamplit closed say 「已取消」, not 「你拒绝了」',
+      srv.includes("rememberFormerName(id, gone.name)") && srv.includes("botName: `${former[r.botId]}（已删除）`") && apps.includes("tag: cancelled ? '已取消'"));
+    const M = await import('../src/model.mjs');
+    const AG = await readText('../src/agent.mjs');
+    const MS = await readText('../src/model.mjs');
+    check('K33 demo mode: a scheduled task whose words match a demo does not run the demo (its turn is marked in the prompt, the same line in both files); the tidy demo says its plan before the card; a refused step is said as refused; a group member speaks under its own name',
+      AG.includes("export const ROUTINE_TURN_LINE = 'This turn runs one of your scheduled tasks (a routine): do what its instruction says.';")
+      && MS.includes("const ROUTINE_TURN_LINE = 'This turn runs one of your scheduled tasks (a routine): do what its instruction says.';")
+      && M.demoPlan('看看我的下载文件夹，按类型整理').some((s) => s.say && /打算这样分/.test(s.say)) && MS.includes("'你拒绝了那一步，所以没有做；别的都没动。（演示模式）'")
+      && MS.includes('selfName: self ? self[1].trim() : \'\','));
+    const U = await import('../src/usage.mjs');
+    check('K33 B8 demo mode is not counted as usage (older demo lines are left out of the totals); DeepSeek\'s own price is used when none is set by hand',
+      U.priceOf({}, 'deepseek-v4-flash')?.in === 2 && U.priceOf({ prices: { 'deepseek-v4-flash': { in: 1, out: 1 } } }, 'deepseek-v4-flash').in === 1
+      && (await readText('../src/usage.mjs')).includes('if (isDemoRecord(entry)) return null;') && (await readText('../src/usage.mjs')).includes("if (isDemoRecord(r)) continue; // older demo-mode lines"));
+    check('K33 C items: getting started says DeepSeek needs a top-up (no 「注册就能拿密钥」); the connection check has no 「live」; the activity log\'s reasons in Chinese; no 「Bot」 left on screen; the about page says what pairing is for',
+      !bots.includes('注册就能拿密钥') && apps.includes("mode && mode !== 'live'") && apps.includes("note: reasonLabel(r.reason)")
+      && !/[一-龥][^<'"`]{0,20}\bBot\b|\bBot\b[^<'"`]{0,20}[一-龥]/.test(page) && bots.includes("'本机：桌面应用里直接用；在浏览器里批准、改权限，要先把浏览器配对一次'"));
+    check('K33 queued: a GET already on its way is shared (opening the page sent /api/health five times); built-in skills in Chinese; the time zone list has the common ones first and a search box (上海 finds Shanghai); Linux shows 命令隔离 in green when the sandbox works',
+      bots.includes('const apiInflight = new Map();') && (await readText('../skills/workspace-sweep.md')).includes('description: 把「工作区里现在怎么样了」写成一张 30 秒能读完的小纸条。')
+      && core.includes('<optgroup label="常用">') && core.includes("'Asia/Shanghai': '上海 北京 中国'") && page.includes('id="tz-filter"')
+      && srv.includes("items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑"));
+    const zhDocs = await readText('../site/docs.html');
+    const enDocs = await readText('../site/en/docs.html');
+    check('K33 docs: 「我的数据去了哪」 in both languages (no accounts, no statistics; the model provider, update checks, your own machines, what you let it use); the stop button, changing a routine\'s time, pairing a browser, the switch being in the desktop app',
+      zhDocs.includes('<h2 id="data">我的数据去了哪</h2>') && enDocs.includes('<h2 id="data">Where my data goes</h2>') && zhDocs.includes('不收集使用统计') && zhDocs.includes('api.github.com')
+      && zhDocs.includes('<strong>停止</strong>（■）') && zhDocs.includes('点「改时间」「删除」') && zhDocs.includes('这一步要你本人确认') && zhDocs.includes('（这个开关只在桌面应用里有）'));
   }
   // 1.5.26: each bot has its own browser on its own screen; a takeover card waits for the tap.
   {
@@ -7073,8 +7166,10 @@ async function scenarioV164() {
     const k3 = approvalsMod.permissionKey('shell', { command: 'npm install' });
     const k4 = approvalsMod.permissionKey('fs_write', { path: path.join(workspaceDir, '..', 'out', 'a.md') }, { workspaceDir });
     const k5 = approvalsMod.permissionKey('fs_write', { path: path.join(workspaceDir, '..', 'out', 'b.md') }, { workspaceDir });
-    check('R3 remember: "the same permission" is the same program for a command (python3 = python3, not npm) and the same folder for files',
-      k1?.key === 'shell:python3' && k2?.key === k1.key && k3?.key === 'shell:npm' && k4?.key && k4.key === k5?.key && /python3/.test(k1.label), JSON.stringify({ k1, k3, k4 }));
+    const k7 = approvalsMod.permissionKey('shell', { command: 'git status && node -e "x"' });
+    check('R3 remember: "the same permission" is the same program for a command (python3 = python3, not npm; a bot must be able to finish a job, 1.5.33) and the same folder for files; a chain names its other programs, which must be allowed too',
+      k1?.key === 'shell:python3' && k2?.key === k1.key && k3?.key === 'shell:npm' && k1.runsCode === true && !k3.runsCode
+      && k7?.key === 'shell:git' && JSON.stringify(k7.also) === '["shell:node"]' && k4?.key && k4.key === k5?.key && /python3/.test(k1.label), JSON.stringify({ k1, k3, k7 }));
     const bots = await import('../src/bots.mjs');
     const made = await bots.createBot({ name: 'R3记住', role: 'x' });
     const saved = await bots.updateBot(made.id, { policy: { allowed: [{ key: 'shell:python3', label: '用 python3 运行命令' }] } });
@@ -7087,7 +7182,7 @@ async function scenarioV164() {
     const serverSrc = await readText('../src/server.mjs');
     const page = await readText('../public/index.html');
     check('R3 remember: a remembered permission runs unasked; the danger list, Lamplit\'s secrets, coding assistants and "ask first" rules still ask every time',
-      agentSrc.includes('if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key))')
+      agentSrc.includes('if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key) && (remember.also')
       && agentSrc.includes('sticky = true;') && serverSrc.includes('body?.always === true && record.status === \'approved\' && record.remember'));
     check('R3 card: three answers - 允许这一次 / 以后都允许 / 拒绝; the bot\'s settings list what it may do unasked, each with 撤销',
       page.includes("'以后都允许'") && page.includes("'允许这一次'") && page.includes('已记住的权限') && page.includes("'撤销'"));

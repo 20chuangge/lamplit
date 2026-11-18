@@ -634,7 +634,9 @@ function auditTime(ts) {
 }
 
 function auditLine(r) {
-  const who = botById(r.botId)?.name || r.botId || '';
+  const who = botById(r.botId)?.name || r.botName || r.botId || '';
+  // Closed by Lamplit, not by you (1.5.33): a deleted bot's cards, a stopped turn's.
+  const cancelled = r.by === 'system' && /^已取消/.test(String(r.note || ''));
   const what = (tool, args) => {
     const info = describeTool(tool, args);
     return info.detail ? `${info.label}：${truncate(info.detail, 60)}` : info.label;
@@ -644,11 +646,11 @@ function auditLine(r) {
     case 'tool.run':
       return { icon: '•', text: `${who} ${what(r.tool, r.args)}`, tag: r.decision === 'auto' ? '自动' : '已批准', risk, bad: r.ok === false };
     case 'approval.resolved':
-      return { icon: r.status === 'approved' ? '✓' : '✕', text: `${who} 请求 ${what(r.toolName, r.args)}`, tag: { approved: '你批准了', denied: '你拒绝了', timeout: '没人处理，超时' }[r.status] || r.status, risk, bad: r.status !== 'approved', note: r.reason };
+      return { icon: r.status === 'approved' ? '✓' : '✕', text: `${who} 请求 ${what(r.toolName, r.args)}`, tag: cancelled ? '已取消' : { approved: '你批准了', denied: '你拒绝了', timeout: '没人处理，超时', dismissed: '已收起' }[r.status] || r.status, risk, bad: r.status !== 'approved' && !cancelled, note: cancelled ? r.note : reasonLabel(r.reason) };
     case 'tool.approval_denied':
       return { icon: '✕', text: `${who} ${what(r.tool, r.args)}`, tag: '被拒绝', risk, bad: true };
     case 'tool.denied':
-      return { icon: '⛔', text: `${who} 想 ${what(r.tool, r.args)}`, tag: '被拦下', bad: true, note: r.reason };
+      return { icon: '⛔', text: `${who} 想 ${what(r.tool, r.args)}`, tag: '被拦下', bad: true, note: reasonLabel(r.reason) };
     case 'feishu.changed':
       return { icon: '💬', text: r.enabled ? `飞书已启用（${r.appId}）` : '飞书已关闭', tag: '飞书' };
     case 'feishu.unpaired':
@@ -1362,7 +1364,7 @@ async function testConnection() {
     const extra = (result && (result.reply || result.message)) || '';
     const mode = (result && result.mode) || '';
     const text = ok
-      ? `连接正常 · ${ms} ms${mode ? ` · ${mode}` : ''}${extra ? ` · ${truncate(extra, 48)}` : ''}`
+      ? `连接正常 · ${ms} 毫秒${mode && mode !== 'live' ? ` · ${mode === 'mock' ? '演示模式' : mode}` : ''}${extra ? ` · ${truncate(extra, 48)}` : ''}`
       : `连接失败${errText ? `：${truncate(errText, 160)}` : ''}`;
     setStatus(ok ? 'ok' : 'bad', text);
   } catch (err) {

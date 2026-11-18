@@ -293,7 +293,7 @@ function renderMachinesList() {
         ${m.url ? `<button class="btn tiny" data-rename="${escapeHtml(m.url)}">改名</button><button class="btn tiny" data-remove="${escapeHtml(m.url)}">移除</button>` : ''}
       </div>
     </div>`;
-  const rows = [row({ url: '', name: '本机', sub: 'Bot 和浏览器都在这台电脑上', current: machineBridge.local })];
+  const rows = [row({ url: '', name: '本机', sub: '助手和浏览器都在这台电脑上', current: machineBridge.local })];
   for (const m of machineBridge.machines || []) {
     rows.push(row({ url: m.url, name: m.name, sub: m.url, current: m.url === machineBridge.current }));
   }
@@ -464,7 +464,7 @@ async function onMachineListClick(event) {
   if (btn.dataset.remove) {
     const ok = await askConfirm({
       title: '移除这台机器？',
-      text: '只是从列表里拿掉，那台机器上的 Bot 和数据不会删除；以后可以重新添加。',
+      text: '只是从列表里拿掉，那台机器上的助手和数据不会删除；以后可以重新添加。',
       confirmLabel: '移除',
     });
     if (!ok) return;

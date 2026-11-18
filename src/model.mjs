@@ -516,6 +516,9 @@ const INTENTS = [
   { id: 'demo_research', re: /上网查|查一下|搜一下|查查|查资料/ },
 ];
 
+/** The line agent.mjs adds to a routine's turn (ROUTINE_TURN_LINE there; the smoke test checks they match). */
+const ROUTINE_TURN_LINE = 'This turn runs one of your scheduled tasks (a routine): do what its instruction says.';
+
 /** Said at the end of every scripted demo (1.5.32). */
 const DEMO_END = '这是演示脚本。接入模型后，你可以用自己的话说任何事。';
 
@@ -681,12 +684,12 @@ function mockPlan(text, botName) {
       // Moving files is the step a human approves: one node script (the same on Windows and Linux).
       const move = `node -e "const fs=require('fs'),p=require('path');const d='${dir}';const m={'.png':'图片','.docx':'文档','.pdf':'文档','.exe':'安装包'};for(const f of fs.readdirSync(d)){const t=m[p.extname(f)];if(t===undefined)continue;fs.mkdirSync(p.join(d,t),{recursive:true});fs.renameSync(p.join(d,f),p.join(d,t,f));}console.log('分好了')"`;
       return [
-        { tool: 'task_plan', args: { goal: '整理下载文件夹（演示）', steps: ['在工作区放一个演示用的「下载」文件夹', '看看里面有什么，按类型分好', '你同意后，把文件移进子文件夹'] } },
+        { tool: 'task_plan', args: { goal: '整理下载文件夹（演示）', steps: ['在工作区放一个演示用的「下载」文件夹', '看看里面有什么，按类型分好', '你同意后移动：截图 → 图片，周报和发票 → 文档，安装包 → 安装包'] } },
         ...files.map((f) => ({ tool: 'fs_write', args: { path: `${dir}/${f}`, content: '（演示文件，可以删掉）\n' } })),
         { tool: 'task_step', args: { step: 1, status: 'done', note: `放好了 ${files.length} 个演示文件：${dir}` } },
         { tool: 'fs_list', args: { path: dir } },
         { tool: 'task_step', args: { step: 2, status: 'done', note: '图片 1 个、文档 2 个、安装包 1 个' } },
-        { tool: 'shell', args: { command: move, timeoutMs: 15000 } },
+        { say: '打算这样分：截图-1118.png → 图片；周报-11月.docx、发票-11月.pdf → 文档；Lamplit-Setup.exe → 安装包。移动文件要你同意，下面这张卡就是在问你（命令就是做这件事的一小段脚本）。', tool: 'shell', args: { command: move, timeoutMs: 15000 } },
         { tool: 'task_step', args: { step: 3, status: 'done', note: '移进了 图片 / 文档 / 安装包' } },
         { tool: 'task_end', args: { done: true } },
         { tool: 'task_finish', args: { summary: `在工作区建了「${dir}」，放了 4 个演示文件，按类型分进 图片、文档、安装包。移动文件这一步先问了你：同意了就已经分好，拒绝了文件就原样不动。真用的时候，它整理的是你自己的下载文件夹，同样先给你看打算怎么动。${DEMO_END}` } },
@@ -697,7 +700,7 @@ function mockPlan(text, botName) {
       return [
         { tool: 'routine_create', args: { name: '早间简报（演示）', instruction: '看一下这台电脑的磁盘空间够不够，有异常就提醒我。', schedule: '0 8 * * *', enabled: false } },
         { tool: 'routine_list', args: {} },
-        { tool: 'task_finish', args: { summary: `建好了一个定时任务「早间简报（演示）」：每天 08:00 跑一次。演示里先不打开，免得每天给你发演示消息；在 设置 → 定时任务 里能看到它，可以打开、改时间或删掉。接入模型后，它每天会真的去查、真的写简报。${DEMO_END}` } },
+        { tool: 'task_finish', args: { summary: `建好了一个定时任务「早间简报（演示）」：每天 08:00 跑一次。演示里先不打开，免得每天给你发演示消息；在右上角工作面板的「任务」页签里能看到它，可以启用、改时间或删掉。接入模型后，它每天会真的去查、真的写简报。${DEMO_END}` } },
       ];
 
     case 'demo_write':
@@ -824,10 +827,12 @@ function groupFromMessages(messages) {
   const membersLine = system.content.split('\n').find((line) => line.startsWith('You are in the group chat'));
   // "Members: Chief (chief) - ...; Researcher (researcher) - ..."
   const ids = membersLine ? [...membersLine.matchAll(/\(([a-z0-9][a-z0-9._-]*)\)/gi)].map((m) => m[1]) : [];
+  const self = membersLine ? new RegExp(`(?:Members:\\s*|;\\s*)([^;()]+?)\\s*\\(${match[3].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`).exec(membersLine) : null;
   return {
     id: match[1],
     role: match[2] === 'the coordinator' ? 'coordinator' : 'member',
     selfId: match[3],
+    selfName: self ? self[1].trim() : '',
     others: ids.filter((id) => id !== match[3]),
   };
 }
@@ -845,23 +850,24 @@ function mockGroupPlan(group, botName, text) {
     return [
       {
         tool: 'group_post',
-        args: { group: group.id, text: say(`收到：${shortQuote(text, 60)}。我问问大家。`, `On it: ${shortQuote(text, 60)}. I will check with the team.`) },
+        args: { group: group.id, text: say(`收到：${shortQuote(text, 60).replace(/[。.！!？?…]+$/, '')}。我问问大家。`, `On it: ${shortQuote(text, 60)}. I will check with the team.`) },
       },
       {
         tool: 'bot_message',
         args: {
           botId: group.others[0],
-          text: say(`群里在做：${shortQuote(text, 80)}。说一句你的看法。`, `The group is working on: ${shortQuote(text, 80)}. One short opinion, please.`),
+          text: say(`群里在做：${shortQuote(text, 80).replace(/[。.！!？?…]+$/, '')}。说一句你的看法。`, `The group is working on: ${shortQuote(text, 80)}. One short opinion, please.`),
         },
       },
       { tool: 'task_finish', args: { summary: say(`在群里回了话，也请 ${group.others[0]} 说了看法。`, `Posted in the group and pulled in ${group.others[0]} for a second opinion.`) } },
     ];
   }
 
+  const bare = (t) => shortQuote(String(t || ''), 60).replace(/[。.！!？?…]+$/, '');
   const spoken =
     group.role === 'coordinator'
-      ? say(`收到：${shortQuote(text, 60)}。我在群里跟进。`, `On it: ${shortQuote(text, 60)}. I am following this up in the group.`)
-      : say(`我是${botName}，接下了群里的活：${shortQuote(text, 60)}。`, `I am ${botName}. Picked up the group task: ${shortQuote(text, 60)}.`);
+      ? say(`收到：${bare(text)}。我在群里跟进。`, `On it: ${bare(text)}. I am following this up in the group.`)
+      : say(`我是${group.selfName || '这位成员'}。收到了；我的看法要等接入模型后才说得出来（现在是演示模式）。`, `I am ${group.selfName || botName}. Picked up the group task: ${bare(text)}.`);
   return [
     { tool: 'group_post', args: { group: group.id, text: spoken } },
     { tool: 'task_finish', args: { summary: say(`在群里说了：${shortQuote(spoken, 70)}`, `Posted in the group: ${shortQuote(spoken, 70)}`) } },
@@ -887,7 +893,19 @@ function mockComplete(messages) {
     group && detectIntent(userText) === 'chat'
       ? mockGroupPlan(group, botName, userText)
       : mockPlan(userText, botName);
-  const step = plan[Math.min(toolResultsSinceUser, plan.length - 1)];
+  // A scheduled task in demo mode (1.5.33): its instruction must not set off the
+  // four scripted demos (「立即运行」 made a second routine, a briefing wrote a leave email).
+  const system = messages.find((m) => m.role === 'system');
+  if (typeof system?.content === 'string' && system.content.includes(ROUTINE_TURN_LINE) && toolResultsSinceUser === 0 && /^demo_/.test(detectIntent(userText))) {
+    return { content: '（演示模式）定时任务到点跑了一次。演示模式下它不会真的去做；接入模型后，它会按指令真的去做，结果发在这里。', toolCalls: [], finishReason: 'stop' };
+  }
+  const step0 = plan[Math.min(toolResultsSinceUser, plan.length - 1)];
+  // A step that was refused or not allowed: the closing line says so (1.5.33: it said 「运行了」 anyway).
+  const results = lastUserIndex >= 0 ? messages.slice(lastUserIndex + 1).filter((m) => m.role === 'tool').map((m) => String(m.content ?? '')) : [];
+  const failed = results.find((r) => /"error"|denied|not granted|NOT_GRANTED|拒绝|没有权限/i.test(r));
+  const step = step0?.tool === 'task_finish' && failed
+    ? { tool: 'task_finish', args: { summary: /denied|拒绝/i.test(failed) ? '你拒绝了那一步，所以没有做；别的都没动。（演示模式）' : '有一步没做成（这个助手没有这项能力，或者被挡下了），所以没有完成；别的都没动。（演示模式）' } }
+    : step0;
 
   // Ran out of scripted steps without a task_finish: emit a plain closing line
   // so the loop terminates instead of spinning.
@@ -904,7 +922,7 @@ function mockComplete(messages) {
   }
 
   return {
-    content: '',
+    content: step.say || '',
     toolCalls: [
       {
         id: `call_${toolResultsSinceUser}_${step.tool}`,

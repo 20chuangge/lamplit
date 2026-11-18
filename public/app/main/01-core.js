@@ -8,12 +8,14 @@
 function scheduleText(expr) {
   const s = String(expr || '').trim();
   const every = /^every\s+(\d+)\s*(minutes?|mins?|m|hours?|h)$/i.exec(s);
-  if (every) return `每 ${every[1]} ${/^h/i.test(every[2]) ? '小时' : '分钟'}`;
+  if (every) return every[1] === '1' && /^h/i.test(every[2]) ? '每小时' : `每 ${every[1]} ${/^h/i.test(every[2]) ? '小时' : '分钟'}`;
   const f = s.split(/\s+/);
   if (f.length !== 5) return s;
   const [mi, h, dom, mon, dow] = f;
-  if (!/^\d{1,2}$/.test(mi) || dom !== '*' || mon !== '*' || !h.split(',').every((x) => /^\d{1,2}$/.test(x))) return s;
+  if (!/^\d{1,2}$/.test(mi) || mon !== '*' || !h.split(',').every((x) => /^\d{1,2}$/.test(x))) return s;
   const times = h.split(',').map((x) => `${x.padStart(2, '0')}:${mi.padStart(2, '0')}`).join('、');
+  // 每月 N 号 (1.5.33: a monthly time can be typed in Chinese now).
+  if (dom !== '*') return /^\d{1,2}$/.test(dom) && dow === '*' ? `每月 ${dom} 号 ${times}` : s;
   const week = '日一二三四五六日';
   const days = dow === '*' ? '每天'
     : /^(1-5|mon-fri)$/i.test(dow) ? '工作日'
@@ -224,10 +226,35 @@ function renderTimezoneOptions() {
   } catch { /* older engine: the common list is enough */ }
   zones.add(effectiveTimezone());
   const current = timezonePref().value;
-  select.innerHTML = [...zones].sort().map((zone) => (
-    `<option value="${escapeHtml(zone)}">${escapeHtml(timezoneLabel(zone))}</option>`
-  )).join('');
+  // The common ones first (1.5.33: one list of 400+ in alphabetical order).
+  const option = (zone) => `<option value="${escapeHtml(zone)}" data-zh="${escapeHtml(TIMEZONE_ZH[zone] || '')}">${escapeHtml(timezoneLabel(zone))}</option>`;
+  const common = COMMON_TIMEZONES.filter((z) => zones.has(z));
+  const rest = [...zones].filter((z) => !common.includes(z)).sort();
+  select.innerHTML = `<optgroup label="常用">${common.map(option).join('')}</optgroup><optgroup label="全部">${rest.map(option).join('')}</optgroup>`;
   select.value = [...zones].includes(current) ? current : effectiveTimezone();
+}
+
+/** Chinese names for the common ones, so 上海 or 纽约 finds them. */
+const TIMEZONE_ZH = {
+  'Asia/Shanghai': '上海 北京 中国', 'Asia/Hong_Kong': '香港', 'Asia/Taipei': '台北', 'Asia/Tokyo': '东京 日本', 'Asia/Seoul': '首尔 韩国',
+  'Asia/Singapore': '新加坡', 'Asia/Bangkok': '曼谷 泰国', 'Asia/Kolkata': '印度 加尔各答', 'Asia/Dubai': '迪拜',
+  'Europe/London': '伦敦 英国', 'Europe/Paris': '巴黎 法国', 'Europe/Berlin': '柏林 德国', 'Europe/Moscow': '莫斯科 俄罗斯',
+  'America/New_York': '纽约 美国东部', 'America/Chicago': '芝加哥', 'America/Denver': '丹佛', 'America/Los_Angeles': '洛杉矶 美国西部',
+  'Australia/Sydney': '悉尼 澳大利亚', 'Pacific/Auckland': '奥克兰 新西兰', UTC: '协调世界时',
+};
+
+/** Typing narrows the list (上海 finds Asia/Shanghai by its Chinese name). */
+function filterTimezones(text) {
+  const q = String(text || '').trim().toLowerCase().replace(/\s+/g, '_');
+  const select = $('tz-select');
+  if (!select) return;
+  let first = null;
+  for (const opt of select.querySelectorAll('option')) {
+    const hit = !q || opt.value.toLowerCase().includes(q) || opt.textContent.toLowerCase().replace(/\s+/g, '_').includes(q) || (opt.dataset.zh || '').includes(q);
+    opt.hidden = !hit;
+    if (hit && !first) first = opt;
+  }
+  if (q && first && select.selectedOptions[0]?.hidden) select.value = first.value;
 }
 
 function syncTimezoneUi() {
@@ -242,6 +269,7 @@ function syncTimezoneUi() {
     $('tz-select').hidden = pref.mode !== 'manual';
     if (!$('tz-select').hidden) $('tz-select').value = pref.value;
   }
+  if ($('tz-filter')) $('tz-filter').hidden = pref.mode !== 'manual';
   if ($('timezone-pill')) $('timezone-pill').textContent = timezoneLabel(zone);
   if ($('tz-note')) {
     if (pref.mode === 'target' && !state.computer?.host?.timezone) {
@@ -294,6 +322,7 @@ function initTimezone() {
   document.querySelectorAll('[data-tz-mode]').forEach((node) => {
     node.addEventListener('click', () => setTimezoneMode(node.dataset.tzMode));
   });
+  $('tz-filter')?.addEventListener('input', (event) => filterTimezones(event.target.value));
   $('tz-select')?.addEventListener('change', () => {
     const pref = timezonePref();
     pref.mode = 'manual';

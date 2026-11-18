@@ -153,7 +153,10 @@ const LOOKERS = new Set(('ps top htop df du ls ll dir lsblk blkid free uptime un
   // 1.5.9 (the cloud project asked for 18 of these): moving around, JSON, the
   // X screen's window list. sed and awk count only in their print-only forms
   // (checked on the whole command first, see printOnly).
-  + 'cd pushd popd set-location sl jq xwininfo xprop xdpyinfo xset sed awk').split(' '));
+  + 'cd pushd popd set-location sl jq xwininfo xprop xdpyinfo xset sed awk '
+  // 1.5.33: 「看看这台电脑」 asked six times on Windows (systeminfo | findstr, wmic … get, Get-CimInstance in powershell).
+  + 'findstr wmic get-physicaldisk get-netadapter get-netipaddress get-netipconfiguration get-counter get-date get-timezone get-hotfix get-localuser '
+  + 'driverquery getmac ver vol nvidia-smi').split(' '));
 // Of those, the ones that read what is inside files (not just names and sizes).
 const READERS = new Set('cat head tail grep egrep fgrep rg get-content gc type select-string sls md5sum sha256sum'.split(' '));
 
@@ -161,6 +164,8 @@ const READERS = new Set('cat head tail grep egrep fgrep rg get-content gc type s
 // the words after it]. Any hit and the command is not "just looking".
 const nonFlags = (args) => args.filter((w) => w && !w.startsWith('-'));
 const WRITE_ARGS = [
+  // wmic only reads with get/list; call, create, delete, set change things.
+  ['wmic', (a) => !a.some((w) => /^(get|list)$/i.test(w)) || a.some((w) => /^(call|create|delete|set|shutdown|reboot)$/i.test(w)) || a.some((w) => /^\/(output|append):/i.test(w))],
   ['sort', (a) => a.some((w) => /^(-o|--output|--compress-program)/.test(w))],
   ['find', (a) => a.some((w) => /^-(fprint\w*|fls|delete|exec\w*|ok\w*)$/.test(w))],
   ['date', (a) => a.some((w) => /^(-s|--set)/.test(w))],
@@ -209,9 +214,26 @@ const SCRIPT_CALL = /\biex\b|::|&\s*[\w$'"({]|\.\w+\s*\(/i;
  * Every part of a pipeline / list must be a looker; any redirection into a
  * file, in-place edit, deletion or command execution makes it not one.
  */
+/**
+ * `powershell -NoProfile -Command "Get-CimInstance …"` and `cmd /c "…"`: the
+ * command inside is what runs (1.5.33). A script file or an encoded command
+ * cannot be read, so it is not "just looking". -> the inner line, or null.
+ */
+function innerCommand(whole) {
+  const ps = /^(?:powershell|pwsh)(?:\.exe)?\s+((?:-(?:NoProfile|NonInteractive|NoLogo|ExecutionPolicy\s+\w+)\s+)*)(?:-(?:c|Command)\s+)?([\s\S]+)$/i.exec(whole);
+  const cmd = /^cmd(?:\.exe)?\s+\/[cCkK]\s+([\s\S]+)$/.exec(whole);
+  const inner = ps ? ps[2] : cmd ? cmd[1] : null;
+  if (inner === null) return null;
+  const line = inner.trim().replace(/^"([\s\S]*)"$/, '$1').trim();
+  return !line || /^-/.test(line) ? '' : line;
+}
+
 export function lookOnly(command) {
-  const whole = String(command || '').trim();
+  let whole = String(command || '').trim();
   if (!whole) return { look: false };
+  const inner = innerCommand(whole);
+  if (inner === '') return { look: false };
+  if (inner) whole = inner;
   if (!printOnly(whole)) return { look: false };
   // An awk program that passed printOnly is data from here on (its NR>=1 is no redirection).
   const raw = whole.replace(/(\bawk\s+(?:-F\s*\S+\s+|-v\s+\S+\s+)*)'[^']*'/g, "$1'AWK'");

@@ -328,6 +328,8 @@ function wireChrome() {
     if (event.dataTransfer?.files?.length) { event.preventDefault(); addFiles(event.dataTransfer.files); }
   });
   $('send-btn').addEventListener('click', send);
+  $('botedit-primary')?.addEventListener('click', makePrimary);
+  $('stop-btn')?.addEventListener('click', stopWorking);
   // capture phase: the picker sees Enter before "send" does
   $('composer').addEventListener('keydown', onMentionKey, true);
   $('composer').addEventListener('input', () => { mention.index = 0; updateMention(); });

@@ -136,6 +136,9 @@ function openBotEdit(botId, options = {}) {
   preview.innerHTML = '';
   appendAvatarContent(preview, avatarOf(bot));
 
+  // The way the 「主助理不能删」 note points to (1.5.33, C8).
+  const prim = $('botedit-primary');
+  if (prim) prim.hidden = Boolean(bot.primary);
   const del = $('botedit-delete');
   del.disabled = Boolean(bot.primary);
   del.textContent = state.deleteArmed ? `再点一次确认删除「${bot.name}」` : '删除这个助手';
@@ -209,6 +212,44 @@ async function deleteBotFlow() {
   }
   button.disabled = true;
   try {
+    await deleteBotNow(bot);
+  } catch (err) {
+    state.deleteArmed = false;
+    button.disabled = false;
+    button.textContent = '删除这个助手';
+    setBotEditNote(`删除失败：${err.message}`);
+  }
+}
+
+/** 「删除」 in a bot's ⋯ menu asks once, here (1.5.33: it opened the settings sheet). */
+async function confirmDeleteBot(bot) {
+  if (!bot || bot.primary) return;
+  const ok = await askConfirm({
+    title: `删除「${bot.name}」？`,
+    text: '它的对话记录和记忆会收进归档，不再出现；它等你确认的卡片会收起，定时任务会暂停。',
+    confirmLabel: '删除',
+  });
+  if (!ok) return;
+  try { await deleteBotNow(bot); } catch (err) { toast(`删除失败：${err.message}`, true); }
+}
+
+/** Make another bot the main assistant (the way to delete the one there was). */
+async function makePrimary() {
+  const bot = botById(state.botEditingId);
+  if (!bot || bot.primary) return;
+  try {
+    await api(`/api/bots/${encodeURIComponent(bot.id)}/primary`, { method: 'POST' });
+    state.bots = await api('/api/bots');
+    renderBots();
+    closeBotEdit();
+    toast(`「${bot.name}」现在是主助理了。`);
+  } catch (err) {
+    setBotEditNote(`没能设为主助理：${err.message}`);
+  }
+}
+
+async function deleteBotNow(bot) {
+  {
     const gone = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'DELETE' });
     closeBotEdit();
     refreshPendingApprovals();
@@ -223,11 +264,6 @@ async function deleteBotFlow() {
     const c = gone?.cleared || {};
     const left = [c.turns ? '停下了它正在做的事' : '', c.approvals ? `收起了 ${c.approvals} 张等你确认的卡片` : '', c.routinesOff ? `暂停了它的 ${c.routinesOff} 个定时任务` : ''].filter(Boolean);
     toast(`已删除 ${bot.name}${left.length ? `：${left.join('，')}` : ''}`);
-  } catch (err) {
-    state.deleteArmed = false;
-    button.disabled = false;
-    button.textContent = '删除这个助手';
-    setBotEditNote(`删除失败：${err.message}`);
   }
 }
 
@@ -282,8 +318,25 @@ function toast(text, isError = false) {
   toast._t = setTimeout(() => { node.className = 'toast'; }, Math.min(9000, Math.max(3200, String(text).length * 110)));
 }
 
-/* One fetch wrapper. Every failure is an Error with .status and .code. */
-async function api(path, options = {}) {
+/*
+ * One fetch wrapper. Every failure is an Error with .status and .code.
+ * A plain GET already on its way is shared, not sent again (1.5.33: opening
+ * the page asked /api/health 5 times, a dozen others twice - each a few
+ * hundred ms for a phone on a relay). Each caller gets its own copy.
+ */
+const apiInflight = new Map();
+function api(path, options = {}) {
+  const plainGet = !options.method || String(options.method).toUpperCase() === 'GET';
+  if (!plainGet || options.body !== undefined || options.headers) return apiRequest(path, options);
+  let pending = apiInflight.get(path);
+  if (!pending) {
+    pending = apiRequest(path, options).finally(() => apiInflight.delete(path));
+    apiInflight.set(path, pending);
+  }
+  return pending.then((json) => (json && typeof json === 'object' ? (typeof structuredClone === 'function' ? structuredClone(json) : JSON.parse(JSON.stringify(json))) : json));
+}
+
+async function apiRequest(path, options = {}) {
   const opts = { ...options, headers: { ...(options.headers || {}) } };
   if (opts.body !== undefined && typeof opts.body !== 'string') {
     opts.body = JSON.stringify(opts.body);
@@ -300,7 +353,8 @@ async function api(path, options = {}) {
     throw err;
   }
 
-  if (res.status === 401) enterAuth('这台设备的授权已失效，请重新配对。');
+  // A wrong code in the 「配对这个浏览器」 box is not a lost login (1.5.33: it threw the whole page out).
+  if (res.status === 401 && path !== '/api/pair') enterAuth('这台设备的授权已失效，请重新配对。');
 
   const text = await res.text();
   let json = null;
@@ -315,8 +369,12 @@ async function api(path, options = {}) {
     // app's key gets a way to pair itself instead of a one-line refusal.
     if (err.code === 'LOCAL_KEY_REQUIRED') {
       if (state.auth) state.auth.authority = false;
+      // Done for them once the browser is paired (1.5.33: 「再点一次刚才的按钮」 was one step too many).
+      state.afterPair = { path, options };
       localPairOpen(true);
-      err.message = '';
+      // Said whole where the page shows it (1.5.33: 「保存失败：」 and nothing after).
+      err.message = '这一步要先把这个浏览器配对一次（看弹出的对话框）。';
+      err.quiet = true;
     }
     throw err;
   }
@@ -335,6 +393,7 @@ function localPairOpen(open) {
   scrim.classList.toggle('show', open);
   if (open) {
     $('local-pair-msg').textContent = '';
+    if ($('local-pair-host')) $('local-pair-host').textContent = location.host;
     $('local-pair-code').value = '';
     if (!isMobile()) setTimeout(() => $('local-pair-code').focus(), 80);
   }
@@ -350,7 +409,19 @@ async function pairThisBrowser() {
     await api('/api/pair', { method: 'POST', body: { code, deviceName: '这台电脑上的浏览器' } });
     if (state.auth) state.auth.authority = true;
     localPairOpen(false);
-    toast('这个浏览器配好了：再点一次刚才的按钮。');
+    const again = state.afterPair;
+    state.afterPair = null;
+    if (again) {
+      try {
+        await api(again.path, again.options);
+        toast('这个浏览器配好了，刚才那一步也做完了。');
+        refreshPendingApprovals();
+      } catch (err) {
+        toast(`这个浏览器配好了；刚才那一步没成功：${err.message}`, true);
+      }
+    } else {
+      toast('这个浏览器配好了。');
+    }
     if (state.settingsOpen) loadSettings().catch(() => {});
   } catch (err) {
     msg.textContent = err.status === 429 ? '试得太多次了，等一分钟再试。'
@@ -771,7 +842,7 @@ function updateModelUi() {
   $('about-server').textContent = `${server.host || location.hostname}${server.port ? ':' + server.port : (location.port ? ':' + location.port : '')}`;
   syncMachineBranding();
   const authRequired = state.auth ? Boolean(state.auth.required) : Boolean(server.requireAuth);
-  $('about-auth').textContent = authRequired ? '需要配对（本机除外）' : '仅本机，无需配对';
+  $('about-auth').textContent = authRequired ? '需要配对（本机除外）' : '本机：桌面应用里直接用；在浏览器里批准、改权限，要先把浏览器配对一次';
 }
 
 function updateComposerMode() {
@@ -906,7 +977,7 @@ function onboardingCard() {
       const p = preset(name);
       if (!p && providers.length) return;
       const label = p?.label || name;
-      const desc = name === 'deepseek' ? '推荐：中文好、便宜，注册就能拿密钥' : (p?.models?.[0] ? `默认模型 ${p.models[0]}` : '');
+      const desc = name === 'deepseek' ? '推荐：中文好、便宜；新账号先充几块钱就能用' : (p?.models?.[0] ? `默认模型 ${p.models[0]}` : '');
       choices.appendChild(choiceButton(String.fromCharCode(65 + i), label, desc, () => { onboard.provider = name; onboard.step = 2; onboard.error = ''; renderMessages(); }));
     });
     choices.appendChild(choiceButton('·', '先用演示模式看看', '不填任何东西，先熟悉界面和审批流程', () => {
@@ -1099,7 +1170,7 @@ function renderBots() {
     menu.appendChild(mkItem('重命名', () => openBotEdit(bot.id, { focus: 'name' })));
     menu.appendChild(mkItem('编辑职责', () => openBotEdit(bot.id, { focus: 'role' })));
     menu.appendChild(el('div', 'menu-sep'));
-    const delItem = mkItem('删除', () => openBotEdit(bot.id, { armDelete: true }), 'danger');
+    const delItem = mkItem('删除', () => confirmDeleteBot(bot), 'danger');
     delItem.disabled = Boolean(bot.primary);
     delItem.title = bot.primary ? '主助理不能删' : '';
     menu.appendChild(delItem);
@@ -1157,6 +1228,8 @@ async function selectBot(id, { keepHome = false } = {}) {
   $('chat-sub').textContent = bot.role || '还没有设定职责';
   $('bot-memory-title').textContent = `${bot.name} 的记忆`;
   state.liveTurn = null;
+  setWorking(false);
+  refreshWorking();
   updateComposerMode();
   connectStream();
   // Its own screen and its own routines, not the last chat's.

@@ -66,6 +66,28 @@ function syncComposerActions() {
   const input = $('composer');
   if (!box || !input) return;
   box.classList.toggle('has-text', Boolean(input.value.trim()) || (state.pendingFiles || []).length > 0);
+  // While this bot works and the box is empty: a stop button (1.5.33; the docs promised one).
+  box.classList.toggle('working', Boolean(state.working && !isGroupMode()));
+}
+
+/** Is the bot on screen working? From the event stream, and once from the hub when a chat opens. */
+function setWorking(on) {
+  state.working = Boolean(on);
+  syncComposerActions();
+}
+async function refreshWorking() {
+  if (isGroupMode() || !state.botId) return setWorking(false);
+  try {
+    const turns = await api('/api/turns');
+    setWorking((turns || []).some((t) => t.botId === state.botId));
+  } catch { /* leave it */ }
+}
+
+/** The stop button says 「停下」: the turn stops, its task does not go on by itself, its waiting cards close. */
+function stopWorking() {
+  if (!state.working || state.sending) return;
+  $('composer').value = '停下';
+  send().finally(() => setTimeout(refreshWorking, 1500));
 }
 /** Every way text gets into the box (typing, voice, 「我弄好了，继续」, editing) goes through `value`. */
 function watchComposerValue() {
@@ -322,6 +344,7 @@ function handleEvent(ev) {
         if (!state.pcPinned && $('pane-computer')?.classList.contains('active')) loadComputer();
       }
       state.liveTurn = { turnId: ev.turnId, botId: ev.botId || null, bubble: null, text: '', sender };
+      if (!isGroupMode() && ev.botId === state.botId && !ev.aside) setWorking(true);
       // A colleague handed this bot work: show what it asked, with its face, as it arrives.
       if (ev.fromBotId && ev.text && !isGroupMode() && ev.botId === state.botId) {
         messagesEl.appendChild(botMessageRow({ fromBot: ev.fromBotId, text: ev.text, ts: ev.ts }));
@@ -524,6 +547,7 @@ function finalizeLiveMessage(text, system, sender) {
 
 function onTurnEnd(ev) {
   state.liveTurn = null;
+  if (!isGroupMode() && (!ev?.botId || ev.botId === state.botId) && !ev?.aside) setWorking(false);
   state.readAloudTurn = false;
   hideTyping();
   normalizeOverlays();
@@ -639,11 +663,12 @@ function buildApprovalCard(data) {
     card.classList.add('resolved');
     const actions = el('div', 'approval-actions');
     const good = data.decision === 'approved' || data.decision === 'approve';
+    const cancelled = !good && /^已取消/.test(String(data.note || ''));
     const done = el('div', 'approval-done');
-    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, decisionLabel(data.decision)));
-    done.appendChild(el('span', 'muted tiny', good ? '这一轮已经继续跑了。' : '它已经收到「不要做」。'));
+    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : decisionLabel(data.decision)));
+    done.appendChild(el('span', 'muted tiny', good ? '这一轮已经继续跑了。' : cancelled ? String(data.note).replace(/^已取消[：:]\s*/, '') + '。' : '它已经收到「不要做」。'));
     actions.appendChild(done);
-    if (data.note) actions.appendChild(el('div', 'muted tiny', `备注：${data.note}`));
+    if (data.note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${data.note}`));
     card.appendChild(actions);
     appendTechnicalDetails(card, data);
     return card;
@@ -665,6 +690,9 @@ function buildApprovalCard(data) {
     always.type = 'button';
     always.title = `以后「${data.remember.label}」不再问你（机器人设置里可以撤销）`;
   }
+  // What 「以后都允许」 covers, said before the click (1.5.33: it read as "allow everything").
+  const still = String(data.remember?.key || '').startsWith('shell:') ? '（危险操作和工作区外的改动照样会问）' : '';
+  const scope = data.remember?.key ? el('div', 'approval-scope muted tiny', `「以后都允许」：以后${data.remember.label}都不再问${still}。${data.remember.warn ? ` ${data.remember.warn}` : ''}`) : null;
   const reject = el('button', 'btn approval-reject', '拒绝');
   reject.type = 'button';
   reject.title = '不执行，把「不行」告诉它';
@@ -684,6 +712,7 @@ function buildApprovalCard(data) {
   choose.appendChild(reject);
   choose.appendChild(more);
   actions.appendChild(choose);
+  if (scope) actions.appendChild(scope);
   actions.appendChild(note);
   card.appendChild(actions);
   appendTechnicalDetails(card, data);
@@ -721,11 +750,13 @@ function settleApprovalCard(card, decision, note) {
   if (actions) {
     actions.innerHTML = '';
     const good = decision === 'approved' || decision === 'approve';
+    // Closed by Lamplit (stopped, the bot deleted), not refused by you (1.5.33).
+    const cancelled = !good && /^已取消/.test(String(note || ''));
     const done = el('div', 'approval-done');
-    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, decisionLabel(decision)));
-    done.appendChild(el('span', 'muted tiny', good ? '这一轮会继续跑。' : '已经告诉它不要做。'));
+    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : decisionLabel(decision)));
+    done.appendChild(el('span', 'muted tiny', good ? '这一轮会继续跑。' : cancelled ? String(note).replace(/^已取消[：:]\s*/, '') + '。' : '已经告诉它不要做。'));
     actions.appendChild(done);
-    if (note) actions.appendChild(el('div', 'muted tiny', `备注：${note}`));
+    if (note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${note}`));
   }
 }
 
@@ -764,7 +795,7 @@ async function decide(approvalId, decision, note, card, approve, deny, remember 
       body: { decision, note: note || '', ...(remember ? { always: true } : {}) },
     });
     settleApprovalCard(card, decision, note);
-    if (res?.remembered) toast(`好的，以后「${res.remembered.label}」不再问你`);
+    if (res?.remembered) toast(`好的，以后${res.remembered.label}都不再问你${String(res.remembered.key || '').startsWith('shell:') ? '（危险操作和工作区外的改动照样会问）' : ''}`);
     state.approvals = state.approvals.filter((a) => a.id !== approvalId);
     refreshPendingApprovals();
   } catch (err) {
@@ -805,6 +836,8 @@ async function refreshPendingApprovals() {
       risk: approval.risk,
       reason: approval.reason,
       args: safeParse(approval.args),
+      // After a reload the card is rebuilt from here: keep 「以后都允许」 (1.5.33).
+      ...(approval.remember?.key ? { remember: approval.remember } : {}),
       ...(parked ? { decision: 'needs_approval', live: true } : {}),
     };
     const existing = messagesEl.querySelector(`[data-approval="${CSS.escape(approval.id)}"]`);
@@ -863,7 +896,7 @@ async function focusApprovalCard(approvalId, botId) {
   if (!card && approvalId) {
     const a = (state.approvals || []).find((x) => x.id === approvalId);
     if (a) {
-      appendApprovalCard({ approvalId: a.id, tool: a.toolName, risk: a.risk, reason: a.reason, args: safeParse(a.args), ...(a.status === 'awaiting_human' ? { decision: 'needs_approval', live: true } : {}) });
+      appendApprovalCard({ approvalId: a.id, tool: a.toolName, risk: a.risk, reason: a.reason, args: safeParse(a.args), ...(a.remember?.key ? { remember: a.remember } : {}), ...(a.status === 'awaiting_human' ? { decision: 'needs_approval', live: true } : {}) });
       card = messagesEl.querySelector(`[data-approval="${CSS.escape(approvalId)}"]`);
     }
   }

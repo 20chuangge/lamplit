@@ -1,45 +1,43 @@
 ---
 name: weekly-review
-description: Assemble a weekly review from what the bots actually did, not from what they remember doing.
-when_to_use: Friday afternoon, or whenever a routine fires the weekly review.
+description: 按助手们这周真正做过的事写周报，不按它们记得的写。
+when_to_use: 周五下午，或者每周复盘的定时任务到点的时候。
 inputs:
-  - week start date
-  - notes/ directory in the shared workspace
+  - 这周从哪天开始
+  - 工作区里的 notes/ 文件夹
 steps:
-  - Call routine_list and collect which routines ran this week and their lastStatus.
-  - Call memory_read with the query "this week" to pull recent facts from memory.
-  - Call fs_list on notes/ and read the three most recent notes.
-  - Write notes/weekly-review.md with Wins / Misses / Next week.
-  - Call memory_write with scope "shared" for anything the whole team should carry forward.
-  - Call task_finish with the three headings as a one-line summary.
+  - 用 routine_list 看这周跑过哪些定时任务、上次结果（lastStatus）是什么。
+  - 用 memory_read 查「这周」，取出最近记下的事。
+  - 用 fs_list 看 notes/，读最新的三篇笔记。
+  - 写 notes/weekly-review.md，分三节：做成了 / 没做成 / 下周。
+  - 全队都该记住的事，用 memory_write 记到共享记忆里（scope 写 "shared"）。
+  - 用 task_finish 结束，一句话带上三节的要点。
 validation:
-  - notes/weekly-review.md exists and mentions at least one routine by name.
-  - Every claim in Wins points at a file or a run that exists.
-output: notes/weekly-review.md, plus shared memory updated with anything durable.
-approval_notes: Writing notes inside the workspace is LOW risk. Writing to memory is LOW risk. Nothing here needs a human unless a step is added that leaves the workspace.
+  - notes/weekly-review.md 存在，至少提到一个定时任务的名字。
+  - 「做成了」里的每一条，都对应一个真实存在的文件或一次运行。
+output: notes/weekly-review.md，以及共享记忆里该长期记住的内容。
+approval_notes: 在工作区里写笔记是低风险，写记忆也是低风险。只要不加离开工作区的步骤，这里没有要你批准的事。
 ---
 
-# Weekly review
+# 每周复盘
 
-The whole point is to resist invention: every line under **Wins** has to name a
-file or a routine run that actually exists in this installation.
+要点是不编：「做成了」下面每一行，都要指得出这台机器上真实存在的文件或定时任务的运行记录。
 
-## Shape
+## 格式
 
 ```
-# Weekly review - <date range>
+# 每周复盘 - <日期范围>
 
-## Wins
-- <thing> (<evidence: file or routine id>)
+## 做成了
+- <事情>（<依据：文件或定时任务>）
 
-## Misses
-- <thing that was attempted and did not land>
+## 没做成
+- <试过但没成的事>
 
-## Next week
-- <one or two things, not ten>
+## 下周
+- <一两件事，不是十件>
 ```
 
-## Failure mode to avoid
+## 要避免的错
 
-Producing a polished review that is not grounded in run history. If the evidence
-is thin, say the week was quiet. A short honest review beats a long invented one.
+写出一份漂亮、却和运行记录对不上的周报。依据少，就说这周比较清闲。短而真，胜过长而编。

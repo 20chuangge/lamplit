@@ -112,7 +112,8 @@ function turnChanges(messages) {
 state.undone = state.undone || new Set();
 function changesLine(turnId, changes) {
   const line = el('div', 'changes-line');
-  const names = [...new Set(changes.map((c) => c.path.split('/').pop()))];
+  // The file's name only, on Windows too (1.5.33: 「演示\下载\周报.docx」).
+  const names = [...new Set(changes.map((c) => c.path.split(/[\\/]/).pop()))];
   const deleted = changes.filter((c) => c.kind === 'delete').length;
   const what = deleted && deleted === changes.length ? '删了' : deleted ? '改动了' : '改了';
   line.appendChild(el('span', null, `这一轮${what} ${names.length} 个文件：${truncate(names.slice(0, 4).join('、'), 60)}${names.length > 4 ? ' 等' : ''}`));

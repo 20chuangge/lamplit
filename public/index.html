@@ -165,6 +165,9 @@
           <button class="mic-btn call-btn" id="call-btn" type="button" title="通话：说完自动发送，回复会念出来" aria-label="通话">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h3.5l1.7 4.3-2.2 1.4a11 11 0 0 0 6.3 6.3l1.4-2.2L20 15.5V19a1.5 1.5 0 0 1-1.6 1.5C10.6 20 4 13.4 3.5 5.6A1.5 1.5 0 0 1 5 4z"/></svg>
           </button>
+          <button class="send-btn stop-btn" id="stop-btn" type="button" title="停下这一轮（已经做好的不会丢）" aria-label="停止">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+          </button>
           <button class="send-btn" id="send-btn" title="发送（Enter）" aria-label="发送">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
           </button>
@@ -202,7 +205,7 @@
               <textarea class="field" id="rt-instruction" rows="2" placeholder="给这个助手的指令…"></textarea>
               <div class="row-2">
                 <select class="field" id="rt-bot"></select>
-                <input class="field" id="rt-schedule" value="every 60 minutes" autocomplete="off" />
+                <input class="field" id="rt-schedule" value="每天 9:00" placeholder="每天 9:00" autocomplete="off" />
               </div>
               <div class="row-2">
                 <button class="btn primary tiny" id="rt-save">创建定时任务</button>
@@ -210,7 +213,7 @@
               </div>
               <label class="switch-row"><input type="checkbox" id="rt-only-changes" /> 只在有变化时提醒我</label>
               <label class="switch-row"><input type="checkbox" id="rt-feishu" /> 结果同时发到飞书</label>
-              <div class="tiny muted">时间写法：“every 30 minutes”，或 5 段 cron，例如 “0 9 * * 1-5”。</div>
+              <div class="tiny muted">时间可以这样写：每天 9:00、工作日 8:30、每周五 18:00、每月 1 号 10:00、每 30 分钟。</div>
             </div>
           </div>
           <div id="routines-list"></div>
@@ -422,7 +425,7 @@
         </div>
         <div class="voice-set" id="vision-set">
           <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">看图</div>
-          <div class="row-note">聊天模型（如 DeepSeek）只能读文字。这里配一个看图模型，Bot 就能看懂你发的图片和它自己的截图。</div>
+          <div class="row-note">聊天模型（如 DeepSeek）只能读文字。这里配一个看图模型，助手就能看懂你发的图片和它自己的截图。</div>
           <div class="row-note" id="vision-state">正在读取…</div>
           <label class="lbl" for="vision-provider">看图服务</label>
           <select class="field" id="vision-provider"></select>
@@ -880,6 +883,7 @@
           <button class="seg-btn" type="button" data-tz-mode="target" role="radio" aria-checked="false">跟随当前机器</button>
           <button class="seg-btn" type="button" data-tz-mode="manual" role="radio" aria-checked="false">手动选择</button>
         </div>
+        <input class="field" id="tz-filter" type="search" hidden autocomplete="off" placeholder="搜索时区：上海、东京、New York…" aria-label="搜索时区" />
         <select class="field select" id="tz-select" hidden aria-label="选择时区"></select>
         <div class="row-note" id="tz-note">当前时区：—</div>
       </section>
@@ -1031,6 +1035,7 @@
   <div class="modal-body">
     <div class="row-note">批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。</div>
     <div class="row-note">想在这个浏览器里用，就配对一次：配对码在 Lamplit 应用的 设置 → 手机和外网；从终端启动的，在终端的启动信息里。</div>
+    <div class="row-note">要用这个地址（<b id="local-pair-host"></b>）上这个 Lamplit 的配对码：同一台电脑上装着另一个 Lamplit 时，它的码在这里用不了。</div>
     <input class="field" id="local-pair-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="8 位配对码" />
     <div class="btn-row">
       <button class="btn primary" id="local-pair-go" type="button">配对这个浏览器</button>
@@ -1179,13 +1184,13 @@
       </button>
       <div class="be-hero-fields">
         <input class="be-name" id="botedit-name-input" autocomplete="off" maxlength="40" aria-label="名字" placeholder="名字" />
-        <textarea class="be-role" id="botedit-role-input" rows="2" maxlength="160" aria-label="职责" placeholder="这个助手负责什么"></textarea>
+        <textarea class="be-role" id="botedit-role-input" rows="2" maxlength="200" aria-label="职责" placeholder="这个助手负责什么"></textarea>
       </div>
     </div>
     <section class="be-section">
       <div class="be-section-title">模型</div>
       <select class="field" id="botedit-model" aria-label="模型"></select>
-      <div class="be-hint" id="botedit-model-note">想要更多选择：设置 → 模型 → 其他模型。</div>
+      <div class="be-hint" id="botedit-model-note">想要更多选择：设置 → 模型 → 多个模型。</div>
     </section>
     <section class="be-section" id="botedit-voice-sec" hidden>
       <div class="be-section-title">朗读声音</div>
@@ -1209,13 +1214,14 @@
       </div>
       <div class="be-allowed" id="botedit-allowed" hidden></div>
     </section>
-    <div class="modal-note" id="botedit-note" hidden></div>
     <div class="be-danger">
+      <button class="btn" id="botedit-primary" type="button" hidden>设为主助理</button>
       <button class="be-delete" id="botedit-delete" type="button">删除这个助手</button>
       <div class="be-hint" id="botedit-delete-note">删除会一并删掉它的记忆和对话记录，无法恢复。</div>
     </div>
   </div>
   <div class="be-foot">
+    <div class="modal-note" id="botedit-note" role="alert" hidden></div>
     <button class="btn primary block" id="botedit-save" type="button">保存</button>
   </div>
 </aside>

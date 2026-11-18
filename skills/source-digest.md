@@ -1,36 +1,33 @@
 ---
 name: source-digest
-description: Fetch a handful of URLs and write a digest that separates what the sources say from what you conclude.
-when_to_use: When asked to research a question on the open web and produce a short written brief.
+description: 读几个网页，写一份摘要，把「资料怎么说」和「我的结论」分开写。
+when_to_use: 有人让你上网查一个问题、写一份简短的书面说明的时候。
 inputs:
-  - the question
-  - 1-5 URLs, or a search direction
+  - 要查的问题
+  - 1–5 个网址，或者一个搜索方向
 steps:
-  - Call http_fetch on each URL (public hosts only; private and loopback addresses are blocked).
-  - Write notes/sources.md listing each URL with its status code and one quoted line.
-  - Write notes/digest.md with "What the sources say" followed by "What I conclude".
-  - Call memory_write with scope "shared" if the conclusion will matter beyond this task.
-  - Call task_finish naming the digest file.
+  - 用 http_fetch 读每个网址（只能是公网地址；内网和本机地址会被挡住）。
+  - 写 notes/sources.md，列出每个网址、状态码和原文摘一句。
+  - 写 notes/digest.md，先写「资料怎么说」，再写「我的结论」。
+  - 结论以后还用得上，就用 memory_write 记到共享记忆里（scope 写 "shared"）。
+  - 用 task_finish 结束，写明摘要文件的位置。
 validation:
-  - Every claim under "What the sources say" maps to a quoted line in notes/sources.md.
-  - The digest is under 60 lines.
-output: notes/sources.md and notes/digest.md.
-approval_notes: http_fetch is MEDIUM risk. The Researcher bot auto-approves it; on any other bot a human is asked first. browser_open needs CHROME_PATH and does nothing when it is unset.
+  - 「资料怎么说」里的每一句，在 notes/sources.md 里都有对应的原文。
+  - 摘要不超过 60 行。
+output: notes/sources.md 和 notes/digest.md。
+approval_notes: 读网页是中风险。研究员默认可以直接读；别的助手读之前会先问你。browser_open 要先配好浏览器（CHROME_PATH），没配时什么都不做。
 ---
 
-# Source digest
+# 资料摘要
 
-## The one rule
+## 唯一的规矩
 
-Quote first, conclude second, and keep the two visibly separate. A digest where
-the reader cannot tell which sentences are yours is worse than no digest.
+先摘原文，再下结论，两部分分开写、一眼看得出来。分不清哪句是资料说的、哪句是你说的，这份摘要还不如没有。
 
-## Budget
+## 篇幅
 
-Five fetches and sixty lines. If the question needs more than that, it is two
-tasks, and the second one should say so.
+最多读五个网页、写六十行。问题需要更多，就是两件事，第二件要说清楚。
 
-## When the web is unavailable
+## 上不了网的时候
 
-Say so and stop. Do not fill the gap from memory and present it as sourced -
-that is the one failure mode this skill exists to prevent.
+直接说上不了网，然后停下。不要凭记忆补上、再说成是查来的——这个技能就是为了防这一种错。

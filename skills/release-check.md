@@ -1,39 +1,37 @@
 ---
 name: release-check
-description: Walk the workspace and run the read-only checks before anything ships.
-when_to_use: Before a release, before handing work over, or when asked "is this ready?".
+description: 发布前把工作区里的项目只读地检查一遍，给出「能发 / 不能发」。
+when_to_use: 要发布、要把活交出去之前，或者有人问「这个能发了吗？」的时候。
 inputs:
-  - project directory inside the shared workspace
+  - 工作区里的项目文件夹
 steps:
-  - Call fs_list on the project directory to confirm the expected files are present.
-  - Call shell with "node --version" to record the runtime the checks will run on.
-  - Call shell with a read-only check command, for example "node --test" if the project has tests.
-  - Write notes/release-check.md with Command / Exit code / Output for each command.
-  - Call task_finish with "ready" or "not ready" and the first failing check.
+  - 用 fs_list 看项目文件夹，确认该有的文件都在。
+  - 用 shell 运行 "node --version"，记下检查用的运行环境。
+  - 用 shell 运行只读的检查命令，比如项目有测试时运行 "node --test"。
+  - 写 notes/release-check.md，每条命令记下：命令 / 退出码 / 输出。
+  - 用 task_finish 结束，写「能发」或「不能发」，以及第一个没通过的检查。
 validation:
-  - Every command in notes/release-check.md has a recorded exit code.
-  - The summary says ready only when every exit code is 0.
-output: notes/release-check.md and a one-line verdict.
-approval_notes: shell is MEDIUM risk, so by default a human approves each command and can read it first. Denylisted commands (rm -rf, sudo, shutdown, curl | bash) are HIGH risk and are refused outright on unattended runs.
+  - notes/release-check.md 里每条命令都有退出码。
+  - 只有所有退出码都是 0，才能说「能发」。
+output: notes/release-check.md 和一句结论。
+approval_notes: 执行命令是中风险，默认每条命令都会先给你看、等你批准。危险命令（rm -rf、sudo、shutdown、curl | bash 之类）是高风险，无人值守时直接不做。
 ---
 
-# Release check
+# 发布前检查
 
-Read-only checks only. This skill never fixes anything; it reports.
+只做只读的检查。这个技能从不修东西，只报告。
 
-## Why a human approves each command
+## 为什么每条命令都要人批准
 
-The shell tool is the one place where a confused model could do real damage.
-Approving each command is the cost of that; it is a cheap cost, and skipping it
-is how the interesting incidents happen.
+执行命令是模型一旦糊涂就能真正搞坏东西的地方。每条都批准是这份安全的代价；这个代价很小，省掉它，麻烦就来了。
 
-## Output shape
+## 输出的样子
 
 ```
-| command | exit | note |
+| 命令 | 退出码 | 说明 |
 |---|---|---|
 | node --version | 0 | v20.x |
-| node --test | 1 | 2 failing |
+| node --test | 1 | 2 个没通过 |
 ```
 
-Verdict line: `ready` or `not ready (node --test)`.
+结论一行：`能发`，或 `不能发（node --test）`。

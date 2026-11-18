@@ -26,7 +26,9 @@ const DOW_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 function cronError(message) {
   // A schedule typed wrong is the request's fault (400, 1.5.32: it was a 500 in English).
-  const err = new Error(`时间的写法不对（${message}）。可以这样写：every 30 minutes（每 30 分钟）、0 8 * * *（每天 8:00）、0 8 * * 1-5（工作日 8:00）、once 2026-12-01 09:00（只跑一次）。`);
+  // The parser's own words stay for the logs; the person reads how to write it (1.5.33: an English line was in the middle).
+  const err = new Error('时间的写法不对。可以这样写：每天 9:00、工作日 8:30、每周五 18:00、每月 1 号 10:00、每 30 分钟、每 2 小时；也认 cron（0 8 * * 1-5）和 once 2026-12-01 09:00（只跑一次）。');
+  err.detail = message;
   err.code = 'CRON_INVALID';
   err.status = 400;
   return err;
@@ -140,10 +142,60 @@ export function parseOnce(spec) {
   return { kind: 'once', year, month, day, hour, minute, expression: `once ${year}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}` };
 }
 
+/**
+ * A time said the way people say it (1.5.33): 每天 9:00, 每天早上9点半, 工作日 8:30,
+ * 周末 10点, 每周一、三、五 18:00, 每月 1 号 10:00, 每 30 分钟, 每隔 2 小时, 每小时.
+ * -> the same in the forms below ("every 30 minutes", a cron line), or null.
+ */
+export function chineseSchedule(spec) {
+  const s = String(spec || '').trim().replace(/\s+/g, ' ');
+  if (!/[\u4e00-\u9fff]/.test(s)) return null;
+  const num = (t) => {
+    const cn = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+    if (/^\d+$/.test(t)) return Number(t);
+    if (/^十([一二三四五六七八九])?$/.test(t)) return 10 + (cn[t[1]] || 0);
+    if (/^([一二三四五六七八九])十([一二三四五六七八九])?$/.test(t)) return cn[t[0]] * 10 + (cn[t[2]] || 0);
+    return cn[t] ?? NaN;
+  };
+  const every = /^每(?:隔)?\s*([\d一二两三四五六七八九十]+)?\s*(分钟|小时|个小时)$/.exec(s);
+  if (every) {
+    const n = every[1] ? num(every[1]) : 1;
+    return Number.isInteger(n) && n > 0 ? `every ${n} ${every[2] === '分钟' ? 'minutes' : 'hours'}` : null;
+  }
+  // The time of day: 9:00, 9：30, 9点, 9点半, 9点15(分), with 早上/上午/中午/下午/晚上 in front.
+  const t = /(早上|上午|中午|下午|晚上|傍晚|凌晨)?\s*([\d一二两三四五六七八九十]{1,3})\s*(?:[:：]\s*(\d{1,2})|点\s*(半|[\d一二三四五六七八九十]{1,3})?\s*分?)/.exec(s);
+  if (!t) return null;
+  let hour = num(t[2]);
+  const minute = t[3] !== undefined ? Number(t[3]) : t[4] === '半' ? 30 : t[4] ? num(t[4]) : 0;
+  if (/下午|晚上|傍晚/.test(t[1] || '') && hour < 12) hour += 12;
+  if (t[1] === '中午' && hour < 11) hour += 12;
+  if (!Number.isInteger(hour) || hour > 23 || !Number.isInteger(minute) || minute > 59) return null;
+  const day = s.slice(0, t.index);
+  const wk = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 };
+  let dom = '*';
+  let dow = '*';
+  const month = /每月\s*([\d一二三四五六七八九十]{1,3})\s*[号日]/.exec(day);
+  const weekly = /(?:每周|每星期|每个?礼拜|周|星期)([一二三四五六日天、，,和及\s]+)/.exec(day);
+  if (month) {
+    const d = num(month[1]);
+    if (!(d >= 1 && d <= 31)) return null;
+    dom = String(d);
+  } else if (/工作日|周一到周五|星期一到星期五/.test(day)) dow = '1-5';
+  else if (/周末|星期六日|周六日/.test(day)) dow = '0,6';
+  else if (weekly) {
+    const days = [...weekly[1]].filter((c) => c in wk).map((c) => wk[c]);
+    if (!days.length) return null;
+    dow = [...new Set(days)].sort((a, b) => a - b).join(',');
+  } else if (!/每天|每日|天天|每晚|每早|^\s*(早上|上午|中午|下午|晚上|傍晚|凌晨)?\s*$/.test(day)) return null;
+  return `${minute} ${hour} ${dom} * ${dow}`;
+}
+
 /** Accepts either shape and returns a normalized schedule descriptor. */
 export function parseSchedule(spec) {
-  const text = String(spec || '').trim();
+  let text = String(spec || '').trim();
   if (!text) throw cronError('schedule is required');
+  text = chineseSchedule(text) || text;
+  if (/[\u4e00-\u9fff]/.test(text)) throw cronError(`not understood: ${text}`);
   if (/^every\b/i.test(text)) return parseInterval(text);
   if (/^(once|at)\b/i.test(text)) return parseOnce(text);
   return parseCron(text);

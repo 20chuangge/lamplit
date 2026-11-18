@@ -119,7 +119,9 @@ function renderRoutines() {
     title.appendChild(el('span', null, rt.name));
     if (!rt.enabled) title.appendChild(el('span', 'tag', '已暂停'));
     card.appendChild(title);
-    card.appendChild(el('div', 'card-sub', `${(bot && bot.name) || rt.botId} · ${scheduleText(rt.schedule)}`));
+    // A routine whose bot was deleted (1.5.33): said so, not an id; it can be given to the main assistant or deleted.
+    const orphan = !bot && !String(rt.botId || '').includes('@');
+    card.appendChild(el('div', 'card-sub', `${bot ? bot.name : orphan ? '助手已删除' : rt.botId} · ${scheduleText(rt.schedule)}`));
 
     const meta = el('div', 'routine-meta');
     meta.appendChild(el('span', 'tag', `下次 ${fmtWhen(rt.nextRun)}`));
@@ -174,6 +176,8 @@ function renderRoutines() {
     const del = el('button', 'btn tiny danger', '删除');
     del.type = 'button';
     del.addEventListener('click', async () => {
+      // Asked first (1.5.33): one click deleted it.
+      if (!(await askConfirm({ title: `删除定时任务「${rt.name}」？`, text: '删了就不会再跑；它以前的运行记录也一起删掉。', confirmLabel: '删除' }))) return;
       try {
         await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'DELETE' });
         await loadRoutines();
@@ -181,9 +185,44 @@ function renderRoutines() {
         toast(err.message, true);
       }
     });
-    actions.appendChild(test);
-    actions.appendChild(toggle);
-    actions.appendChild(del);
+    // Its time can be changed here (1.5.33: there was no way to).
+    const when = el('button', 'btn tiny', '改时间');
+    when.type = 'button';
+    when.addEventListener('click', async () => {
+      const next = await askText({ title: `「${rt.name}」什么时候跑`, text: '可以写：每天 9:00、工作日 8:30、每周五 18:00、每月 1 号 10:00、每 30 分钟。', value: scheduleText(rt.schedule), confirmLabel: '保存' });
+      if (next === null || next === undefined || !String(next).trim() || String(next).trim() === scheduleText(rt.schedule)) return;
+      try {
+        await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { schedule: String(next).trim() } });
+        await loadRoutines();
+        toast('时间改好了');
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    const adopt = orphan ? el('button', 'btn tiny', '交给主助理') : null;
+    if (adopt) {
+      adopt.type = 'button';
+      adopt.addEventListener('click', async () => {
+        const primary = (state.bots || []).find((b) => b.primary);
+        if (!primary) return;
+        try {
+          await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { botId: primary.id } });
+          await loadRoutines();
+          toast(`交给「${primary.name}」了；要它接着跑，点「启用」。`);
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    }
+    if (orphan) {
+      if (adopt) actions.appendChild(adopt);
+      actions.appendChild(del);
+    } else {
+      actions.appendChild(test);
+      actions.appendChild(toggle);
+      actions.appendChild(when);
+      actions.appendChild(del);
+    }
     card.appendChild(actions);
     list.appendChild(card);
   }
@@ -204,7 +243,7 @@ async function createRoutine() {
         name: $('rt-name').value.trim() || '未命名任务',
         instruction,
         botId: $('rt-bot').value,
-        schedule: $('rt-schedule').value.trim() || 'every 60 minutes',
+        schedule: $('rt-schedule').value.trim() || '每天 9:00',
         onlyChanges: $('rt-only-changes').checked,
         pushFeishu: $('rt-feishu').checked,
       },

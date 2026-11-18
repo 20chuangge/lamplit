@@ -1,35 +1,33 @@
 ---
 name: workspace-sweep
-description: Turn "what is going on in the shared workspace" into a short note somebody can read in 30 seconds.
-when_to_use: When the human asks for a status update, a recap, or what changed recently.
+description: 把「工作区里现在怎么样了」写成一张 30 秒能读完的小纸条。
+when_to_use: 有人要看进展、要个回顾，或者问最近改了什么的时候。
 inputs:
-  - workspace path (defaults to the shared workspace root)
+  - 工作区里的位置（默认是工作区根目录）
 steps:
-  - Call fs_list on the workspace root and read the names and modification times.
-  - Pick the two files that look most load-bearing (newest, or named plan/todo/README) and call fs_read on each.
-  - Write notes/status.md with three sections: What changed / What is blocked / Next step.
-  - Call task_finish with the path you wrote and the single most important line.
+  - 用 fs_list 看工作区根目录，读文件名和修改时间。
+  - 挑两个看起来最要紧的文件（最新的，或者叫 plan / todo / README 的），各用 fs_read 读一遍。
+  - 写 notes/status.md，分三节：改了什么 / 卡在哪 / 下一步。
+  - 用 task_finish 结束，写上文件位置和最重要的一句话。
 validation:
-  - notes/status.md exists in the workspace.
-  - The note is shorter than 40 lines and names at least one concrete file.
-output: A markdown note at notes/status.md plus a one-line summary in chat.
-approval_notes: Everything here is inside the shared workspace, so every call is LOW risk and runs without approval. Nothing outside workspace/ is touched.
+  - 工作区里有 notes/status.md。
+  - 这张纸条不超过 40 行，至少点名一个具体的文件。
+output: notes/status.md 一张小纸条，加上对话里的一句话总结。
+approval_notes: 这里的每一步都在工作区里，都是低风险，不用批准。工作区以外的东西一概不碰。
 ---
 
-# Workspace sweep
+# 工作区小结
 
-A deliberately small procedure. The value is in the shape of the note, not in
-how much it collects.
+故意做得很小。价值在纸条的样子，不在收集了多少东西。
 
-## Why three sections
+## 为什么是三节
 
-- **What changed** gives the human a delta without re-reading the files.
-- **What is blocked** is the only section that ever needs action.
-- **Next step** forces a recommendation instead of a status report.
+- **改了什么**：不用重读文件就知道变化。
+- **卡在哪**：唯一需要你动手的一节。
+- **下一步**：逼自己给建议，而不是只报状态。
 
-## Anti-patterns
+## 不要这样做
 
-- Listing every file. If there are more than ten, summarise the shape instead.
-- Reading the whole workspace. Two files is the budget.
-- Writing the note outside `workspace/`. That escalates to a HIGH approval for
-  no reason.
+- 把每个文件都列出来。超过十个，就说大致的样子。
+- 把整个工作区都读一遍。最多读两个文件。
+- 把纸条写到 `workspace/` 外面。那样会无缘无故变成高风险、要你批准。

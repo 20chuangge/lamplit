@@ -133,7 +133,7 @@ async function loadComputer() {
     ['桌面归属', (() => {
       const per = data.perBotDesktop;
       if (!per) return '共享桌面';
-      if (per.running && per.display) return `本 Bot 专属 ${per.display}`;
+      if (per.running && per.display) return `这个助手专属 ${per.display}`;
       if (per.support && per.support.available === false) return '共享桌面（Hub 不支持专属桌面）';
       return per.error ? `专属桌面启动失败` : '未启动';
     })()],

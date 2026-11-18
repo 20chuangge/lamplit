@@ -9061,6 +9061,75 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('U28 network check: the hub times each other machine, the page times itself and says what a slow path usually is',
         lat.status === 200 && Array.isArray(lat.json?.machines) && machinesSrc.includes('async function runNetCheck()') && machinesSrc.includes('PROCESS-NAME,tailscaled.exe,DIRECT') && pageSrc.includes('id="net-check"'));
       const peersSrc = await readText('../src/peers.mjs');
+      // 1.5.29: Windows Firewall, the phone's short way home, the relay in China.
+      {
+        const G = await import('../desktop/guard.mjs');
+        const was = G.firewallVerdict({ block: ['Public', 'Public'], allow: [], networks: ['Public'] });
+        const fixed = G.firewallVerdict({ block: [], allow: ['Any'], ours: true, networks: ['Public'] });
+        const priv = G.firewallVerdict({ block: ['Public'], allow: ['Private'], networks: ['Private'] });
+        check('N29 firewall: Block rules for Lamplit.exe on the network it is on (seen 11-17) = phones on the LAN kept out; our allow rule for any profile = open; a Public-only block does not touch a Private network',
+          was.blocked && !was.ok && fixed.ok && fixed.ours && priv.ok
+          && G.mayUse('desk:firewall-fix', 'known') === false && G.mayUse('desk:firewall-fix', 'local') === true && G.mayUse('desk:tailscale-netcheck', 'known') === false);
+        const desk29 = await readText('../desktop/main.mjs');
+        check('N29 firewall: the fix asks Windows for admin (UAC) and allows only TCP from the local network and Tailscale; the page offers it in 手机和外网',
+          desk29.includes('-Verb RunAs') && desk29.includes('-RemoteAddress LocalSubnet,100.64.0.0/10') && desk29.includes("-Action Allow -Program $exe -Protocol TCP")
+          && pageSrc.includes('id="firewall-fix"') && (await readText('../public/app/main/08-settings.js')).includes('async function checkFirewall(remoteOn)'));
+        const nc = G.parseNetcheck('Report:\n\t* Nearest DERP: Hong Kong\n\t* DERP latency:\n\t\t- lamplit: 12.3ms  (Lamplit relay (China))\n\t\t- hkg: 41.2ms (Hong Kong)\n');
+        check('N29 network check: tailscale netcheck is read for the relay regions (ours is "lamplit")',
+          nc.nearest === 'Hong Kong' && nc.regions.length === 2 && nc.regions[0].code === 'lamplit' && nc.regions[0].ms === 12);
+        const javaSrc = await readText('../mobile/android/app/src/main/java/com/desk/assistant/NightshiftWatcher.java');
+        check('N29 phone: the background link reaches a machine on its LAN address when that answers (same Wi-Fi), else the paired one; a failure looks again',
+          javaSrc.includes('String url = via(hub) + "/api/stream";') && javaSrc.includes('postJson(via(hub) + "/api/phone/agent", token, body);')
+          && javaSrc.includes('postJson(via(hub) + "/api/phone/jobs/" + jobId, token, reply);') && javaSrc.includes('forgetRoute(hub);') && javaSrc.includes('isLanAddress(other) && answers(other)'));
+        const RM = await import('../src/remote.mjs');
+        const map = RM.derpMapFor({ host: '203.0.113.9', port: 33445, stunPort: 3478, certName: 'sha256-raw:' + 'ab'.repeat(32) });
+        check('N29 relay: only a public IPv4 can be the relay; the Tailscale policy text pins its self-signed certificate',
+          RM.isPublicIpv4('203.0.113.9') && !RM.isPublicIpv4('100.100.1.2') && !RM.isPublicIpv4('192.168.1.3') && !RM.isPublicIpv4('172.20.0.1') && !RM.isPublicIpv4('10.1.2.3')
+          && /"HostName": "203\.0\.113\.9"/.test(map) && /"IPv6": "none"/.test(map) && /"DERPPort": 33445/.test(map) && /"CertName": "sha256-raw:(ab){32}"/.test(map) && RM.derpMapFor({ host: 'x', certName: 'bad' }) === '');
+        const relayNone = await api('/api/relay');
+        const badRelay = await api('/api/remote/relay', { method: 'POST', body: { host: '192.168.1.5', username: 'u', password: 'p' } });
+        await fsp.writeFile(path.join(process.env.ASSIST_DATA_DIR, 'relay.json'), JSON.stringify({ state: 'ready', host: '203.0.113.9', port: 33445, stunPort: 3478, certName: 'sha256-raw:' + 'cd'.repeat(32) }));
+        const relayReady = await api('/api/relay');
+        await fsp.rm(path.join(process.env.ASSIST_DATA_DIR, 'relay.json'), { force: true });
+        check('N29 relay: the machine says how its relay install went and hands out the policy text; a LAN address is refused before any SSH',
+          relayNone.status === 200 && relayNone.json?.relay === null && badRelay.status === 400 && badRelay.json?.error?.code === 'REMOTE_RELAY_NEEDS_PUBLIC_IP'
+          && relayReady.json?.relay?.state === 'ready' && /sha256-raw:(cd){32}/.test(relayReady.json?.derpMap || ''));
+        const U29 = await import('../src/usage.mjs');
+        const peakRec = { ts: '2026-11-17T02:00:00Z', prompt: 1e6, completion: 1e5, total: 1.1e6, cached: 8e5 };
+        const dsPrice = U29.knownPrice('deepseek-flash');
+        check('C29 cost: DeepSeek peak hours (weekdays 9-12, 14-18 Beijing time) at the price, the rest half; the site\'s prices are offered for known models',
+          U29.isPeakTime('2026-11-17T02:00:00Z') && !U29.isPeakTime('2026-11-17T05:00:00Z') && !U29.isPeakTime('2026-11-21T02:00:00Z') && !U29.isPeakTime('2026-11-17T12:00:00Z')
+          && Math.abs(U29.recordCost(peakRec, dsPrice) - 1.232) < 1e-9 && Math.abs(U29.recordCost({ ...peakRec, ts: '2026-11-17T12:00:00Z' }, dsPrice) - 0.616) < 1e-9
+          && U29.recordCost(peakRec, { in: 2, cached: 0.04, out: 8 }) === U29.recordCost({ ...peakRec, ts: '2026-11-17T12:00:00Z' }, { in: 2, cached: 0.04, out: 8 }));
+        const named = U29.summarizeUsage([{ day: 'd', botId: 'bot-x', botName: '发布', model: 'm', prompt: 1, completion: 0, total: 1 }], { prices: {} });
+        const apps29 = await readText('../public/app/main/09-apps.js');
+        check('C29 cost page: each record keeps the assistant\'s name; deleted nameless ones fold into one row, evaluation runs into another',
+          named.byBot[0].name === '发布' && (await readText('../src/agent.mjs')).includes('botName: bot.name, provider: turnModel.provider')
+          && apps29.includes('已删除的助手（${row.count} 个）') && apps29.includes('评测（${row.count} 项）') && apps29.includes("'填官网价'"));
+        const css29 = await readText('../public/app/style.css');
+        const live29 = await readText('../public/app/main/06-live.js');
+        const mach29 = await readText('../public/app/main/11-machines.js');
+        check('U29 composer: two round buttons at a time - 🎤 and 📞 while empty, 📞 gives its place to send once there is text or a file (every way text gets in is watched)',
+          css29.includes('.composer-box:not(.has-text) .send-btn { display: none; }') && css29.includes('.composer-box.has-text .call-btn:not(.on) { display: none; }')
+          && live29.includes("box.classList.toggle('has-text', Boolean(input.value.trim()) || (state.pendingFiles || []).length > 0);") && live29.includes("Object.defineProperty(input, 'value', {"));
+        check('U29 machines on a phone: the phone box no longer grows past its card; a machine row says 在线/离线 instead of its address, its buttons go under the name; adb only in the desktop app',
+          css29.includes('.phone-box { grid-template-columns: minmax(0, 1fr); }') && mach29.includes("${m.online ? '在线' : '离线'}") && mach29.includes("'关掉外网访问' : '打开外网访问'")
+          && mach29.includes("$('phone-adb-row').hidden = !(local && window.desk && !isMobile());") && (await readText('../public/app/main/08-settings.js')).includes(", .relay-box';"));
+        const relays29 = await api('/api/peers/relays');
+        check('U29 relay section: its own card with a state chip, steps that tick themselves (ports reachable from the machine, in use by its Tailscale - so a phone sees it too)',
+          relays29.status === 200 && 'inUse' in (relays29.json || {}) && mach29.includes('const inUse = data.inUse || null;') && mach29.includes("step(portsOk,") && pageSrc.includes('id="relay-chip"'));
+        const derpSh = await readText('../hub/derp-linux.sh');
+        check('N29 relay script: official derper built through the China mirrors, IP certificate, only this tailnet\'s devices, reports to the hub',
+          derpSh.includes('GOPROXY="https://goproxy.cn') && derpSh.includes('golang.google.cn') && derpSh.includes('tailscale.com/cmd/derper@latest')
+          && derpSh.includes('-certmode manual') && derpSh.includes('-verify-clients') && derpSh.includes('STATE="$HUB_DATA/relay.json"') && derpSh.includes('fail "这台机器上的 Tailscale 没在运行'));
+        const bashOk = await new Promise((resolve) => {
+          const c = spawn('bash', ['-n', fileURLToPath(new URL('../hub/derp-linux.sh', import.meta.url))], { stdio: 'ignore' });
+          c.on('error', () => resolve('none'));
+          c.on('close', (code) => resolve(code === 0 ? 'ok' : 'bad'));
+        });
+        if (bashOk === 'none') skip('N29 relay script parses', 'no bash here');
+        else check('N29 relay script parses (bash -n)', bashOk === 'ok');
+      }
       check('U28 machines: the address that answered last is tried first (an unreachable LAN address no longer waits out its timeout every call)',
         peersSrc.includes('const lastGood = new Map();') && peersSrc.includes('lastGood.set(peer.name, candidate)'));
     }

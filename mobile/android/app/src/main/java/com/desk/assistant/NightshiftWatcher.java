@@ -359,6 +359,83 @@ public class NightshiftWatcher extends Service {
         }
     }
 
+    // ------------------------------------------------------------ the shortest way (1.5.29)
+    /**
+     * A machine is known by the address the phone paired with (often its
+     * Tailscale one) and, in the app's list, by its other addresses. On the
+     * same Wi-Fi its LAN address is the short way: no VPN, no relay abroad when
+     * Tailscale cannot connect directly. The token works at either address.
+     * Checked at most once a minute per machine; a failure forgets the choice.
+     */
+    private final Map<String, String[]> routes = new java.util.concurrent.ConcurrentHashMap<>();
+
+    static boolean isLanAddress(String url) {
+        String host;
+        try {
+            host = new URL(url).getHost();
+        } catch (Exception e) {
+            return false;
+        }
+        return host.matches("^(10\\.\\d+|192\\.168|172\\.(1[6-9]|2\\d|3[01]))\\.\\d+\\.\\d+$");
+    }
+
+    /** The other addresses the app knows for this machine (desk.hubs rows: {url, alt:[...]}). */
+    private java.util.List<String> addressesOf(String hub) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        try {
+            org.json.JSONArray rows = new org.json.JSONArray(prefs(this).getString("desk.hubs", "[]"));
+            for (int i = 0; i < rows.length(); i += 1) {
+                JSONObject row = rows.optJSONObject(i);
+                if (row == null) continue;
+                java.util.List<String> all = new java.util.ArrayList<>();
+                all.add(row.optString("url", "").replaceAll("/+$", ""));
+                org.json.JSONArray alt = row.optJSONArray("alt");
+                if (alt != null) for (int j = 0; j < alt.length(); j += 1) all.add(alt.optString(j, "").replaceAll("/+$", ""));
+                if (!all.contains(hub)) continue;
+                for (String u : all) if (!u.isEmpty() && !u.equals(hub) && !out.contains(u)) out.add(u);
+            }
+        } catch (Exception ignored) {
+            // no list yet: only the paired address
+        }
+        return out;
+    }
+
+    private boolean answers(String base) {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(base + "/api/auth").openConnection();
+            conn.setConnectTimeout(1500);
+            conn.setReadTimeout(2500);
+            return conn.getResponseCode() > 0;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** Where to reach `hub` now: a LAN address of the same machine that answers, else `hub` itself. */
+    String via(String hub) {
+        String[] known = routes.get(hub);
+        if (known != null && System.currentTimeMillis() - Long.parseLong(known[1]) < 60000L) return known[0];
+        String best = hub;
+        if (!isLanAddress(hub)) {
+            for (String other : addressesOf(hub)) {
+                if (isLanAddress(other) && answers(other)) {
+                    best = other;
+                    break;
+                }
+            }
+        }
+        routes.put(hub, new String[] { best, String.valueOf(System.currentTimeMillis()) });
+        if (!best.equals(hub)) Log.i(TAG, "reaching " + hub + " on the local network");
+        return best;
+    }
+
+    void forgetRoute(String hub) {
+        routes.remove(hub);
+    }
+
     private void ensureWorker(String hub) {
         Thread alive = workers.get(hub);
         if (alive != null && alive.isAlive()) return;
@@ -386,6 +463,8 @@ public class NightshiftWatcher extends Service {
                 established = connectAndRead(hub, token);
             } catch (Exception err) {
                 if (!running) return;
+                // Left the Wi-Fi (or the VPN dropped): look for the way again next time.
+                forgetRoute(hub);
                 Log.i(TAG, "stream from " + hub + " ended: " + err.getClass().getSimpleName());
             }
             if (!running) return;
@@ -399,7 +478,7 @@ public class NightshiftWatcher extends Service {
 
     /** One SSE connection; returns true when it had been established. */
     private boolean connectAndRead(String hub, String token) throws Exception {
-        String url = hub + "/api/stream";
+        String url = via(hub) + "/api/stream";
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         connections.add(conn);
         try {
@@ -459,9 +538,10 @@ public class NightshiftWatcher extends Service {
             body.put("sdk", Build.VERSION.SDK_INT);
             // The same phone paired through two addresses is one phone (1.4.1).
             body.put("phoneId", phoneId(this));
-            postJson(hub + "/api/phone/agent", token, body);
+            postJson(via(hub) + "/api/phone/agent", token, body);
             return true;
         } catch (Exception err) {
+            forgetRoute(hub);
             Log.d(TAG, "phone agent report to " + hub + " failed: " + err.getClass().getSimpleName());
             return false;
         }
@@ -516,7 +596,7 @@ public class NightshiftWatcher extends Service {
             String token = TokenBox.open(prefs(this).getString("desk.token:" + hub, null));
             if (token == null) return;
             try {
-                postJson(hub + "/api/phone/jobs/" + jobId, token, reply);
+                postJson(via(hub) + "/api/phone/jobs/" + jobId, token, reply);
             } catch (Exception err) {
                 Log.d(TAG, "phone step answer to " + hub + " failed: " + err.getMessage());
                 // The answer did not get through (too large, a dropped network): say

@@ -182,7 +182,10 @@ async function renderPhoneBox() {
   const local = onLocalMachine();
   let data;
   try { data = await api('/api/phone'); } catch (err) { list.innerHTML = `<div class="machine-empty">${escapeHtml(err.message)}</div>`; return; }
-  $('phone-adb-row').hidden = !local;
+  // Where adb is: only in the desktop app on this computer (a phone cannot set it; 1.5.29).
+  $('phone-adb-row').hidden = !(local && window.desk && !isMobile());
+  // On the phone itself, the cable way is not the one to explain.
+  if ($('phone-usb-note')) $('phone-usb-note').hidden = Boolean(window.NightshiftShell);
   if ($('phone-adb') && document.activeElement !== $('phone-adb')) $('phone-adb').value = data.adb?.configured || data.adb?.path || '';
   renderPhoneAgentRow();
   if (!(data.devices || []).length) {
@@ -215,6 +218,8 @@ function renderPhoneAgentRow() {
     ? '已打开：你各台机器上的机器人可以用这部手机（不用数据线）。通知栏里有提示，点「停止」随时关掉。'
     : '还没打开。打开后，你各台机器上的机器人不用数据线也能用这部手机：看屏幕、点、输入、打开 App。付款、发送、发布、同意条款每次都会先问你；锁屏时不会解锁，也不会输入密码。';
   $('phone-agent-btn').textContent = on ? '去系统设置里关掉' : '打开「让机器人用这部手机」';
+  // Turning it off is the quiet choice; turning it on the main one (1.5.29).
+  $('phone-agent-btn').classList.toggle('primary', !on);
   // 1.5.17: with the screen off the system puts Lamplit to sleep and the machines
   // lose the phone. Ask to keep running while it is given to the bots.
   const bat = $('phone-agent-battery');
@@ -314,14 +319,14 @@ async function renderBrowserMachines() {
     <div class="machine-row ${m.self ? 'current' : ''}">
       <div class="machine-avatar">${escapeHtml((m.name || '?').slice(0, 1).toUpperCase())}</div>
       <div class="machine-meta">
-        <div class="machine-name">${escapeHtml(m.name)}${m.self ? '' : (m.online ? '' : ' <span class="machine-tag">离线</span>')}</div>
-        <div class="machine-sub">${escapeHtml(m.self ? '你正在用的这台' : (m.tailnetUrl || m.url || ''))}</div>
+        <div class="machine-name">${escapeHtml(m.name)}</div>
+        <div class="machine-sub">${m.self ? '你正在用的这台' : `<span class="dot ${m.online ? 'on' : ''}"></span>${m.online ? '在线' : '离线'}<span class="funnel-state" data-funnel-state="${escapeHtml(m.name)}"></span>`}</div>
       </div>
       <div class="machine-actions">
         ${m.self
           ? '<span class="machine-tag">当前</span>'
-          : `<button class="btn tiny" data-handoff="${escapeHtml(m.name)}" ${m.online ? '' : 'disabled'}>切到这</button>
-             <button class="btn tiny" data-funnel="${escapeHtml(m.name)}" ${m.online ? '' : 'disabled'}>外网</button>`}
+          : `<button class="btn tiny" data-handoff="${escapeHtml(m.name)}" ${m.online ? '' : 'disabled'}>切到这台</button>
+             <button class="btn tiny" data-funnel="${escapeHtml(m.name)}" ${m.online ? '' : 'disabled'} title="外网访问：不装 Tailscale 也能从外面连这台">外网访问</button>`}
       </div>
     </div>`;
   const rows = machines.map(row);
@@ -343,10 +348,13 @@ async function refreshMachineFunnelButtons() {
       const data = await api(`/api/machines/${encodeURIComponent(name)}/funnel`);
       const funnel = data.funnel || {};
       btn.dataset.enabled = funnel.enabled ? '1' : '';
-      btn.textContent = funnel.enabled ? '外网开' : '外网关';
+      // The button says what it does; the row says how it is (1.5.29: 「外网开」 read as a command).
+      btn.textContent = funnel.enabled ? '关掉外网访问' : '打开外网访问';
       btn.title = funnel.address || funnel.error || '';
+      const tag = document.querySelector(`[data-funnel-state="${cssEscape(name)}"]`);
+      if (tag) tag.textContent = funnel.enabled ? ' · 外网访问已开' : '';
     } catch {
-      btn.textContent = '外网?';
+      btn.textContent = '外网访问';
     }
   }
 }
@@ -1439,6 +1447,15 @@ async function runNetCheck() {
   const current = machineDisplayName();
   const rows = [line(isMobile() ? '这部手机' : '这台设备', current, here)];
   for (const m of peers.machines || []) rows.push(line(current, m.machine, m.ms, m.error ? '没连上' : (m.via === 'tailscale' ? '走 Tailscale' : '')));
+  const ts = window.desk?.tailscaleNetcheck && onLocalMachine() ? await window.desk.tailscaleNetcheck().catch(() => null) : null;
+  const cn = (ts?.regions || []).find((r) => r.code === 'lamplit');
+  if (cn) rows.push(line(isMobile() ? '这部手机' : '这台设备', '国内中转（Tailscale）', cn.ms, '直连打不通时走它'));
+  else if (ts?.ok && (ts.regions || []).length) {
+    const best = [...ts.regions].sort((a, b) => a.ms - b.ms)[0];
+    rows.push(`<div class="row-note">Tailscale 直连打不通时走的中转：${escapeHtml(best.name)}，${best.ms} 毫秒${best.ms >= NET_SLOW_MS ? '（在国外；可以把一台国内云服务器做成中转，见下面「国内中转」）' : ''}。</div>`);
+  }
+  const fw = window.desk?.firewallStatus && onLocalMachine() ? await window.desk.firewallStatus().catch(() => null) : null;
+  if (fw?.applies && fw.known && !fw.ok) rows.push('<div class="row-note warn-note">Windows 防火墙没有放行局域网里的手机：在「设置 → 手机和外网」里点「修复防火墙」。</div>');
   const slow = here == null || here >= NET_SLOW_MS || (peers.machines || []).some((m) => m.ms != null && m.ms >= NET_SLOW_MS);
   if (slow) {
     rows.push(`<div class="row-note warn-note">超过 ${NET_SLOW_MS} 毫秒，多半是网络在绕道：电脑上开着代理软件（Clash、V2Ray 等）时，Tailscale 的流量会被送到国外再绕回来。在代理规则的最前面加一条 <code>PROCESS-NAME,tailscaled.exe,DIRECT</code>，在 TUN（虚拟网卡）设置里排除局域网网段（192.168.0.0/16、10.0.0.0/8、172.16.0.0/12），然后在代理软件里关闭全部连接。手机和电脑在同一个 Wi-Fi 却很慢，也是这个原因。</div>`);
@@ -1461,3 +1478,100 @@ setTimeout(async () => {
   try { localStorage.setItem('lamplit.netwarn', today); } catch { /* no storage */ }
   toast(`连到这台机器很慢（约 ${ms} 毫秒）。打开「设置 → 机器 → 网络诊断」看看原因`, true);
 }, 20000);
+
+/* ---------------------------------------------------------------------
+   国内中转 (1.5.29): a cloud server in China as Tailscale's relay. Installed
+   over SSH (hub/derp-linux.sh), then two steps that only the human can do:
+   open the ports in the cloud's security group, and paste the derpMap into
+   the Tailscale policy file. The network check says when it is in use.
+   --------------------------------------------------------------------- */
+async function renderRelays() {
+  const box = $('relay-status');
+  if (!box) return;
+  const data = await api(`/api/peers/relays${state.relayFresh ? '?fresh=1' : ''}`).catch(() => ({ machines: [] }));
+  state.relayFresh = false;
+  state.relays = data.machines || [];
+  // In use? The machine asks its own Tailscale, so the phone sees it as well.
+  const inUse = data.inUse || null;
+  const chip = $('relay-chip');
+  const ready = state.relays.filter((m) => m.relay?.state === 'ready');
+  const installing = state.relays.some((m) => m.relay?.state === 'installing');
+  if (chip) {
+    chip.textContent = inUse ? `已生效 · ${inUse.ms} 毫秒` : installing ? '正在安装' : ready.length ? '还差几步' : state.relays.length ? '没装好' : '可选';
+    chip.className = `relay-chip ${inUse ? 'ok' : ready.length || installing ? 'warn' : ''}`;
+  }
+  // Installing: look again every 10 s while the section is open (1.5.29: it said "正在连接 SSH…" long after it was done).
+  clearTimeout(state.relayTimer);
+  if (installing && $('relay-box')?.open) state.relayTimer = setTimeout(renderRelays, 10000);
+  // The form is for a new relay: shown when there is none, behind a button otherwise.
+  if ($('relay-form')) $('relay-form').hidden = state.relays.length > 0 && !state.relayFormOpen;
+  if ($('relay-add')) $('relay-add').hidden = !state.relays.length || state.relayFormOpen;
+  if (!state.relays.length) { box.innerHTML = ''; return; }
+  const step = (done, html) => `<li class="${done ? 'done' : ''}"><span class="relay-check" aria-hidden="true">${done ? '✓' : ''}</span><span>${html}</span></li>`;
+  box.innerHTML = state.relays.map((m, i) => {
+    const r = m.relay || {};
+    const head = `<div class="relay-head"><b>${escapeHtml(m.machine)}</b><span class="relay-ip">${escapeHtml(r.host || '')}</span></div>`;
+    if (r.state !== 'ready' || !m.derpMap) {
+      const word = r.state === 'failed' ? `没装好：${r.message || ''}` : (r.message || '正在安装');
+      return `<div class="relay-card">${head}<div class="row-note${r.state === 'failed' ? ' warn-note' : ''}">${escapeHtml(word)}</div></div>`;
+    }
+    const portsOk = m.reachable === true;
+    if (inUse) {
+      return `<div class="relay-card">${head}<div class="row-note">已生效：直连打不通时走它，${inUse.ms} 毫秒。</div>
+        <details class="relay-config"><summary>Tailscale 里的配置</summary><pre class="relay-map">${escapeHtml(m.derpMap)}</pre></details></div>`;
+    }
+    return `<div class="relay-card">${head}
+      <ol class="relay-steps">
+        ${step(true, '中转程序装好了')}
+        ${step(portsOk, `在云服务器控制台的「安全组 / 防火墙」里放行 <code>TCP ${Number(r.port) || 33445}</code> 和 <code>UDP ${Number(r.stunPort) || 3478}</code>${portsOk ? '（已经连得上）' : ''}`)}
+        ${step(false, `打开 <a href="https://login.tailscale.com/admin/acls/file" target="_blank" rel="noreferrer">Tailscale 后台 → Access controls → JSON editor</a>，把配置粘到最开头的 <code>{</code> 后面，保存`)}
+      </ol>
+      <div class="relay-actions"><button class="btn tiny primary" type="button" data-relay-copy="${i}">复制配置</button><button class="btn tiny" type="button" data-relay-recheck>再检查一次</button></div>
+      <details class="relay-config"><summary>看配置内容</summary><pre class="relay-map">${escapeHtml(m.derpMap)}</pre></details>
+    </div>`;
+  }).join('');
+}
+
+async function startRelay() {
+  const note = $('relay-note');
+  const say = (text, bad = false) => { note.hidden = false; note.textContent = text; note.classList.toggle('warn-note', bad); };
+  const host = $('relay-host').value.trim();
+  const password = $('relay-ssh-pass').value;
+  if (!host) return say('先填服务器的公网 IP（在云服务器控制台里能看到）', true);
+  if (!password) return say('还需要这台服务器的 SSH 密码', true);
+  const btn = $('relay-start');
+  btn.disabled = true;
+  try {
+    const res = await provisionApi('/api/remote/relay', { method: 'POST', body: {
+      host, publicIp: host, sshPort: Number($('relay-ssh-port').value) || 22, username: $('relay-ssh-user').value.trim() || 'root', password,
+    } });
+    $('relay-ssh-pass').value = '';
+    let job = res.job;
+    for (let i = 0; i < 120 && job?.state === 'running'; i += 1) {
+      say(job.message || '正在连接…');
+      await new Promise((r) => setTimeout(r, 1500));
+      job = (await provisionApi(`/api/remote/provision/${encodeURIComponent(job.id)}`).catch(() => null))?.job || job;
+    }
+    say(job?.message || '', job?.state === 'error');
+    if (job?.state === 'done') setTimeout(renderRelays, 5000);
+  } catch (err) {
+    say(err.message || String(err), true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.addEventListener('click', (event) => {
+  if (event.target.closest('#relay-start')) startRelay();
+  if (event.target.closest('#relay-add')) { state.relayFormOpen = true; renderRelays(); }
+  if (event.target.closest('[data-relay-recheck]')) { state.relayFresh = true; renderRelays(); }
+  const copy = event.target.closest('[data-relay-copy]');
+  if (copy) {
+    const text = state.relays?.[Number(copy.dataset.relayCopy)]?.derpMap || '';
+    (window.desk?.clipboardWrite ? window.desk.clipboardWrite(text) : navigator.clipboard.writeText(text))
+      .then(() => toast('已复制，去 Tailscale 后台粘贴'), () => toast('复制失败，请手动选中复制', true));
+  }
+});
+document.addEventListener('toggle', (event) => {
+  if (event.target?.id === 'relay-box' && event.target.open) renderRelays();
+}, true);

@@ -399,6 +399,7 @@ function wireChrome() {
     }
   });
   $('composer').addEventListener('input', (event) => autoGrow(event.target));
+  watchComposerValue();
   $('composer').addEventListener('focus', () => {
     setTimeout(() => { if (isMobile()) scrollToBottom(true); }, 260);
   });
@@ -599,6 +600,7 @@ function wireChrome() {
   $('qr-refresh')?.addEventListener('click', () => requestPairLink(state.pairLinksPrefer || ''));
   $('qr-copy')?.addEventListener('click', () => copyText($('qr-url').textContent.trim(), '链接已复制'));
   $('allow-remote')?.addEventListener('change', (event) => applyRemoteSwitch(event.target.checked));
+  $('firewall-fix')?.addEventListener('click', () => fixFirewall());
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && $('pair-modal')?.classList.contains('open')) pairModalOpen(false);
   });

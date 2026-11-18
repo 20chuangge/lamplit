@@ -510,14 +510,72 @@
   .bubble.folded.unfolded .bubble-body { max-height: none; -webkit-mask-image: none; mask-image: none; }
   .bubble.md .bubble-body > *:first-child { margin-top: 0; }
   .bubble.md .bubble-body > *:last-child { margin-bottom: 0; }
-  .fold-btn { display: block; margin-top: 4px; padding: 2px 0; border: 0; background: none; color: var(--accent, #6b8afd); font: inherit; font-size: 12.5px; cursor: pointer; }
-  .fold-btn:hover { text-decoration: underline; }
+  /* A small chip, not a line of text (1.5.29: 「展开」 looked like part of the reply). */
+  .fold-btn { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 3px 10px 3px 12px; border: 1px solid var(--border-strong, var(--border)); border-radius: 999px; background: transparent; color: var(--muted, var(--dim)); font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; transition: color 120ms var(--ease, ease), background 120ms var(--ease, ease), border-color 120ms var(--ease, ease); }
+  .fold-btn::after { content: ''; width: 6px; height: 6px; margin-top: -3px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform 140ms var(--ease, ease); }
+  .bubble.unfolded .fold-btn::after { margin-top: 3px; transform: rotate(-135deg); }
+  .fold-btn:hover { color: var(--text); background: var(--panel-2); border-color: var(--border-strong); }
+  .fold-btn:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px; }
   /* 网络诊断 (1.5.28) */
   .net-check { margin-top: 10px; display: grid; gap: 6px; }
   .net-line { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; font-size: 13px; }
   .net-line b { font-weight: 600; }
   .net-line.bad b { color: var(--danger, #e5484d); }
   .net-check code { font-family: var(--mono); font-size: 12px; }
+  /* 国内中转 (1.5.29) */
+  .relay-box { min-width: 0; }
+  .relay-box > summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 0; border-radius: 8px; }
+  .relay-box > summary::-webkit-details-marker { display: none; }
+  .relay-box > summary::after { content: ''; width: 7px; height: 7px; margin-left: auto; border-right: 1.6px solid var(--dim); border-bottom: 1.6px solid var(--dim); transform: rotate(-45deg); transition: transform 140ms var(--ease, ease); }
+  .relay-box[open] > summary::after { transform: rotate(45deg); }
+  .relay-box > summary:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 2px; }
+  .relay-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .relay-chip { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
+  .relay-chip.ok { color: var(--ok, #2f9e5b); border-color: color-mix(in srgb, var(--ok, #2f9e5b) 45%, transparent); }
+  .relay-chip.warn { color: var(--amber, #d18b14); border-color: color-mix(in srgb, var(--amber, #d18b14) 45%, transparent); }
+  .relay-status { display: grid; gap: 10px; margin-top: 10px; min-width: 0; }
+  .relay-card { min-width: 0; padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 12px; display: grid; gap: 8px; }
+  .relay-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .relay-ip { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .relay-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 12.5px; line-height: 1.55; }
+  .relay-steps li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; color: var(--text); }
+  .relay-steps li.done { color: var(--dim); }
+  .relay-check { width: 16px; height: 16px; margin-top: 2px; border-radius: 50%; border: 1.5px solid var(--border-strong); display: grid; place-items: center; font-size: 10px; line-height: 1; }
+  .relay-steps li.done .relay-check { border-color: var(--ok, #2f9e5b); background: var(--ok, #2f9e5b); color: #fff; }
+  .relay-steps code, .relay-map { font-family: var(--mono); font-size: 11.5px; }
+  .relay-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .relay-card > * { min-width: 0; }
+  .relay-config { min-width: 0; max-width: 100%; }
+  .relay-config > summary { cursor: pointer; font-size: 12px; color: var(--dim); list-style: none; display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; outline: none; }
+  .relay-config > summary::-webkit-details-marker { display: none; }
+  .relay-config > summary::before { content: ''; width: 5px; height: 5px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 140ms var(--ease, ease); }
+  .relay-config[open] > summary::before { transform: rotate(45deg); }
+  .relay-config > summary:hover { color: var(--text); }
+  .relay-config > summary:focus-visible { box-shadow: 0 0 0 2px var(--border-strong); }
+  /* The configuration stays inside its card and scrolls both ways there (1.5.29: a long line pushed it out). */
+  .relay-map { display: block; margin: 8px 0 0; width: 100%; max-height: 220px; overflow: auto; overscroll-behavior: contain; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-soft); background: var(--bg-2, rgba(127,127,127,.12)); white-space: pre; box-sizing: border-box; }
+  .relay-map::-webkit-scrollbar { width: 6px; height: 6px; }
+  .relay-map::-webkit-scrollbar-thumb { background: var(--border-strong, rgba(127,127,127,.5)); border-radius: 3px; }
+  .relay-map::-webkit-scrollbar-corner { background: transparent; }
+  .relay-map::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  .relay-map::-webkit-scrollbar-track { background: transparent; }
+  .relay-form { display: grid; gap: 6px; margin-top: 10px; max-width: 420px; }
+  .relay-form .btn { justify-self: start; }
+  #relay-add { margin-top: 10px; }
+  .machine-sub .dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: var(--dim); vertical-align: 1px; }
+  .machine-sub .dot.on { background: var(--ok, #2f9e5b); }
+  /* The phone box: a long line (a phone's app in front) no longer widens it past its card (1.5.29). */
+  .phone-box { grid-template-columns: minmax(0, 1fr); }
+  .phone-box > * { min-width: 0; }
+  /* The composer's right side (1.5.29): two round buttons of one size; 📞 gives its place to send once there is text. */
+  .composer-box .mic-btn, .composer-box .send-btn { width: 34px; height: 34px; margin: 0; border-radius: 50%; flex: none; align-self: flex-end; }
+  .composer-box .mic-btn { background: transparent; color: var(--dim); }
+  .composer-box .mic-btn:hover { background: var(--panel-2); color: var(--text); }
+  .composer-box .mic-btn + .mic-btn { margin-left: -6px; }
+  .composer-box .mic-btn.rec { background: var(--red); color: #fff; }
+  .composer-box .call-btn.on { color: var(--ok, #2f9e5b); }
+  .composer-box:not(.has-text) .send-btn { display: none; }
+  .composer-box.has-text .call-btn:not(.on) { display: none; }
   .chip .fail-mark { color: var(--red); }
   .chip .ok-mark { color: var(--green); }
 
@@ -3030,6 +3088,7 @@
   .usage-price-row .name-input { flex: 1; min-width: 130px; font-family: var(--mono); font-size: 12px; }
   .usage-price-row input.field { width: 92px; }
   .usage-price-row .tag { font-size: 11px; color: var(--amber, #f0a72c); }
+  .usage-price-row .usage-peak { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted, #999); white-space: nowrap; }
   .perm-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
   .level-opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 12px; cursor: pointer; }
   .level-opt:has(input:checked) { border-color: var(--accent, #8b7cf6); background: var(--panel-2); }
@@ -3330,3 +3389,10 @@
 .update-notes summary { cursor: pointer; color: var(--muted); }
 .update-notes ul { margin: 6px 0 0; padding-left: 18px; }
 .update-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+@media (max-width: 860px) {
+  .machine-row { flex-wrap: wrap; row-gap: 8px; }
+  .machine-row .machine-actions { width: 100%; justify-content: flex-end; }
+  .machine-row.current .machine-actions { width: auto; }
+  .composer-box .mic-btn, .composer-box .send-btn { width: 40px; height: 40px; }
+}

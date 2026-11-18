@@ -54,6 +54,32 @@ async function send() {
 function autoGrow(node) {
   node.style.height = 'auto';
   node.style.height = `${Math.min(node.scrollHeight, 160)}px`;
+  syncComposerActions();
+}
+
+/**
+ * The composer's right side (1.5.29): 🎤 and 📞 while it is empty; once there
+ * is text or a file, 📞 gives its place to send. Two buttons at a time.
+ */
+function syncComposerActions() {
+  const box = document.querySelector('.composer-box');
+  const input = $('composer');
+  if (!box || !input) return;
+  box.classList.toggle('has-text', Boolean(input.value.trim()) || (state.pendingFiles || []).length > 0);
+}
+/** Every way text gets into the box (typing, voice, 「我弄好了，继续」, editing) goes through `value`. */
+function watchComposerValue() {
+  const input = $('composer');
+  const own = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+  if (!input || !own || input.dataset.watched) return;
+  input.dataset.watched = '1';
+  Object.defineProperty(input, 'value', {
+    configurable: true,
+    get() { return own.get.call(this); },
+    set(v) { own.set.call(this, v); syncComposerActions(); },
+  });
+  input.addEventListener('input', syncComposerActions);
+  syncComposerActions();
 }
 
 /* ---------------------------------------------------------------------

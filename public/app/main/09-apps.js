@@ -1115,12 +1115,28 @@ function renderUsage(data) {
     note.hidden = !(data.missing?.length || data.otherCurrencies?.length);
     note.textContent = [data.missing?.length ? `没连上的机器没算进来：${data.missing.join('、')}` : '', data.otherCurrencies?.length ? '有的机器单价用的是另一种货币，合计只是粗略相加' : ''].filter(Boolean).join('；');
   }
+  // By name (1.5.29); assistants that are gone and nameless fold into one row, evaluation runs into another.
+  const nameOfBot = (row) => (row.machine ? state.peerBots?.[row.machine]?.[row.key] : botById(row.key)?.name) || row.name || '';
+  const isEval = (row) => /^评测-/.test(nameOfBot(row)) || /^[a-z]\d{1,2}-[a-z0-9-]+$/.test(row.key);
+  const folded = new Map();
+  const botRows = [];
+  for (const row of data.byBot || []) {
+    const kind = isEval(row) ? 'eval' : (nameOfBot(row) ? '' : 'gone');
+    if (!kind) { botRows.push(row); continue; }
+    const key = `${kind}|${row.machine || ''}`;
+    const sum = folded.get(key) || { key, kind, machine: row.machine, count: 0, tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
+    for (const k of ['tokens', 'prompt', 'completion', 'cached', 'cost', 'calls', 'unpricedTokens', 'callsWithoutUsage']) sum[k] += Number(row[k]) || 0;
+    sum.count += 1;
+    folded.set(key, sum);
+  }
+  botRows.push(...folded.values());
+  botRows.sort((a, b) => b.tokens - a.tokens);
   renderUsageTable(
     $('usage-bots'),
-    data.byBot,
+    botRows,
     currency,
     (row) => {
-      const name = row.machine ? (state.peerBots?.[row.machine]?.[row.key] || row.key) : (botById(row.key)?.name || row.key);
+      const name = row.kind === 'eval' ? `评测（${row.count} 项）` : row.kind === 'gone' ? `已删除的助手（${row.count} 个）` : nameOfBot(row);
       return row.machine ? `${name || '—'} · ${row.machine}` : (name || '—');
     },
     '还没有用量。接上真实模型聊几句，这里就会出现。',
@@ -1167,10 +1183,33 @@ function renderUsage(data) {
       cachedInput.title = '命中缓存的输入的单价；不填按输入价算';
       cachedInput.inputMode = 'decimal';
       cachedInput.value = price && price.cached != null ? String(price.cached) : '';
+      // Peak prices (1.5.29): what is typed is the peak price, the rest of the time half.
+      const peakLabel = el('label', 'usage-peak');
+      const peakBox = el('input', 'peak-input');
+      peakBox.type = 'checkbox';
+      peakBox.checked = Boolean(price?.peak);
+      peakLabel.title = '填的是高峰价：北京时间工作日 9–12、14–18 按这个算，其余时间按一半算（DeepSeek 的规则）';
+      peakLabel.append(peakBox, document.createTextNode(' 峰谷价'));
       row.appendChild(nameInput);
       row.appendChild(inInput);
       row.appendChild(cachedInput);
       row.appendChild(outInput);
+      row.appendChild(peakLabel);
+      // The site's prices for a model Lamplit knows: one click fills them (saved only with 保存).
+      const known = (data.suggested || {})[name];
+      if (known && !(price && price.in === known.in && price.out === known.out && price.cached === known.cached && Boolean(price.peak) === Boolean(known.peak))) {
+        const fill = el('button', 'btn tiny', '填官网价');
+        fill.type = 'button';
+        fill.title = `输入 ${known.in}、缓存命中 ${known.cached}、输出 ${known.out}（每百万 tokens，高峰价；空闲时段半价）`;
+        fill.addEventListener('click', () => {
+          inInput.value = String(known.in);
+          cachedInput.value = String(known.cached);
+          outInput.value = String(known.out);
+          peakBox.checked = Boolean(known.peak);
+          toast('已填好，点下面的「保存」生效');
+        });
+        row.appendChild(fill);
+      }
       if (missing) row.appendChild(el('span', 'tag', '未设单价'));
       if (removable) {
         const del = el('button', 'att-x', '✕');
@@ -1206,7 +1245,7 @@ async function saveUsageForm() {
     // An untouched row (name only, no numbers) is not a price: saving it as
     // 0/0 would silently turn "no price" into "free".
     if (!name || (!inRaw && !outRaw)) return;
-    prices[name] = { in: Number(inRaw) || 0, out: Number(outRaw) || 0, ...(cachedRaw ? { cached: Number(cachedRaw) || 0 } : {}) };
+    prices[name] = { in: Number(inRaw) || 0, out: Number(outRaw) || 0, ...(cachedRaw ? { cached: Number(cachedRaw) || 0 } : {}), ...(row.querySelector('.peak-input')?.checked ? { peak: true } : {}) };
   });
   const dailyAlert = Number($('usage-alert')?.value) || 0;
   const botDailyBudget = Number($('usage-budget')?.value) || 0;

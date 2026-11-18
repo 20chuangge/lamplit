@@ -23,7 +23,7 @@ import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pickDataDir } from './datadir.mjs';
 import { textMenuTemplate } from './textmenu.mjs';
-import { senderKind, mayUse, isProgramFile } from './guard.mjs';
+import { senderKind, mayUse, isProgramFile, firewallVerdict, parseNetcheck } from './guard.mjs';
 import { readSecretJson } from './sealed.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1175,6 +1175,99 @@ handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {
 
 handle('desk:switch-hub', (_event, url, message) => switchTo(url, message));
 handle('desk:use-local', (_event, message) => switchTo('', message));
+
+/**
+ * Windows Firewall and the phone (1.5.29). With 允许手机连接 on, the hub
+ * (this Lamplit.exe) listens on the network, but Windows decides who gets in:
+ * a "Block" rule it made when its first prompt was cancelled, or a home
+ * network marked 公用 with no allow rule, keeps a phone on the same Wi-Fi out
+ * (it then goes round through Tailscale, or not at all). Seen 11-17: two Block
+ * rules for Lamplit.exe, the old allow rule still naming Nightshift.exe.
+ *
+ * firewallStatus reads the rules (no admin needed). firewallFix asks Windows
+ * for admin (the UAC prompt is the human's yes), removes the Block rules for
+ * this program and adds one allow rule for it: TCP, from the local network
+ * and Tailscale (100.64.0.0/10) only. Pairing is still required to get in.
+ */
+const FIREWALL_RULE = 'Lamplit phone access (local network + Tailscale)';
+const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+function runPowerShell(script, { timeoutMs = 30000 } = {}) {
+  return new Promise((resolve) => {
+    // Progress bars go to stderr as XML when nobody watches: off, and only stdout is the answer.
+    const encoded = Buffer.from(`$ProgressPreference = 'SilentlyContinue'\n${script}`, 'utf16le').toString('base64');
+    let out = '';
+    let err = '';
+    let child;
+    try {
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { windowsHide: true });
+    } catch (err) {
+      resolve({ code: -1, out: err.message });
+      return;
+    }
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, timeoutMs);
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, out: '', err: e.message }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out, err }); });
+  });
+}
+const FIREWALL_RULES_OF_THIS_APP = (exe) => `
+$exe = ${psQuote(exe)}
+$mine = Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { $_.Program -and $_.Program -ieq $exe } | Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Direction -eq 'Inbound' -and $_.Enabled -eq 'True' }`;
+async function firewallStatus() {
+  if (process.platform !== 'win32') return { applies: false };
+  const script = `${FIREWALL_RULES_OF_THIS_APP(process.execPath)}
+$cats = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notmatch 'Tailscale' -and $_.IPv4Connectivity -ne 'Disconnected' } | ForEach-Object { $_.NetworkCategory.ToString() })
+[pscustomobject]@{
+  block = @($mine | Where-Object { $_.Action -eq 'Block' } | ForEach-Object { $_.Profile.ToString() })
+  allow = @($mine | Where-Object { $_.Action -eq 'Allow' } | ForEach-Object { $_.Profile.ToString() })
+  ours = [bool]($mine | Where-Object { $_.DisplayName -eq ${psQuote(FIREWALL_RULE)} })
+  networks = $cats
+} | ConvertTo-Json -Compress`;
+  const res = await runPowerShell(script);
+  let data;
+  try { data = JSON.parse(res.out.trim().split(/\r?\n/).pop()); } catch { return { applies: true, known: false, error: (res.err || res.out).slice(0, 200) }; }
+  return { applies: true, known: true, ...firewallVerdict(data) };
+}
+async function firewallFix() {
+  if (process.platform !== 'win32') return { ok: false, error: 'only on Windows' };
+  const inner = `$ProgressPreference = 'SilentlyContinue'
+${FIREWALL_RULES_OF_THIS_APP(process.execPath)}
+$mine | Where-Object { $_.Action -eq 'Block' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+Get-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+Get-NetFirewallRule -DisplayName 'Nightshift phone access*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -Direction Inbound -Action Allow -Program $exe -Protocol TCP -Profile Any -RemoteAddress LocalSubnet,100.64.0.0/10 | Out-Null`;
+  const encoded = Buffer.from(inner, 'utf16le').toString('base64');
+  // The elevated copy runs the rules; this one waits for it (a "No" on the prompt is an error here).
+  const res = await runPowerShell(`try { $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}'; exit $p.ExitCode } catch { Write-Output 'DECLINED'; exit 5 }`, { timeoutMs: 180000 });
+  if (/DECLINED/.test(res.out)) return { ok: false, declined: true };
+  const after = await firewallStatus();
+  bootLog(`firewall fix: exit ${res.code}, now ${after.ok ? 'open to the LAN' : 'still closed'}`);
+  return { ok: Boolean(after.ok), status: after };
+}
+handle('desk:firewall-status', () => firewallStatus());
+
+/**
+ * `tailscale netcheck` on this computer (1.5.29, read-only): the relay regions
+ * and how far each is - the network check shows whether the relay in China
+ * (region "lamplit") is in use and how fast it is.
+ */
+function tailscaleExe() {
+  if (process.platform !== 'win32') return 'tailscale';
+  const installed = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tailscale', 'tailscale.exe');
+  return fs.existsSync(installed) ? installed : 'tailscale';
+}
+handle('desk:tailscale-netcheck', () => new Promise((resolve) => {
+  let out = '';
+  let child;
+  try { child = spawn(tailscaleExe(), ['netcheck'], { windowsHide: true }); } catch (err) { resolve({ ok: false, error: err.message }); return; }
+  const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, 20000);
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', () => {});
+  child.on('error', (err) => { clearTimeout(timer); resolve({ ok: false, error: err.message }); });
+  child.on('close', () => { clearTimeout(timer); resolve({ ok: true, ...parseNetcheck(out) }); });
+}));
+handle('desk:firewall-fix', () => firewallFix());
 
 // Settings → 手机和外网 → 允许手机连接. Rebinds the bundled server so phones on
 // the home network or on Tailscale can reach it; pairing is still required.

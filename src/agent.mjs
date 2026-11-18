@@ -878,7 +878,7 @@ export class AgentRuntime {
         ...history,
         { role: 'user', content: said },
       ], { tools: [] });
-      noteUsage({ botId: bot.id, provider: model.provider || '', model: model.model || '', usage: response.usage, source }, { audit, bus: this.bus }).catch(() => {});
+      noteUsage({ botId: bot.id, botName: bot.name, provider: model.provider || '', model: model.model || '', usage: response.usage, source }, { audit, bus: this.bus }).catch(() => {});
       answer = String(response.content || '').trim() || plain();
     } catch (err) {
       answer = busy ? plain() : `没能回答：${err.message}`;
@@ -1405,7 +1405,7 @@ export class AgentRuntime {
 
         // Cost accounting is a side ledger: a write failure must not fail a turn.
         noteUsage(
-          { botId: bot.id, provider: turnModel.provider || '', model: turnModel.model || '', usage: response.usage, source: baseEvent.source, routineId },
+          { botId: bot.id, botName: bot.name, provider: turnModel.provider || '', model: turnModel.model || '', usage: response.usage, source: baseEvent.source, routineId },
           { audit, bus: this.bus },
         ).catch(() => {});
 

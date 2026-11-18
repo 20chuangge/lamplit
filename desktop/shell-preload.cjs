@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('desk', {
   openFile: (rel, reveal = false) => ipcRenderer.invoke('desk:open-file', { rel, reveal }),
   // Settings → 手机和外网 → 允许手机连接: rebinds the bundled server to the network.
   setRemote: (on) => ipcRenderer.invoke('desk:set-remote', Boolean(on)),
+  // Windows Firewall lets a phone on the LAN in? and the one-click fix (asks for admin) (1.5.29).
+  firewallStatus: () => ipcRenderer.invoke('desk:firewall-status'),
+  firewallFix: () => ipcRenderer.invoke('desk:firewall-fix'),
+  // Tailscale's relay regions and their distance from this computer (read-only, 1.5.29).
+  tailscaleNetcheck: () => ipcRenderer.invoke('desk:tailscale-netcheck'),
   voiceStop: () => ipcRenderer.invoke('desk:voice-stop'),
   voiceCancel: () => ipcRenderer.invoke('desk:voice-cancel'),
   voiceLevel: () => ipcRenderer.invoke('desk:voice-level'),

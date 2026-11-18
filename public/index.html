@@ -777,6 +777,20 @@
           <button class="btn tiny" id="net-check" type="button">网络诊断</button>
         </div>
         <div class="net-check" id="net-check-out" hidden></div>
+        <details class="relay-box" id="relay-box">
+          <summary><span class="relay-title">国内中转</span><span class="relay-chip" id="relay-chip">可选</span></summary>
+          <div class="row-note">手机、电脑、云服务器之间直连打不通时，Tailscale 会走它在国外的中转（新加坡、美国），一来一回几百毫秒。把一台国内的云服务器做成中转，就只要几十毫秒。只有你自己 Tailscale 账号里的设备能用它。需要这台服务器上已经装好 Tailscale。</div>
+          <div class="relay-status" id="relay-status"></div>
+          <button class="btn tiny" id="relay-add" type="button" hidden>在另一台服务器上装</button>
+          <div class="relay-form" id="relay-form">
+            <input class="field" id="relay-host" placeholder="服务器的公网 IP" autocomplete="off" spellcheck="false" />
+            <input class="field" id="relay-ssh-port" placeholder="SSH 端口，默认 22" inputmode="numeric" autocomplete="off" />
+            <input class="field" id="relay-ssh-user" placeholder="SSH 用户名，例如 ubuntu 或 root" autocomplete="off" spellcheck="false" />
+            <input class="field" id="relay-ssh-pass" type="password" placeholder="SSH 密码（只用这一次，不保存）" autocomplete="off" />
+            <button class="btn tiny primary" id="relay-start" type="button">在这台服务器上装中转</button>
+          </div>
+          <div class="row-note" id="relay-note" hidden></div>
+        </details>
         <div id="desktop-mode-box" hidden>
           <label class="lbl" for="desktop-mode">这台机器上机器人的桌面</label>
           <select class="field" id="desktop-mode">
@@ -789,7 +803,7 @@
         <div class="row-note" id="desktop-mode-none" hidden></div>
         <div class="phone-box" id="phone-box">
           <div class="lbl">手机</div>
-          <div class="row-note">安卓手机用数据线连这台机器，在手机的开发者选项里打开「USB 调试」，手机上弹出提示时点「允许」。给机器人勾上「操作手机」后，它就能看手机屏幕、点、输入、打开 App；付款、发送、发布、删除每次都会先问你，手机锁着时它会请你解锁。</div>
+          <div class="row-note" id="phone-usb-note">安卓手机用数据线连这台机器，在手机的开发者选项里打开「USB 调试」，手机上弹出提示时点「允许」。给机器人勾上「操作手机」后，它就能看手机屏幕、点、输入、打开 App；付款、发送、发布、删除每次都会先问你，手机锁着时它会请你解锁。</div>
           <div id="phone-agent-row" class="phone-agent-row" hidden>
             <div class="row-note" id="phone-agent-state"></div>
             <div class="btn-row"><button class="btn tiny primary" id="phone-agent-btn" type="button">打开「让机器人用这部手机」</button></div>
@@ -873,6 +887,8 @@
               <span>允许手机连接</span>
             </label>
             <div class="row-note" id="allow-remote-note">打开后，这台电脑的 Lamplit 会监听网络，手机在同一个家（局域网）或装了 Tailscale 就能连上。只有配对过的设备能进来。</div>
+            <div class="row-note warn-note" id="firewall-note" hidden></div>
+            <div class="btn-row" id="firewall-row" hidden><button class="btn tiny primary" id="firewall-fix" type="button">修复防火墙</button></div>
           </div>
           <div class="pair-row" style="align-items:center;margin-top:14px">
             <div>

@@ -43,6 +43,23 @@ const SETUP_SCRIPTS = {
   linux: path.join(HERE, '..', 'hub', 'setup-linux.sh'),
   windows: path.join(HERE, '..', 'hub', 'setup-windows.ps1'),
 };
+// The Tailscale relay in China (1.5.29): hub/derp-linux.sh, run with sudo in the background.
+const RELAY_SCRIPT = path.join(HERE, '..', 'hub', 'derp-linux.sh');
+export const RELAY_PORT = 33445;
+
+/** A public IPv4 address (not private, loopback or Tailscale's 100.64/10): what a relay must be reached on. */
+export function isPublicIpv4(ip) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip || '').trim());
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if ([m[1], m[2], m[3], m[4]].some((x) => Number(x) > 255)) return false;
+  if (a === 10 || a === 127 || a === 0 || a >= 224) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  if (a === 169 && b === 254) return false;
+  return true;
+}
 // A freshly restored machine downloads everything (Node, a desktop, a browser)
 // and may be sharing its package lock with the OS's own updates: give it an hour.
 const JOB_TIMEOUT_MS = 60 * 60 * 1000;
@@ -522,6 +539,45 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     );
   }
 
+  async function runRelay(job, { host, sshPort, username, password, publicIp }) {
+    let client = null;
+    try {
+      phase(job, '连接 SSH');
+      setProgress(job, '正在连接 SSH…');
+      client = await connectSsh({ host, port: sshPort, username, password });
+      job.os = await detectOs(client);
+      if (job.os !== 'linux') throw remoteError('REMOTE_UNSUPPORTED_OS', '国内中转只能装在 Linux 服务器上。');
+      const identity = await execStream(client, 'id -u', { timeoutMs: 15000 });
+      const isRoot = identity.output.trim().split(/\s+/).pop() === '0';
+      let sudoPrefix = '';
+      if (!isRoot) {
+        const check = await execStream(client, "sudo -S -p '' -v", { stdin: `${password}\n`, timeoutMs: 15000 });
+        if (check.code !== 0) throw remoteError('REMOTE_NO_SUDO', '这个 SSH 账号不能 sudo；请换一个管理员账号。');
+        sudoPrefix = "sudo -S -p '' ";
+      }
+      phase(job, '上传并开始安装');
+      await uploadFile(client, RELAY_SCRIPT, '/tmp/desk-derp.sh');
+      // Building takes minutes: it goes on by itself after this connection ends.
+      const inner = `/bin/bash /tmp/desk-derp.sh ${shellQuote(publicIp)} ${RELAY_PORT} > /var/log/lamplit-derp-setup.log 2>&1`;
+      const started = await execStream(
+        client,
+        `${sudoPrefix}sh -c ${shellQuote(`if command -v systemd-run >/dev/null 2>&1; then systemd-run --unit=lamplit-derp-setup --collect --quiet /bin/bash -c ${shellQuote(inner)}; else nohup /bin/bash -c ${shellQuote(inner)} >/dev/null 2>&1 & fi`)}`,
+        { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 30000 },
+      );
+      if (started.code !== 0) throw remoteError('REMOTE_RELAY_FAILED', `没能开始安装中转（${cleanLine(started.output).slice(0, 160) || `exit ${started.code}`}）`);
+      phase(job, null);
+      job.state = 'done';
+      job.message = `国内中转正在 ${publicIp} 上后台安装（约 5–10 分钟）。装好后这里会显示下一步：放行端口，把配置填进 Tailscale 后台。`;
+      job.finishedAt = nowIso();
+    } catch (err) {
+      job.state = 'error';
+      job.message = /^REMOTE_/.test(String(err?.code || '')) ? (err.message || '没能开始安装中转') : friendlySshError(err);
+      job.finishedAt = nowIso();
+    } finally {
+      try { client?.end(); } catch { /* closed */ }
+    }
+  }
+
   async function run(job, { host, sshPort, username, password, hubPort, tailscaleKey = '', tailscaleName = '', desktop = '' }) {
     let client = null;
     try {
@@ -706,6 +762,24 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
   }
 
   return {
+    /**
+     * Make a Linux machine the Tailscale relay in China (1.5.29): over SSH, run
+     * hub/derp-linux.sh with sudo in the background (building takes minutes);
+     * the machine's hub reports how it went (GET /api/relay).
+     */
+    startRelay(input = {}) {
+      const host = assertHost(input.host);
+      const sshPort = assertPort(input.sshPort, 22, 'sshPort');
+      const username = assertCredential(input.username, 'SSH username');
+      const password = assertCredential(input.password, 'SSH password');
+      const publicIp = String(input.publicIp || host).trim();
+      if (!isPublicIpv4(publicIp)) throw remoteError('REMOTE_RELAY_NEEDS_PUBLIC_IP', `中转要用这台服务器的公网 IP（${publicIp || '没填'} 不是）：在云服务器控制台里能看到`);
+      const job = { id: uid('prov'), kind: 'relay', state: 'running', message: '排队中…', step: 0, totalSteps: 3, address: host, os: '', hubPort: 0, hubUrl: '', pairCode: '', startedAt: nowIso(), finishedAt: null, log: [] };
+      jobs.set(job.id, job);
+      runRelay(job, { host, sshPort, username, password, publicIp });
+      return publicJob(job);
+    },
+
     start(input = {}) {
       const host = assertHost(input.host);
       const sshPort = assertPort(input.sshPort, 22, 'sshPort');
@@ -755,4 +829,26 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       return [...jobs.values()].map(publicJob);
     },
   };
+}
+
+/**
+ * What goes into the Tailscale policy file (Access controls) for a relay
+ * (1.5.29). The official regions stay: Tailscale uses whichever is nearest.
+ * IPv6 'none': a cloud server in China seldom has one; without it Tailscale's
+ * own check reports an IPv6 error.
+ */
+export function derpMapFor(relay) {
+  if (!relay?.host || !/^sha256-raw:[0-9a-f]{64}$/.test(String(relay.certName || ''))) return '';
+  const node = { Name: '900a', RegionID: 900, HostName: relay.host, IPv4: relay.host, IPv6: 'none', DERPPort: Number(relay.port) || RELAY_PORT, STUNPort: Number(relay.stunPort) || 3478, CertName: relay.certName };
+  const region = { RegionID: 900, RegionCode: 'lamplit', RegionName: 'Lamplit relay (China)', Nodes: [node] };
+  return `"derpMap": ${JSON.stringify({ Regions: { 900: region } }, null, 2)},`;
+}
+
+/** `tailscale netcheck` output -> the relay regions and their distance (1.5.29; desktop/guard.mjs has the same for the app). */
+export function parseNetcheckText(text) {
+  const regions = [];
+  for (const m of String(text || '').matchAll(/^\s*-\s*([a-z0-9-]+):\s*([\d.]+)\s*ms\s*\(([^)]*)\)/gim)) {
+    regions.push({ code: m[1], ms: Math.round(Number(m[2])), name: m[3] });
+  }
+  return regions;
 }

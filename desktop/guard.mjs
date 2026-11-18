@@ -32,7 +32,7 @@ export function senderKind(url, { localOrigin = '', machineOrigins = [] } = {}) 
  * fine from any added machine's page too (the clipboard, adding a machine -
  * which always runs from here - switching, notifications, voice).
  */
-const LOCAL_ONLY = new Set(['desk:open-file', 'desk:set-remote', 'desk:install-update']);
+const LOCAL_ONLY = new Set(['desk:open-file', 'desk:set-remote', 'desk:install-update', 'desk:firewall-status', 'desk:firewall-fix', 'desk:tailscale-netcheck']);
 
 export function mayUse(channel, kind) {
   if (kind === 'local') return true;
@@ -47,4 +47,26 @@ const PROGRAM_EXTENSIONS = new Set(['.exe', '.bat', '.cmd', '.com', '.msi', '.ps
 export function isProgramFile(name) {
   const m = /\.[^./\\]+$/.exec(String(name || '').toLowerCase());
   return Boolean(m) && PROGRAM_EXTENSIONS.has(m[0]);
+}
+
+/** Windows Firewall (1.5.29) - see firewallStatus in main.mjs. */
+/** From the rules of this program and the networks it is on: does Windows let a phone on the LAN in? */
+export function firewallVerdict({ block = [], allow = [], ours = false, networks = [] } = {}) {
+  const list = (x) => (Array.isArray(x) ? x : x == null ? [] : [x]).map(String);
+  const nets = list(networks).filter((n) => /Public|Private|Domain/i.test(n));
+  const covers = (profile, net) => /Any/i.test(profile) || profile.toLowerCase().includes(net.toLowerCase().replace('domainauthenticated', 'domain'));
+  const want = nets.length ? nets : ['Public'];
+  const blocked = list(block).some((p) => want.some((n) => covers(p, n)));
+  const allowed = want.every((n) => list(allow).some((p) => covers(p, n)));
+  return { blocked, allowed, ok: !blocked && allowed, ours: Boolean(ours), networks: nets };
+}
+
+/** `tailscale netcheck` output -> the relay regions and their distance (1.5.29). */
+export function parseNetcheck(text) {
+  const regions = [];
+  for (const m of String(text || '').matchAll(/^\s*-\s*([a-z0-9-]+):\s*([\d.]+)\s*ms\s*\(([^)]*)\)/gim)) {
+    regions.push({ code: m[1], ms: Math.round(Number(m[2])), name: m[3] });
+  }
+  const nearest = /Nearest DERP:\s*(.+)/i.exec(String(text || ''))?.[1]?.trim() || '';
+  return { regions, nearest };
 }

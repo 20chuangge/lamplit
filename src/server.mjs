@@ -10,6 +10,7 @@
  *         is what scripts/smoke.mjs parses. Human logging goes to stderr.
  */
 
+import tls from 'node:tls';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
@@ -61,7 +62,7 @@ import {
 import { computerSnapshot, captureScreen } from './computer.mjs';
 import { createRegistry } from './tools.mjs';
 import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern, invalidDenyPatterns } from './approvals.mjs';
-import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay, forgetSpent } from './usage.mjs';
+import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay, forgetSpent, knownPrice } from './usage.mjs';
 import { normalizeRule } from './rules.mjs';
 import { RoutineStore } from './routines.mjs';
 import { AgentRuntime, recoverInterruptedTurns } from './agent.mjs';
@@ -75,7 +76,7 @@ import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesk
 import { loadPlan } from './plans.mjs';
 import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './clipboard.mjs';
 import { createMcpManager } from './mcp.mjs';
-import { createProvisioner } from './remote.mjs';
+import { createProvisioner, derpMapFor, isPublicIpv4, parseNetcheckText } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
 import * as voiceModule from './voice.mjs';
@@ -2300,6 +2301,69 @@ route('POST', /^\/api\/ui\/state$/, async (_req, _res, { body, state }) => ({
   ui: state.reportUi(body?.patch || body || {}),
 }));
 
+// The Tailscale relay in China (1.5.29).
+//   POST /api/remote/relay {host, sshPort?, username, password, publicIp?} -> {job}   install it over SSH
+//   GET  /api/relay        -> {relay:{state, message, host, port, stunPort, certName, at}|null, derpMap}
+//   GET  /api/peers/relays -> {machines:[{machine, relay, derpMap}]}
+route('POST', /^\/api\/remote\/relay$/, async (_req, _res, { body, state }) => ({ job: state.provisioner.startRelay(body || {}) }));
+function readRelay() {
+  try {
+    const relay = JSON.parse(fs.readFileSync(path.join(P.dataDir, 'relay.json'), 'utf8'));
+    return relay && typeof relay === 'object' ? relay : null;
+  } catch { return null; }
+}
+route('GET', /^\/api\/relay$/, async () => {
+  const relay = readRelay();
+  return { relay, derpMap: relay?.state === 'ready' ? derpMapFor(relay) : '' };
+});
+/** Does a relay answer on its TLS port from here? (only relays the machines reported; 1.5.29) */
+function relayAnswers(host, port) {
+  return new Promise((resolve) => {
+    const socket = tls.connect({ host, port: Number(port) || 33445, rejectUnauthorized: false, timeout: 4000 }, () => { socket.destroy(); resolve(true); });
+    socket.on('error', () => resolve(false));
+    socket.on('timeout', () => { socket.destroy(); resolve(false); });
+  });
+}
+/**
+ * Is the relay in use by this machine's Tailscale (region "lamplit" in its
+ * netcheck)? Asked here, so a phone sees it too (1.5.29); at most every 5 min.
+ */
+let netcheckCache = { at: 0, value: null };
+function tailscaleCli() {
+  if (process.platform !== 'win32') return 'tailscale';
+  const exe = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Tailscale', 'tailscale.exe');
+  return fs.existsSync(exe) ? exe : 'tailscale';
+}
+function relayInUse() {
+  if (Date.now() - netcheckCache.at < 5 * 60 * 1000) return Promise.resolve(netcheckCache.value);
+  return new Promise((resolve) => {
+    let out = '';
+    let child;
+    try { child = spawnChild(tailscaleCli(), ['netcheck'], { windowsHide: true }); } catch { resolve(null); return; }
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, 15000);
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('error', () => { clearTimeout(timer); resolve(null); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      const ours = parseNetcheckText(out).find((r) => r.code === 'lamplit') || null;
+      netcheckCache = { at: Date.now(), value: ours };
+      resolve(ours);
+    });
+  });
+}
+route('GET', /^\/api\/peers\/relays$/, async (_req, _res, { state, query }) => {
+  if (query.get('fresh') === '1') netcheckCache.at = 0;
+  const { machines } = await fromEveryPeer(state, '/api/relay');
+  const own = readRelay();
+  const list = machines.filter((m) => m.relay).map((m) => ({ machine: m.machine, relay: m.relay, derpMap: m.derpMap || '' }));
+  if (own) list.unshift({ machine: selfMachineName(), relay: own, derpMap: own.state === 'ready' ? derpMapFor(own) : '' });
+  await Promise.all(list.map(async (m) => {
+    if (m.relay?.state === 'ready' && isPublicIpv4(m.relay.host)) m.reachable = await relayAnswers(m.relay.host, m.relay.port);
+  }));
+  const inUse = list.some((m) => m.relay?.state === 'ready') ? await relayInUse() : null;
+  return { machines: list, inUse };
+});
+
 route('GET', /^\/api\/remote\/provision$/, async (_req, _res, { state }) => ({
   jobs: state.provisioner.list(),
 }));
@@ -3285,7 +3349,9 @@ route('GET', /^\/api\/usage$/, async (_req, _res, { query }) => {
   const records = recentRecords(await readUsageRecords(), days);
   const summary = summarizeUsage(records, settings);
   const today = summarizeUsage(records.filter((r) => r.day === localDay()), settings).totals;
-  return { currency: settings.currency, days, today, alert: settings.dailyAlert ? readUsageAlert() : null, settings, ...summary };
+  // The site's prices for models it knows (offered on the cost page, saved only by the human).
+  const suggested = Object.fromEntries(summary.byModel.map((m) => [m.key, knownPrice(m.key)]).filter(([, p]) => p));
+  return { currency: settings.currency, days, today, alert: settings.dailyAlert ? readUsageAlert() : null, settings, suggested, ...summary };
 });
 
 route('PUT', /^\/api\/usage$/, async (_req, _res, { body, state }) => {

@@ -34,7 +34,12 @@ function cleanSettings(raw) {
     const outPrice = Number(value?.out);
     if (!Number.isFinite(inPrice) || !Number.isFinite(outPrice) || inPrice < 0 || outPrice < 0) continue;
     const cachedPrice = value?.cached === '' || value?.cached == null ? NaN : Number(value.cached);
-    prices[name] = { in: round(inPrice), out: round(outPrice), ...(Number.isFinite(cachedPrice) && cachedPrice >= 0 ? { cached: round(cachedPrice) } : {}) };
+    prices[name] = {
+      in: round(inPrice), out: round(outPrice),
+      ...(Number.isFinite(cachedPrice) && cachedPrice >= 0 ? { cached: round(cachedPrice) } : {}),
+      // 1.5.29: the prices are peak prices; outside the peak hours they are half (DeepSeek's rule).
+      ...(value?.peak ? { peak: true } : {}),
+    };
   }
   const limit = Number(raw?.dailyAlert);
   const budget = Number(raw?.botDailyBudget);
@@ -88,13 +93,39 @@ function normalizeUsage(usage) {
   return total ? { prompt, completion, total, cached } : null;
 }
 
+/**
+ * DeepSeek's peak hours (1.5.29): Beijing time, Monday to Friday, 9:00-12:00
+ * and 14:00-18:00; the rest is off-peak at half price. China's public
+ * holidays are off-peak too - not known here, so those weekdays count as peak
+ * (the estimate errs high).
+ */
+export function isPeakTime(ts) {
+  const t = Date.parse(ts);
+  if (!Number.isFinite(t)) return true;
+  const bj = new Date(t + 8 * 3600 * 1000);
+  const day = bj.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const minutes = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+  return (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
+}
+
+/** The prices on DeepSeek's site (November 2026, peak; off-peak is half) - offered, never applied by themselves. */
+export const KNOWN_PRICES = [
+  { match: /^deepseek-(v[\d.]+-)?flash/i, price: { in: 2, cached: 0.04, out: 8, peak: true } },
+  { match: /^deepseek-(v[\d.]+-)?pro/i, price: { in: 9, cached: 0.3, out: 27, peak: true } },
+];
+export function knownPrice(model) {
+  return KNOWN_PRICES.find((k) => k.match.test(String(model || '')))?.price || null;
+}
+
 /** Money for one record at a price; cached input at its own price (the input price when none is set). */
 export function recordCost(r, price) {
   if (!price || !Number.isFinite(r?.total)) return null;
   const prompt = Number(r.prompt) || 0;
   const cached = Math.min(prompt, Number(r.cached) || 0);
   const cachedPrice = Number.isFinite(price.cached) ? price.cached : price.in;
-  return ((prompt - cached) * price.in + cached * cachedPrice + (Number(r.completion) || 0) * price.out) / 1_000_000;
+  const factor = price.peak && !isPeakTime(r.ts) ? 0.5 : 1;
+  return (factor * ((prompt - cached) * price.in + cached * cachedPrice + (Number(r.completion) || 0) * price.out)) / 1_000_000;
 }
 
 /**
@@ -102,12 +133,14 @@ export function recordCost(r, price) {
  * null tokens: the call happened, but inventing a token count would make the
  * estimate a lie. Returns the record.
  */
-export async function recordUsage({ botId = '', provider = '', model = '', usage = null, source = '', routineId = '' } = {}) {
+export async function recordUsage({ botId = '', botName = '', provider = '', model = '', usage = null, source = '', routineId = '' } = {}) {
   const counts = normalizeUsage(usage);
   const record = {
     ts: nowIso(),
     day: localDay(),
     botId: String(botId || ''),
+    // The name too (1.5.29): a deleted assistant was only an id on the cost page.
+    ...(botName ? { botName: String(botName).slice(0, 60) } : {}),
     provider: String(provider || ''),
     model: String(model || ''),
     prompt: counts ? counts.prompt : null,
@@ -145,6 +178,7 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
       key, tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0,
     };
     entry.calls += 1;
+    if (r.botName && map === byBot) entry.name = r.botName;
     if (tokens == null) entry.callsWithoutUsage += 1;
     else {
       entry.tokens += tokens;

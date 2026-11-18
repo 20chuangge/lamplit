@@ -402,12 +402,12 @@ function foldBubble(bubble, text, mode = 'long') {
   while (bubble.firstChild) body.appendChild(bubble.firstChild);
   bubble.appendChild(body);
   bubble.classList.add('folded', mode === 'line' ? 'fold-line' : 'fold-long');
-  const btn = el('button', 'fold-btn', '展开');
+  const btn = el('button', 'fold-btn', mode === 'line' ? '展开' : '展开全文');
   btn.type = 'button';
   btn.addEventListener('click', (event) => {
     event.stopPropagation();
     const open = bubble.classList.toggle('unfolded');
-    btn.textContent = open ? '收起' : '展开';
+    btn.textContent = open ? '收起' : (mode === 'line' ? '展开' : '展开全文');
   });
   bubble.appendChild(btn);
 }

@@ -716,6 +716,7 @@ function renderAttachStrip() {
   if (!strip) return;
   strip.innerHTML = '';
   strip.hidden = state.pendingFiles.length === 0;
+  syncComposerActions();
   for (const f of state.pendingFiles) {
     const chip = el('div', `att-chip${f.status === 'uploading' ? ' busy' : ''}${f.status === 'error' ? ' bad' : ''}`);
     if (f.preview) {

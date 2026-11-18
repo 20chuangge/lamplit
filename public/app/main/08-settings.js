@@ -184,6 +184,7 @@ function renderPairing() {
   if (wrap) wrap.hidden = !deskCanRebind;
   const remoteBox = $('allow-remote');
   if (remoteBox) remoteBox.checked = remoteOn;
+  checkFirewall(remoteOn);
   const connectBtn = $('phone-connect');
   if (connectBtn) connectBtn.disabled = false;
   const hint = $('phone-connect-hint');
@@ -461,6 +462,41 @@ async function loadDevices() {
   }
 }
 
+/**
+ * Windows Firewall (1.5.29): with 允许手机连接 on, does Windows let a phone on
+ * the same Wi-Fi in? If not, say so here and offer the fix (it asks for admin).
+ */
+async function checkFirewall(remoteOn) {
+  const note = $('firewall-note');
+  const row = $('firewall-row');
+  if (!note || !row) return;
+  if (!remoteOn || !window.desk?.firewallStatus || !onLocalMachine()) { note.hidden = true; row.hidden = true; return; }
+  const st = await window.desk.firewallStatus().catch(() => null);
+  state.firewall = st;
+  const closed = st?.applies && st.known && !st.ok;
+  note.hidden = !closed;
+  row.hidden = !closed;
+  if (closed) {
+    note.textContent = st.blocked
+      ? 'Windows 防火墙挡住了局域网里的手机（之前弹窗时可能点了取消）。手机只能绕 Tailscale 连进来，会慢一些。'
+      : `这台电脑的网络被 Windows 标成了「${(st.networks || []).includes('Public') ? '公用' : '专用'}」，没有放行 Lamplit：同一个 Wi-Fi 里的手机连不进来，只能绕 Tailscale。`;
+  }
+}
+async function fixFirewall() {
+  const btn = $('firewall-fix');
+  if (!window.desk?.firewallFix) return;
+  if (btn) btn.disabled = true;
+  toast('Windows 会弹出管理员确认，点「是」');
+  try {
+    const res = await window.desk.firewallFix();
+    if (res?.ok) toast('好了：同一个 Wi-Fi 里的手机现在能直接连进来');
+    else toast(res?.declined ? '没有修改：管理员确认被取消了' : '没修好，请在 Windows 防火墙里放行 Lamplit', true);
+  } finally {
+    if (btn) btn.disabled = false;
+    checkFirewall(true);
+  }
+}
+
 /** Desktop only: rebind the local hub so phones can reach it. */
 async function applyRemoteSwitch(on) {
   const box = $('allow-remote');
@@ -535,7 +571,7 @@ const MODEL_TABS = [
   ['media', '生图和视频', ['media-image-set', 'media-video-set']],
   ['code', '编程助手', ['cliagents-set']],
 ];
-const CARD_BLOCKS = 'form, .voice-set, .perm-card, .pair-card, .model-share, .vault-add, details.set-block';
+const CARD_BLOCKS = 'form, .voice-set, .perm-card, .pair-card, .model-share, .vault-add, details.set-block, .relay-box';
 
 function cardifySettings() {
   for (const sec of document.querySelectorAll('#settings-scroll > .dsec')) {

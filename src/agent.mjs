@@ -38,6 +38,7 @@ import { checkBoundary, DEVTOOLS } from './boundary.mjs';
 import { PHONE_KIND_LABEL } from './phone.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
 import { historyStart } from './groups.mjs';
+import { explainModelError } from './modelerrors.mjs';
 import { noteUsage, overBudget, allowMore } from './usage.mjs';
 
 const MAX_TOOL_OUTPUT = 12000;
@@ -1398,7 +1399,9 @@ export class AgentRuntime {
             break;
           }
           status = 'failed';
-          summary = `Model error: ${err.message}`;
+          // Said so the human knows what to do (1.5.30); the provider's words go to the log.
+          summary = `模型出错了：${explainModelError(err).text}`;
+          console.error(`[agent] model error (${bot.id}): ${String(err.message).slice(0, 300)}`);
           this.bus.emit({ type: 'error', ...baseEvent, message: summary });
           break;
         }

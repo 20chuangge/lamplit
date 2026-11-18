@@ -1575,3 +1575,108 @@ document.addEventListener('click', (event) => {
 document.addEventListener('toggle', (event) => {
   if (event.target?.id === 'relay-box' && event.target.open) renderRelays();
 }, true);
+
+/* ---------------------------------------------------------------------
+   体检 (1.5.30): one list a new user can read top to bottom. The machine
+   checks the model, the balance, voice, phones, its own load and the other
+   machines (GET /api/checkup); this page adds what only it sees - its own
+   distance to the machine, Windows Firewall, Tailscale's relay. Problems
+   first; each with the one button that fixes or leads to the fix.
+   --------------------------------------------------------------------- */
+const CHECKUP_ORDER = { bad: 0, warn: 1, ok: 2, info: 3 };
+async function gatherCheckup() {
+  const data = await api('/api/checkup?deep=1').catch((err) => ({ items: [{ id: 'hub', title: '这台机器', state: 'bad', text: `问不到它的情况：${err.message}` }] }));
+  const items = [...(data.items || [])];
+  const here = await pingHub().catch(() => null);
+  if (here != null && here >= NET_SLOW_MS) {
+    items.push({ id: 'net', title: '网络', state: 'warn', text: `这台设备连到「${machineDisplayName()}」要 ${here} 毫秒，比正常慢很多：多半是代理软件让网络绕了远路。`, action: { kind: 'settings', target: 'sec-machines', label: '网络诊断' } });
+  }
+  const local = window.desk && onLocalMachine();
+  const fw = local && window.desk.firewallStatus ? await window.desk.firewallStatus().catch(() => null) : null;
+  const remoteOn = Boolean(state.settings?.server?.lanUrl);
+  if (fw?.applies && fw.known && remoteOn) {
+    items.push(fw.ok
+      ? { id: 'firewall', title: 'Windows 防火墙', state: 'ok', text: '同一个 Wi-Fi 里的手机可以直接连进来。' }
+      : { id: 'firewall', title: 'Windows 防火墙', state: 'bad', text: '挡住了同一个 Wi-Fi 里的手机，手机只能绕远路连进来。', action: { kind: 'firewall', label: '修复防火墙' } });
+  }
+  const ts = local && window.desk.tailscaleNetcheck ? await window.desk.tailscaleNetcheck().catch(() => null) : null;
+  if (ts?.ok && (ts.regions || []).length) {
+    const best = [...ts.regions].sort((a, b) => a.ms - b.ms)[0];
+    items.push(best.ms < NET_SLOW_MS
+      ? { id: 'relay', title: 'Tailscale 中转', state: 'ok', text: `直连打不通时走「${best.name}」，${best.ms} 毫秒。` }
+      : { id: 'relay', title: 'Tailscale 中转', state: 'info', text: `直连打不通时要绕到国外的「${best.name}」（${best.ms} 毫秒）。在家用影响不大；常在外面用，可以把一台国内云服务器做成中转。`, action: { kind: 'settings', target: 'sec-machines', label: '国内中转' } });
+  }
+  items.sort((a, b) => (CHECKUP_ORDER[a.state] ?? 9) - (CHECKUP_ORDER[b.state] ?? 9));
+  return items;
+}
+
+function renderCheckup(items) {
+  const box = $('checkup-list');
+  if (!box) return;
+  state.checkupItems = items;
+  box.innerHTML = items.map((it, i) => `<div class="checkup-row ${it.state}">
+      <span class="checkup-dot" aria-hidden="true"></span>
+      <div class="checkup-meta"><b>${escapeHtml(it.title)}</b><span>${escapeHtml(it.text)}</span></div>
+      ${it.action ? `<button class="btn tiny${it.state === 'bad' ? ' primary' : ''}" type="button" data-checkup-act="${i}">${escapeHtml(it.action.label)}</button>` : ''}
+    </div>`).join('');
+  const bad = items.filter((it) => it.state === 'bad' || it.state === 'warn').length;
+  if ($('checkup-when')) $('checkup-when').textContent = bad ? `发现 ${bad} 个要处理的地方` : '都正常';
+}
+
+async function runCheckup() {
+  const box = $('checkup-list');
+  if (box) box.innerHTML = '<div class="row-note">正在检查（要问一下模型服务商，十几秒）…</div>';
+  const btn = $('checkup-run');
+  if (btn) btn.disabled = true;
+  try {
+    const items = await gatherCheckup();
+    renderCheckup(items);
+    showCheckupBanner(items);
+    return items;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function checkupAction(action) {
+  if (!action) return;
+  if (action.kind === 'settings') openSettings(action.target);
+  else if (action.kind === 'link') openSignInPage(action.url);
+  else if (action.kind === 'firewall') fixFirewall().then(() => runCheckup());
+}
+
+/** Above the chat, once a day: the check found something to fix. */
+function showCheckupBanner(items) {
+  const bar = $('checkup-banner');
+  if (!bar) return;
+  const problems = (items || []).filter((it) => it.state === 'bad' || it.state === 'warn');
+  let dismissed = '';
+  try { dismissed = localStorage.getItem('lamplit.checkup.dismissed') || ''; } catch { /* no storage */ }
+  bar.hidden = !problems.length || dismissed === new Date().toDateString() || (state.unconfigured && problems.every((p) => p.id === 'model'));
+  if (!bar.hidden) $('checkup-banner-text').textContent = problems.length === 1 ? `体检：${problems[0].title}有问题。` : `体检发现 ${problems.length} 个要处理的地方。`;
+}
+
+document.addEventListener('click', (event) => {
+  if (event.target.closest('#checkup-run')) runCheckup();
+  const act = event.target.closest('[data-checkup-act]');
+  if (act) checkupAction(state.checkupItems?.[Number(act.dataset.checkupAct)]?.action);
+  if (event.target.closest('[data-set-target="sec-checkup"]') || event.target.closest('#checkup-banner-btn')) {
+    if (event.target.closest('#checkup-banner-btn')) openSettings('sec-checkup');
+    runCheckup();
+  }
+  if (event.target.closest('#checkup-banner-x')) {
+    try { localStorage.setItem('lamplit.checkup.dismissed', new Date().toDateString()); } catch { /* no storage */ }
+    $('checkup-banner').hidden = true;
+  }
+});
+
+/* Once a day, a quiet check a minute after the app opens (no model test: free). */
+setTimeout(async () => {
+  let last = '';
+  try { last = localStorage.getItem('lamplit.checkup.day') || ''; } catch { /* no storage */ }
+  const today = new Date().toDateString();
+  if (last === today || state.unconfigured) return;
+  try { localStorage.setItem('lamplit.checkup.day', today); } catch { /* no storage */ }
+  const data = await api('/api/checkup').catch(() => null);
+  if (data?.items) showCheckupBanner(data.items);
+}, 60000);

@@ -246,6 +246,30 @@ function addSpent(record) {
 /** Prices changed: count today again with the new ones. */
 export function forgetSpent() { spent = { day: '', byBot: null }; }
 
+/**
+ * What a day costs at the recent pace (1.5.30), from records that say how much
+ * input hit the cache - older ones priced every input token at the full price
+ * and read twice the bill. Whole days first (their average); with only today,
+ * today so far scaled to 24 hours once 3 hours have passed. -> {perDay, basis}
+ */
+export function spendRate(records, settings = readUsageSettings(), now = new Date()) {
+  const today = localDay(now);
+  const byDay = new Map();
+  for (const r of records) {
+    if (r.cached == null) continue;
+    const cost = recordCost(r, settings.prices?.[r.model]);
+    if (cost == null) continue;
+    byDay.set(r.day, (byDay.get(r.day) || 0) + cost);
+  }
+  const whole = [...byDay.entries()].filter(([day, cost]) => day !== today && cost > 0).map(([, cost]) => cost);
+  if (whole.length) return { perDay: round(whole.reduce((a, b) => a + b, 0) / whole.length, 2), basis: 'days', days: whole.length };
+  const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
+  const hours = (now - midnight) / 3600000;
+  const spentToday = byDay.get(today) || 0;
+  if (hours >= 3 && spentToday > 0) return { perDay: round((spentToday / hours) * 24, 2), basis: 'today', days: 0 };
+  return { perDay: 0, basis: 'none', days: 0 };
+}
+
 /** One assistant's estimated spend today (priced models only). */
 export async function botCostToday(botId) {
   return round((await spentMap()).get(botId) || 0, 4);

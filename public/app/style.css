@@ -560,6 +560,25 @@
   .relay-map::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   .relay-map::-webkit-scrollbar-track { background: transparent; }
   .relay-form { display: grid; gap: 6px; margin-top: 10px; max-width: 420px; }
+  /* 体检 (1.5.30) */
+  .checkup-list { display: grid; gap: 2px; }
+  .checkup-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 2px; border-bottom: 1px solid var(--border-soft); }
+  .checkup-row:last-child { border-bottom: 0; }
+  .checkup-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); align-self: start; margin-top: 7px; }
+  .checkup-row.ok .checkup-dot { background: var(--ok, #2f9e5b); }
+  .checkup-row.warn .checkup-dot { background: var(--amber, #d18b14); }
+  .checkup-row.bad .checkup-dot { background: var(--danger, #e5484d); }
+  .checkup-row.info .checkup-dot { background: transparent; border: 1.5px solid var(--dim); width: 6px; height: 6px; }
+  .checkup-meta { display: grid; gap: 2px; min-width: 0; font-size: 13px; }
+  .checkup-meta b { font-weight: 600; color: var(--text); }
+  .checkup-meta span { color: var(--muted, var(--dim)); line-height: 1.55; font-size: 12.5px; }
+  .checkup-row.ok .checkup-meta span, .checkup-row.info .checkup-meta span { color: var(--dim); }
+  .checkup-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+  #checkup-banner .link-btn.dim { opacity: 0.6; margin-left: 2px; }
+  @media (max-width: 860px) {
+    .checkup-row { grid-template-columns: 10px minmax(0, 1fr); }
+    .checkup-row > .btn { grid-column: 2; justify-self: start; }
+  }
   .relay-form .btn { justify-self: start; }
   #relay-add { margin-top: 10px; }
   .machine-sub .dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%; background: var(--dim); vertical-align: 1px; }
@@ -1405,6 +1424,9 @@
   .onboard-step.on { color: var(--text); border-color: var(--text); }
   .onboard-step.done { color: var(--muted); }
   .onboard .onboard-key { margin: 12px auto 8px; max-width: 360px; width: 100%; font-family: var(--mono); }
+  /* The key box and its 显示 button are one 360px block (1.5.30: 显示 sat at the card's far edge). */
+  .onboard .pw-wrap { max-width: 360px; width: 100%; margin: 12px 0 8px; }
+  .onboard .pw-wrap > .onboard-key { margin: 0; max-width: none; }
   .onboard .btn.primary { min-width: 180px; }
   .onboard-msg { min-height: 18px; margin: 8px 0; font-size: 12px; color: var(--muted); }
   .onboard-msg.bad { color: #ff9d9a; }

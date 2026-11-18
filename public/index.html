@@ -138,6 +138,11 @@
       <button class="decision-strip" id="decision-strip" type="button" hidden></button>
       <div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions text"></div>
 
+      <div class="notice slim" id="checkup-banner" hidden>
+        <span id="checkup-banner-text"></span>
+        <button class="link-btn" id="checkup-banner-btn" type="button">看看怎么修</button>
+        <button class="link-btn dim" id="checkup-banner-x" type="button" aria-label="今天不再提示">✕</button>
+      </div>
       <div class="notice slim" id="mock-banner" hidden>
         <span>现在是演示模式，回答由脚本生成。</span>
         <button class="link-btn" id="mock-banner-btn" type="button">接入真实模型</button>
@@ -301,6 +306,7 @@
       </div>
       <div class="setnav-sec">
         <div class="setnav-group">通用</div>
+        <button class="setnav" type="button" data-set-target="sec-checkup">体检</button>
         <button class="setnav" type="button" data-set-target="sec-appearance">外观</button>
         <button class="setnav" type="button" data-set-target="sec-usage">成本</button>
         <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
@@ -987,6 +993,15 @@
           <div class="row-note" id="qr-error" hidden></div>
         </div>
       </div>
+
+      <section class="dsec" id="sec-checkup">
+        <div class="dsec-head">体检</div>
+        <div class="row-note">看看这台机器能不能好好干活：模型、余额、网络、手机……哪里不对，会说怎么修。</div>
+        <div class="checkup-card">
+          <div class="checkup-list" id="checkup-list"><div class="row-note">还没检查。</div></div>
+          <div class="checkup-foot"><span class="row-note" id="checkup-when"></span><button class="btn tiny" id="checkup-run" type="button">重新体检</button></div>
+        </div>
+      </section>
 
       <section class="dsec" id="sec-about">
         <div class="dsec-head">关于</div>

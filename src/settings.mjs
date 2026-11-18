@@ -22,6 +22,7 @@
  * "API key required" - the UI already knows because hasKey is false.
  */
 
+import { explainModelError } from './modelerrors.mjs';
 import fsp from 'node:fs/promises';
 import { P, readJson, writeJsonAtomic } from './store.mjs';
 import { createModel } from './model.mjs';
@@ -233,6 +234,8 @@ export async function testConnection({ settings, apiKey, timeoutMs = 20000 } = {
       reply: String(result?.content || '').slice(0, 80),
     };
   } catch (err) {
-    return { ok: false, latencyMs: Date.now() - started, mode: 'live', provider, error: { message: err.message } };
+    // What it means and what to do, the provider's own words kept in `detail` (1.5.30).
+    const why = explainModelError(err);
+    return { ok: false, latencyMs: Date.now() - started, mode: 'live', provider, error: { message: why.text, code: why.code, detail: why.detail } };
   }
 }

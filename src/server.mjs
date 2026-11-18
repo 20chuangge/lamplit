@@ -10,6 +10,7 @@
  *         is what scripts/smoke.mjs parses. Human logging goes to stderr.
  */
 
+import { explainModelError } from './modelerrors.mjs';
 import tls from 'node:tls';
 import http from 'node:http';
 import https from 'node:https';
@@ -62,7 +63,7 @@ import {
 import { computerSnapshot, captureScreen } from './computer.mjs';
 import { createRegistry } from './tools.mjs';
 import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern, invalidDenyPatterns } from './approvals.mjs';
-import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay, forgetSpent, knownPrice } from './usage.mjs';
+import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay, forgetSpent, knownPrice, spendRate } from './usage.mjs';
 import { normalizeRule } from './rules.mjs';
 import { RoutineStore } from './routines.mjs';
 import { AgentRuntime, recoverInterruptedTurns } from './agent.mjs';
@@ -1580,7 +1581,8 @@ route('POST', /^\/api\/models\/test$/, async (_req, _res, { body }) => {
     const r = await client.complete([{ role: 'user', content: 'Reply with the single word: ok' }], { maxTokens: 8, temperature: 0, timeoutMs: 20000 });
     return { ok: true, latencyMs: Date.now() - started, reply: String(r?.content || '').slice(0, 80) };
   } catch (err) {
-    return { ok: false, latencyMs: Date.now() - started, error: { message: err.message } };
+    const why = explainModelError(err);
+    return { ok: false, latencyMs: Date.now() - started, error: { message: why.text, code: why.code, detail: why.detail } };
   }
 });
 
@@ -2300,6 +2302,104 @@ route('POST', /^\/api\/ui\/state$/, async (_req, _res, { body, state }) => ({
   ok: true,
   ui: state.reportUi(body?.patch || body || {}),
 }));
+
+// --- 体检 (1.5.30): is this machine ready to work? -------------------------------
+//   GET /api/checkup?deep=1 -> {items:[{id, title, state:'ok'|'warn'|'bad'|'info', text, action?}]}
+// One list a new user can read top to bottom: each item says how it is and,
+// when it is not right, what to do (action: {kind:'settings', target, label}).
+// deep=1 also asks the model provider (a few tokens) and the balance where the
+// provider has an API for it. The page adds what only it can see (this device's
+// distance to the machine, Windows Firewall, Tailscale's relay).
+async function deepseekBalance(baseUrl, apiKey) {
+  const root = String(baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '').replace(/\/v1$/, '');
+  const res = await fetch(`${root}/user/balance`, { headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json();
+  const info = (json.balance_infos || []).find((b) => b.currency === 'CNY') || (json.balance_infos || [])[0] || null;
+  return { available: Boolean(json.is_available), amount: info ? Number(info.total_balance) : null, currency: info?.currency || 'CNY' };
+}
+export function checkupItem(id, title, state, text, action = null) {
+  return { id, title, state, text, ...(action ? { action } : {}) };
+}
+/** What a day costs lately, every machine together (they share one provider account): each machine's pace, added. */
+async function dailySpend(state) {
+  const own = spendRate(recentRecords(await readUsageRecords(), 7), readUsageSettings()).perDay;
+  const { machines } = await fromEveryPeer(state, '/api/usage?days=7').catch(() => ({ machines: [] }));
+  return own + machines.reduce((sum, m) => sum + (Number(m.spendRate?.perDay) || 0), 0);
+}
+/** The balance said with how long it lasts at that pace (1.5.30: ¥14 read as fine while a day cost ¥25). */
+export function balanceVerdict(amount, perDay) {
+  const money = (n) => `¥${Number(n).toFixed(2)}`;
+  if (amount == null) return { state: 'ok', text: 'DeepSeek 账户可用。' };
+  if (!(perDay > 0)) return amount < 5 ? { state: 'warn', text: `DeepSeek 余额只剩 ${money(amount)}，快用完了。` } : { state: 'ok', text: `DeepSeek 余额 ${money(amount)}。` };
+  const days = amount / perDay;
+  const pace = `按最近每天约 ${money(perDay)} 的花费`;
+  if (days < 1) return { state: 'bad', text: `DeepSeek 余额 ${money(amount)}，${pace}，今天就可能用完：用完后机器人都会停下。` };
+  if (days < 3) return { state: 'warn', text: `DeepSeek 余额 ${money(amount)}，${pace}，大约还能用 ${Math.floor(days)} 天。` };
+  return { state: 'ok', text: `DeepSeek 余额 ${money(amount)}，${pace}，大约还能用 ${days >= 60 ? '两个月以上' : `${Math.floor(days)} 天`}。` };
+}
+route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
+  const deep = query.get('deep') === '1';
+  const items = [];
+  const provider = settingsModule.effectiveProvider ? settingsModule.effectiveProvider(state.settings, state.apiKey) : (state.apiKey ? state.settings.provider : 'mock');
+  const toModel = { kind: 'settings', target: 'sec-model', label: '去设置模型' };
+  if (provider === 'mock' || !state.apiKey) {
+    items.push(checkupItem('model', '模型', 'bad', '还没接模型：现在的回答是演示脚本生成的。选一家服务商、填上密钥就能正经干活。', toModel));
+  } else if (deep) {
+    const test = await settingsModule.testConnection({ settings: state.settings, apiKey: state.apiKey, timeoutMs: 20000 });
+    items.push(test.ok
+      ? checkupItem('model', '模型', 'ok', `${state.settings.model || provider} 能用，一来一回 ${test.latencyMs} 毫秒。`)
+      : checkupItem('model', '模型', 'bad', test.error?.message || '模型没有回应。', toModel));
+    if (/deepseek/i.test(provider) || /deepseek\.com/i.test(state.settings.baseUrl || '')) {
+      try {
+        const b = await deepseekBalance(state.settings.baseUrl, state.apiKey);
+        const topUp = { kind: 'link', url: 'https://platform.deepseek.com/top_up', label: '去充值' };
+        if (!b.available) {
+          items.push(checkupItem('balance', '余额', 'bad', `DeepSeek 账户不能用了${b.amount != null ? `（余额 ¥${b.amount.toFixed(2)}）` : ''}：到 DeepSeek 开放平台充值。`, topUp));
+        } else {
+          const v = balanceVerdict(b.currency === 'CNY' ? b.amount : null, await dailySpend(state).catch(() => 0));
+          items.push(checkupItem('balance', '余额', v.state, v.text, v.state === 'ok' ? null : topUp));
+        }
+      } catch { /* the balance API is optional */ }
+    }
+  } else {
+    items.push(checkupItem('model', '模型', 'info', `已接入 ${state.settings.model || provider}。`));
+  }
+  // Voice and pictures: optional, said as such.
+  try {
+    const v = voiceModule.publicVoice(state.voice, state.settings, state.apiKey);
+    items.push(v?.available
+      ? checkupItem('voice', '语音输入', 'ok', '能用：输入框旁的麦克风可以说话转文字。')
+      : checkupItem('voice', '语音输入', 'info', '没配（可选）：想说话代替打字，在「设置 → 模型」里填一个硅基流动的密钥。', toModel));
+  } catch { /* older voice module */ }
+  // Phones: optional too.
+  const phones = state.phoneLink.list();
+  items.push(phones.length
+    ? checkupItem('phone', '手机', 'ok', `已连 ${phones.length} 部：${phones.map((p) => p.model || p.name).filter(Boolean).join('、')}。`)
+    : checkupItem('phone', '手机', 'info', '还没连手机（可选）：装上 Lamplit 手机 App，扫一下二维码，在外面也能用，机器人也能帮你操作手机。', { kind: 'settings', target: 'sec-pair', label: '连手机' }));
+  // This machine: memory and processor.
+  const load = machineLoad();
+  items.push(load.busy
+    ? checkupItem('load', '这台机器', 'warn', load.why === 'memory' ? `内存快用完了（剩 ${load.memFreeMB} MB）：关掉一些程序，或少开几个浏览器。` : '处理器一直很忙：机器人会变慢。')
+    : checkupItem('load', '这台机器', 'ok', `内存还剩 ${(load.memFreeMB / 1024).toFixed(1)} GB，处理器不忙。`));
+  // The other machines: answering, and how far.
+  const machines = await Promise.all(state.peers.list().map(async ({ name }) => {
+    const started = Date.now();
+    try {
+      const res = await state.peers.call(state.peers.find(name), 'GET', '/api/health', { timeoutMs: 4000 });
+      await res.text().catch(() => '');
+      return { name, ms: Date.now() - started };
+    } catch { return { name, ms: null }; }
+  }));
+  for (const m of machines) {
+    items.push(m.ms == null
+      ? checkupItem(`machine:${m.name}`, `机器「${m.name}」`, 'warn', '连不上：它可能关机了，或者网络不通。', { kind: 'settings', target: 'sec-machines', label: '看看机器' })
+      : m.ms >= 150
+        ? checkupItem(`machine:${m.name}`, `机器「${m.name}」`, 'warn', `连得上，但很慢（${m.ms} 毫秒）：多半是代理软件让网络绕了远路。`, { kind: 'settings', target: 'sec-machines', label: '网络诊断' })
+        : checkupItem(`machine:${m.name}`, `机器「${m.name}」`, 'ok', `在线，${m.ms} 毫秒。`));
+  }
+  return { items, at: nowIso() };
+});
 
 // The Tailscale relay in China (1.5.29).
 //   POST /api/remote/relay {host, sshPort?, username, password, publicIp?} -> {job}   install it over SSH
@@ -3349,6 +3449,8 @@ route('GET', /^\/api\/usage$/, async (_req, _res, { query }) => {
   const records = recentRecords(await readUsageRecords(), days);
   const summary = summarizeUsage(records, settings);
   const today = summarizeUsage(records.filter((r) => r.day === localDay()), settings).totals;
+  // The recent pace from the last 7 days with cache data (1.5.30, for the checkup's "how long the balance lasts").
+  summary.spendRate = spendRate(recentRecords(records, 7), settings);
   // The site's prices for models it knows (offered on the cost page, saved only by the human).
   const suggested = Object.fromEntries(summary.byModel.map((m) => [m.key, knownPrice(m.key)]).filter(([, p]) => p));
   return { currency: settings.currency, days, today, alert: settings.dailyAlert ? readUsageAlert() : null, settings, suggested, ...summary };

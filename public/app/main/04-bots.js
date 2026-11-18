@@ -765,6 +765,8 @@ const onboard = { step: 1, provider: '', error: '', busy: false };
 
 function onboardingCard() {
   const wrap = el('div', 'empty onboard');
+  // The guide starts at its top (1.5.30: the chat scrolled it to the middle, title and steps out of sight).
+  requestAnimationFrame(() => { if (messagesEl.querySelector('.onboard')) messagesEl.scrollTop = 0; });
   wrap.appendChild(emptyMark());
   const steps = el('div', 'onboard-steps');
   ['选服务商', '填密钥', '试一句'].forEach((name, i) => steps.appendChild(el('span', `onboard-step${onboard.step === i + 1 ? ' on' : onboard.step > i + 1 ? ' done' : ''}`, `${i + 1} ${name}`)));
@@ -799,7 +801,7 @@ function onboardingCard() {
 
   const p = preset(onboard.provider) || { name: onboard.provider, label: onboard.provider, models: [], baseUrl: '' };
   wrap.appendChild(el('h2', null, `填上 ${p.label} 的密钥`));
-  const how = el('p', null, '在服务商的网站登录，新建一个 API Key，复制回来贴在下面。密钥只存在这台电脑上，加密保存。');
+  const how = el('p', null, `在服务商的网站登录，新建一个 API Key，复制回来贴在下面。密钥只存在这台电脑上，加密保存。${onboard.provider === 'deepseek' ? '新账号要先充值（几块钱就够用很久），否则会提示余额不足。' : ''}`);
   wrap.appendChild(how);
   if (p.keyUrl) {
     const get = el('button', 'btn tiny', `去 ${p.label} 拿密钥 ↗`);
@@ -843,7 +845,11 @@ function onboardingCard() {
       send();
     } catch (err) {
       onboard.busy = false; onboard.step = 2;
-      onboard.error = `没连上：${truncate(err.message || '未知原因', 160)}。检查一下密钥有没有复制全，或者换一家试试。`;
+      // The machine already says what it means and what to do (1.5.30); only an unexplained one gets the old hint.
+      const said = String(err.message || '');
+      onboard.error = /^(密钥不对|账户没钱|请求太多|服务商|这次要发|连不上服务商|模型服务商)/.test(said)
+        ? said
+        : `没连上：${truncate(said || '未知原因', 160)}。检查一下密钥有没有复制全，或者换一家试试。`;
       renderMessages();
     }
   };

@@ -556,6 +556,7 @@ const SETNAV_ICONS = {
   'sec-appearance': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
   'sec-pair': '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
   'sec-about': '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+  'sec-checkup': '<path d="M3 12h4l2-5 4 10 2-5h6"/>',
 };
 /*
  * Settings laid out as cards (1.5.10, after Cursor / Codex): each page keeps
@@ -571,7 +572,7 @@ const MODEL_TABS = [
   ['media', '生图和视频', ['media-image-set', 'media-video-set']],
   ['code', '编程助手', ['cliagents-set']],
 ];
-const CARD_BLOCKS = 'form, .voice-set, .perm-card, .pair-card, .model-share, .vault-add, details.set-block, .relay-box';
+const CARD_BLOCKS = 'form, .voice-set, .perm-card, .pair-card, .model-share, .vault-add, details.set-block, .relay-box, .checkup-card';
 
 function cardifySettings() {
   for (const sec of document.querySelectorAll('#settings-scroll > .dsec')) {

@@ -7408,7 +7408,7 @@ async function scenarioV156() {
         ['助理', 'sec-model,sec-skills,sec-memory'],
         ['安全', 'sec-run,sec-bounds,sec-vault,sec-audit'],
         ['连接', 'sec-machines,sec-pair,sec-feishu,sec-mcp'],
-        ['通用', 'sec-appearance,sec-usage,sec-pages,sec-about'],
+        ['通用', 'sec-checkup,sec-appearance,sec-usage,sec-pages,sec-about'],
       ]), JSON.stringify(groups));
     const sec = (id) => (page.match(new RegExp(`<section class="dsec" id="${id}">[\\s\\S]*?</section>`)) || [''])[0];
     const run = sec('sec-run');
@@ -9114,10 +9114,36 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
           && live29.includes("box.classList.toggle('has-text', Boolean(input.value.trim()) || (state.pendingFiles || []).length > 0);") && live29.includes("Object.defineProperty(input, 'value', {"));
         check('U29 machines on a phone: the phone box no longer grows past its card; a machine row says 在线/离线 instead of its address, its buttons go under the name; adb only in the desktop app',
           css29.includes('.phone-box { grid-template-columns: minmax(0, 1fr); }') && mach29.includes("${m.online ? '在线' : '离线'}") && mach29.includes("'关掉外网访问' : '打开外网访问'")
-          && mach29.includes("$('phone-adb-row').hidden = !(local && window.desk && !isMobile());") && (await readText('../public/app/main/08-settings.js')).includes(", .relay-box';"));
+          && mach29.includes("$('phone-adb-row').hidden = !(local && window.desk && !isMobile());") && (await readText('../public/app/main/08-settings.js')).includes(', .relay-box'));
         const relays29 = await api('/api/peers/relays');
         check('U29 relay section: its own card with a state chip, steps that tick themselves (ports reachable from the machine, in use by its Tailscale - so a phone sees it too)',
           relays29.status === 200 && 'inUse' in (relays29.json || {}) && mach29.includes('const inUse = data.inUse || null;') && mach29.includes("step(portsOk,") && pageSrc.includes('id="relay-chip"'));
+        const ME = await import('../src/modelerrors.mjs');
+        const codes = ['model HTTP 401: {"error":{"message":"Authentication Fails, Your api key: ****cdef is invalid"}}', 'model HTTP 402: {"error":{"message":"Insufficient Balance"}}', 'model HTTP 429: Too Many Requests', 'model HTTP 404: {"error":{"message":"Model Not Exist"}}', 'model HTTP 503: Service Unavailable', 'model request failed: fetch failed', 'model HTTP 400: {"error":{"message":"Invalid temperature"}}'].map((m) => ME.explainModelError(m).code);
+        check('E30 model errors: what the provider said becomes what happened and what to do (bad key, no balance, rate limit, no such model, provider down, unreachable); the raw words stay in detail',
+          codes.join() === 'KEY_INVALID,NO_BALANCE,RATE_LIMIT,MODEL_NOT_FOUND,PROVIDER_DOWN,UNREACHABLE,MODEL_ERROR' && /^密钥不对/.test(ME.explainModelError('model HTTP 401: x').text)
+          && ME.explainModelError('model HTTP 401: x').detail === 'model HTTP 401: x' && (await readText('../src/agent.mjs')).includes('summary = `模型出错了：${explainModelError(err).text}`;'));
+        const cu = await api('/api/checkup');
+        const ids = (cu.json?.items || []).map((i) => i.id);
+        check('E30 checkup: one list of how the machine is - model, voice, phones, its load, the other machines - each problem with the button that fixes it',
+          cu.status === 200 && ids.includes('model') && ids.includes('phone') && ids.includes('load') && (cu.json.items || []).every((i) => ['ok', 'warn', 'bad', 'info'].includes(i.state) && i.title && i.text)
+          && pageSrc.includes('id="sec-checkup"') && mach29.includes('async function gatherCheckup()') && mach29.includes("action: { kind: 'firewall', label: '修复防火墙' }"));
+        const SV = await import('../src/server.mjs');
+        check('E30 checkup: the balance is said with how long it lasts at the recent daily spend (¥14 at ¥25 a day is today, not fine)',
+          SV.balanceVerdict(14.06, 25).state === 'bad' && SV.balanceVerdict(40, 15).state === 'warn' && /大约还能用 2 天/.test(SV.balanceVerdict(40, 15).text)
+          && SV.balanceVerdict(200, 10).state === 'ok' && SV.balanceVerdict(3, 0).state === 'warn' && SV.balanceVerdict(20, 0).state === 'ok');
+        const U30 = await import('../src/usage.mjs');
+        const rp = { prices: { m: { in: 2, out: 8, cached: 0.04 } } };
+        const rec = (day, cached) => ({ day, model: 'm', prompt: 1e6, completion: 0, total: 1e6, ...(cached === undefined ? {} : { cached }) });
+        const noon = new Date(2026, 10, 18, 12, 0, 0);
+        const r1 = U30.spendRate([rec('2026-11-16'), rec('2026-11-17', 9e5), rec('2026-11-17', 9e5), rec('2026-11-18', 0)], rp, noon);
+        const r2 = U30.spendRate([rec('2026-11-17'), rec('2026-11-18', 0)], rp, noon);
+        check('E30 balance pace: only records that know their cached share count (older ones read twice the bill), whole days first, else today scaled to 24 h',
+          r1.basis === 'days' && Math.abs(r1.perDay - 0.47) < 0.01 && r2.basis === 'today' && Math.abs(r2.perDay - 4) < 0.01 && U30.spendRate([rec('2026-11-17')], rp, noon).basis === 'none');
+        const bots30 = await readText('../public/app/main/04-bots.js');
+        check('E30 first run: the guide opens at its top, says DeepSeek needs a top-up first, and shows the machine\'s explanation of a failed key',
+          bots30.includes('messagesEl.scrollTop = 0;') && bots30.includes('新账号要先充值') && bots30.includes('/^(密钥不对|账户没钱|请求太多|服务商|这次要发|连不上服务商|模型服务商)/.test(said)')
+          && css29.includes('.onboard .pw-wrap { max-width: 360px;'));
         const derpSh = await readText('../hub/derp-linux.sh');
         check('N29 relay script: official derper built through the China mirrors, IP certificate, only this tailnet\'s devices, reports to the hub',
           derpSh.includes('GOPROXY="https://goproxy.cn') && derpSh.includes('golang.google.cn') && derpSh.includes('tailscale.com/cmd/derper@latest')

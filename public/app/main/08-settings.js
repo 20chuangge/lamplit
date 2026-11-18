@@ -190,8 +190,9 @@ function renderPairing() {
   const connectBtn = $('phone-connect');
   if (connectBtn) connectBtn.disabled = false;
   const hint = $('phone-connect-hint');
-  // Through the relay only (第 1 步原型): no LAN address, and still reachable.
+  // Through the relay (第 2 步: 设置 → 手机和外网 → 云服务器中转): reachable from outside without Tailscale.
   const relayOn = Boolean(s.pairing?.relay);
+  if (typeof renderTunnel === 'function') renderTunnel();
   if (hint) {
     hint.textContent = remoteOn
       ? '电脑上显示一个二维码，手机扫一下就进去了。'
@@ -208,11 +209,13 @@ function renderPairing() {
   $('pair-tailnet').textContent = tailnet;
   const outside = $('outside-state');
   if (outside) {
-    outside.textContent = tailnet
+    outside.textContent = relayOn
+      ? '这台电脑已经通过你的云服务器中转连接（上面「出门在外」）：手机 App 扫过码，在外面用流量也能连上，不用装 Tailscale。'
+      : tailnet
       ? `这台机器已经在 Tailscale 上：电脑和手机装好 Tailscale 后，在外面也能用 ${tailnet} 连上它。`
       : (s.server && s.server.lanUrl)
         ? '这台机器还没装 Tailscale：现在只能在同一个局域网里连上它。'
-        : '这是本机的 Lamplit，只在这台电脑上用。出门在外想让它干活，用飞书给助理发消息；想直接连，就让家里的远程机器装上 Tailscale。';
+        : '这是本机的 Lamplit，只在这台电脑上用。出门在外想直接连：用上面的「云服务器中转」（推荐），或者装 Tailscale；只想让它干活，用飞书给助理发消息。';
   }
   // A public address: say the connection is not encrypted.
   try {
@@ -280,6 +283,8 @@ function drawQr(url, note = '') {
   if (!box) return;
   try {
     const qr = window.qrcode(0, 'M');
+    // A relay-only code starts with words (第 2 步): UTF-8, or the phone reads gibberish.
+    if (/[^\x00-\x7f]/.test(url) && window.qrcode.stringToBytesFuncs?.['UTF-8']) window.qrcode.stringToBytes = window.qrcode.stringToBytesFuncs['UTF-8'];
     qr.addData(url);
     qr.make();
     box.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true, alt: note || '手机扫这个码连接 Lamplit' });

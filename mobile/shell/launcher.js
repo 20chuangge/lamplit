@@ -326,14 +326,18 @@
   }
 
   async function foldDuplicateRows() {
-    const rows = await readHubs();
+    // The prototype app saved a relay-only code's placeholder (…relay.invalid) as
+    // a machine that is never online: drop it, and it from any row's addresses.
+    const dead = (u) => { try { return /\.relay\.invalid$/i.test(new URL(u).hostname); } catch { return false; } };
+    const stored = await readHubs();
+    const rows = stored.filter((h) => !dead(h.url)).map((h) => (h.alt?.some(dead) ? { ...h, alt: h.alt.filter((u) => !dead(u)) } : h));
     const hasToken = await Promise.all(rows.map((h) => store.get(KEYS.tokenFor(h.url)).then(Boolean).catch(() => false)));
     const { list, moves } = foldRows(rows, hasToken);
     for (const [from, to] of moves) {
       const token = await store.get(KEYS.tokenFor(from)).catch(() => null);
       if (token) await store.set(KEYS.tokenFor(to), token);
     }
-    if (JSON.stringify(list) !== JSON.stringify(rows)) await store.set(KEYS.hubs, JSON.stringify(list.slice(0, 12)));
+    if (JSON.stringify(list) !== JSON.stringify(stored)) await store.set(KEYS.hubs, JSON.stringify(list.slice(0, 12)));
   }
 
   /**
@@ -441,6 +445,8 @@
    * computer's address here is http://127.0.0.1:<port>.
    */
   const RELAY_PORTS = [14440, 14499];
+  // A probe through the relay slower than this is shown as 「中转 · 较慢」 in the list.
+  const RELAY_SLOW_MS = 1500;
   function isRelayLocal(raw) {
     try {
       const u = new URL(raw);
@@ -575,7 +581,14 @@
       // Tailscale elsewhere), not which address happened to be saved first.
       const anyUp = async () => {
         const best = await bestAddress([entry.url, ...(entry.alt || [])]);
-        if (best) { url.textContent = linkLabel(best, entry); url.title = best; }
+        // Through the relay and slow to answer (a weak signal, a far relay): say so.
+        // Timed on its own: the other addresses' probes run out their timeouts away from home.
+        let slow = false;
+        if (best && linkKind(best) === '中转') {
+          const started = Date.now();
+          slow = !(await probe(best, RELAY_SLOW_MS * 4)) || Date.now() - started > RELAY_SLOW_MS;
+        }
+        if (best) { url.textContent = slow ? '中转 · 较慢' : linkLabel(best, entry); url.title = best; }
         if (best && best !== entry.best) {
           // Remember it for the next time this list opens.
           const all = await readHubs();
@@ -1006,7 +1019,12 @@
 
   /** A pair link from the computer's QR code: https://host:port/?pair=TOKEN */
   async function connectFromScan(raw) {
-    const text = String(raw || '').trim();
+    let text = String(raw || '').trim();
+    // A relay-only code starts with words for older apps (第 2 步): the link follows them.
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
+      const link = /https?:\/\/\S+/i.exec(text)?.[0];
+      if (link && /[?&]relay=/.test(link)) text = link;
+    }
     if (!text) {
       setError('没扫到内容，再试一次。');
       return;

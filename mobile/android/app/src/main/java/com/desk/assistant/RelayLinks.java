@@ -93,8 +93,12 @@ public final class RelayLinks {
         if (!validHost(host) || port <= 0 || port > 65535 || !validId(id)) return "";
         String cleanFp = fp == null ? "" : fp.toLowerCase().replace(":", "");
         if (!validFp(cleanFp)) return "";
-        String key = host.toLowerCase() + ":" + port + "/" + id;
+        // One forwarder per computer, kept by its id (第 2 步): the relay's port or
+        // address may change (installed again, a new port) and the computer keeps
+        // its local address - its row in the list and its login stay.
+        String key = "id:" + id;
         SharedPreferences p = prefs(context);
+        SharedPreferences.Editor cleanup = p.edit();
         int local = 0;
         try {
             String known = p.getString(key, null);
@@ -102,6 +106,19 @@ public final class RelayLinks {
         } catch (Exception ignored) {
             local = 0;
         }
+        // Rows from the prototype were kept by host:port/id: take their port over.
+        for (Map.Entry<String, ?> e : p.getAll().entrySet()) {
+            if (e.getKey().equals(key)) continue;
+            try {
+                JSONObject old = new JSONObject(String.valueOf(e.getValue()));
+                if (!id.equals(old.optString("id", ""))) continue;
+                if (local < FIRST_PORT || local > LAST_PORT) local = old.optInt("local", 0);
+                cleanup.remove(e.getKey());
+            } catch (Exception ignored) {
+                // not ours
+            }
+        }
+        cleanup.commit();
         if (local < FIRST_PORT || local > LAST_PORT) {
             java.util.Set<Integer> used = new java.util.HashSet<>();
             for (Map.Entry<String, ?> e : p.getAll().entrySet()) {

@@ -71,6 +71,10 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
         });
         if (res.status === 401 || res.status === 403) throw Object.assign(new Error(`「${peer.name}」不认这台机器的凭据（需要在 Lamplit 客户端里重新配对那台机器）`), { code: 'PEER_UNAUTHORIZED' });
         if (known.includes(candidate)) lastGood.set(peer.name, candidate);
+        // Which way it went (第 2 步: the desktop app says "through the relay").
+        if (candidate.startsWith('relay:')) {
+          try { Object.defineProperty(res, 'viaRelay', { value: true }); } catch { /* frozen */ }
+        }
         return res;
       } catch (err) {
         if (err.code === 'PEER_UNAUTHORIZED' || signal?.aborted) throw err;

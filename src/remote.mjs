@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { uid, nowIso, P } from './store.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
+import { checkRelay } from './relaylink.mjs';
 
 // ssh2 is only needed when this machine PROVISIONS another one. Importing it
 // eagerly would make a freshly deployed hub crash on boot when node_modules was
@@ -49,7 +50,43 @@ export const RELAY_PORT = 33445;
 // Lamplit's own relay, no Tailscale (第 1 步原型): hub/relay-linux.sh installs hub/relay/relay.mjs.
 const TUNNEL_SCRIPT = path.join(HERE, '..', 'hub', 'relay-linux.sh');
 const TUNNEL_PROGRAM = path.join(HERE, '..', 'hub', 'relay', 'relay.mjs');
+// The Lamplit on a server joins the relay (第 2 步): hub/relay-hub-join.sh, root, settings in a file.
+const TUNNEL_JOIN_SCRIPT = path.join(HERE, '..', 'hub', 'relay-hub-join.sh');
 export const TUNNEL_PORT = 34443;
+
+/**
+ * Where to open a relay's port in the cloud console, in words (第 2 步). The
+ * server's own firewall (ufw / firewalld) is opened by the installer; the
+ * cloud's is outside the server and only its owner can change it.
+ */
+export function relayPortAdvice(port) {
+  const p = Number(port) || TUNNEL_PORT;
+  return `在云服务器控制台放行 TCP ${p}（来源 0.0.0.0/0）：腾讯云轻量应用服务器在实例详情的「防火墙」页添加规则；腾讯云 CVM（云服务器）在「安全组」的入站规则里添加；阿里云 ECS 也是「安全组」。`;
+}
+
+/**
+ * Hand a Lamplit on a Linux server its relay settings over an open SSH
+ * session (第 2 步): the settings go into a file only this account can read,
+ * hub/relay-hub-join.sh gives them to that Lamplit on 127.0.0.1 with its local
+ * key, then deletes the file. The join secret never crosses the network in
+ * the clear and never appears on a command line.
+ * -> 'ok' | 'none' (no Lamplit there) | 'error:<why>'
+ */
+async function joinHubOverSsh(client, { sudoPrefix = '', password = '', isRoot = true }, settings) {
+  const id = crypto.randomBytes(6).toString('hex');
+  const body = `/tmp/lamplit-relay-join-${id}.json`;
+  const script = `/tmp/lamplit-relay-join-${id}.sh`;
+  const put = await execStream(client, `umask 077; cat > ${body} && test -s ${body}`, { stdin: JSON.stringify(settings), endInput: true, timeoutMs: 15000 })
+    .catch((err) => ({ code: 1, output: err.message }));
+  if (put.code !== 0) return 'error:没能把设置交给那台服务器';
+  try {
+    await uploadFile(client, TUNNEL_JOIN_SCRIPT, script);
+    const ran = await execStream(client, `${sudoPrefix}/bin/bash ${script} ${body}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 90000 });
+    return (/^DESK_HUB_RELAY=(.*)$/m.exec(ran.output)?.[1] || '').trim() || `error:exit ${ran.code}`;
+  } finally {
+    await execStream(client, `rm -f ${body} ${script}`, { timeoutMs: 15000 }).catch(() => {});
+  }
+}
 
 /** A public IPv4 address (not private, loopback or Tailscale's 100.64/10): what a relay must be reached on. */
 export function isPublicIpv4(ip) {
@@ -372,6 +409,25 @@ async function shareModel(hubUrl, pairCode, model, voice = null, vision = null) 
   }
 }
 
+/** The relay settings to a freshly installed Windows hub, like shareModel (第 2 步). */
+async function shareRelay(hubUrl, pairCode, settings) {
+  const pair = await fetch(`${hubUrl}/api/pair`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code: pairCode }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!pair.ok) throw new Error(`pair HTTP ${pair.status}`);
+  const cookie = (pair.headers.get('set-cookie') || '').split(';')[0];
+  const res = await fetch(`${hubUrl}/api/relay-link`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify(settings),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`relay HTTP ${res.status}`);
+}
+
 /**
  * The Node.js build a target needs, downloaded once on this computer (checked
  * against the official SHA-256 list) and cached, then uploaded over the LAN:
@@ -410,7 +466,9 @@ export async function nodePackage(kind, arch = 'x64') {
 
 /** modelToShare: () => {provider, baseUrl, model, apiKey} | null
  *  voiceToShare: () => {baseUrl, model, apiKey} | null  (speech-to-text) */
-export function createProvisioner({ modelToShare = () => null, voiceToShare = () => null, visionToShare = () => null, onRelayTunnel = async () => {} } = {}) {
+/*  relayToShare: () => {host, port, relayFingerprint, join} | null  (Lamplit's own relay, 第 2 步)
+ *  onRelayTunnel({host, port, fingerprint, join}) / onRelayRemoved({host}): this computer's relay settings */
+export function createProvisioner({ modelToShare = () => null, voiceToShare = () => null, visionToShare = () => null, relayToShare = () => null, onRelayTunnel = async () => {}, onRelayRemoved = async () => {}, checkRelayImpl = checkRelay } = {}) {
   /** @type {Map<string, object>} */
   const jobs = new Map();
 
@@ -426,6 +484,8 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     hubUrl: job.hubUrl || '',
     pairCode: job.pairCode || '',
     modelShared: Boolean(job.modelShared),
+    ...(job.mode ? { mode: job.mode } : {}),
+    ...(job.relayJoined !== undefined ? { relayJoined: Boolean(job.relayJoined) } : {}),
     // How long each step took, to see what makes an install slow.
     timings: (job.timings || []).map((t) => ({ label: t.label, ms: t.ms })),
     desktopPending: Boolean(job.desktopPending),
@@ -585,13 +645,21 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
   }
 
   /**
-   * Lamplit's own relay (第 1 步原型): over SSH, as root or with sudo, install
+   * Lamplit's own relay: over SSH, as root or with sudo, install
    * hub/relay/relay.mjs as a service (a minute at most, so in the foreground)
    * and take back its certificate fingerprint and join secret. Those go
-   * straight into this computer's relay settings (onRelayTunnel); the job the
-   * UI reads carries the address and fingerprint only.
+   * straight into this computer's relay settings (onRelayTunnel, which turns
+   * 「通过中转连接」 on); the job the UI reads carries the address and
+   * fingerprint only.
+   *
+   * 第 2 步: installing again keeps the join secret and the computers already
+   * registered (the relay's data folder stays), and is also how the port
+   * changes. A Lamplit already running on that server joins the relay itself
+   * (dialing 127.0.0.1). Then this computer tries the port from outside, so a
+   * cloud firewall that still drops it is said right away, with where to open it.
+   * mode 'uninstall': the service, program and data go; this computer forgets it.
    */
-  async function runRelayTunnel(job, { host, sshPort, username, password, publicIp, port }) {
+  async function runRelayTunnel(job, { host, sshPort, username, password, publicIp, port, mode = 'install' }) {
     let client = null;
     try {
       phase(job, '连接 SSH');
@@ -607,6 +675,27 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         if (check.code !== 0) throw remoteError('REMOTE_NO_SUDO', '这个 SSH 账号不能 sudo；请换一个管理员账号。');
         sudoPrefix = "sudo -S -p '' ";
       }
+      const sudo = { sudoPrefix, password, isRoot };
+
+      if (mode === 'uninstall') {
+        phase(job, '卸载');
+        setProgress(job, '这台服务器上的 Lamplit 先断开中转…');
+        await joinHubOverSsh(client, sudo, { enabled: false }).catch(() => 'error');
+        setProgress(job, '停掉并删除中转服务…');
+        await uploadFile(client, TUNNEL_SCRIPT, '/tmp/lamplit-relay-setup.sh');
+        const ran = await execStream(client, `${sudoPrefix}/bin/bash /tmp/lamplit-relay-setup.sh --uninstall`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 120000 });
+        await execStream(client, 'rm -f /tmp/lamplit-relay-setup.sh', { timeoutMs: 15000 }).catch(() => {});
+        const field = (k) => (new RegExp(`^${k}=(.*)$`, 'm').exec(ran.output)?.[1] || '').trim();
+        if (field('DESK_RELAY') !== 'removed') throw remoteError('REMOTE_RELAY_FAILED', field('DESK_RELAY_ERROR') || `没能卸载中转（exit ${ran.code}）`);
+        await onRelayRemoved({ host: publicIp });
+        phase(job, null);
+        const oldPort = Number(field('DESK_RELAY_PORT')) || port;
+        job.state = 'done';
+        job.message = `中转已经卸载，这台电脑也不再连它。云服务器控制台里为 TCP ${oldPort} 加的放行规则可以删掉了。`;
+        job.finishedAt = nowIso();
+        return;
+      }
+
       phase(job, '上传并安装');
       setProgress(job, '上传中转程序…');
       await uploadFile(client, TUNNEL_PROGRAM, '/tmp/lamplit-relay.mjs');
@@ -620,12 +709,43 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       const fingerprint = field('DESK_RELAY_FP');
       const join = field('DESK_RELAY_JOIN');
       if (!/^[0-9a-f]{64}$/.test(fingerprint) || join.length < 16) throw remoteError('REMOTE_RELAY_FAILED', '中转装好了，但没有拿到它的证书指纹');
+      const oldPort = Number(field('DESK_RELAY_OLD_PORT')) || 0;
       phase(job, '记下中转');
       await onRelayTunnel({ host: publicIp, port: Number(port), fingerprint, join });
+
+      // The Lamplit on this same server (added as a machine earlier) joins too.
+      if (field('DESK_RELAY_HUB') === 'yes') {
+        setProgress(job, '这台服务器上的 Lamplit 也连上中转…');
+        const joined = await joinHubOverSsh(client, sudo, { host: publicIp, port: Number(port), relayFingerprint: fingerprint, join, dial: '127.0.0.1', enabled: true })
+          .catch((err) => `error:${err.message}`);
+        job.hubJoined = joined;
+      }
+
+      phase(job, '检查端口');
+      setProgress(job, '从这台电脑试连中转的端口…');
+      let check = await checkRelayImpl({ host: publicIp, port: Number(port), relayFingerprint: fingerprint });
+      // A service that just started: one more try before calling the port closed.
+      if (!check.ok && check.code === 'RELAY_UNREACHABLE') {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        check = await checkRelayImpl({ host: publicIp, port: Number(port), relayFingerprint: fingerprint });
+      }
       phase(job, null);
-      job.relayTunnel = { host: publicIp, port: Number(port), fingerprint };
-      job.state = 'done';
-      job.message = `中转装好了（${publicIp}，TCP ${Number(port)}）。还差一步：在云服务器控制台的「安全组 / 防火墙」里放行 TCP ${Number(port)}，然后打开「通过中转连接」。`;
+      job.relayTunnel = { host: publicIp, port: Number(port), fingerprint, portOpen: Boolean(check.ok), ...(check.ok ? { ms: check.ms } : {}) };
+      const moved = oldPort && oldPort !== Number(port)
+        ? ` 端口从 ${oldPort} 换成了 ${Number(port)}：手机要在家里（同一个 Wi-Fi）打开一次 Lamplit App，或者重新扫一次码，才会记下新端口。`
+        : '';
+      const hubNote = job.hubJoined === 'ok' ? ' 这台服务器上的 Lamplit 也连上了中转。'
+        : /^error:/.test(job.hubJoined || '') ? ` 这台服务器上的 Lamplit 没能连上中转（${job.hubJoined.slice(6)}）。` : '';
+      if (check.ok) {
+        job.state = 'done';
+        job.message = `中转装好了（${publicIp}，TCP ${Number(port)}），这台电脑已经连上它，「通过中转连接」已打开。在 设置 → 手机和外网 里点「显示二维码」，手机 App 扫一次，出门用流量也能连回来。${moved}${hubNote}`;
+      } else if (check.code === 'RELAY_CERT_MISMATCH') {
+        job.state = 'warning';
+        job.message = `中转装好了，但 ${publicIp}:${Number(port)} 上回答的不是它（证书对不上），可能端口被转到了别的程序。换一个端口再装一次。${hubNote}`;
+      } else {
+        job.state = 'warning';
+        job.message = `中转装好了，「通过中转连接」也已打开，但从这台电脑连不上 ${publicIp} 的 TCP ${Number(port)}：云服务器的防火墙还没放行。${relayPortAdvice(port)}放行后点「再测一次」。${moved}${hubNote}`;
+      }
       job.finishedAt = nowIso();
     } catch (err) {
       job.state = 'error';
@@ -789,6 +909,24 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           job.warning = job.warning || `装好了，但模型设置没同步过去（${err.message}）；切过去后在「设置 → 模型」里填一下。`;
         }
       }
+      // 第 2 步: this computer uses Lamplit's relay, so the new machine does too
+      // (its own id, key and certificate; the relay's address and join secret
+      // from here). Linux: over this SSH session, never in the clear. Windows:
+      // over HTTP like the model, when it answers. The relay server itself,
+      // added as a machine, reaches its relay on 127.0.0.1.
+      const relay = relayToShare();
+      if (relay) {
+        setProgress(job, '让这台机器也连上中转…');
+        const settings = { ...relay, enabled: true, ...(relay.host === host ? { dial: '127.0.0.1' } : {}) };
+        let joined = '';
+        if (!windows) {
+          joined = await joinHubOverSsh(client, { sudoPrefix, password, isRoot }, settings).catch((err) => `error:${err.message}`);
+        } else if (reachable) {
+          joined = await shareRelay(job.reachUrl, job.pairCode, settings).then(() => 'ok', (err) => `error:${err.message}`);
+        }
+        job.relayJoined = joined === 'ok';
+        if (/^error:/.test(joined)) job.log.push(`relay: ${joined}`);
+      }
       if (!reachable) {
         job.state = 'warning';
         job.message = tailscaleKey
@@ -838,8 +976,9 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       return publicJob(job);
     },
 
-    /** Lamplit's own relay on a Linux server (第 1 步原型): see runRelayTunnel. */
+    /** Lamplit's own relay on a Linux server: see runRelayTunnel. input.mode: 'install' (default) | 'uninstall'. */
     startRelayTunnel(input = {}) {
+      const mode = input.mode === 'uninstall' ? 'uninstall' : 'install';
       const host = assertHost(input.host);
       const sshPort = assertPort(input.sshPort, 22, 'sshPort');
       const port = assertPort(input.port, TUNNEL_PORT, 'port');
@@ -848,9 +987,9 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       const password = assertCredential(input.password, 'SSH password');
       const publicIp = String(input.publicIp || host).trim();
       if (!isPublicIpv4(publicIp)) throw remoteError('REMOTE_RELAY_NEEDS_PUBLIC_IP', `中转要用这台服务器的公网 IP（${publicIp || '没填'} 不是）：在云服务器控制台里能看到`);
-      const job = { id: uid('prov'), kind: 'relay-tunnel', state: 'running', message: '排队中…', step: 0, totalSteps: 3, address: host, os: '', hubPort: 0, hubUrl: '', pairCode: '', startedAt: nowIso(), finishedAt: null, log: [] };
+      const job = { id: uid('prov'), kind: 'relay-tunnel', mode, state: 'running', message: '排队中…', step: 0, totalSteps: mode === 'uninstall' ? 2 : 4, address: host, os: '', hubPort: 0, hubUrl: '', pairCode: '', startedAt: nowIso(), finishedAt: null, log: [] };
       jobs.set(job.id, job);
-      runRelayTunnel(job, { host, sshPort, username, password, publicIp, port });
+      runRelayTunnel(job, { host, sshPort, username, password, publicIp, port, mode });
       return publicJob(job);
     },
 

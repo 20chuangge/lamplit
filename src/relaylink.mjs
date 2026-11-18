@@ -17,6 +17,8 @@
 // data/relay-link.json {enabled, host, port, relayFingerprint, join, id, key}
 //   id   this computer's random name on the relay (in the phone's address)
 //   key  its secret for holding that name; join: the relay's member secret
+//   dial where the tunnel connects when that differs from the address phones
+//        use (第 2 步: the Lamplit on the relay server itself dials 127.0.0.1)
 // Both secrets stay in this file (mode 600) and only ever go to the pinned relay.
 
 import crypto from 'node:crypto';
@@ -28,6 +30,49 @@ import { Readable } from 'node:stream';
 import tls from 'node:tls';
 
 import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, shieldStream } from '../hub/relay/relay.mjs';
+
+/**
+ * Is the relay at host:port there, and is it the one installed (its
+ * certificate)? From this computer; nothing is sent but a health request.
+ * -> {ok:true, ms, tunnels} | {ok:false, code, message}
+ *   RELAY_UNREACHABLE    no answer: off, or the cloud firewall drops the port
+ *   RELAY_CERT_MISMATCH  something else answers there
+ */
+export function checkRelay({ host, port, relayFingerprint, timeoutMs = 8000 } = {}) {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    let done = false;
+    let timer = null;
+    let socket = null;
+    const finish = (out) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { socket?.destroy(); } catch { /* gone */ }
+      resolve(out);
+    };
+    timer = setTimeout(() => finish({ ok: false, code: 'RELAY_UNREACHABLE', message: 'no answer in time' }), timeoutMs);
+    socket = tls.connect({ host, port: Number(port) || DEFAULT_PORT, servername: CONTROL_NAME, rejectUnauthorized: false, ALPNProtocols: ['http/1.1'] }, () => {
+      const cert = socket.getPeerCertificate();
+      if (!cert?.raw || certFingerprint(cert) !== String(relayFingerprint || '').toLowerCase()) {
+        finish({ ok: false, code: 'RELAY_CERT_MISMATCH', message: 'something else answers on that port' });
+        return;
+      }
+      socket.write(`GET /health HTTP/1.1\r\nHost: ${CONTROL_NAME}\r\nConnection: close\r\n\r\n`);
+    });
+    let text = '';
+    socket.on('data', (d) => {
+      text += d;
+      // The body may come chunked: look for the fields, not for clean JSON.
+      const body = text.slice(text.indexOf('\r\n\r\n') + 4);
+      if (/"relay"\s*:\s*"lamplit"/.test(body) && /"tunnels"\s*:\s*\d+/.test(body)) {
+        finish({ ok: true, ms: Date.now() - started, tunnels: Number(/"tunnels"\s*:\s*(\d+)/.exec(body)[1]) });
+      }
+    });
+    socket.on('error', (err) => finish({ ok: false, code: 'RELAY_UNREACHABLE', message: err.message }));
+    socket.on('close', () => finish({ ok: false, code: 'RELAY_UNREACHABLE', message: 'connection closed' }));
+  });
+}
 
 export const RELAY_SNI_SUFFIX = 'relay.lamplit';
 const FP_RE = /^[0-9a-f]{64}$/;
@@ -215,14 +260,24 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
     return Math.round(base * (0.8 + Math.random() * 0.4));
   }
 
+  let connecting = false;
   async function connect() {
-    if (!wanted || tunnel) return;
+    if (!wanted || tunnel || connecting) return;
     if (!configured()) { status.state = 'unconfigured'; return; }
+    connecting = true;
+    try {
+      await connectOnce();
+    } finally {
+      connecting = false;
+    }
+  }
+
+  async function connectOnce() {
     ensureIdentity();
     ensureMachineSecrets();
     status.state = 'connecting';
     try {
-      const t = await openTunnelImpl({ host: cfg.host, port: Number(cfg.port) || DEFAULT_PORT, relayFingerprint: cfg.relayFingerprint, id: cfg.id, key: cfg.key, join: cfg.join || '' });
+      const t = await openTunnelImpl({ host: cfg.dial || cfg.host, port: Number(cfg.port) || DEFAULT_PORT, relayFingerprint: cfg.relayFingerprint, id: cfg.id, key: cfg.key, join: cfg.join || '' });
       if (!wanted) { t.mux.close(); return; }
       tunnel = t;
       const upAt = Date.now();
@@ -295,6 +350,7 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
         port: Number(cfg.port) || DEFAULT_PORT,
         relayFingerprint: cfg.relayFingerprint || '',
         hasJoin: Boolean(cfg.join),
+        dial: cfg.dial || '',
         id: cfg.id || '',
         fingerprint: cfg.id ? ensureIdentity().fingerprint : '',
         state: status.state,
@@ -316,9 +372,41 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
       if (!cfg.enabled || !configured() || !ID_RE.test(String(cfg.id || ''))) return null;
       return { host: cfg.host, port: Number(cfg.port), id: cfg.id, fp: ensureIdentity().fingerprint };
     },
+    /** Waiting out the backoff (the port was just opened): try now. */
+    retryNow() {
+      if (!wanted || tunnel || connecting) return;
+      clearTimeout(retryTimer);
+      attempt = 0;
+      connect();
+    },
+    /** Can this computer reach its relay now? (checkRelay with the settings here) */
+    check() {
+      if (!configured()) return Promise.resolve({ ok: false, code: 'RELAY_NOT_CONFIGURED', message: 'no relay set up' });
+      return checkRelay({ host: cfg.dial || cfg.host, port: cfg.port, relayFingerprint: cfg.relayFingerprint });
+    },
+    /**
+     * Forget the relay (it was uninstalled): off, its address and join secret
+     * gone. This computer's own id, key and certificate stay, so a phone that
+     * paired before still knows it when a relay comes back.
+     */
+    forget() {
+      stop();
+      const { host: _h, port: _p, relayFingerprint: _f, join: _j, dial: _d, ...rest } = cfg;
+      cfg = { ...rest, enabled: false, updatedAt: new Date().toISOString() };
+      saveConfig();
+      status.state = 'off';
+      status.error = '';
+      status.lastError = null;
+      return this.view();
+    },
     /** Change the settings; secrets that are not given are kept. Restarts the tunnel. */
     configure(patch = {}) {
       const next = { ...cfg };
+      if (patch.dial !== undefined) {
+        const dial = String(patch.dial || '').trim().toLowerCase();
+        if (dial && !HOST_RE.test(dial)) throw Object.assign(new Error('relay dial host is not a host name or IP'), { code: 'RELAY_BAD_HOST' });
+        next.dial = dial;
+      }
       if (patch.host !== undefined) {
         const host = String(patch.host || '').trim().toLowerCase();
         if (host && !HOST_RE.test(host)) throw Object.assign(new Error('relay host is not a host name or IP'), { code: 'RELAY_BAD_HOST' });
@@ -339,7 +427,7 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
       if (next.enabled && !(next.host && next.port && FP_RE.test(String(next.relayFingerprint || '')))) {
         throw Object.assign(new Error('fill in the relay address and its fingerprint first'), { code: 'RELAY_NOT_CONFIGURED' });
       }
-      const moved = next.host !== cfg.host || next.port !== cfg.port || next.relayFingerprint !== cfg.relayFingerprint || next.join !== cfg.join;
+      const moved = next.host !== cfg.host || next.port !== cfg.port || next.relayFingerprint !== cfg.relayFingerprint || next.join !== cfg.join || (next.dial || '') !== (cfg.dial || '');
       cfg = { ...next, updatedAt: new Date().toISOString() };
       if (cfg.enabled) { ensureIdentity(); ensureMachineSecrets(); }
       saveConfig();

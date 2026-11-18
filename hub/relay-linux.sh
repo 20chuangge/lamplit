@@ -11,7 +11,11 @@
 #  做的事：找到 Node.js 20+ → 装 hub/relay/relay.mjs 到 /opt/lamplit-relay →
 #  注册成 lamplit-relay 服务（独立的临时账号，只能写自己的数据目录）→ 等它
 #  生成自己的证书和「加入密码」→ 把证书指纹和加入密码交回给装它的电脑。
-#  可以重复运行：数据目录（证书、加入密码、已登记的电脑）保留不变。
+#  可以重复运行：数据目录（证书、加入密码、已登记的电脑）保留不变；换端口就是
+#  用新端口再装一次。
+#
+#  卸载：relay-linux.sh --uninstall —— 停掉并删除服务、程序和数据目录，删掉本机
+#  防火墙里为它放行的端口。云服务器控制台里的规则要你自己删。
 # ==========================================================================
 set -u
 SRC="${1:-}"
@@ -19,11 +23,36 @@ PORT="${2:-34443}"
 BASE=/opt/lamplit-relay
 SERVICE=lamplit-relay
 STATE_DIR=/var/lib/lamplit-relay
+UNIT="/etc/systemd/system/$SERVICE.service"
 
 say() { echo "[desk] $*"; }
 fail() { echo "DESK_RELAY_ERROR=$1"; exit 1; }
 
 [ "$(id -u)" = 0 ] || fail "要用 root 运行"
+
+if [ "$SRC" = "--uninstall" ]; then
+  OLD_PORT="$(sed -n 's/.*--port \([0-9]*\).*/\1/p' "$UNIT" 2>/dev/null | head -1)"
+  systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+  rm -f "$UNIT"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  # DynamicUser 的数据实际在 /var/lib/private 下，/var/lib/lamplit-relay 是指向它的链接。
+  rm -rf "$BASE" "$STATE_DIR" "/var/lib/private/$SERVICE"
+  if [ -n "$OLD_PORT" ]; then
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+      ufw delete allow "$OLD_PORT/tcp" >/dev/null 2>&1 || true
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+      firewall-cmd --permanent --remove-port="$OLD_PORT/tcp" >/dev/null 2>&1 || true
+      firewall-cmd --reload >/dev/null 2>&1 || true
+    fi
+  fi
+  systemctl is-active --quiet "$SERVICE" && fail "服务还在运行，没能停掉"
+  say "中转已卸载${OLD_PORT:+（原来的端口 TCP $OLD_PORT）}"
+  echo "DESK_RELAY_PORT=${OLD_PORT:-}"
+  echo "DESK_RELAY=removed"
+  exit 0
+fi
+
 [ -f "$SRC" ] || fail "没有找到中转程序（上传失败？）"
 [[ "$PORT" =~ ^[0-9]{4,5}$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] || fail "端口不对：$PORT（要 1024–65535）"
 command -v systemctl >/dev/null 2>&1 || fail "这台服务器没有 systemd，暂时没法装成服务"
@@ -47,8 +76,9 @@ if command -v ss >/dev/null 2>&1 && ss -ltnH 2>/dev/null | awk '{print $4}' | gr
 fi
 
 # 3. 程序和服务
+OLD_PORT="$(sed -n 's/.*--port \([0-9]*\).*/\1/p' "$UNIT" 2>/dev/null | head -1)"
 install -m 0644 "$SRC" "$BASE/relay.mjs"
-cat > "/etc/systemd/system/$SERVICE.service" <<EOF
+cat > "$UNIT" <<EOF
 [Unit]
 Description=Lamplit relay (reach your computer without Tailscale)
 After=network-online.target
@@ -75,11 +105,14 @@ systemctl enable "$SERVICE" >/dev/null 2>&1 || true
 systemctl restart "$SERVICE" || fail "服务没能启动（journalctl -u $SERVICE 看原因）"
 
 # 4. 本机防火墙（如果开着）放行这个端口；云服务器控制台的安全组要你自己去放行。
+# 换了端口：旧端口在本机防火墙里的放行也删掉。
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "$PORT/tcp" >/dev/null 2>&1 || true
+  [ -n "$OLD_PORT" ] && [ "$OLD_PORT" != "$PORT" ] && { ufw delete allow "$OLD_PORT/tcp" >/dev/null 2>&1 || true; }
 fi
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
   firewall-cmd --permanent --add-port="$PORT/tcp" >/dev/null 2>&1 || true
+  [ -n "$OLD_PORT" ] && [ "$OLD_PORT" != "$PORT" ] && { firewall-cmd --permanent --remove-port="$OLD_PORT/tcp" >/dev/null 2>&1 || true; }
   firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 
@@ -98,5 +131,7 @@ let o='';s.on('data',d=>o+=d);s.on('close',()=>console.log(/\"relay\":\"lamplit\
 say "中转装好了：TCP $PORT，证书指纹 $FP"
 echo "DESK_RELAY_FP=$FP"
 echo "DESK_RELAY_PORT=$PORT"
+echo "DESK_RELAY_OLD_PORT=${OLD_PORT:-}"
+echo "DESK_RELAY_HUB=$([ -f /etc/systemd/system/desk-hub.service ] && echo yes || echo no)"
 echo "DESK_RELAY_JOIN=$(tr -d '[:space:]' < "$STATE_DIR/join-secret")"
 echo "DESK_RELAY=ready"

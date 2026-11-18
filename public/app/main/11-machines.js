@@ -1574,16 +1574,54 @@ document.addEventListener('click', (event) => {
 });
 document.addEventListener('toggle', (event) => {
   if (event.target?.id === 'relay-box' && event.target.open) renderRelays();
-  if (event.target?.id === 'tunnel-box' && event.target.open) renderTunnel();
 }, true);
 
 /* ---------------------------------------------------------------------
-   不用 Tailscale 连回家 (第 1 步原型): Lamplit's own relay on a cloud
-   server. Installed over SSH (hub/relay-linux.sh); this computer keeps a
-   tunnel to it while 「通过中转连接」 is on (off by default). The relay only
-   forwards TLS it cannot read; the phone app pins this computer's own
-   certificate, carried by the pairing code.
+   不用 Tailscale：用你的云服务器中转 (设置 → 手机和外网, 第 2 步). Lamplit's
+   own relay on a cloud server, installed over SSH (hub/relay-linux.sh); once
+   installed this computer keeps a tunnel to it (「通过中转连接」, turned on by
+   the install). The relay only forwards TLS it cannot read; the phone app
+   pins this computer's own certificate, carried by the pairing code.
+   The form has three uses: install, install again (same server: keeps the
+   join secret and the registered computers; also how the port changes),
+   uninstall.
    --------------------------------------------------------------------- */
+
+/** Where to open the relay's port in the cloud console (src/remote.mjs says the same). */
+function relayPortAdvice(port) {
+  const p = Number(port) || 34443;
+  return `在云服务器控制台放行 TCP ${p}（来源 0.0.0.0/0）：腾讯云轻量应用服务器在实例详情的「防火墙」页添加规则；腾讯云 CVM（云服务器）在「安全组」的入站规则里添加；阿里云 ECS 也是「安全组」。`;
+}
+
+const isShown = (node) => Boolean(node && node.offsetParent !== null);
+
+function tunnelFormMode(mode, view = state.tunnel || {}) {
+  state.tunnelFormMode = mode || '';
+  const form = $('tunnel-form');
+  if (!form) return;
+  const configured = Boolean(view.host && view.relayFingerprint);
+  form.hidden = configured && !mode;
+  const start = $('tunnel-start');
+  const note = $('tunnel-form-note');
+  $('tunnel-port').hidden = mode === 'uninstall';
+  if ($('tunnel-cancel')) $('tunnel-cancel').hidden = !configured;
+  start.classList.toggle('danger', mode === 'uninstall');
+  if (mode === 'reinstall') {
+    $('tunnel-host').value = view.host || '';
+    $('tunnel-port').value = String(view.port || '');
+    start.textContent = '重装中转';
+    note.textContent = '在同一台服务器上再装一次：加入密码和已经登记的电脑都保留。想换端口，就改下面的端口再装（记得在云服务器控制台放行新端口）。';
+  } else if (mode === 'uninstall') {
+    $('tunnel-host').value = view.host || '';
+    start.textContent = '卸载中转';
+    note.textContent = '从这台服务器上删掉中转（服务、程序和它的数据），这台电脑也不再连它。手机在外面就连不上了，在家（局域网）不受影响。';
+  } else {
+    if (mode === 'add') { $('tunnel-host').value = ''; $('tunnel-port').value = ''; }
+    start.textContent = '在这台服务器上装中转';
+    note.textContent = '要一台有公网 IP 的 Linux 云服务器（腾讯云、阿里云等都行），填它的 SSH 账号。装好后这台电脑会自动连上，并试一下端口通不通。';
+  }
+}
+
 async function renderTunnel() {
   const box = $('tunnel-status');
   if (!box) return;
@@ -1597,31 +1635,41 @@ async function renderTunnel() {
   state.tunnel = view;
   const configured = Boolean(view.host && view.relayFingerprint);
   const toggle = $('tunnel-enabled');
-  if (toggle) { toggle.checked = Boolean(view.enabled); toggle.disabled = !configured; }
+  if (toggle) { toggle.checked = Boolean(view.enabled); toggle.disabled = !configured; toggle.closest('label').hidden = !configured; }
   const chip = $('tunnel-chip');
   const words = { online: '已连上', connecting: '正在连接', error: '连不上', off: '关', unconfigured: '没装' };
   if (chip) {
     chip.textContent = view.enabled ? (words[view.state] || view.state) : configured ? '关' : '没装';
     chip.className = `relay-chip ${view.enabled && view.state === 'online' ? 'ok' : view.enabled ? 'warn' : ''}`;
   }
-  if ($('tunnel-form')) $('tunnel-form').hidden = configured && !state.tunnelFormOpen;
-  if ($('tunnel-add')) $('tunnel-add').hidden = !configured || state.tunnelFormOpen;
+  // The form while there is no relay, or while one of its uses is open.
+  if (!configured && state.tunnelFormMode !== 'add') tunnelFormMode('', view);
+  else if ($('tunnel-form')) $('tunnel-form').hidden = !state.tunnelFormMode;
+  if ($('tunnel-actions')) $('tunnel-actions').hidden = !configured || Boolean(state.tunnelFormMode);
   if ($('tunnel-share')) $('tunnel-share').hidden = !(configured && view.enabled);
-  if (!configured) { box.textContent = ''; return; }
+  const portNote = $('tunnel-port-note');
+  box.textContent = '';
+  if (!configured) { if (portNote) portNote.hidden = true; return; }
   const mb = (n) => (Number(n) / 1024 / 1024).toFixed(1);
   const why = {
-    RELAY_UNREACHABLE: '连不上中转：服务器关了，或者云服务器的安全组还没放行这个端口',
-    RELAY_UNAUTHORIZED: '中转不认这台电脑（加入密码不对）',
+    RELAY_UNREACHABLE: '连不上中转：服务器关了，或者云服务器的防火墙（安全组）还没放行这个端口',
+    RELAY_UNAUTHORIZED: '中转不认这台电脑（加入密码不对）：在这里点「重装 / 换端口」再装一次',
     RELAY_CERT_MISMATCH: '中转的证书变了：不是装的那一台，为了安全没有连',
   };
   const lines = [`中转：${view.host}，TCP ${view.port}`];
-  if (!view.enabled) lines.push('打开「通过中转连接」后，再在 设置 → 手机和外网 里重新扫一次码，手机就会记下这条路。');
-  else if (view.state === 'online') lines.push(`已连上。经过中转的连接 ${view.connections} 个，收 ${mb(view.bytesIn)} MB，发 ${mb(view.bytesOut)} MB。`);
+  if (!view.enabled) lines.push('「通过中转连接」关着：手机在外面连不上这台电脑。');
+  else if (view.state === 'online') lines.push(`已连上。经过中转的连接 ${view.connections} 个，收 ${mb(view.bytesIn)} MB，发 ${mb(view.bytesOut)} MB。手机 App 扫过 设置 → 手机和外网 的二维码，出门用流量也能连回来。`);
   else if (view.state === 'error') lines.push(why[view.error] || `连不上中转（${view.error}）`);
   else lines.push('正在连接中转…');
-  box.textContent = lines.join('\n');
+  for (const line of lines) box.appendChild(el('div', '', line));
+  // Port closed in the cloud console: say where to open it, every time it is the reason.
+  if (portNote) {
+    const closed = view.enabled && view.state === 'error' && view.error === 'RELAY_UNREACHABLE';
+    portNote.hidden = !closed;
+    if (closed) portNote.textContent = `${relayPortAdvice(view.port)}放行后点「再测一次」。`;
+  }
   clearTimeout(state.tunnelTimer);
-  if ($('tunnel-box')?.open) state.tunnelTimer = setTimeout(renderTunnel, view.enabled && view.state !== 'online' ? 3000 : 15000);
+  if (isShown($('tunnel-box'))) state.tunnelTimer = setTimeout(renderTunnel, view.enabled && view.state !== 'online' ? 3000 : 15000);
 }
 
 async function setTunnel(enabled) {
@@ -1631,59 +1679,97 @@ async function setTunnel(enabled) {
     toast(err.message || String(err), true);
   }
   renderTunnel();
+  loadSettings().then(() => renderPairing()).catch(() => {});
+}
+
+function tunnelSay(text, bad = false) {
+  const note = $('tunnel-note');
+  if (!note) return;
+  note.hidden = !text;
+  note.textContent = text || '';
+  note.classList.toggle('warn-note', bad);
+}
+
+async function testTunnel() {
+  const btn = $('tunnel-test');
+  if (btn) btn.disabled = true;
+  tunnelSay('正在从这台电脑试连中转的端口…');
+  try {
+    const res = await api('/api/relay-link/test', { method: 'POST' });
+    const port = res.view?.port || state.tunnel?.port;
+    if (res.ok) tunnelSay(`通了：这台电脑连中转要 ${res.ms} 毫秒。`);
+    else if (res.code === 'RELAY_CERT_MISMATCH') tunnelSay('这个端口上回答的不是装的那个中转（证书对不上）。点「重装 / 换端口」换一个端口再装。', true);
+    else tunnelSay(`还是连不上 TCP ${port}。${relayPortAdvice(port)}`, true);
+  } catch (err) {
+    tunnelSay(err.message || String(err), true);
+  } finally {
+    if (btn) btn.disabled = false;
+    renderTunnel();
+  }
 }
 
 async function startTunnel() {
-  const note = $('tunnel-note');
-  const say = (text, bad = false) => { note.hidden = false; note.textContent = text; note.classList.toggle('warn-note', bad); };
+  const mode = state.tunnelFormMode === 'uninstall' ? 'uninstall' : 'install';
   const host = $('tunnel-host').value.trim();
   const password = $('tunnel-ssh-pass').value;
-  if (!host) return say('先填云服务器的公网 IP（在云服务器控制台里能看到）', true);
-  if (!password) return say('还需要这台服务器的 SSH 密码', true);
+  if (!host) return tunnelSay('先填云服务器的公网 IP（在云服务器控制台里能看到）', true);
+  if (!password) return tunnelSay('还需要这台服务器的 SSH 密码', true);
+  // eslint-disable-next-line no-alert
+  if (mode === 'uninstall' && !window.confirm(`从 ${host} 上卸载中转？手机在外面就连不上这台电脑了。`)) return;
   const btn = $('tunnel-start');
   btn.disabled = true;
   try {
     const res = await provisionApi('/api/remote/relay-tunnel', { method: 'POST', body: {
-      host, publicIp: host, sshPort: Number($('tunnel-ssh-port').value) || 22, username: $('tunnel-ssh-user').value.trim() || 'root', password,
+      mode, host, publicIp: host, sshPort: Number($('tunnel-ssh-port').value) || 22, username: $('tunnel-ssh-user').value.trim() || 'root', password,
       port: Number($('tunnel-port').value) || 34443,
     } });
     $('tunnel-ssh-pass').value = '';
     let job = res.job;
     for (let i = 0; i < 160 && job?.state === 'running'; i += 1) {
-      say(job.message || '正在连接…');
+      tunnelSay(job.message || '正在连接…');
       await new Promise((r) => setTimeout(r, 1500));
       job = (await provisionApi(`/api/remote/provision/${encodeURIComponent(job.id)}`).catch(() => null))?.job || job;
     }
-    say(job?.message || '', job?.state === 'error');
-    if (job?.state === 'done') { state.tunnelFormOpen = false; renderTunnel(); }
+    // Said once, here, until the next action: done, or what is left (the port).
+    tunnelSay(job?.message || '', job?.state !== 'done');
+    if (job?.state === 'done' || job?.state === 'warning') {
+      tunnelFormMode('');
+      await renderTunnel();
+      loadSettings().then(() => renderPairing()).catch(() => {});
+    }
   } catch (err) {
-    say(err.message || String(err), true);
+    tunnelSay(err.message || String(err), true);
   } finally {
     btn.disabled = false;
   }
 }
 
 async function shareTunnel() {
-  const note = $('tunnel-note');
-  note.hidden = false;
-  note.classList.remove('warn-note');
-  note.textContent = '正在告诉其他机器…';
+  tunnelSay('正在告诉其他机器…');
   try {
     const res = await api('/api/relay-link/share', { method: 'POST' });
     const list = res.machines || [];
-    note.textContent = list.length
+    tunnelSay(list.length
       ? list.map((m) => (m.ok ? `「${m.machine}」：已打开` : `「${m.machine}」：没成功（${m.error || ''}）`)).join('\n')
-      : '还没有其他机器。';
+      : '还没有其他机器。');
   } catch (err) {
-    note.classList.add('warn-note');
-    note.textContent = err.message || String(err);
+    tunnelSay(err.message || String(err), true);
   }
 }
 
 document.addEventListener('click', (event) => {
   if (event.target.closest('#tunnel-start')) startTunnel();
+  if (event.target.closest('#tunnel-test')) testTunnel();
   if (event.target.closest('#tunnel-share')) shareTunnel();
-  if (event.target.closest('#tunnel-add')) { state.tunnelFormOpen = true; renderTunnel(); }
+  const use = event.target.closest('#tunnel-add, #tunnel-reinstall, #tunnel-uninstall, #tunnel-cancel');
+  if (use) {
+    const mode = { 'tunnel-add': 'add', 'tunnel-reinstall': 'reinstall', 'tunnel-uninstall': 'uninstall' }[use.id] || '';
+    tunnelSay('');
+    tunnelFormMode(mode);
+    renderTunnel();
+  }
+  // 设置 → 手机和外网 opened: show where the relay stands.
+  if (event.target.closest('.setnav[data-set-target="sec-pair"]')) setTimeout(renderTunnel, 0);
 });
 document.addEventListener('change', (event) => {
   if (event.target?.id === 'tunnel-enabled') setTunnel(event.target.checked);

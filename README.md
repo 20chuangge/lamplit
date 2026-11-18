@@ -34,7 +34,7 @@ npm run smoke            # 全量自测
 npm run desktop:build    # 出 Windows 安装包 → desktop/dist/
 ```
 
-需要 Node ≥ 20。添加远程机器、空白机测试方案见 `docs/`（`HUB.md`、`TEST-PLAN.md`）。
+需要 Node ≥ 20。添加远程机器、空白机测试方案见 `docs/`（`HUB.md`、`TEST-PLAN.md`）；不用 Tailscale、用自己的云服务器中转连回家，见 `docs/RELAY.md`。
 
 ## 许可证
 

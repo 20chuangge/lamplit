@@ -25,7 +25,7 @@ import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
 
 import { CONTROL_NAME, createLimiter, createRelay, idFromSni, makeSelfSignedCert, openTunnel, readClientHello, wsAccept, WsConn } from '../hub/relay/relay.mjs';
-import { connectViaRelay, createRelayLink, relayFetch } from '../src/relaylink.mjs';
+import { checkRelay, connectViaRelay, createRelayLink, relayFetch } from '../src/relaylink.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(cond, ms = 5000) {
@@ -324,6 +324,32 @@ export async function relayChecks({ check }) {
       s.on('error', () => resolve(out));
     });
     check('relay: the control plane answers /health', /"relay":"lamplit"/.test(health));
+
+    // ---------------------------------------------------------- 第 2 步: port test, dial, forget
+    const okCheck = await checkRelay({ host: '127.0.0.1', port: relayPort, relayFingerprint: relayId.fingerprint });
+    check('relay port test: the installed relay answers, with its certificate', okCheck.ok === true && okCheck.ms >= 0, JSON.stringify(okCheck));
+    const dropper = net.createServer((s) => s.destroy());
+    const closedPort = await listen(dropper);
+    cleanup.push(() => dropper.close());
+    const shut = await checkRelay({ host: '127.0.0.1', port: closedPort, relayFingerprint: relayId.fingerprint, timeoutMs: 3000 });
+    check('relay port test: a port that drops connections reads as not reachable (the cloud firewall)', shut.ok === false && shut.code === 'RELAY_UNREACHABLE', JSON.stringify(shut));
+    const other = await checkRelay({ host: '127.0.0.1', port: relayPort, relayFingerprint: 'a'.repeat(64) });
+    check('relay port test: another certificate on that port is said as such', other.ok === false && other.code === 'RELAY_CERT_MISMATCH', JSON.stringify(other));
+
+    // The Lamplit on the relay server: phones use the public address, its tunnel dials 127.0.0.1.
+    const srv = makeComputer(path.join(tmp, 'srv'));
+    cleanup.push(() => srv.link.stop());
+    srv.link.configure({ enabled: true, host: '198.51.100.7', dial: '127.0.0.1', port: relayPort, relayFingerprint: relayId.fingerprint, join });
+    const srvUp = await until(() => srv.link.view().state === 'online', 5000);
+    const srvDesc = srv.link.descriptor();
+    check('relay dial: the server\'s own Lamplit connects on 127.0.0.1 and hands phones the public address', srvUp && srvDesc?.host === '198.51.100.7' && srv.link.view().dial === '127.0.0.1', JSON.stringify(srv.link.view()));
+    check('relay dial: a port test goes where the tunnel goes', (await srv.link.check()).ok === true);
+    const idBefore = srvDesc.id;
+    const fpBefore = srvDesc.fp;
+    const gone = srv.link.forget();
+    const kept = JSON.parse(fs.readFileSync(path.join(tmp, 'srv', 'relay-link.json'), 'utf8'));
+    check('relay forget: off, no address or join secret left; its own id, key and certificate stay', gone.enabled === false && !gone.host && !kept.join && !kept.host && kept.id === idBefore && kept.key && srv.link.view().fingerprint === fpBefore && srv.link.descriptor() === null, JSON.stringify(kept));
+    check('relay forget: the tunnel goes', await until(() => !relay.tunnels.has(idBefore), 3000));
   } finally {
     for (const fn of cleanup.reverse()) { try { fn(); } catch { /* best effort */ } }
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -362,8 +388,20 @@ export async function relayServerChecks({ check, api, makePairLink }) {
     const eight = await relayFetch(target, '/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: '12345678' }) });
     check('relay link: the 8-digit code is refused through the relay', eight.status === 403);
 
+    const tested = await api('/api/relay-link/test', { method: 'POST' });
+    check('relay link: 「再测一次」 reaches the relay from this computer', tested.status === 200 && tested.body.ok === true && tested.body.view?.state === 'online', JSON.stringify(tested.body));
+
     const made = await makePairLink();
     check('relay link: the pairing link and QR carry the relay address and fingerprint', made.relay?.id === desc.id && made.relay?.fp === desc.fp && /[?&]relay=/.test(made.qr || '') && /[?&]rfp=[0-9a-f]{64}/.test(made.qr || ''), JSON.stringify(made));
+    if (!made.url) {
+      // Relay only: words first. An app from before the relay parses any code
+      // with `new URL('http://' + text)`; it fails, so that app saves nothing
+      // instead of a dead …relay.invalid machine.
+      let oldAppSaw = 'parsed';
+      try { new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(made.qr) ? made.qr : `http://${made.qr}`); } catch { oldAppSaw = 'not a code'; }
+      const link = /https?:\/\/\S+/i.exec(made.qr)?.[0] || '';
+      check('relay link: a relay-only QR starts with words an old app cannot take for an address, then the link', oldAppSaw === 'not a code' && /更新/.test(made.qr) && new URL(link).searchParams.get('rid') === desc.id, made.qr);
+    }
     const paired = await relayFetch(target, '/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: made.token, client: 'app' }) });
     const pj = await paired.json().catch(() => ({}));
     check('relay link: the one-time QR token pairs through the relay', paired.status === 200 && String(pj.token || '').length >= 16);

@@ -79,7 +79,7 @@ import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './
 import { createMcpManager } from './mcp.mjs';
 import { createProvisioner, derpMapFor, isPublicIpv4, parseNetcheckText } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
-import { createRelayLink } from './relaylink.mjs';
+import { createRelayLink, relayFetch } from './relaylink.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
@@ -269,13 +269,29 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       const v = state?.vision;
       return v?.apiKey ? { baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey } : null;
     },
-    // A relay just installed: remembered here (still off until the human turns it on).
+    // A relay just installed (or installed again): remembered here and turned
+    // on (第 2 步: the human installed it to use it).
     onRelayTunnel: async ({ host, port, fingerprint, join }) => {
       if (!state?.relayLink) throw Object.assign(new Error('relay link not started'), { code: 'REMOTE_RELAY_FAILED' });
-      const was = state.relayLink.view();
-      state.relayLink.configure({ host, port, relayFingerprint: fingerprint, join, enabled: was.enabled });
+      state.relayLink.configure({ host, port, relayFingerprint: fingerprint, join, dial: '', enabled: true });
+      await audit({ kind: 'relay.link', enabled: true, host, port, installed: true }).catch(() => {});
       state.bus?.emit({ type: 'settings.changed', section: 'network' });
+      // The other machines on the same relay learn its new port (an install again may move it).
+      setTimeout(() => shareRelayWithMachines(state, { onlyHost: host }).catch(() => {}), 1000).unref?.();
     },
+    // The relay was uninstalled: this computer forgets it, and the machines that used it turn their link off.
+    onRelayRemoved: async ({ host }) => {
+      if (!state?.relayLink) return;
+      if (state.relayLink.view().host === String(host || '').toLowerCase()) state.relayLink.forget();
+      await audit({ kind: 'relay.link', enabled: false, host, removed: true }).catch(() => {});
+      state.bus?.emit({ type: 'settings.changed', section: 'network' });
+      await Promise.all(state.peers.list().filter((p) => p.relay?.host === String(host || '').toLowerCase()).map((p) => {
+        const peer = state.peers.find(p.name);
+        return state.peers.json(peer, 'PUT', '/api/relay-link', { body: { enabled: false }, timeoutMs: 8000, noRelay: true }).catch(() => null);
+      }));
+    },
+    // A machine added here joins the relay this computer uses (第 2 步).
+    relayToShare: () => (state?.relayLink?.view().enabled ? state.relayLink.shareable() : null),
   });
 
   // Per-bot desktops read the VNC password the installer stored, if any.
@@ -2131,8 +2147,16 @@ function combinedPairUrl(links, token, relay = null) {
     url.searchParams.set('rid', relay.id);
     url.searchParams.set('rfp', relay.fp);
   }
+  // Relay only (第 2 步): words first, then the link. An app from before the
+  // relay cannot read this as an address, so it says the code is not one and
+  // saves nothing (it used to keep a dead `…relay.invalid` row); a phone's
+  // camera shows the words. The app that knows the relay takes the link.
+  if (!sorted.length) return `${RELAY_ONLY_QR_NOTE} ${url.toString()}`;
   return url.toString();
 }
+export const RELAY_ONLY_QR_NOTE = 'Lamplit：这台电脑要经过中转连接，旧版 App 不支持，请先更新 Lamplit App 再扫。';
+/** The link inside a pairing code, without the words a relay-only code starts with. */
+const linkInCode = (qr) => /https?:\/\/\S+/i.exec(String(qr || ''))?.[0] || null;
 
 route('POST', /^\/api\/pairing\/link$/, async (req, _res, { state }) => {
   const publicUrl = funnelPublicUrl();
@@ -2175,12 +2199,47 @@ route('POST', /^\/api\/pairing\/link$/, async (req, _res, { state }) => {
   };
 });
 
-// 「通过中转连接」 (第 1 步原型, relaylink.mjs). Off by default.
+/**
+ * This computer's relay settings to the other machines (join secret included,
+ * over the machines' own link; never through the relay itself), and their
+ * link turned on. Each machine keeps its own id, key and certificate.
+ * onlyHost: just the machines already on that relay (an install again moved its port).
+ * The relay server's own Lamplit keeps dialing 127.0.0.1.
+ */
+async function shareRelayWithMachines(state, { onlyHost = '' } = {}) {
+  const mine = state.relayLink?.shareable?.();
+  if (!mine) return [];
+  const peers = state.peers.list().filter((p) => !onlyHost || p.relay?.host === String(onlyHost).toLowerCase());
+  const machines = await Promise.all(peers.map(async (p) => {
+    const peer = state.peers.find(p.name);
+    const onServer = [peer.url, peer.tailnetUrl].some((u) => { try { return new URL(u).hostname === mine.host; } catch { return false; } });
+    try {
+      const view = await state.peers.json(peer, 'PUT', '/api/relay-link', { body: { ...mine, enabled: true, ...(onServer ? { dial: '127.0.0.1' } : {}) }, timeoutMs: 10000, noRelay: true });
+      return { machine: peer.name, ok: true, state: view.state || '' };
+    } catch (err) {
+      return { machine: peer.name, ok: false, error: err.message };
+    }
+  }));
+  setTimeout(() => state.peers.learnRelays().catch(() => {}), 5000).unref();
+  return machines;
+}
+
+// 「通过中转连接」 (relaylink.mjs). Off by default; on once a relay is installed from here.
 //   GET /api/relay-link -> {enabled, host, port, relayFingerprint, id, fingerprint, state, error, …, descriptor}
 //   PUT /api/relay-link {enabled?, host?, port?, relayFingerprint?, join?} -> the same (the human only)
 route('GET', /^\/api\/relay-link$/, async (_req, _res, { state }) => {
   if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
   return { ...state.relayLink.view(), descriptor: state.relayLink.descriptor() };
+});
+// Can this computer reach its relay's port right now (第 2 步: after opening it in the cloud console)?
+//   POST /api/relay-link/test -> {ok, ms?, code?, message?, view}
+route('POST', /^\/api\/relay-link\/test$/, async (_req, _res, { state }) => {
+  if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
+  const result = await state.relayLink.check();
+  // The port just opened: do not wait out the backoff to reconnect.
+  const view = state.relayLink.view();
+  if (result.ok && view.enabled && view.state !== 'online') state.relayLink.retryNow();
+  return { ...result, view: { ...state.relayLink.view(), descriptor: state.relayLink.descriptor() } };
 });
 // The same relay for the other machines (3.6): this computer hands its relay
 // settings - join secret included - to each machine it holds a token for, and
@@ -2188,19 +2247,8 @@ route('GET', /^\/api\/relay-link$/, async (_req, _res, { state }) => {
 //   POST /api/relay-link/share -> {machines:[{machine, ok, state?, error?}]}
 route('POST', /^\/api\/relay-link\/share$/, async (req, _res, { state }) => {
   if (!mayDecide(req, state)) throw httpError(403, 'AUTHORITY_REQUIRED', 'only you can change how the machines are reached');
-  const mine = state.relayLink?.shareable?.();
-  if (!mine) throw httpError(409, 'RELAY_NOT_CONFIGURED', 'set up the relay on this computer first');
-  const machines = await Promise.all(state.peers.list().map(async (p) => {
-    const peer = state.peers.find(p.name);
-    try {
-      const view = await state.peers.json(peer, 'PUT', '/api/relay-link', { body: { ...mine, enabled: true }, timeoutMs: 10000, noRelay: true });
-      return { machine: peer.name, ok: true, state: view.state || '' };
-    } catch (err) {
-      return { machine: peer.name, ok: false, error: err.message };
-    }
-  }));
-  setTimeout(() => state.peers.learnRelays().catch(() => {}), 5000).unref();
-  return { machines };
+  if (!state.relayLink?.shareable?.()) throw httpError(409, 'RELAY_NOT_CONFIGURED', 'set up the relay on this computer first');
+  return { machines: await shareRelayWithMachines(state) };
 });
 route('PUT', /^\/api\/relay-link$/, async (req, _res, { body, state }) => {
   if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
@@ -2423,7 +2471,7 @@ route('POST', /^\/api\/machines\/(?<name>[^/]+)\/handoff$/, async (_req, _res, {
   // first one it can reach. A VM's LAN address is often the computer's internal
   // network, while its Tailscale one works from the phone.
   const links = Array.isArray(made.links) ? made.links.filter((l) => l && typeof l.url === 'string') : [];
-  return { ok: true, machine: peer.name, url: made.url || made.qr, links, qr: made.qr || null, ...(made.relay ? { relay: made.relay } : {}), expiresAt: made.expiresAt };
+  return { ok: true, machine: peer.name, url: made.url || linkInCode(made.qr), links, qr: made.qr || null, ...(made.relay ? { relay: made.relay } : {}), expiresAt: made.expiresAt };
 });
 
 // --- UI state / remote machines -------------------------------------------
@@ -2561,6 +2609,7 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
 route('POST', /^\/api\/remote\/relay$/, async (_req, _res, { body, state }) => ({ job: state.provisioner.startRelay(body || {}) }));
 // Lamplit's own relay, no Tailscale (第 1 步原型): install it over SSH; it lands in this computer's relay settings.
 //   POST /api/remote/relay-tunnel {host, sshPort?, username, password, publicIp?, port?} -> {job}
+//   body.mode 'uninstall' (第 2 步): removes it from that server; this computer forgets it.
 route('POST', /^\/api\/remote\/relay-tunnel$/, async (req, _res, { body, state }) => {
   if (!mayDecide(req, state)) throw httpError(403, 'AUTHORITY_REQUIRED', 'only you can set up a relay');
   return { job: state.provisioner.startRelayTunnel(body || {}) };
@@ -2678,6 +2727,23 @@ route(
   { rawBody: true },
 );
 
+// How the desktop app learns a machine's version when none of its own
+// addresses answer (第 2 步): this hub asks it by every route it knows - LAN,
+// Tailscale, then the relay - with its login for that machine.
+//   GET /api/remote/reach?url=<machine address>  loopback only -> {via:'direct'|'relay', health}
+route('GET', /^\/api\/remote\/reach$/, async (req, _res, { query, state }) => {
+  if (req.viaPublic || !isLoopbackHost(clientIp(req))) throw httpError(403, 'LOCAL_ONLY', 'only the desktop app on this computer can ask this');
+  const originOf = (u) => { try { return new URL(u).origin.toLowerCase(); } catch { return ''; } };
+  const target = originOf(String(query.get('url') || ''));
+  const listed = target && state.peers.list().find((p) => [p.url, p.tailnetUrl].some((u) => u && originOf(u) === target));
+  if (!listed) throw httpError(404, 'NOT_A_MACHINE', 'not a machine in the list');
+  const peer = state.peers.find(listed.name);
+  const res = await state.peers.call(peer, 'GET', '/api/health', { timeoutMs: 15000 }).catch((err) => { throw httpError(502, 'MACHINE_UNREACHABLE', err.message); });
+  if (!res.ok) throw httpError(502, 'MACHINE_UNREACHABLE', `HTTP ${res.status}`);
+  const health = await res.json();
+  return { via: res.viaRelay ? 'relay' : 'direct', health };
+});
+
 route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state }) => {
   if (req.viaPublic || !isLoopbackHost(clientIp(req))) throw httpError(403, 'LOCAL_ONLY', 'only the desktop app on this computer can push updates');
   const url = String(body?.url || '').replace(/\/+$/, '');
@@ -2686,15 +2752,28 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state })
   // or its Tailscale address), never to whatever address a request names.
   const originOf = (u) => { try { return new URL(u).origin.toLowerCase(); } catch { return ''; } };
   const target = originOf(url);
-  const listed = state.peers.list().some((p) => [p.url, p.tailnetUrl].some((u) => u && originOf(u) === target));
-  if (!listed) throw httpError(403, 'NOT_A_MACHINE', 'updates go only to machines in the list');
+  const listedPeer = state.peers.list().find((p) => [p.url, p.tailnetUrl].some((u) => u && originOf(u) === target));
+  if (!listedPeer) throw httpError(403, 'NOT_A_MACHINE', 'updates go only to machines in the list');
+  // Away from home with neither LAN nor Tailscale (第 2 步): the same package
+  // through the relay, to the machine whose certificate the relay address pins,
+  // with this computer's login for it. Tried only when the address does not answer.
+  const peer = state.peers.find(listedPeer.name);
+  let viaRelay = false;
   const headers = body?.cookie ? { cookie: String(body.cookie) } : {};
+  const send = (p, init = {}) => (viaRelay
+    ? relayFetch(peer.relay, p, { ...init, headers: { ...(init.headers || {}), authorization: `Bearer ${peer.token}` } })
+    : fetch(`${url}${p}`, { ...init, headers: { ...(init.headers || {}), ...headers } }));
   const health = async () => {
-    const res = await fetch(`${url}/api/health`, { headers, signal: AbortSignal.timeout(30000) });
+    const res = await send('/api/health', { signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   };
-  const before = await health().catch((err) => { throw httpError(502, 'MACHINE_UNREACHABLE', `连不上这台机器：${err.message}`); });
+  let before = await health().catch((err) => err);
+  if (before instanceof Error && peer?.relay && peer.token) {
+    viaRelay = true;
+    before = await health().catch((err) => err);
+  }
+  if (before instanceof Error) throw httpError(502, 'MACHINE_UNREACHABLE', `连不上这台机器：${before.message}`);
   if (!isUpdate({ version: VERSION, build: BUILD }, before)) return { ok: true, updated: false, version: before.version };
   if (!before.selfUpdate) {
     // Installed before self-update existed: one last manual add, automatic after that.
@@ -2709,12 +2788,13 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state })
   const packed = signed ? null : await packApp();
   try {
     const packageBytes = signed ? signed.bytes : fs.readFileSync(packed.file);
-    const res = await fetch(`${url}/api/system/update`, {
+    const res = await send('/api/system/update', {
       method: 'POST',
-      headers: { ...headers, 'content-type': 'application/gzip', 'x-nightshift-version': VERSION, 'x-nightshift-sha256': sha256Hex(packageBytes), ...(signed ? { 'x-nightshift-signature': signed.signature } : {}) },
+      headers: { 'content-type': 'application/gzip', 'x-nightshift-version': VERSION, 'x-nightshift-sha256': sha256Hex(packageBytes), ...(signed ? { 'x-nightshift-signature': signed.signature } : {}) },
       body: packageBytes,
-      // The machine test-starts the new version (up to 2 min) before answering.
-      signal: AbortSignal.timeout(300000),
+      // The machine test-starts the new version (up to 2 min) before answering;
+      // through the relay the upload itself takes minutes (a small cloud server).
+      signal: AbortSignal.timeout(viaRelay ? 900000 : 300000),
     });
     const reply = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -2729,7 +2809,7 @@ route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state })
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2000));
     const now = await health().catch(() => null);
-    if (now && (compareVersions(now.version, VERSION) > 0 || (now.version === VERSION && (!BUILD || now.build === BUILD)))) return { ok: true, updated: true, from: before.version, to: now.version };
+    if (now && (compareVersions(now.version, VERSION) > 0 || (now.version === VERSION && (!BUILD || now.build === BUILD)))) return { ok: true, updated: true, from: before.version, to: now.version, ...(viaRelay ? { via: 'relay' } : {}) };
   }
   return { ok: false, version: before.version, message: '新版本已经装上，但 90 秒内没有重新连上，稍后再看' };
 });

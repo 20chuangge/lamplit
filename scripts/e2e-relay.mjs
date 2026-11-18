@@ -137,8 +137,13 @@ async function main() {
   // --- the phone, through the relay ------------------------------------------
   const link = (await A.api('/api/pairing/link', { method: 'POST' })).body;
   check('A: a pairing code exists with only the relay (no LAN)', Boolean(link?.qr && link.relay?.id === descA.id), JSON.stringify(link));
-  const qr = new URL(link.qr);
-  check('A: the QR code carries relay=, rid= and rfp=, and a placeholder origin', qr.hostname.endsWith('.relay.invalid') && qr.searchParams.get('relay') === `127.0.0.1:${relayPort}` && qr.searchParams.get('rfp') === descA.fp);
+  // Relay only (第 2 步): words for apps from before the relay, then the link.
+  let oldApp = 'parsed';
+  try { new URL(`http://${link.qr}`); } catch { oldApp = 'not a code'; }
+  const qr = new URL(/https?:\/\/\S+/i.exec(link.qr)?.[0] || 'http://x');
+  check('A: the QR code says to update the app (an old app saves nothing), then carries relay=, rid=, rfp=', oldApp === 'not a code' && /^Lamplit：/.test(link.qr) && qr.hostname.endsWith('.relay.invalid') && qr.searchParams.get('relay') === `127.0.0.1:${relayPort}` && qr.searchParams.get('rfp') === descA.fp, link.qr);
+  const tested = await A.api('/api/relay-link/test', { method: 'POST' });
+  check('A: 「再测一次」 reaches the relay port', tested.body?.ok === true, JSON.stringify(tested.body));
   const phone = (p, init = {}) => relayFetch(descA, p, init);
   const paired = await (await phone('/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: link.token, client: 'app', deviceName: 'e2e phone' }) })).json();
   check('phone: paired through the relay', String(paired.token || '').length >= 16);
@@ -210,6 +215,14 @@ async function main() {
   check(`A → B: a call to B goes through the relay (${Date.now() - t1} ms incl. the dead address)`, handoff.status === 200 && handoff.body?.ok && handoff.body.relay?.id === descB.id && /[?&]pair=/.test(handoff.body.url || ''), JSON.stringify(handoff.body));
   const roster = await A.api('/api/peers/pages');
   check('A → B: a read from B through the relay', roster.status === 200 && Array.isArray(roster.body?.machines), JSON.stringify(roster.body).slice(0, 200));
+  // Updates (第 2 步): the desktop app asks A for B's version when B's own address is dead…
+  const reach = await A.api(`/api/remote/reach?url=${encodeURIComponent('http://127.0.0.1:9')}`);
+  check('A → B: the desktop app\'s version check reaches B through the relay', reach.status === 200 && reach.body?.via === 'relay' && Boolean(reach.body?.health?.version), JSON.stringify(reach.body).slice(0, 200));
+  // …and push-update goes the same way (same version here, so nothing to send: it stops after the check).
+  const pushed = await A.api('/api/remote/push-update', { method: 'POST', body: { url: 'http://127.0.0.1:9' } });
+  check('A → B: push-update reaches B through the relay when its address is dead', pushed.status === 200 && pushed.body?.ok === true && pushed.body?.updated === false && Boolean(pushed.body?.version), JSON.stringify(pushed.body).slice(0, 200));
+  const notListed = await A.api('/api/remote/push-update', { method: 'POST', body: { url: 'http://127.0.0.1:8' } });
+  check('A: push-update still goes only to a machine in the list', notListed.status === 403);
 
   // Group work across machines (crossmachine.mjs) is peers.json/call: the same
   // calls, made here with a peer list whose only working address is the relay.

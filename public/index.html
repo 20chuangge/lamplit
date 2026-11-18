@@ -787,7 +787,8 @@
         </div>
         <div class="net-check" id="net-check-out" hidden></div>
         <details class="relay-box" id="relay-box">
-          <summary><span class="relay-title">国内中转</span><span class="relay-chip" id="relay-chip">可选</span></summary>
+          <summary><span class="relay-title">国内中转（给 Tailscale 用）</span><span class="relay-chip" id="relay-chip">可选</span></summary>
+          <div class="row-note">不想装 Tailscale：用 设置 → 手机和外网 里的「云服务器中转」，更简单，也是推荐的做法。下面这个只给已经在用 Tailscale 的人。</div>
           <div class="row-note">手机、电脑、云服务器之间直连打不通时，Tailscale 会走它在国外的中转（新加坡、美国），一来一回几百毫秒。把一台国内的云服务器做成中转，就只要几十毫秒。只有你自己 Tailscale 账号里的设备能用它。需要这台服务器上已经装好 Tailscale。</div>
           <div class="relay-status" id="relay-status"></div>
           <button class="btn tiny" id="relay-add" type="button" hidden>在另一台服务器上装</button>
@@ -799,22 +800,6 @@
             <button class="btn tiny primary" id="relay-start" type="button">在这台服务器上装中转</button>
           </div>
           <div class="row-note" id="relay-note" hidden></div>
-        </details>
-        <details class="relay-box" id="tunnel-box">
-          <summary><span class="relay-title">不用 Tailscale 连回家（试验）</span><span class="relay-chip" id="tunnel-chip">关</span></summary>
-          <div class="row-note">这台电脑主动连到你的一台云服务器（中转）上，手机在外面用流量也能打开它，不用装 Tailscale。中转只转发加密的数据，看不到内容；证书的私钥只在这台电脑上。目前只支持 Lamplit 安卓 App。</div>
-          <label class="switch-row" for="tunnel-enabled"><input type="checkbox" id="tunnel-enabled" /> 通过中转连接</label>
-          <div class="relay-status" id="tunnel-status"></div>
-          <div class="relay-actions"><button class="btn tiny" id="tunnel-share" type="button" hidden>让其他机器也用这个中转</button><button class="btn tiny" id="tunnel-add" type="button" hidden>装到另一台服务器</button></div>
-          <div class="relay-form" id="tunnel-form">
-            <input class="field" id="tunnel-host" placeholder="云服务器的公网 IP" autocomplete="off" spellcheck="false" />
-            <input class="field" id="tunnel-ssh-port" placeholder="SSH 端口，默认 22" inputmode="numeric" autocomplete="off" />
-            <input class="field" id="tunnel-ssh-user" placeholder="SSH 用户名，例如 ubuntu 或 root" autocomplete="off" spellcheck="false" />
-            <input class="field" id="tunnel-ssh-pass" type="password" placeholder="SSH 密码（只用这一次，不保存）" autocomplete="off" />
-            <input class="field" id="tunnel-port" placeholder="中转端口，默认 34443" inputmode="numeric" autocomplete="off" />
-            <button class="btn tiny primary" id="tunnel-start" type="button">在这台服务器上装中转</button>
-          </div>
-          <div class="row-note" id="tunnel-note" hidden></div>
         </details>
         <div id="desktop-mode-box" hidden>
           <label class="lbl" for="desktop-mode">这台机器上机器人的桌面</label>
@@ -960,6 +945,49 @@
           <div class="pair-empty" id="pair-empty" hidden></div>
         </div>
         <div class="row-note">配对码只用于把手机接进这台电脑上的 Lamplit，不会上传到任何地方。</div>
+
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外：用你的云服务器中转（推荐，不用装 Tailscale）</div>
+        <div class="pair-card" id="tunnel-box">
+          <div class="pair-row" style="align-items:center">
+            <div>
+              <div class="pair-label">不用 Tailscale：用你的云服务器中转</div>
+              <div class="pair-hint">这台电脑主动连到你的一台云服务器（中转），手机在外面用流量也能打开它。中转只转发加密的数据，看不到内容。目前支持 Lamplit 安卓 App。</div>
+            </div>
+            <span class="relay-chip" id="tunnel-chip">没装</span>
+          </div>
+          <label class="switch-row" for="tunnel-enabled"><input type="checkbox" id="tunnel-enabled" /> 通过中转连接</label>
+          <div class="relay-status" id="tunnel-status"></div>
+          <div class="row-note warn-note" id="tunnel-port-note" hidden></div>
+          <div class="relay-actions" id="tunnel-actions" hidden>
+            <button class="btn tiny" id="tunnel-test" type="button">再测一次</button>
+            <button class="btn tiny" id="tunnel-share" type="button" hidden>让其他机器也用这个中转</button>
+            <button class="btn tiny" id="tunnel-reinstall" type="button">重装 / 换端口</button>
+            <button class="btn tiny" id="tunnel-add" type="button">装到另一台服务器</button>
+            <button class="btn tiny" id="tunnel-uninstall" type="button">卸载中转</button>
+          </div>
+          <div class="relay-form" id="tunnel-form">
+            <div class="row-note" id="tunnel-form-note">要一台有公网 IP 的 Linux 云服务器（腾讯云、阿里云等都行），填它的 SSH 账号。装好后这台电脑会自动连上，并试一下端口通不通。</div>
+            <input class="field" id="tunnel-host" placeholder="云服务器的公网 IP" autocomplete="off" spellcheck="false" />
+            <input class="field" id="tunnel-ssh-port" placeholder="SSH 端口，默认 22" inputmode="numeric" autocomplete="off" />
+            <input class="field" id="tunnel-ssh-user" placeholder="SSH 用户名，例如 ubuntu 或 root" autocomplete="off" spellcheck="false" />
+            <input class="field" id="tunnel-ssh-pass" type="password" placeholder="SSH 密码（只用这一次，不保存）" autocomplete="off" />
+            <input class="field" id="tunnel-port" placeholder="中转端口，默认 34443" inputmode="numeric" autocomplete="off" />
+            <div class="btn-row">
+              <button class="btn tiny primary" id="tunnel-start" type="button">在这台服务器上装中转</button>
+              <button class="btn tiny" id="tunnel-cancel" type="button" hidden>取消</button>
+            </div>
+          </div>
+          <div class="row-note" id="tunnel-note" hidden></div>
+          <details class="vault-add" id="tunnel-safety">
+            <summary>中转看得到什么、怎么断开</summary>
+            <ul class="feishu-steps">
+              <li>手机和这台电脑之间是加密的（TLS），加解密只在手机和电脑上做，证书的私钥只在这台电脑上。中转只看得到「哪台电脑、什么时候、多少流量」，看不到对话、文件、屏幕，也拿不到登录凭据。</li>
+              <li>手机只认配对时记下的这台电脑的证书：中转或别人冒充这台电脑，手机不会连。</li>
+              <li>能不能操作这台电脑，仍然看配对：从中转进来的请求都算外网，不能用 8 位配对码，只认扫码配对过的设备，「只有你能批准」的事也不能从这里做。</li>
+              <li>想马上断开：关掉上面的「通过中转连接」。不想要某台手机了：在下面「已连接的设备」里移除它。不要这个中转了：点「卸载中转」，再到云服务器控制台删掉放行端口的规则。</li>
+            </ul>
+          </details>
+        </div>
 
         <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">已连接的设备</div>
         <div class="device-list" id="device-list"></div>

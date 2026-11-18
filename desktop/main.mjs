@@ -1508,7 +1508,18 @@ async function autoUpdateMachine(machine) {
   try {
     // Away from home the machine may only answer on its Tailscale address.
     const base = (await reachMachine(url)) || url;
-    const res = await net.fetch(`${base}/api/health`, { signal: AbortSignal.timeout(30000) }).catch(() => null);
+    let res = await net.fetch(`${base}/api/health`, { signal: AbortSignal.timeout(30000) }).catch(() => null);
+    // Neither its LAN nor its Tailscale address (第 2 步): this computer's hub
+    // knows the machine's relay address too; the update then goes that way.
+    let viaRelay = false;
+    if (!res || !res.ok) {
+      const reached = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/reach?url=${encodeURIComponent(url)}`, { signal: AbortSignal.timeout(30000) })
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      if (reached?.health) {
+        viaRelay = reached.via === 'relay';
+        res = new Response(JSON.stringify(reached.health), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+    }
     if (!res || !res.ok) {
       // Off, unpaired or too busy to answer: try again in 2 minutes, a few times.
       const n = (updateAttempts.get(url) || 0) + 1;
@@ -1529,7 +1540,7 @@ async function autoUpdateMachine(machine) {
       notifyPage(L(`「${name}」还是 ${health.version}：重新添加一次这台机器就能更新到 ${mine}，之后会自动更新`, `"${name}" is still on ${health.version}: add it again once to update it to ${mine}; after that it updates on its own`), true);
       return;
     }
-    bootLog(`update ${url}: ${health.version} -> ${mine}`);
+    bootLog(`update ${url}: ${health.version} -> ${mine}${viaRelay ? ' (through the relay)' : ''}`);
     notifyPage(L(`正在把「${name}」更新到 ${mine}…`, `Updating "${name}" to ${mine}…`));
     const push = async () => {
       const r = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/push-update`, {

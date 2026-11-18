@@ -8,6 +8,10 @@
 
 **官网和下载：https://20chuangge.github.io/lamplit/**
 
+![演示：说一句「整理下载文件夹」，它列出任务清单，移动文件前先问你，点「允许」后整理好，改过的文件可以一键撤销](docs/media/lamplit-demo.gif)
+
+<sub>演示模式录屏：整理下载文件夹 → 移动前先问你 → 允许 → 完成；改过的文件可以一键撤销。</sub>
+
 - **一个助理就够**：默认的「助理」什么都能做，也能自己建 Bot、拉群分工。
 - **多台机器**：闲置电脑或云主机填上 IP、账号、密码，自动装好；切换机器，整个界面跟着切。支持 Ubuntu、Debian、Rocky、Windows。照着做的教程和常见的坑：[添加机器](https://20chuangge.github.io/lamplit/docs.html#machines)。
 - **看得见、能接管**：每台机器的屏幕实时可看，随时接管鼠标键盘。

@@ -6,6 +6,10 @@ While you rest, the lamp stays lit. An AI assistant with a computer of its own: 
 
 **Website and docs: https://20chuangge.github.io/lamplit/en/**
 
+![Demo: asked to tidy the downloads folder, it lists the steps, asks before moving files, and after "Allow" it is done; the changed files can be undone in one click](docs/media/lamplit-demo.gif)
+
+<sub>Recorded in demo mode (the app in Chinese; English is in Settings → Appearance): tidy the downloads → asks before moving files → Allow → done, with one-click undo.</sub>
+
 - **One assistant is enough**: the default assistant can do anything, and can make more bots and put them in a group to share work.
 - **Several machines**: a spare computer or a cloud server joins with an IP, a user and a password and sets itself up; switch machines and the whole app follows. Ubuntu, Debian, Rocky and Windows. Step-by-step guide, pitfalls included: [Add machines](https://20chuangge.github.io/lamplit/en/docs.html#machines).
 - **Watch and take over**: each machine's screen is live; take over mouse and keyboard any time.

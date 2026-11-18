@@ -4140,7 +4140,7 @@ async function scenarioMcp({ home, toolsMod }) {
     const said = (p) => JSON.stringify(p);
     check('K32 demo mode: each of the four suggested starts plays its own scripted run (tidy: a checklist, files, a command that asks first; write: a file; daily: a routine, paused; research: what a model would do) and ends with 「这是演示脚本」',
       starters.length === 4 && new Set(tools).size === 4
-      && /^task_plan,(fs_write,){4}task_step,fs_list,task_step,shell,task_step,task_end,task_finish$/.test(tools[0])
+      && /^task_plan,(fs_write,){4}task_step,fs_list,task_step,shell,task_step,task_finish$/.test(tools[0])
       && tools[1] === 'text' && /演示模式不联网/.test(said(plans[1]))
       && tools[2] === 'fs_write,task_finish' && plans[2][0].args.path === '演示/请假邮件.md'
       && tools[3] === 'routine_create,routine_list,task_finish' && plans[3][0].args.enabled === false

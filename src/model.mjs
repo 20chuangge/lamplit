@@ -690,8 +690,8 @@ function mockPlan(text, botName) {
         { tool: 'fs_list', args: { path: dir } },
         { tool: 'task_step', args: { step: 2, status: 'done', note: '图片 1 个、文档 2 个、安装包 1 个' } },
         { say: '打算这样分：截图-1118.png → 图片；周报-11月.docx、发票-11月.pdf → 文档；Lamplit-Setup.exe → 安装包。移动文件要你同意，下面这张卡就是在问你（命令就是做这件事的一小段脚本）。', tool: 'shell', args: { command: move, timeoutMs: 15000 } },
+        // The checklist closes itself when its last step is done (a task_end here only got NO_TASK back).
         { tool: 'task_step', args: { step: 3, status: 'done', note: '移进了 图片 / 文档 / 安装包' } },
-        { tool: 'task_end', args: { done: true } },
         { tool: 'task_finish', args: { summary: `在工作区建了「${dir}」，放了 4 个演示文件，按类型分进 图片、文档、安装包。移动文件这一步先问了你：同意了就已经分好，拒绝了文件就原样不动。真用的时候，它整理的是你自己的下载文件夹，同样先给你看打算怎么动。${DEMO_END}` } },
       ];
     }
@@ -902,7 +902,8 @@ function mockComplete(messages) {
   const step0 = plan[Math.min(toolResultsSinceUser, plan.length - 1)];
   // A step that was refused or not allowed: the closing line says so (1.5.33: it said 「运行了」 anyway).
   const results = lastUserIndex >= 0 ? messages.slice(lastUserIndex + 1).filter((m) => m.role === 'tool').map((m) => String(m.content ?? '')) : [];
-  const failed = results.find((r) => /"error"|denied|not granted|NOT_GRANTED|拒绝|没有权限/i.test(r));
+  // (The checklist's own bookkeeping - NO_TASK, BAD_STEP - is not a step the human refused.)
+  const failed = results.find((r) => /"error"|denied|not granted|NOT_GRANTED|拒绝|没有权限/i.test(r) && !/NO_TASK|BAD_STEP|BAD_TASK/.test(r));
   const step = step0?.tool === 'task_finish' && failed
     ? { tool: 'task_finish', args: { summary: /denied|拒绝/i.test(failed) ? '你拒绝了那一步，所以没有做；别的都没动。（演示模式）' : '有一步没做成（这个助手没有这项能力，或者被挡下了），所以没有完成；别的都没动。（演示模式）' } }
     : step0;

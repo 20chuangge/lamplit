@@ -9136,6 +9136,13 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         check('N2 scan: the back key and 取消 both close the camera', launcherS.includes("history.pushState({ scan: true }, '');") && launcherS.includes("window.addEventListener('popstate', onBack);") && launcherS.includes('stream.getTracks().forEach((t) => t.stop());'));
         check('auto address: the phone probes every address at once and keeps the closest that answers (LAN, then Tailscale, then public), for scanning and for opening a machine', launcherS.includes('async function bestAddress(urls)') && launcherS.includes("url.searchParams.getAll('alt')") && launcherS.includes('let hub = (await bestAddress([entry.url, ...(entry.alt || [])])) || entry.url;'));
         check('auto address: each row is labelled by the address that answers now (局域网 / Tailscale)', launcherS.includes("if (best) { url.textContent = slow ? '中转 · 较慢' : linkLabel(best, entry); url.title = best; }"));
+        // 1.5.38, seen on mobile data: the page was the relay forwarder (no login of its own), and the handoff went to the PC's LAN address.
+        const bridgeJ = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ShellBridge.java');
+        check('phone away from home: a machine reached through the relay may still open another machine, and the handoff goes to the address that answers',
+          /boolean fromMachinePage\(\) \{\s*return fromTrustedPage\(\) \|\| RelayLinks\.isRelayLocal\(currentUrl\(\)\);/.test(bridgeJ)
+          && /public boolean openMachine\(final String name\) \{\s*if \(!fromMachinePage\(\)/.test(bridgeJ)
+          && launcherS.includes('const viaBase = (viaRow && (await bestAddress([viaRow.url, ...(viaRow.alt || [])]))) || entry.via;')
+          && launcherS.includes('await fetch(`${viaBase}/api/machines/'));
         check('auto address: the row shows how it was reached last time while checking, and remembers the new one', launcherS.includes('url.textContent = linkLabel(entry.best || entry.url, entry);') && launcherS.includes('row.best = best;'));
         check('phone list: the 15 s redraw keeps the last state (no 检测中 flashing), and a relayed Tailscale address gets a second, longer try before 离线', launcherS.includes('const known = renderMachines.lastUp?.get(entry.url);') && launcherS.includes('const again = await Promise.all(slow.map((u) => probe(u, 10000)));') && launcherS.includes('async function probe(hub, timeoutMs = PROBE_TIMEOUT_MS) {'));
         check('N2 list: a VM only the computer can reach says 仅电脑可达 and explains, instead of 离线', launcherS.includes('async function behindVia(entry)') && launcherS.includes("tag.textContent = '仅电脑可达';") && launcherS.includes('手机直接连不到'));

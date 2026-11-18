@@ -2213,8 +2213,15 @@ async function shareRelayWithMachines(state, { onlyHost = '' } = {}) {
   const machines = await Promise.all(peers.map(async (p) => {
     const peer = state.peers.find(p.name);
     const onServer = [peer.url, peer.tailnetUrl].some((u) => { try { return new URL(u).hostname === mine.host; } catch { return false; } });
+    // Already on this very relay (same address and port): nothing to send (1.5.38:
+    // it used to try anyway and said 「没成功」 when only the relay reached it).
+    if (peer.relay && peer.relay.host === String(mine.host).toLowerCase() && Number(peer.relay.port) === Number(mine.port)) {
+      return { machine: peer.name, ok: true, already: true, state: 'online' };
+    }
     try {
-      const view = await state.peers.json(peer, 'PUT', '/api/relay-link', { body: { ...mine, enabled: true, ...(onServer ? { dial: '127.0.0.1' } : {}) }, timeoutMs: 10000, noRelay: true });
+      // Any route, the relay included: the settings travel inside TLS that ends
+      // on that machine (its pinned certificate), so the relay cannot read them.
+      const view = await state.peers.json(peer, 'PUT', '/api/relay-link', { body: { ...mine, enabled: true, ...(onServer ? { dial: '127.0.0.1' } : {}) }, timeoutMs: 10000 });
       return { machine: peer.name, ok: true, state: view.state || '' };
     } catch (err) {
       return { machine: peer.name, ok: false, error: err.message };

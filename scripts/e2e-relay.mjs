@@ -237,6 +237,8 @@ async function main() {
   check('A → B: through the door B still asks for its login (it counts as remote)', noAuth === 401);
   const again2 = await A.api('/api/remote/relay-door', { method: 'POST', body: { url: 'http://127.0.0.1:9' } });
   check('A → B: asking again gives the same door (the same cookies)', again2.body?.url === doorUrl);
+  const shareAgain = await A.api('/api/relay-link/share', { method: 'POST' });
+  check('A → B: sharing again with a machine already on this relay says so (no "failed" when only the relay reaches it)', shareAgain.body?.machines?.[0]?.ok === true && shareAgain.body.machines[0].already === true, JSON.stringify(shareAgain.body));
   const latency = await A.api('/api/peers/latency');
   check('A → B: the network check says B is reached through the relay', latency.body?.machines?.[0]?.via === 'relay', JSON.stringify(latency.body));
 

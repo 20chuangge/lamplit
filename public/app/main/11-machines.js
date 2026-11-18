@@ -1833,7 +1833,7 @@ async function shareTunnel() {
     const res = await api('/api/relay-link/share', { method: 'POST' });
     const list = res.machines || [];
     tunnelSay(list.length
-      ? list.map((m) => (m.ok ? `「${m.machine}」：已打开` : `「${m.machine}」：没成功（${m.error || ''}）`)).join('\n')
+      ? list.map((m) => (m.ok ? (m.already ? `「${m.machine}」：已经在用这个中转` : `「${m.machine}」：已打开`) : `「${m.machine}」：没成功（${m.error || ''}）`)).join('\n')
       : '还没有其他机器。');
   } catch (err) {
     tunnelSay(err.message || String(err), true);

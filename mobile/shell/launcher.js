@@ -776,7 +776,11 @@
       // what the background watcher needs), then mint a fresh link for the
       // WebView's own cookie.
       try {
-        const res = await fetch(`${entry.via}/api/machines/${encodeURIComponent(entry.name || '')}/handoff`, {
+        // The machine that told us about this one, by whichever of its addresses
+        // answers now: away from home its LAN address does not, its relay one does (1.5.38).
+        const viaRow = (await readHubs()).find((h) => h.url === entry.via);
+        const viaBase = (viaRow && (await bestAddress([viaRow.url, ...(viaRow.alt || [])]))) || entry.via;
+        const res = await fetch(`${viaBase}/api/machines/${encodeURIComponent(entry.name || '')}/handoff`, {
           method: 'POST',
           headers: { authorization: `Bearer ${(await store.get(KEYS.tokenFor(entry.via))) || ''}` },
         });

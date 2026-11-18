@@ -73,6 +73,17 @@ public class ShellBridge {
         return "http://localhost".equals(originOf(currentUrl()));
     }
 
+    /**
+     * A machine's page, for calls that only move between the app's own screens
+     * (showMachines, openMachine): a trusted page, or one this app opened
+     * through its relay forwarder (127.0.0.1:14440-14499, pinned to a machine
+     * the phone paired with). 1.5.38: on mobile data the page is the forwarder
+     * and its origin holds no login of its own, so these were refused.
+     */
+    boolean fromMachinePage() {
+        return fromTrustedPage() || RelayLinks.isRelayLocal(currentUrl());
+    }
+
     boolean fromTrustedPage() {
         String origin = originOf(currentUrl());
         if (origin.isEmpty()) return false;
@@ -113,7 +124,7 @@ public class ShellBridge {
      */
     @JavascriptInterface
     public boolean showMachines() {
-        if (!fromTrustedPage() || !(activity instanceof BridgeActivity)) return false;
+        if (!fromMachinePage() || !(activity instanceof BridgeActivity)) return false;
         activity.runOnUiThread(() -> {
             com.getcapacitor.Bridge bridge = ((BridgeActivity) activity).getBridge();
             if (bridge == null || bridge.getWebView() == null || bridge.getLocalUrl() == null) return;
@@ -130,7 +141,7 @@ public class ShellBridge {
      */
     @JavascriptInterface
     public boolean openMachine(final String name) {
-        if (!fromTrustedPage() || !(activity instanceof BridgeActivity) || name == null) return false;
+        if (!fromMachinePage() || !(activity instanceof BridgeActivity) || name == null) return false;
         final String clean = name.trim();
         if (clean.isEmpty() || clean.length() > 80) return false;
         activity.runOnUiThread(() -> {

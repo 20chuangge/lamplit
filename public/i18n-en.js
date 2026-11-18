@@ -2361,4 +2361,5 @@ window.DESK_I18N_EN = {
   "经中转过去…": "Going through the relay…",
   "中转": "Relay",
   "局域网": "LAN",
+  "「{0}」：已经在用这个中转": "\"{0}\": already on this relay",
 };

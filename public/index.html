@@ -788,7 +788,7 @@
         <div class="net-check" id="net-check-out" hidden></div>
         <details class="relay-box" id="relay-box">
           <summary><span class="relay-title">国内中转（给 Tailscale 用）</span><span class="relay-chip" id="relay-chip">可选</span></summary>
-          <div class="row-note">不想装 Tailscale：用 设置 → 手机和外网 里的「云服务器中转」，更简单，也是推荐的做法。下面这个只给已经在用 Tailscale 的人。</div>
+          <div class="row-note">不想装 Tailscale：可以试试 设置 → 手机和外网 里的「云服务器中转」（试验）。下面这个只给已经在用 Tailscale 的人。</div>
           <div class="row-note">手机、电脑、云服务器之间直连打不通时，Tailscale 会走它在国外的中转（新加坡、美国），一来一回几百毫秒。把一台国内的云服务器做成中转，就只要几十毫秒。只有你自己 Tailscale 账号里的设备能用它。需要这台服务器上已经装好 Tailscale。</div>
           <div class="relay-status" id="relay-status"></div>
           <button class="btn tiny" id="relay-add" type="button" hidden>在另一台服务器上装</button>
@@ -946,11 +946,11 @@
         </div>
         <div class="row-note">配对码只用于把手机接进这台电脑上的 Lamplit，不会上传到任何地方。</div>
 
-        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外：用你的云服务器中转（推荐，不用装 Tailscale）</div>
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外：用你的云服务器中转（试验，不用装 Tailscale）</div>
         <div class="pair-card" id="tunnel-box">
           <div class="pair-row" style="align-items:center">
             <div>
-              <div class="pair-label">不用 Tailscale：用你的云服务器中转</div>
+              <div class="pair-label">不用 Tailscale：用你的云服务器中转（试验）</div>
               <div class="pair-hint">这台电脑主动连到你的一台云服务器（中转），手机在外面用流量也能打开它。中转只转发加密的数据，看不到内容。目前支持 Lamplit 安卓 App。</div>
             </div>
             <span class="relay-chip" id="tunnel-chip">没装</span>

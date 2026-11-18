@@ -215,7 +215,7 @@ function renderPairing() {
       ? `这台机器已经在 Tailscale 上：电脑和手机装好 Tailscale 后，在外面也能用 ${tailnet} 连上它。`
       : (s.server && s.server.lanUrl)
         ? '这台机器还没装 Tailscale：现在只能在同一个局域网里连上它。'
-        : '这是本机的 Lamplit，只在这台电脑上用。出门在外想直接连：用上面的「云服务器中转」（推荐），或者装 Tailscale；只想让它干活，用飞书给助理发消息。';
+        : '这是本机的 Lamplit，只在这台电脑上用。出门在外想直接连：装 Tailscale，或者试试上面的「云服务器中转」（试验）；只想让它干活，用飞书给助理发消息。';
   }
   // A public address: say the connection is not encrypted.
   try {

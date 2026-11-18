@@ -2307,8 +2307,6 @@ window.DESK_I18N_EN = {
   "已经通过中转连接：手机 App 扫码以后，在外面用流量也能连上。": "Connected through the relay: once the phone app scans the code, it can connect from outside on mobile data too.",
   // --- 第 2 步: the relay on your cloud server (设置 → 手机和外网) ---------------
   "国内中转（给 Tailscale 用）": "Relay in China (for Tailscale)",
-  "不想装 Tailscale：用 设置 → 手机和外网 里的「云服务器中转」，更简单，也是推荐的做法。下面这个只给已经在用 Tailscale 的人。": "Rather not install Tailscale: use \"Relay on your cloud server\" in Settings → Phone & internet. It is simpler, and the recommended way. The one below is only for people already using Tailscale.",
-  "出门在外：用你的云服务器中转（推荐，不用装 Tailscale）": "When you are out: relay through your cloud server (recommended, no Tailscale)",
   "不用 Tailscale：用你的云服务器中转": "Without Tailscale: relay through your cloud server",
   "这台电脑主动连到你的一台云服务器（中转），手机在外面用流量也能打开它。中转只转发加密的数据，看不到内容。目前支持 Lamplit 安卓 App。": "This computer connects out to one of your cloud servers (the relay), so your phone can open it from outside on mobile data. The relay only forwards encrypted data and cannot read it. Works with the Lamplit Android app for now.",
   "再测一次": "Test again",
@@ -2321,7 +2319,7 @@ window.DESK_I18N_EN = {
   "能不能操作这台电脑，仍然看配对：从中转进来的请求都算外网，不能用 8 位配对码，只认扫码配对过的设备，「只有你能批准」的事也不能从这里做。": "Pairing still decides who may use this computer: requests through the relay count as from outside, the 8-digit code does not work there, only devices paired by scanning get in, and what only you may approve cannot be done that way.",
   "想马上断开：关掉上面的「通过中转连接」。不想要某台手机了：在下面「已连接的设备」里移除它。不要这个中转了：点「卸载中转」，再到云服务器控制台删掉放行端口的规则。": "To cut it off now: turn off \"Connect through the relay\" above. To drop a phone: remove it under \"Connected devices\" below. To stop using the relay: click \"Uninstall the relay\", then delete the port rule in the cloud console.",
   "这台电脑已经通过你的云服务器中转连接（上面「出门在外」）：手机 App 扫过码，在外面用流量也能连上，不用装 Tailscale。": "This computer is connected through your cloud server's relay (\"When you are out\" above): once the phone app has scanned the code, it connects from outside on mobile data too, without Tailscale.",
-  "这是本机的 Lamplit，只在这台电脑上用。出门在外想直接连：用上面的「云服务器中转」（推荐），或者装 Tailscale；只想让它干活，用飞书给助理发消息。": "This is the Lamplit on this computer, used only here. To connect from outside: use \"Relay through your cloud server\" above (recommended), or install Tailscale; to just give it work, message the assistant in Feishu.",
+  "这是本机的 Lamplit，只在这台电脑上用。出门在外想直接连：装 Tailscale，或者试试上面的「云服务器中转」（试验）；只想让它干活，用飞书给助理发消息。": "This is the Lamplit on this computer, used only here. To connect from outside: install Tailscale, or try \"Relay through your cloud server\" above (experimental); to just give it work, message the assistant in Feishu.",
   "在云服务器控制台放行 TCP {0}（来源 0.0.0.0/0）：腾讯云轻量应用服务器在实例详情的「防火墙」页添加规则；腾讯云 CVM（云服务器）在「安全组」的入站规则里添加；阿里云 ECS 也是「安全组」。": "Allow TCP {0} (source 0.0.0.0/0) in the cloud console: on a Tencent Cloud Lighthouse server, add a rule on the instance's Firewall page; on Tencent Cloud CVM, add an inbound rule to its Security group; Alibaba Cloud ECS also uses a Security group.",
   "重装中转": "Reinstall the relay",
   "在同一台服务器上再装一次：加入密码和已经登记的电脑都保留。想换端口，就改下面的端口再装（记得在云服务器控制台放行新端口）。": "Install again on the same server: the join secret and the computers already registered are kept. To change the port, change it below and install (remember to allow the new port in the cloud console).",
@@ -2354,4 +2352,7 @@ window.DESK_I18N_EN = {
   "让这台机器也连上中转…": "Letting this machine join the relay too…",
   "你正在用的这台 · 经过中转": "The one you are using · through the relay",
   "返回 App 的机器列表": "Back to the app's machine list",
+  "不想装 Tailscale：可以试试 设置 → 手机和外网 里的「云服务器中转」（试验）。下面这个只给已经在用 Tailscale 的人。": "Rather not install Tailscale: try \"Relay on your cloud server\" in Settings → Phone & internet (experimental). The one below is only for people already using Tailscale.",
+  "出门在外：用你的云服务器中转（试验，不用装 Tailscale）": "When you are out: relay through your cloud server (experimental, no Tailscale)",
+  "不用 Tailscale：用你的云服务器中转（试验）": "Without Tailscale: relay through your cloud server (experimental)",
 };

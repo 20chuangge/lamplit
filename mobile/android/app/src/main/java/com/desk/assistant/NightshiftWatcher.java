@@ -146,6 +146,8 @@ public class NightshiftWatcher extends Service {
         long lastSync = 0;
         while (running) {
             java.util.List<String> hubs = hubsWithToken(prefs(this));
+            // The relay forwarders live in this process: up again after Android restarted it.
+            RelayLinks.startAll(this);
             // 「让机器人用这部手机」 turned off by an update or a cleaner: back on (1.5.20).
             AgentKeeper.ensure(this);
             keepAwakeForBots();
@@ -255,6 +257,12 @@ public class NightshiftWatcher extends Service {
                 String lan = machine.optString("url", "").replaceAll("/+$", "");
                 if (!tailnet.isEmpty()) targets.add(tailnet);
                 if (!lan.isEmpty() && !lan.equals(tailnet)) targets.add(lan);
+                // Through the relay (第 1 步原型): works with neither Wi-Fi nor Tailscale.
+                JSONObject relay = machine.optJSONObject("relay");
+                if (relay != null) {
+                    String local = RelayLinks.localUrl(this, relay.optString("host", ""), relay.optInt("port", 0), relay.optString("id", ""), relay.optString("fp", ""));
+                    if (!local.isEmpty()) targets.add(local);
+                }
                 for (String target : targets) {
                     if (prefs(this).getString("desk.token:" + target, null) != null) break;
                     String door = handoff(hub, token, name);
@@ -414,21 +422,42 @@ public class NightshiftWatcher extends Service {
         }
     }
 
-    /** Where to reach `hub` now: a LAN address of the same machine that answers, else `hub` itself. */
+    /**
+     * Where to reach `hub` now: a LAN address of the same machine that answers,
+     * else `hub` itself, else (when it does not answer) the machine's relay
+     * address (第 1 步原型: no Wi-Fi, no Tailscale). A machine without a relay
+     * address keeps the old behaviour: `hub` itself, untested.
+     */
     String via(String hub) {
         String[] known = routes.get(hub);
         if (known != null && System.currentTimeMillis() - Long.parseLong(known[1]) < 60000L) return known[0];
-        String best = hub;
+        java.util.List<String> others = addressesOf(hub);
+        String best = null;
         if (!isLanAddress(hub)) {
-            for (String other : addressesOf(hub)) {
+            for (String other : others) {
                 if (isLanAddress(other) && answers(other)) {
                     best = other;
                     break;
                 }
             }
         }
+        if (best == null) {
+            java.util.List<String> relays = new java.util.ArrayList<>();
+            for (String other : others) if (RelayLinks.isRelayLocal(other)) relays.add(other);
+            if (relays.isEmpty() || RelayLinks.isRelayLocal(hub) || answers(hub)) {
+                best = hub;
+            } else {
+                for (String relay : relays) {
+                    if (answers(relay)) {
+                        best = relay;
+                        break;
+                    }
+                }
+            }
+            if (best == null) best = hub;
+        }
         routes.put(hub, new String[] { best, String.valueOf(System.currentTimeMillis()) });
-        if (!best.equals(hub)) Log.i(TAG, "reaching " + hub + " on the local network");
+        if (!best.equals(hub)) Log.i(TAG, "reaching " + hub + (RelayLinks.isRelayLocal(best) ? " through the relay" : " on the local network"));
         return best;
     }
 

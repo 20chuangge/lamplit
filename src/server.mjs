@@ -79,6 +79,7 @@ import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './
 import { createMcpManager } from './mcp.mjs';
 import { createProvisioner, derpMapFor, isPublicIpv4, parseNetcheckText } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
+import { createRelayLink } from './relaylink.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
@@ -753,6 +754,13 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       attachHubUpgrade(publicServer, state, true);
       return publicServer;
     },
+    // The relay's connections (relaylink.mjs): TLS ends in this process, then
+    // the same routes as the public socket - never local, whatever the address.
+    makeRelayLink: () => {
+      const link = createRelayLink({ dataDir: P.dataDir, handler: hubRequestHandler(state, true) });
+      attachHubUpgrade(link.server, state, true);
+      return link;
+    },
   };
 }
 
@@ -760,6 +768,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 function hubRequestHandler(state, viaPublic) {
   return (req, res) => {
     if (viaPublic) req.viaPublic = true;
+    // Through the relay (relaylink.mjs): remote like the public door, whatever the socket says.
+    if (req.socket?.viaRelay) { req.viaPublic = true; req.viaRelay = true; }
     handleRequest(req, res, state).catch((err) => {
       // Last-resort guard: no route may ever produce an unhandled rejection.
       console.error('[assistant] unhandled request error:', err);
@@ -773,6 +783,7 @@ function hubRequestHandler(state, viaPublic) {
 function attachHubUpgrade(server, state, viaPublic) {
   server.on('upgrade', (req, socket, head) => {
     if (viaPublic) req.viaPublic = true;
+    if (req.socket?.viaRelay) { req.viaPublic = true; req.viaRelay = true; }
     const refuse = (status, text) => {
       try { socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); } catch { /* gone */ }
     };
@@ -1407,6 +1418,7 @@ route('PUT', /^\/api\/peers$/, async (_req, _res, { body, state }) => {
   // (the name given in "添加机器"), so every list shows that name.
   if (typeof body?.self?.name === 'string' && body.self.name.trim()) setSelfMachineName(body.self.name);
   const peers = await state.peers.set(body?.peers);
+  void state.peers.learnRelays().catch(() => {});
   state.bus.emit({ type: 'settings.changed', section: 'machines' });
   return { peers };
 });
@@ -2053,7 +2065,9 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
   const deviceName = String(body?.deviceName || '').trim().slice(0, 40);
   const userAgent = req?.headers?.['user-agent'];
   const { device, sessionToken } = state.devices.add({ name: deviceName || describeAgent(userAgent), ip: clientIp(req), kind: deviceKind(userAgent), parent: link?.parent || '' });
-  res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: isSecureRequest(req) || Boolean(req.viaPublic) }));
+  // Through the relay the phone app's page is http://127.0.0.1 (its own TLS
+  // forwarder does the encryption), where a Secure cookie may not stick.
+  res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: (isSecureRequest(req) || Boolean(req.viaPublic)) && !req.viaRelay }));
   // A native app has no cookie jar it trusts across origins: when it says so, it
   // gets the per-device token in the body and sends it as `Authorization`.
   if (String(body?.client || '') === 'app') return { ok: true, device, token: sessionToken };
@@ -2093,20 +2107,29 @@ route('GET', /^\/api\/pairing$/, async (_req, _res, { state }) => pairingInfo(st
 // A QR code in Settings: a URL that pairs the phone by itself, once, in ten
 // minutes. Only the machine owner (or an already-paired device) can ask.
 /** `<lan>/?pair=T&alt=<tailnet>&alt=<public>`; null when there is no address. */
-function combinedPairUrl(links, token) {
+function combinedPairUrl(links, token, relay = null) {
   const order = { lan: 0, tailnet: 1, public: 2 };
   const sorted = [...(links || [])].filter((l) => l && l.url).sort((a, b) => (order[a.kind] ?? 3) - (order[b.kind] ?? 3));
-  if (!sorted.length) return null;
-  const [first, ...rest] = sorted;
+  // Relay only: a placeholder origin the app knows to skip; relay= is the address.
+  if (!sorted.length && !relay) return null;
+  const [first, ...rest] = sorted.length ? sorted : [{ url: `https://${relay.id}.relay.invalid` }];
   const url = new URL(`${String(first.url).replace(/\/+$/, '')}/`);
   url.searchParams.set('pair', token);
   for (const link of rest) url.searchParams.append('alt', new URL(link.url).origin);
+  // The relay (第 1 步原型): where, which computer, and the fingerprint the app
+  // pins - the certificate is this computer's own, not a public CA's.
+  if (relay) {
+    url.searchParams.set('relay', `${relay.host}:${relay.port}`);
+    url.searchParams.set('rid', relay.id);
+    url.searchParams.set('rfp', relay.fp);
+  }
   return url.toString();
 }
 
 route('POST', /^\/api\/pairing\/link$/, async (req, _res, { state }) => {
   const publicUrl = funnelPublicUrl();
-  if (!state.lanUrl && !publicUrl) {
+  const relay = state.relayLink?.descriptor() || null;
+  if (!state.lanUrl && !publicUrl && !relay) {
     throw httpError(
       409,
       'REMOTE_DISABLED',
@@ -2136,10 +2159,33 @@ route('POST', /^\/api\/pairing\/link$/, async (req, _res, { state }) => {
     // One code for every address: LAN first (what a phone at home opens), the
     // others as alt=. The Nightshift app tries them all and keeps the one that
     // answers - LAN when it is on the same network, Tailscale when it is not.
-    qr: combinedPairUrl(links, token),
+    qr: combinedPairUrl(links, token, relay),
+    // Through the relay the app builds the address itself (its local forwarder).
+    ...(relay ? { relay, token } : {}),
     expiresAt: new Date(expiresAt).toISOString(),
     expiresInSec: Math.round((expiresAt - Date.now()) / 1000),
   };
+});
+
+// 「通过中转连接」 (第 1 步原型, relaylink.mjs). Off by default.
+//   GET /api/relay-link -> {enabled, host, port, relayFingerprint, id, fingerprint, state, error, …, descriptor}
+//   PUT /api/relay-link {enabled?, host?, port?, relayFingerprint?, join?} -> the same (the human only)
+route('GET', /^\/api\/relay-link$/, async (_req, _res, { state }) => {
+  if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
+  return { ...state.relayLink.view(), descriptor: state.relayLink.descriptor() };
+});
+route('PUT', /^\/api\/relay-link$/, async (req, _res, { body, state }) => {
+  if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
+  if (!mayDecide(req, state)) throw httpError(403, 'AUTHORITY_REQUIRED', 'only you can change how this computer is reached');
+  let view;
+  try {
+    view = state.relayLink.configure(body || {});
+  } catch (err) {
+    throw httpError(400, err.code || 'RELAY_BAD_SETTINGS', err.message);
+  }
+  await audit({ kind: 'relay.link', enabled: view.enabled, host: view.host, port: view.port });
+  state.bus.emit({ type: 'settings.changed', section: 'network' });
+  return { ...view, descriptor: state.relayLink.descriptor() };
 });
 
 route('GET', /^\/api\/devices$/, async (_req, _res, { state }) => ({ devices: state.devices.list() }));
@@ -2301,7 +2347,8 @@ route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
   const peers = state.peers.list();
   // Its Tailscale address too: a phone that refreshes this row from here must not lose it.
   const selfTailnet = tailnetUrl(state);
-  const self = { name: selfMachineName(), url: state.pairingUrl || null, ...(selfTailnet && selfTailnet !== state.pairingUrl ? { tailnetUrl: selfTailnet } : {}), online: true, self: true };
+  const selfRelay = state.relayLink?.descriptor() || null;
+  const self = { name: selfMachineName(), url: state.pairingUrl || null, ...(selfTailnet && selfTailnet !== state.pairingUrl ? { tailnetUrl: selfTailnet } : {}), ...(selfRelay ? { relay: selfRelay } : {}), online: true, self: true };
   const rest = await Promise.all(
     peers.map(async (peer) => {
       // list() deliberately hides tokens; the probe needs the real record, or it
@@ -2321,10 +2368,10 @@ route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
                 .then((res) => res.ok)
                 .catch(() => false)
             : Promise.resolve(false);
-        online = (await Promise.all([probe(peer.url), probe(peer.tailnetUrl || '')])).some(Boolean);
+        online = (await Promise.all([probe(peer.url), probe(peer.tailnetUrl || ''), probe(peer.relay ? { relay: peer.relay } : '')])).some(Boolean);
         machineProbeCache.set(peer.name, { at: Date.now(), online });
       }
-      return { name: peer.name, url: peer.url, tailnetUrl: peer.tailnetUrl || '', online, self: false };
+      return { name: peer.name, url: peer.url, tailnetUrl: peer.tailnetUrl || '', ...(peer.relay ? { relay: peer.relay } : {}), online, self: false };
     }),
   );
   return { machines: [self, ...rest] };
@@ -4460,7 +4507,7 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
     throw err;
   }
 
-  const { server, state, makePublicServer } = await createAssistant({ port, host });
+  const { server, state, makePublicServer, makeRelayLink } = await createAssistant({ port, host });
 
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -4529,6 +4576,14 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
     writeJsonSyncAtomic(path.join(P.dataDir, 'public-port.json'), { port: publicPort, updatedAt: nowIso() });
     console.error(`[assistant] public port: http://127.0.0.1:${publicPort} (tunnel only; never local-trusted)`);
   }
+  // 「通过中转连接」 (off unless turned on): the tunnel to the relay comes back by itself.
+  state.relayLink = makeRelayLink();
+  state.relayLink.start();
+  // The other machines' relay addresses, learned while they answer another way (3.6).
+  const learnRelays = () => state.peers.learnRelays().catch(() => {});
+  setTimeout(learnRelays, 15000).unref();
+  setInterval(learnRelays, 10 * 60 * 1000).unref();
+
   // A funnel the human left on comes back after a restart; failure is logged,
   // never fatal (the tunnel is optional).
   if (publicPort) {

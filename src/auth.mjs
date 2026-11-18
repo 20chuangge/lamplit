@@ -387,6 +387,7 @@ export function isAuthorityRequest(method, pathname, body = {}) {
   if (/^\/api\/approvals\/[^/]+$/.test(p) && m === 'POST') return true;
   if (p === '/api/policy' || p === '/api/settings' || p === '/api/cliagents' || p === '/api/pairing/link') return true;
   if (p === '/api/usage' && m === 'PUT') return true;
+  if (p === '/api/relay-link' && m === 'PUT') return true;
   if (/^\/api\/(vault|mcp|feishu|devices)(\/|$)/.test(p) && !/\/test$/.test(p)) return true;
   if (/^\/api\/bots\/[^/]+\/primary$/.test(p)) return true;
   if (/^\/api\/bots(\/[^/]+)?$/.test(p) && (m === 'POST' || m === 'PATCH') && body && (body.policy !== undefined || (m === 'PATCH' && body.tools !== undefined))) return true;

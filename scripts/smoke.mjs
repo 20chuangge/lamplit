@@ -151,6 +151,7 @@ async function main() {
     await stage('cross-site requests (SEC-01/02/03)', () => scenarioCrossSite({ auth: authMod }));
     await stage('pairing', scenarioPairing);
     await stage('phone pairing link', scenarioPairingLink);
+    await stage('relay without Tailscale (第 1 步原型)', scenarioRelay);
     await stage('bots', scenarioBots);
     await stage('bot avatars', scenarioBotAvatars);
     await stage('chief turn', scenarioChiefTurn);
@@ -2652,6 +2653,21 @@ async function scenarioPairing() {
  * QR link, the phone redeems it once, shows up in Settings, and can be removed.
  * A second server on a throw-away home keeps this away from every other stage.
  */
+/**
+ * The relay (hub/relay/relay.mjs + src/relaylink.mjs), all on 127.0.0.1:
+ * SNI, multiplexing, limits, forged registrations, no plaintext at the relay
+ * (scripts/smoke-relay.mjs), then this hub behind a relay: never local.
+ */
+async function scenarioRelay() {
+  const { relayChecks, relayServerChecks } = await import('./smoke-relay.mjs');
+  await relayChecks({ check });
+  const wrap = async (p, { method = 'GET', body, noLocalKey = false } = {}) => {
+    const r = await api(p, { method, body, headers: noLocalKey ? { 'x-no-local-key': '1' } : {} });
+    return { status: r.status, body: r.json };
+  };
+  await relayServerChecks({ check, api: wrap, makePairLink: async () => (await api('/api/pairing/link', { method: 'POST' })).json });
+}
+
 async function scenarioPairingLink() {
   const remoteHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-smoke-phone-'));
   await seedHome(remoteHome);

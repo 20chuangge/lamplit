@@ -375,7 +375,7 @@
       const before = JSON.stringify(list);
       const listed = new Set();
       for (const machine of data?.machines || []) {
-        const urls = [machine.tailnetUrl, machine.url].map(strip).filter(Boolean);
+        const urls = [machine.tailnetUrl, machine.url, relayLocal(machine.relay)].map(strip).filter(Boolean);
         if (machine.self) {
           // The hub itself: its own name for the row we opened it by.
           for (const h of list) {
@@ -432,10 +432,47 @@
     await store.remove(KEYS.hub);
   }
 
-  /** How this phone reaches a machine, in words: 局域网 / Tailscale / 外网. */
+  // ---------------------------------------------------------------- the relay (第 1 步原型)
+  /*
+   * A computer reached through the Lamplit relay, without Tailscale. The app
+   * runs a small forwarder per computer on 127.0.0.1:14440-14499 (RelayLinks
+   * on Android): it opens TLS through the relay to that computer and trusts
+   * only the certificate fingerprint the pairing code carried. So such a
+   * computer's address here is http://127.0.0.1:<port>.
+   */
+  const RELAY_PORTS = [14440, 14499];
+  function isRelayLocal(raw) {
+    try {
+      const u = new URL(raw);
+      const port = Number(u.port);
+      return u.hostname === '127.0.0.1' && port >= RELAY_PORTS[0] && port <= RELAY_PORTS[1];
+    } catch {
+      return false;
+    }
+  }
+  /** {host, port, id, fp} -> the local address for it ('' without the app's bridge or a bad address). */
+  function relayLocal(relay) {
+    const shell = window.NightshiftShell;
+    if (!relay || !shell || typeof shell.relayLocal !== 'function') return '';
+    try {
+      return String(shell.relayLocal(String(relay.host || ''), Number(relay.port) || 0, String(relay.id || ''), String(relay.fp || '')) || '');
+    } catch {
+      return '';
+    }
+  }
+  /** relay=host:port&rid=…&rfp=… in a pairing code -> the local address ('' when absent). */
+  function relayFromCode(url) {
+    const where = url.searchParams.get('relay') || '';
+    const cut = where.lastIndexOf(':');
+    if (!where || cut < 1) return '';
+    return relayLocal({ host: where.slice(0, cut).replace(/^\[|\]$/g, ''), port: Number(where.slice(cut + 1)), id: url.searchParams.get('rid'), fp: url.searchParams.get('rfp') });
+  }
+
+  /** How this phone reaches a machine, in words: 局域网 / Tailscale / 中转 / 外网. */
   function linkKind(raw) {
     let host = '';
     try { host = new URL(raw).hostname; } catch { return raw; }
+    if (isRelayLocal(raw)) return '中转';
     if (/\.ts\.net$/i.test(host)) return raw.startsWith('https:') ? '外网' : 'Tailscale';
     const m = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
     if (m) {
@@ -703,7 +740,11 @@
         if (res.ok) {
           const made = await res.json();
           const links = Array.isArray(made?.links) ? made.links : [];
-          const target = (await pickReachableLink(links, safeOrigin(hub))) || made?.url;
+          // Through the relay the computer cannot know this phone's local
+          // address: the one-time token goes to the address we just reached.
+          const pairOf = (u) => { try { return new URL(u).searchParams.get('pair') || ''; } catch { return ''; } };
+          const relayToken = isRelayLocal(hub) ? made?.token || pairOf(made?.qr) || pairOf(made?.url) : '';
+          const target = (relayToken && `${hub}/?pair=${encodeURIComponent(relayToken)}`) || (await pickReachableLink(links, safeOrigin(hub))) || made?.url;
           if (target) {
             await store.set(KEYS.hub, hub);
             window.location.assign(withOrigin(target, origin));
@@ -798,7 +839,8 @@
   async function bestAddress(urls) {
     const list = [...new Set((urls || []).filter(Boolean))];
     if (!list.length) return '';
-    const kindRank = { '局域网': 0, Tailscale: 1, '外网': 2 };
+    // The relay is the long way round, but a domestic one is still shorter than Funnel's.
+    const kindRank = { '局域网': 0, Tailscale: 1, '中转': 2, '外网': 3 };
     const up = await Promise.all(list.map((u) => probe(u)));
     if (!up.some(Boolean)) {
       // A Tailscale connection that goes through a relay (DERP) can need more
@@ -979,7 +1021,15 @@
     for (const alt of url.searchParams.getAll('alt')) {
       try { all.push(new URL(alt).origin); } catch { /* skip */ }
     }
-    const hub = (await bestAddress(all)) || url.origin;
+    // Through the relay: a computer with no other address puts a placeholder first.
+    const viaRelay = relayFromCode(url);
+    if (viaRelay) all.push(viaRelay);
+    if (/\.relay\.invalid$/i.test(url.hostname)) all.shift();
+    if (!all.length) {
+      setError('这个码要经过中转，但这个 App 版本还不会走中转：更新 App 后再扫。');
+      return;
+    }
+    const hub = (await bestAddress(all)) || all[0];
     const token = url.searchParams.get('pair') || '';
     await rememberHub(hub, all.filter((u) => u !== hub));
     await renderMachines();

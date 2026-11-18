@@ -4,12 +4,13 @@
 // to each other without the client: a bot here can hand work to a bot there
 // and move files, even while the laptop is closed.
 //
-// data/peers.json [{name, url, tailnetUrl, token}] - tokens never leave through
+// data/peers.json [{name, url, tailnetUrl, relay?, token}] - tokens never leave through
 // any route. This computer's own hub listens on loopback only, so other
 // machines cannot call into it; it can still call out to them.
 
 import fsp from 'node:fs/promises';
 import { readJson, writeJsonAtomic } from './store.mjs';
+import { cleanDescriptor, relayFetch } from './relaylink.mjs';
 
 const clean = (u) => String(u || '').trim().replace(/\/+$/, '');
 
@@ -24,7 +25,10 @@ export function friendlyHostname(hostname) {
   return /^(.*?)-(vmware|virtualbox|virtual|platform)/i.exec(h)?.[1] || h;
 }
 
-export function createPeers({ file, fetchImpl = fetch } = {}) {
+/** A peer's relay address as a candidate base ("relay:<id>"), next to its URLs. */
+const relayBase = (peer) => (peer?.relay ? `relay:${peer.relay.id}` : '');
+
+export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFetch } = {}) {
   let peers = [];
   const rosters = new Map(); // name -> {at, bots}
 
@@ -49,14 +53,17 @@ export function createPeers({ file, fetchImpl = fetch } = {}) {
 
   /** One request to a peer: the address that worked last, else its LAN address, then its Tailscale address.
    *  `base` forces a single address (the machine list probes both in parallel). */
-  async function call(peer, method, path, { body, raw, headers = {}, timeoutMs = 20000, signal, base } = {}) {
+  async function call(peer, method, path, { body, raw, headers = {}, timeoutMs = 20000, signal, base, noRelay = false } = {}) {
     let lastErr = null;
-    const known = [peer.url, peer.tailnetUrl].filter(Boolean);
+    // The relay comes last (第 1 步原型): it works from anywhere, but it is the long way.
+    const known = [peer.url, peer.tailnetUrl, noRelay ? '' : relayBase(peer)].filter(Boolean);
+    if (base && typeof base === 'object') base = relayBase(peer) || undefined;
     const good = lastGood.get(peer.name);
     const bases = base ? [base] : (good && known.includes(good) ? [good, ...known.filter((b) => b !== good)] : known);
     for (const candidate of bases) {
       try {
-        const res = await fetchImpl(`${clean(candidate)}${path}`, {
+        const send = candidate.startsWith('relay:') ? (_u, init) => relayFetchImpl(peer.relay, path, init) : fetchImpl;
+        const res = await send(`${clean(candidate)}${path}`, {
           method,
           headers: { authorization: `Bearer ${peer.token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
           body: raw !== undefined ? raw : body !== undefined ? JSON.stringify(body) : undefined,
@@ -83,17 +90,24 @@ export function createPeers({ file, fetchImpl = fetch } = {}) {
   return {
     async load() {
       const raw = await readJson(file, []);
-      peers = Array.isArray(raw) ? raw.filter((p) => p && p.name && p.url && p.token) : [];
+      peers = Array.isArray(raw)
+        ? raw.filter((p) => p && p.name && p.url && p.token).map((p) => {
+          const relay = cleanDescriptor(p.relay);
+          const { relay: _drop, ...rest } = p;
+          return relay ? { ...rest, relay } : rest;
+        })
+        : [];
     },
 
     /** Replace the list (the desktop client sends it). */
     async set(list) {
-      peers = (Array.isArray(list) ? list : []).slice(0, 30).map((p) => ({
-        name: String(p?.name || '').trim().slice(0, 60),
-        url: clean(p?.url),
-        tailnetUrl: clean(p?.tailnetUrl),
-        token: String(p?.token || '').trim(),
-      })).filter((p) => p.name && /^https?:\/\//.test(p.url) && /^[A-Za-z0-9._~-]{8,200}$/.test(p.token));
+      const before = new Map(peers.map((p) => [p.name, p]));
+      peers = (Array.isArray(list) ? list : []).slice(0, 30).map((p) => {
+        const name = String(p?.name || '').trim().slice(0, 60);
+        // A relay address learned earlier stays when the list does not carry one.
+        const relay = cleanDescriptor(p?.relay) || before.get(name)?.relay || null;
+        return { name, url: clean(p?.url), tailnetUrl: clean(p?.tailnetUrl), ...(relay ? { relay } : {}), token: String(p?.token || '').trim() };
+      }).filter((p) => p.name && /^https?:\/\//.test(p.url) && /^[A-Za-z0-9._~-]{8,200}$/.test(p.token));
       rosters.clear();
       await save();
       return this.list();
@@ -101,7 +115,31 @@ export function createPeers({ file, fetchImpl = fetch } = {}) {
 
     /** What a route or a bot may see: never the tokens. */
     list() {
-      return peers.map((p) => ({ name: p.name, url: p.url, tailnetUrl: p.tailnetUrl || '' }));
+      return peers.map((p) => ({ name: p.name, url: p.url, tailnetUrl: p.tailnetUrl || '', ...(p.relay ? { relay: p.relay } : {}) }));
+    },
+
+    /**
+     * Ask every machine for its relay address while it is reachable (at home,
+     * on Tailscale), so it can still be reached through the relay later. A
+     * machine that turned its relay off is forgotten there too.
+     */
+    async learnRelays() {
+      let changed = false;
+      await Promise.all(peers.map(async (p) => {
+        try {
+          const res = await call(p, 'GET', '/api/relay-link', { timeoutMs: 6000 });
+          if (!res.ok) return;
+          const view = await res.json().catch(() => null);
+          if (!view || typeof view !== 'object' || !('descriptor' in view)) return;
+          const relay = cleanDescriptor(view.descriptor);
+          if (JSON.stringify(relay || null) !== JSON.stringify(p.relay || null)) {
+            if (relay) p.relay = relay; else delete p.relay;
+            changed = true;
+          }
+        } catch { /* off or away: keep what we knew */ }
+      }));
+      if (changed) await save();
+      return changed;
     },
 
     find,

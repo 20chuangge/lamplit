@@ -33,6 +33,8 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // The relay forwarders (127.0.0.1:144xx) before the page or the watcher needs them.
+        RelayLinks.startAll(this);
         startWatcher();
         askForNotifications();
         installVoiceBridge();

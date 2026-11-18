@@ -101,6 +101,17 @@ public class ShellBridge {
         return token == null ? "" : token;
     }
 
+    /**
+     * The local address (http://127.0.0.1:144xx) for a computer behind a Lamplit
+     * relay, pinned to the certificate fingerprint its pairing code carried
+     * (launcher only; 第 1 步原型). Empty when it is not a relay address.
+     */
+    @JavascriptInterface
+    public String relayLocal(final String host, final int port, final String id, final String fp) {
+        if (!fromAppPage()) return "";
+        return RelayLinks.localUrl(activity, host, port, id, fp);
+    }
+
     @JavascriptInterface
     public void setImmersive(final boolean on) {
         activity.runOnUiThread(() -> {

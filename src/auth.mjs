@@ -467,12 +467,13 @@ export function createPairLinkStore({ ttlMs = PAIR_LINK_TTL_MS, now = () => Date
 
   return {
     /** 32 random bytes, URL-safe; safe to put in a query string. */
-    create(ttl = ttlMs) {
+    create(ttl = ttlMs, { parent = '' } = {}) {
       const at = now();
       prune(at);
       const token = crypto.randomBytes(32).toString('base64url');
       const expiresAt = at + Math.max(1000, Number(ttl) || ttlMs);
-      links.set(token, { expiresAt });
+      // parent: the paired device that asked for it (its next login replaces the one before, 1.5.30).
+      links.set(token, { expiresAt, ...(parent ? { parent } : {}) });
       return { token, expiresAt };
     },
 
@@ -485,7 +486,7 @@ export function createPairLinkStore({ ttlMs = PAIR_LINK_TTL_MS, now = () => Date
       const link = links.get(key);
       if (!link) return null;
       links.delete(key);
-      return link.expiresAt > at ? { expiresAt: link.expiresAt } : null;
+      return link.expiresAt > at ? { expiresAt: link.expiresAt, ...(link.parent ? { parent: link.parent } : {}) } : null;
     },
 
     get size() {

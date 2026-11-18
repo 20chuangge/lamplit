@@ -759,6 +759,40 @@ function refreshMockState() {
  *   3 Lamplit saves it, tests it and sends the first sentence
  * The demo is still one click away; Settings → 模型 has everything else.
  */
+/**
+ * First things to try (1.5.30): everyday work, not system reports. Shown in
+ * an empty chat, and under the first exchange - the first-run guide sends
+ * "你好" itself, so the empty chat with them was never seen.
+ */
+const STARTER_EXAMPLES = [
+  ['A', '整理下载文件夹', '按类型分好，先给你看打算怎么动', '看看我的下载文件夹，按类型（图片、文档、安装包、压缩包）整理到子文件夹里。先列出你打算怎么动，等我同意再动手。'],
+  ['B', '上网查资料', '给结论，附出处', '上网查一下：现在适合新手的 AI 写作工具有哪些？挑 3 个，说说各自的优缺点和价格，附上出处。'],
+  ['C', '写一份东西', '邮件、通知、周报都行', '帮我写一封请假邮件：明天下午请半天假去医院，语气礼貌、简短。'],
+  ['D', '每天提醒我', '到点自己跑，不用你记着', '每天早上 8 点给我一份简报：今天的天气、这台电脑的磁盘空间够不够，有异常就提醒我。'],
+];
+
+/** Under a chat's first exchange with the primary assistant: 试试这些. */
+function appendStarters(visible) {
+  const bot = botById(state.botId);
+  if (isGroupMode() || !bot?.primary || state.showProcess) return;
+  const said = visible.filter((m) => m.role === 'user').length;
+  if (said > 1 || !visible.some((m) => m.role === 'assistant')) return;
+  const row = el('div', 'starter-row');
+  row.appendChild(el('span', 'starter-label', '试试这些：'));
+  for (const [, title, , prompt] of STARTER_EXAMPLES) {
+    const chip = el('button', 'starter-chip', title);
+    chip.type = 'button';
+    chip.addEventListener('click', () => {
+      const composer = $('composer');
+      composer.value = prompt;
+      autoGrow(composer);
+      composer.focus();
+    });
+    row.appendChild(chip);
+  }
+  messagesEl.appendChild(row);
+}
+
 const ONBOARD_PROVIDERS = ['deepseek', 'moonshot', 'zhipu', 'qwen', 'siliconflow', 'openai'];
 const ONBOARD_FIRST = '你好！用两三句话介绍一下你能帮我做什么。';
 const onboard = { step: 1, provider: '', error: '', busy: false };

@@ -88,6 +88,7 @@ function renderMessages() {
     if (working) showTyping(typingBotId(), '正在处理…');
   }
 
+  if (visible.length) appendStarters(visible);
   updateComposerMode();
   renderVideoJobs();
   scrollToBottom(true);
@@ -276,14 +277,8 @@ function welcomeCard() {
     ? `${intro}。要动文件或系统的操作，我会先问过你。`
     : `${intro}。这台机器交给我了，我会自己把事情做完。`));
 
-  const examples = [
-    ['A', '看看这台电脑', '系统、磁盘、正在跑的程序', '看看这台电脑的系统版本、磁盘剩余空间和占用最多的几个程序，整理成一份简短的报告。'],
-    ['B', '打开一个网页', '读完告诉我要点', '打开 https://news.ycombinator.com ，把首页前五条标题和链接整理给我。'],
-    ['C', '记住我的习惯', '比如默认用公制单位', '记住：我习惯用公制单位，温度用摄氏度，距离用公里。'],
-    ['D', '安排一个定时任务', '比如每天早上的简报', '每天早上 9 点给我一份简报：这台电脑的磁盘和运行状态，有异常就标出来。'],
-  ];
   const choices = el('div', 'choice-list');
-  for (const [key, title, desc, prompt] of examples) {
+  for (const [key, title, desc, prompt] of STARTER_EXAMPLES) {
     choices.appendChild(choiceButton(key, title, desc, () => {
       const composer = $('composer');
       composer.value = prompt;

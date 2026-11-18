@@ -104,8 +104,11 @@ export function createDeviceStore({ items = [], persist = async () => {} } = {})
       lastSeenAt: cleanIso(d.lastSeenAt || d.createdAt, now()),
       ip: String(d.ip || ''),
       ...(['phone', 'browser', 'machine'].includes(d.kind) ? { kind: d.kind } : {}),
+      ...(d.parent ? { parent: String(d.parent) } : {}),
     }))
     .slice(0, MAX_DEVICES);
+  // A phone or a browser (not another machine's sync login): what may be cleaned up.
+  const isPersonal = (d) => d.kind === 'phone' || d.kind === 'browser' || (!d.kind && !/机器|machine/i.test(d.name));
 
   let saveChain = Promise.resolve();
   function save() {
@@ -126,8 +129,17 @@ export function createDeviceStore({ items = [], persist = async () => {} } = {})
         .map(publicDevice);
     },
 
-    /** Register a newly paired device and hand back its one-time session token. */
-    add({ name = '设备', ip = '', kind = '' } = {}) {
+    /**
+     * Register a newly paired device and hand back its one-time session token.
+     * `parent`: the paired device that asked for the one-time link (1.5.30) -
+     * the phone app opening this machine in its own page. It had a new login
+     * every time (45 on one computer for one phone); now the new one replaces
+     * the one before.
+     */
+    add({ name = '设备', ip = '', kind = '', parent = '' } = {}) {
+      if (parent) {
+        for (let i = devices.length - 1; i >= 0; i -= 1) if (devices[i].parent === parent) devices.splice(i, 1);
+      }
       const sessionToken = crypto.randomBytes(SESSION_BYTES).toString('hex');
       const stamp = now();
       const device = {
@@ -138,6 +150,7 @@ export function createDeviceStore({ items = [], persist = async () => {} } = {})
         lastSeenAt: stamp,
         ip: String(ip || ''),
         ...(['phone', 'browser', 'machine'].includes(kind) ? { kind } : {}),
+        ...(parent ? { parent: String(parent).slice(0, 40) } : {}),
       };
       devices.push(device);
       // Oldest activity goes first when the list is full.
@@ -170,6 +183,23 @@ export function createDeviceStore({ items = [], persist = async () => {} } = {})
       device.lastSeenAt = now();
       save();
       return true;
+    },
+
+    /**
+     * Revoke the phones' and browsers' logins not used for `olderThanMs`
+     * (1.5.30); another machine's sync login and `keep` stay. -> how many went.
+     */
+    prune({ olderThanMs = 30 * 24 * 3600 * 1000, keep = [] } = {}) {
+      const cutoff = Date.now() - olderThanMs;
+      let removed = 0;
+      for (let i = devices.length - 1; i >= 0; i -= 1) {
+        const d = devices[i];
+        if (!isPersonal(d) || keep.includes(d.id)) continue;
+        const seen = Date.parse(d.lastSeenAt);
+        if (Number.isFinite(seen) && seen < cutoff) { devices.splice(i, 1); removed += 1; }
+      }
+      if (removed) save();
+      return removed;
     },
 
     /** Revoke one device. Its cookie stops working on the next request. */

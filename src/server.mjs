@@ -299,6 +299,9 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // ...and, without the cable, the phone whose Lamplit app has 「让机器人用这部手机」 on (1.4.0).
   // The local key for the human's own app (1.5.27), made before anything listens.
   localKey(P.dataDir);
+  // Logins of phones and browsers unused for 30 days go (1.5.30); checked again every day.
+  try { devices.prune(); } catch { /* the list stays */ }
+  setInterval(() => { try { devices.prune(); } catch { /* next day */ } }, 24 * 3600 * 1000).unref();
   refs.phoneLink = createPhoneLink({ bus });
   const adbHere = () => findAdb({ configured: phoneConfig().adbPath });
   refs.phone = createPhone({ adb: () => adbHere() || 'lamplit', exec: makePhoneExec({ adbPath: adbHere, link: refs.phoneLink }), workspaceDir });
@@ -1982,8 +1985,9 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
     await notePublicPairFailure(state);
     throw httpError(403, 'PAIR_CODE_NOT_ALLOWED_PUBLIC', 'the 8-digit code cannot be used on the public address; scan the QR code instead');
   }
+  let link = null;
   if (!/^\d{8}$/.test(code)) {
-    const link = state.pairLinks.consume(code);
+    link = state.pairLinks.consume(code);
     if (!link) {
       if (req.viaPublic) await notePublicPairFailure(state);
       throw httpError(401, 'PAIR_INVALID_LINK', 'that code was already used or has expired; scan the code again');
@@ -2003,7 +2007,7 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
   // A client may name its device (the computer's entry for the other machines).
   const deviceName = String(body?.deviceName || '').trim().slice(0, 40);
   const userAgent = req?.headers?.['user-agent'];
-  const { device, sessionToken } = state.devices.add({ name: deviceName || describeAgent(userAgent), ip: clientIp(req), kind: deviceKind(userAgent) });
+  const { device, sessionToken } = state.devices.add({ name: deviceName || describeAgent(userAgent), ip: clientIp(req), kind: deviceKind(userAgent), parent: link?.parent || '' });
   res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: isSecureRequest(req) || Boolean(req.viaPublic) }));
   // A native app has no cookie jar it trusts across origins: when it says so, it
   // gets the per-device token in the body and sends it as `Authorization`.
@@ -2055,7 +2059,7 @@ function combinedPairUrl(links, token) {
   return url.toString();
 }
 
-route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
+route('POST', /^\/api\/pairing\/link$/, async (req, _res, { state }) => {
   const publicUrl = funnelPublicUrl();
   if (!state.lanUrl && !publicUrl) {
     throw httpError(
@@ -2076,7 +2080,9 @@ route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
   }
 
   // One token, every address: the phone scans whichever it can reach.
-  const { token, expiresAt } = state.pairLinks.create();
+  // Asked by a paired device (the phone app opening this machine): its page's next login replaces its last one.
+  const auth = req.auth || evaluateAuth(req, state.security, state.devices);
+  const { token, expiresAt } = state.pairLinks.create(undefined, { parent: auth?.deviceId || '' });
   const withToken = links.map((link) => ({ ...link, url: `${link.url}/?pair=${token}` }));
   const preferred = withToken[0] || null;
   return {
@@ -2092,6 +2098,15 @@ route('POST', /^\/api\/pairing\/link$/, async (_req, _res, { state }) => {
 });
 
 route('GET', /^\/api\/devices$/, async (_req, _res, { state }) => ({ devices: state.devices.list() }));
+// Old logins of phones and browsers, not used for a while (1.5.30): the one asking stays.
+//   POST /api/devices/prune {olderThanHours?=24} -> {removed}
+route('POST', /^\/api\/devices\/prune$/, async (req, _res, { body, state }) => {
+  const hours = Math.max(1, Number(body?.olderThanHours) || 24);
+  const auth = req.auth || evaluateAuth(req, state.security, state.devices);
+  const removed = state.devices.prune({ olderThanMs: hours * 3600 * 1000, keep: auth?.deviceId ? [auth.deviceId] : [] });
+  if (removed) await audit({ kind: 'devices.pruned', removed, olderThanHours: hours });
+  return { removed, devices: state.devices.list() };
+});
 
 // Public HTTPS door. Off by default; enabling runs the real Tailscale CLI and
 // persists the choice so a restart brings it back.
@@ -2372,11 +2387,15 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
       ? checkupItem('voice', '语音输入', 'ok', '能用：输入框旁的麦克风可以说话转文字。')
       : checkupItem('voice', '语音输入', 'info', '没配（可选）：想说话代替打字，在「设置 → 模型」里填一个硅基流动的密钥。', toModel));
   } catch { /* older voice module */ }
-  // Phones: optional too.
+  // Phones: optional too. A paired phone with 「让机器人用这部手机」 off is said as such (1.5.30).
   const phones = state.phoneLink.list();
+  const week = Date.now() - 7 * 24 * 3600 * 1000;
+  const pairedPhone = state.devices.list().some((d) => d.kind === 'phone' && Date.parse(d.lastSeenAt) > week);
   items.push(phones.length
-    ? checkupItem('phone', '手机', 'ok', `已连 ${phones.length} 部：${phones.map((p) => p.model || p.name).filter(Boolean).join('、')}。`)
-    : checkupItem('phone', '手机', 'info', '还没连手机（可选）：装上 Lamplit 手机 App，扫一下二维码，在外面也能用，机器人也能帮你操作手机。', { kind: 'settings', target: 'sec-pair', label: '连手机' }));
+    ? checkupItem('phone', '手机', 'ok', `已连 ${phones.length} 部：${phones.map((p) => p.model || p.name).filter(Boolean).join('、')}，机器人可以操作它。`)
+    : pairedPhone
+      ? checkupItem('phone', '手机', 'info', '手机已经配对，能在手机上用 Lamplit；要让机器人帮你操作手机，在手机 App 的「设置 → 机器 → 手机」里打开「让机器人用这部手机」。')
+      : checkupItem('phone', '手机', 'info', '还没连手机（可选）：装上 Lamplit 手机 App，扫一下二维码，在外面也能用，机器人也能帮你操作手机。', { kind: 'settings', target: 'sec-pair', label: '连手机' }));
   // This machine: memory and processor.
   const load = machineLoad();
   items.push(load.busy

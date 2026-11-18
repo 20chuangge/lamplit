@@ -405,12 +405,34 @@ async function showPairDialog() {
 }
 
 /** One row per paired phone; removing one ends that phone's session. */
-function renderDevices(devices) {
+function renderDevices(all) {
   const list = $('device-list');
   if (!list) return;
   list.innerHTML = '';
   const empty = $('device-empty');
-  if (empty) empty.hidden = devices.length > 0;
+  if (empty) empty.hidden = all.length > 0;
+  // Logins not used for a day fold into one line with a clean-up (1.5.30: one phone had 45).
+  const cut = Date.now() - 24 * 3600 * 1000;
+  const personal = (d) => d.kind === 'phone' || d.kind === 'browser' || (!d.kind && !/机器/.test(d.name || ''));
+  const old = all.filter((d) => personal(d) && Date.parse(d.lastSeenAt) < cut);
+  const devices = all.filter((d) => !old.includes(d));
+  if (old.length) {
+    const row = el('div', 'device-item device-old');
+    const main = el('div', 'device-main');
+    main.append(el('div', 'device-name', `还有 ${old.length} 个超过一天没用的旧登录`), el('div', 'device-meta', '多半是手机 App 重新打开机器、或重新配对时留下的；清掉不影响正在用的设备。'));
+    const clean = el('button', 'btn tiny', '清理掉');
+    clean.type = 'button';
+    clean.addEventListener('click', async () => {
+      clean.disabled = true;
+      try {
+        const res = await api('/api/devices/prune', { method: 'POST', body: { olderThanHours: 24 } });
+        toast(`清掉了 ${res.removed || 0} 个旧登录`);
+        renderDevices(res.devices || []);
+      } catch (err) { toast(err.message, true); clean.disabled = false; }
+    });
+    row.append(main, clean);
+    list.appendChild(row);
+  }
 
   for (const device of devices) {
     const row = document.createElement('div');

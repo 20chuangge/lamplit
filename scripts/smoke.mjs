@@ -9141,9 +9141,32 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         check('E30 balance pace: only records that know their cached share count (older ones read twice the bill), whole days first, else today scaled to 24 h',
           r1.basis === 'days' && Math.abs(r1.perDay - 0.47) < 0.01 && r2.basis === 'today' && Math.abs(r2.perDay - 4) < 0.01 && U30.spendRate([rec('2026-11-17')], rp, noon).basis === 'none');
         const bots30 = await readText('../public/app/main/04-bots.js');
+        const DV = await import('../src/devices.mjs');
+        const store = DV.createDeviceStore({ items: [
+          { id: 'old1', name: 'Android 手机', tokenHash: 'a', kind: 'phone', lastSeenAt: '2026-01-01T00:00:00Z' },
+          { id: 'sync', name: '其他机器（同步用）', tokenHash: 'b', lastSeenAt: '2026-01-01T00:00:00Z' },
+          { id: 'web1', name: 'Android 手机', tokenHash: 'c', kind: 'phone', parent: 'app1', lastSeenAt: new Date().toISOString() },
+        ] });
+        store.add({ name: 'Android 手机', kind: 'phone', parent: 'app1' });
+        const afterAdd = store.list().filter((d) => d.name === 'Android 手机').length;
+        const pruned = store.prune({ olderThanMs: 30 * 24 * 3600 * 1000 });
+        check('D30 devices: the phone app opening a machine replaces its page\'s last login (one phone had 45); phone and browser logins unused for 30 days go, another machine\'s sync login stays',
+          afterAdd === 2 && pruned === 1 && store.list().some((d) => d.id === 'sync') && !store.list().some((d) => d.id === 'old1' || d.id === 'web1')
+          && (await readText('../src/server.mjs')).includes("parent: link?.parent || ''") && (await readText('../public/app/main/08-settings.js')).includes("'/api/devices/prune'"));
+        check('D30 first things to try: everyday tasks, also under the first exchange (the guide says 你好 itself, so the empty chat with them was never seen)',
+          bots30.includes('const STARTER_EXAMPLES = [') && bots30.includes('function appendStarters(visible)') && (await readText('../public/app/main/05-chat.js')).includes('if (visible.length) appendStarters(visible);'));
         check('E30 first run: the guide opens at its top, says DeepSeek needs a top-up first, and shows the machine\'s explanation of a failed key',
           bots30.includes('messagesEl.scrollTop = 0;') && bots30.includes('新账号要先充值') && bots30.includes('/^(密钥不对|账户没钱|请求太多|服务商|这次要发|连不上服务商|模型服务商)/.test(said)')
           && css29.includes('.onboard .pw-wrap { max-width: 360px;'));
+        const PC = await import('./publish-cn.mjs');
+        const auth = PC.cosAuthorization({ secretId: 'AKIDexample', secretKey: 'secret', method: 'PUT', key: 'download/a.exe', host: 'b-1.cos.ap-shanghai.myqcloud.com', now: 1700000000 });
+        const eb = await readText('../desktop/electron-builder.yml');
+        const siteZh = await readText('../site/index.html');
+        check('P31 downloads in China: Windows installers to Tencent Cloud COS (signed requests, keys from a file outside the repository), the Chinese site\'s button goes there; installers slimmer (zh/en only, maximum compression)',
+          /^q-sign-algorithm=sha1&q-ak=AKIDexample&q-sign-time=1699999940;1700000600&q-key-time=1699999940;1700000600&q-header-list=host&q-url-param-list=&q-signature=[0-9a-f]{40}$/.test(auth)
+          && eb.includes('compression: maximum') && /electronLanguages:\s*\n\s*- zh-CN\s*\n\s*- en-US/.test(eb)
+          && siteZh.includes('data-cn="1" href="https://lamplit-1528578126.cos.ap-shanghai.myqcloud.com/download/latest/Lamplit-Setup.exe"')
+          && siteZh.includes('id="dl-apk" data-cn="1" href="https://gitee.com/') && (await readText('../site/site.js')).includes('if (apk && b && !b.dataset.cn)'));
         const derpSh = await readText('../hub/derp-linux.sh');
         check('N29 relay script: official derper built through the China mirrors, IP certificate, only this tailnet\'s devices, reports to the hub',
           derpSh.includes('GOPROXY="https://goproxy.cn') && derpSh.includes('golang.google.cn') && derpSh.includes('tailscale.com/cmd/derper@latest')

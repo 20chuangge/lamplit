@@ -560,6 +560,13 @@
   .relay-map::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   .relay-map::-webkit-scrollbar-track { background: transparent; }
   .relay-form { display: grid; gap: 6px; margin-top: 10px; max-width: 420px; }
+  /* First things to try, under the first exchange (1.5.30) */
+  .starter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 8px 46px; }
+  .starter-label { font-size: 12px; color: var(--dim); margin-right: 2px; }
+  .starter-chip { border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted, var(--text)); font: inherit; font-size: 12.5px; padding: 4px 12px; cursor: pointer; }
+  .starter-chip:hover { border-color: var(--border-strong); color: var(--text); background: var(--panel-2); }
+  @media (max-width: 860px) { .starter-row { margin-left: 0; } }
+  .device-old .device-name { color: var(--muted, var(--text)); }
   /* 体检 (1.5.30) */
   .checkup-list { display: grid; gap: 2px; }
   .checkup-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 2px; border-bottom: 1px solid var(--border-soft); }

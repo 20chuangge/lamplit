@@ -56,7 +56,8 @@ extraResources:
     to: server/update
 
 asar: true
-compression: normal
+# maximum: 124 -> 110 MB for the installer (1.5.31), a few seconds more to build.
+compression: maximum
 removePackageScripts: true
 
 win:
@@ -100,3 +101,8 @@ linux:
   category: Utility
   synopsis: Personal AI assistant with its own computer
 
+# Chromium's own strings (menus, dialogs) in the languages Lamplit speaks; the
+# other 53 locales were 48 MB unpacked (1.5.31).
+electronLanguages:
+  - zh-CN
+  - en-US

@@ -79,7 +79,7 @@ import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './
 import { createMcpManager } from './mcp.mjs';
 import { createProvisioner, derpMapFor, isPublicIpv4, parseNetcheckText } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
-import { createRelayLink, relayFetch } from './relaylink.mjs';
+import { createRelayLink, openRelayForwarder, relayFetch } from './relaylink.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
@@ -1407,7 +1407,7 @@ async function fetchPeerNames(state) {
 // How fast this machine reaches each of the others (1.5.28, 网络诊断): three
 // small requests each, the middle time. A proxy that sends Tailscale abroad
 // shows up here as hundreds of milliseconds between machines in one city.
-//   GET /api/peers/latency -> {machines:[{machine, ms, via:'lan'|'tailscale', error?}]}
+//   GET /api/peers/latency -> {machines:[{machine, ms, via:'lan'|'tailscale'|'relay', error?}]}
 export function middle(times) {
   const s = times.filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
   return s.length ? s[Math.floor((s.length - 1) / 2)] : null;
@@ -1424,7 +1424,7 @@ route('GET', /^\/api\/peers\/latency$/, async (_req, _res, { state }) => {
         const res = await state.peers.call(peer, 'GET', '/api/health', { timeoutMs: 3000 });
         await res.text().catch(() => '');
         times.push(Date.now() - started);
-        via = res.url && peer.tailnetUrl && res.url.startsWith(String(peer.tailnetUrl).replace(/\/+$/, '')) ? 'tailscale' : 'lan';
+        via = res.viaRelay ? 'relay' : res.url && peer.tailnetUrl && res.url.startsWith(String(peer.tailnetUrl).replace(/\/+$/, '')) ? 'tailscale' : 'lan';
       } catch (err) { error = err.message; break; }
     }
     return { machine: name, ms: middle(times), via, ...(times.length ? {} : { error }) };
@@ -2742,6 +2742,31 @@ route('GET', /^\/api\/remote\/reach$/, async (req, _res, { query, state }) => {
   if (!res.ok) throw httpError(502, 'MACHINE_UNREACHABLE', `HTTP ${res.status}`);
   const health = await res.json();
   return { via: res.viaRelay ? 'relay' : 'direct', health };
+});
+
+// The desktop window on a machine that only the relay reaches (1.5.36): a
+// loopback door to it (openRelayForwarder), one per machine, kept while this
+// hub runs. Its own address and Tailscale are tried by the app first.
+//   POST /api/remote/relay-door {url: <machine address>}  loopback only -> {url: 'http://127.0.0.N:port'}
+const relayDoors = new Map(); // relay id -> {url, fp, host, close}
+route('POST', /^\/api\/remote\/relay-door$/, async (req, _res, { body, state }) => {
+  if (req.viaPublic || !isLoopbackHost(clientIp(req))) throw httpError(403, 'LOCAL_ONLY', 'only the desktop app on this computer can ask this');
+  const originOf = (u) => { try { return new URL(u).origin.toLowerCase(); } catch { return ''; } };
+  const target = originOf(String(body?.url || ''));
+  const listed = target && state.peers.list().find((p) => [p.url, p.tailnetUrl].some((u) => u && originOf(u) === target));
+  if (!listed) throw httpError(404, 'NOT_A_MACHINE', 'not a machine in the list');
+  const relay = state.peers.find(listed.name)?.relay;
+  if (!relay) throw httpError(409, 'NO_RELAY', `「${listed.name}」没有中转地址`);
+  const had = relayDoors.get(relay.id);
+  // Same machine, same certificate and relay: the same door (and the same cookies).
+  if (had && had.fp === relay.fp && had.relayAt === `${relay.host}:${relay.port}`) return { url: had.url };
+  had?.close();
+  const used = new Set([...relayDoors.values()].map((d) => d.host));
+  let n = 2;
+  while (used.has(`127.0.0.${n}`) && n < 250) n += 1;
+  const door = await openRelayForwarder(relay, { host: `127.0.0.${n}` });
+  relayDoors.set(relay.id, { ...door, fp: relay.fp, relayAt: `${relay.host}:${relay.port}` });
+  return { url: door.url };
 });
 
 route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state }) => {

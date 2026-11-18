@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CONTROL_NAME, createLimiter, createRelay, idFromSni, makeSelfSignedCert, openTunnel, readClientHello, wsAccept, WsConn } from '../hub/relay/relay.mjs';
 import { checkRelay, connectViaRelay, createRelayLink, relayFetch } from '../src/relaylink.mjs';
+import { createPeers } from '../src/peers.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(cond, ms = 5000) {
@@ -350,6 +351,23 @@ export async function relayChecks({ check }) {
     const kept = JSON.parse(fs.readFileSync(path.join(tmp, 'srv', 'relay-link.json'), 'utf8'));
     check('relay forget: off, no address or join secret left; its own id, key and certificate stay', gone.enabled === false && !gone.host && !kept.join && !kept.host && kept.id === idBefore && kept.key && srv.link.view().fingerprint === fpBefore && srv.link.descriptor() === null, JSON.stringify(kept));
     check('relay forget: the tunnel goes', await until(() => !relay.tunnels.has(idBefore), 3000));
+
+    // 1.5.36: a proxy answering 502 for an address it cannot reach is not the machine.
+    const peersFile = path.join(tmp, 'peers-proxy.json');
+    fs.writeFileSync(peersFile, JSON.stringify([{ name: 'M', url: 'http://198.51.100.9:4390', tailnetUrl: 'http://100.64.0.9:4390', token: 'abcdefghijklmnop', relay: { host: '198.51.100.7', port: 34443, id: 'abcdefghijklmnopqrstuvwxyz', fp: 'a'.repeat(64) } }]));
+    const tried = [];
+    const peersM = createPeers({
+      file: peersFile,
+      fetchImpl: async (url) => { tried.push(url); return new Response('<html>Bad Gateway</html>', { status: 502, headers: { 'content-type': 'text/html' } }); },
+      relayFetchImpl: async () => { tried.push('relay'); return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } }); },
+    });
+    await peersM.load();
+    const viaProxy = await peersM.call(peersM.find('M'), 'GET', '/api/health').catch((e) => e);
+    check('peers: a proxy\'s 502 on the LAN and Tailscale addresses moves on to the relay', viaProxy?.status === 200 && viaProxy.viaRelay === true && tried.join(',').endsWith('relay') && tried.length === 3, JSON.stringify(tried));
+    const own = createPeers({ file: peersFile, fetchImpl: async () => new Response('{"error":{"code":"X"}}', { status: 502, headers: { 'content-type': 'application/json' } }), relayFetchImpl: async () => { throw new Error('should not be tried'); } });
+    await own.load();
+    const ownRes = await own.call(own.find('M'), 'GET', '/api/x').catch((e) => e);
+    check('peers: the machine\'s own 502 (JSON) is its answer, not a reason to switch routes', ownRes?.status === 502);
   } finally {
     for (const fn of cleanup.reverse()) { try { fn(); } catch { /* best effort */ } }
     fs.rmSync(tmp, { recursive: true, force: true });

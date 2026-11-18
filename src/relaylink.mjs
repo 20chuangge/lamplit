@@ -161,6 +161,39 @@ export function relayFetch(desc, urlPath, { method = 'GET', headers = {}, body, 
   });
 }
 
+/**
+ * A plain-HTTP door on this computer's loopback to a machine behind the relay
+ * (1.5.36: the desktop window opens a machine that only the relay reaches).
+ * Each connection to host:port becomes a pinned TLS connection through the
+ * relay (connectViaRelay), bytes copied both ways - what the phone app's
+ * forwarder does. Each machine gets its own loopback address (127.0.0.2, .3 …)
+ * so cookies of different machines never mix. Whoever uses the door still
+ * needs that machine's login: through the relay it treats every request as remote.
+ * -> Promise<{url, host, port, close()}>
+ */
+export function openRelayForwarder(desc, { host = '127.0.0.2', port = 0 } = {}) {
+  const d = cleanDescriptor(desc);
+  if (!d) return Promise.reject(Object.assign(new Error('not a relay address'), { code: 'RELAY_BAD_ADDRESS' }));
+  const server = net.createServer({ allowHalfOpen: true }, (inner) => {
+    inner.on('error', () => {});
+    inner.pause();
+    connectViaRelay(d).then((outer) => {
+      outer.on('error', () => inner.destroy());
+      inner.on('error', () => outer.destroy());
+      inner.pipe(outer);
+      outer.pipe(inner);
+      inner.resume();
+    }, () => inner.destroy());
+  });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, host, () => {
+      const p = server.address().port;
+      resolve({ url: `http://${host}:${p}`, host, port: p, close: () => server.close() });
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The link: settings, the tunnel, and the TLS end of every relayed connection
 // ---------------------------------------------------------------------------

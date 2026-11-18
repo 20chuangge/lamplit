@@ -1463,7 +1463,7 @@ async function runNetCheck() {
   };
   const current = machineDisplayName();
   const rows = [line(isMobile() ? '这部手机' : '这台设备', current, here)];
-  for (const m of peers.machines || []) rows.push(line(current, m.machine, m.ms, m.error ? '没连上' : (m.via === 'tailscale' ? '走 Tailscale' : '')));
+  for (const m of peers.machines || []) rows.push(line(current, m.machine, m.ms, m.error ? '没连上' : (m.via === 'tailscale' ? '走 Tailscale' : m.via === 'relay' ? '走中转' : '')));
   const ts = window.desk?.tailscaleNetcheck && onLocalMachine() ? await window.desk.tailscaleNetcheck().catch(() => null) : null;
   const cn = (ts?.regions || []).find((r) => r.code === 'lamplit');
   if (cn) rows.push(line(isMobile() ? '这部手机' : '这台设备', '国内中转（Tailscale）', cn.ms, '直连打不通时走它'));
@@ -1663,10 +1663,24 @@ async function renderTunnel() {
   if (!configured && state.tunnelFormMode !== 'add') tunnelFormMode('', view);
   else if ($('tunnel-form')) $('tunnel-form').hidden = !state.tunnelFormMode;
   if ($('tunnel-actions')) $('tunnel-actions').hidden = !configured || Boolean(state.tunnelFormMode);
+  // Another machine's page in the desktop app (1.5.36): installing runs from this
+  // computer (over SSH), so the form lives on 本机's page; here only its status.
+  const elsewhere = Boolean(window.desk?.localProvision && machineBridge && !machineBridge.local);
+  if (elsewhere) {
+    if ($('tunnel-form')) $('tunnel-form').hidden = true;
+    for (const id of ['tunnel-reinstall', 'tunnel-add', 'tunnel-uninstall']) if ($(id)) $(id).hidden = true;
+    if ($('tunnel-actions')) $('tunnel-actions').hidden = !configured;
+  } else {
+    for (const id of ['tunnel-reinstall', 'tunnel-add', 'tunnel-uninstall']) if ($(id)) $(id).hidden = false;
+  }
   if ($('tunnel-share')) $('tunnel-share').hidden = !(configured && view.enabled);
   const portNote = $('tunnel-port-note');
   box.textContent = '';
-  if (!configured) { if (portNote) portNote.hidden = true; return; }
+  if (!configured) {
+    if (portNote) portNote.hidden = true;
+    if (elsewhere) box.appendChild(el('div', '', '中转在「本机」的 设置 → 手机和外网 里装（在这台电脑上点，它会经 SSH 装到云服务器）；装好后点「让其他机器也用这个中转」，这台机器就跟着连上。'));
+    return;
+  }
   const mb = (n) => (Number(n) / 1024 / 1024).toFixed(1);
   const why = {
     RELAY_UNREACHABLE: '连不上中转：服务器关了，或者云服务器的防火墙（安全组）还没放行这个端口',

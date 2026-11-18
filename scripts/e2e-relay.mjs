@@ -223,6 +223,18 @@ async function main() {
   check('A → B: push-update reaches B through the relay when its address is dead', pushed.status === 200 && pushed.body?.ok === true && pushed.body?.updated === false && Boolean(pushed.body?.version), JSON.stringify(pushed.body).slice(0, 200));
   const notListed = await A.api('/api/remote/push-update', { method: 'POST', body: { url: 'http://127.0.0.1:8' } });
   check('A: push-update still goes only to a machine in the list', notListed.status === 403);
+  // The desktop window on B through the relay (1.5.36): A opens a loopback door to B.
+  const door = await A.api('/api/remote/relay-door', { method: 'POST', body: { url: 'http://127.0.0.1:9' } });
+  const doorUrl = door.body?.url || '';
+  const viaDoor = doorUrl ? await fetch(`${doorUrl}/api/bots`, { headers: { authorization: `Bearer ${bPair.token}` } }).catch(() => null) : null;
+  const doorPage = doorUrl ? await fetch(`${doorUrl}/`).then((r) => r.text()).catch(() => '') : '';
+  check('A → B: a loopback door (127.0.0.N) opens B through the relay for the desktop window', /^http:\/\/127\.0\.0\.\d+:\d+$/.test(doorUrl) && !doorUrl.startsWith('http://127.0.0.1:') && viaDoor?.status === 200 && /<html/i.test(doorPage), JSON.stringify(door.body));
+  const noAuth = doorUrl ? await fetch(`${doorUrl}/api/bots`).then((r) => r.status).catch(() => 0) : 0;
+  check('A → B: through the door B still asks for its login (it counts as remote)', noAuth === 401);
+  const again2 = await A.api('/api/remote/relay-door', { method: 'POST', body: { url: 'http://127.0.0.1:9' } });
+  check('A → B: asking again gives the same door (the same cookies)', again2.body?.url === doorUrl);
+  const latency = await A.api('/api/peers/latency');
+  check('A → B: the network check says B is reached through the relay', latency.body?.machines?.[0]?.via === 'relay', JSON.stringify(latency.body));
 
   // Group work across machines (crossmachine.mjs) is peers.json/call: the same
   // calls, made here with a peer list whose only working address is the relay.

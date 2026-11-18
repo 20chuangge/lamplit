@@ -306,18 +306,51 @@ async function reachMachine(url) {
   // DESK_FORCE_TAILNET=1 acts as if the LAN were unreachable (testing away-from-home at home).
   if (process.env.DESK_FORCE_TAILNET !== '1' && await probeHub(url)) return url;
   const alt = readMachines().find((m) => m.url === url)?.tailnetUrl;
-  if (!alt || !(await probeHub(alt))) return '';
-  await tailnetDirect();
+  if (alt && await probeHub(alt)) {
+    await tailnetDirect();
+    await copyLogin(url, alt);
+    bootLog(`${url} unreachable, using its Tailscale address ${alt}`);
+    return alt;
+  }
+  // Neither (Tailscale off, or never installed): through Lamplit's relay (1.5.36).
+  // This computer's hub opens a loopback door to that machine (127.0.0.N); the
+  // login is the same one, copied to the door's address.
+  const door = await relayDoor(url);
+  if (door && await probeHub(door)) {
+    await copyLogin(url, door);
+    bootLog(`${url} unreachable, using the relay (${door})`);
+    return door;
+  }
+  return '';
+}
+
+/** The pairing cookie of a machine, copied to another address of the same machine. */
+async function copyLogin(from, to) {
   try {
-    for (const c of await session.defaultSession.cookies.get({ url })) {
+    for (const c of await session.defaultSession.cookies.get({ url: from })) {
       await session.defaultSession.cookies.set({
-        url: alt, name: c.name, value: c.value, path: c.path || '/', httpOnly: c.httpOnly,
+        url: to, name: c.name, value: c.value, path: c.path || '/', httpOnly: c.httpOnly,
         ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}), ...(c.sameSite ? { sameSite: c.sameSite } : {}),
       });
     }
-  } catch (err) { bootLog(`cookie copy to ${alt} failed: ${err.message}`); }
-  bootLog(`${url} unreachable, using its Tailscale address ${alt}`);
-  return alt;
+  } catch (err) { bootLog(`cookie copy to ${to} failed: ${err.message}`); }
+}
+
+/** A loopback door to a machine through the relay, from this computer's hub ('' when it has no relay address). */
+async function relayDoor(url) {
+  if (HUB_MODE || !serverPort) return '';
+  try {
+    const res = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/relay-door`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return '';
+    return String((await res.json())?.url || '');
+  } catch {
+    return '';
+  }
 }
 
 /**

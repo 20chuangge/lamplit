@@ -70,6 +70,13 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
           signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         });
         if (res.status === 401 || res.status === 403) throw Object.assign(new Error(`「${peer.name}」不认这台机器的凭据（需要在 Lamplit 客户端里重新配对那台机器）`), { code: 'PEER_UNAUTHORIZED' });
+        // 502/503/504 that is not Lamplit's own JSON came from something in the
+        // way (a proxy such as Clash answering for an address it cannot reach):
+        // that address is not the machine; try the next one, the relay last (1.5.36).
+        if (res.status >= 502 && res.status <= 504 && !candidate.startsWith('relay:') && !/json/i.test(res.headers.get('content-type') || '')) {
+          await res.body?.cancel().catch(() => {});
+          throw Object.assign(new Error(`HTTP ${res.status}（不是那台机器回的，多半是代理）`), { code: 'PEER_PROXY_ERROR' });
+        }
         if (known.includes(candidate)) lastGood.set(peer.name, candidate);
         // Which way it went (第 2 步: the desktop app says "through the relay").
         if (candidate.startsWith('relay:')) {

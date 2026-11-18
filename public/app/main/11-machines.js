@@ -144,7 +144,7 @@ function renderMachineMenu() {
     for (const m of list) {
       rows.push(
         m.self
-          ? row(m.name, '你正在用的这台', { current: true })
+          ? row(m.name, selfSub(), { current: true })
           : row(m.name, m.tailnetUrl || m.url || '', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
       );
     }
@@ -320,7 +320,7 @@ async function renderBrowserMachines() {
       <div class="machine-avatar">${escapeHtml((m.name || '?').slice(0, 1).toUpperCase())}</div>
       <div class="machine-meta">
         <div class="machine-name">${escapeHtml(m.name)}</div>
-        <div class="machine-sub">${m.self ? '你正在用的这台' : `<span class="dot ${m.online ? 'on' : ''}"></span>${m.online ? '在线' : '离线'}<span class="funnel-state" data-funnel-state="${escapeHtml(m.name)}"></span>`}</div>
+        <div class="machine-sub">${m.self ? selfSub() : `<span class="dot ${m.online ? 'on' : ''}"></span>${m.online ? '在线' : '离线'}<span class="funnel-state" data-funnel-state="${escapeHtml(m.name)}"></span>`}</div>
       </div>
       <div class="machine-actions">
         ${m.self
@@ -1001,6 +1001,15 @@ function saveMachineFromModal() {
  * belong to a remote machine, which would install its own older copy and
  * restart itself mid-way when it is the target).
  */
+/**
+ * The machine you are on, and how this page reaches it (第 2 步): inside the phone app
+ * a page on 127.0.0.1:14440-14499 came through the relay (the app's forwarder, RelayLinks).
+ */
+function selfSub() {
+  const port = Number(location.port);
+  return location.hostname === '127.0.0.1' && port >= 14440 && port <= 14499 ? '你正在用的这台 · 经过中转' : '你正在用的这台';
+}
+
 /** A job poll answers with the job itself (GET /api/remote/provision/:id); keep the last one when it fails. */
 const jobFrom = (res, last) => (res?.id ? res : res?.job?.id ? res.job : last);
 

@@ -2352,4 +2352,5 @@ window.DESK_I18N_EN = {
   "中转装好了，但 {0}:{1} 上回答的不是它（证书对不上），可能端口被转到了别的程序。换一个端口再装一次。{2}": "The relay is installed, but what answers on {0}:{1} is not it (the certificate does not match); the port may lead to another program. Install again on another port.{2}",
   "中转装好了，「通过中转连接」也已打开，但从这台电脑连不上 {0} 的 TCP {1}：云服务器的防火墙还没放行。{2}放行后点「再测一次」。{3}{4}": "The relay is installed and \"Connect through the relay\" is on, but this computer cannot reach TCP {1} on {0}: the cloud firewall does not allow it yet. {2} Then click \"Test again\".{3}{4}",
   "让这台机器也连上中转…": "Letting this machine join the relay too…",
+  "你正在用的这台 · 经过中转": "The one you are using · through the relay",
 };

@@ -66,8 +66,8 @@
 
       <div class="bot-form" id="bot-form">
         <div class="bot-form-head">新建助手</div>
-        <input class="field" id="new-bot-name" placeholder="名字（例如：小笔）" autocomplete="off" />
-        <input class="field" id="new-bot-role" placeholder="职责（例如：整理会议纪要）" autocomplete="off" />
+        <input class="field" id="new-bot-name" placeholder="名字（例如：小笔）" autocomplete="off" maxlength="40" />
+        <input class="field" id="new-bot-role" placeholder="职责（例如：整理会议纪要）" autocomplete="off" maxlength="200" />
         <div class="row-2" style="display:flex; gap:8px;">
           <button class="btn primary tiny" id="new-bot-save" style="flex:1">创建</button>
           <button class="btn tiny" id="new-bot-cancel" style="flex:1">取消</button>
@@ -502,8 +502,8 @@
             <span class="row-note" style="flex:1;min-width:200px;margin:0">改审批级别会实时反映在这里；危险命令和你的规则仍可能单独拦截。</span>
           </div>
           <div class="perm-foot">
-            <div class="row-note" id="perm-strict-note">一键 strict：审批层面的最小权限——审批改为谨慎、生成先问、其他位置一律不许、sudo 先问、接管只看；机器人能力（工具授权）不变。改动会写进审计。</div>
-            <button class="btn danger" id="perm-strict" type="button">一键 strict</button>
+            <div class="row-note" id="perm-strict-note">一键最严：审批改成「谨慎」，生成图片和视频每次先问，工作区以外的位置一律不许，sudo 先问，接管桌面只能看。机器人能用哪些工具不变；改动记进审计。</div>
+            <button class="btn danger" id="perm-strict" type="button">一键最严</button>
           </div>
         </div>
         <div class="row-note" id="policy-note">这台机器上，机器人做事前要不要先问你。每台机器单独设置。</div>
@@ -775,7 +775,7 @@
       <section class="dsec" id="sec-machines">
         <div class="dsec-head">机器</div>
         <div class="dsec-hint">
-          每台机器有自己的一套 Bot、记忆、工作区和桌面。选中哪台，整个界面就是哪台；左上角也能切换。
+          每台机器有自己的一套助手、记忆、工作区和桌面。选中哪台，整个界面就是哪台；左上角也能切换。
         </div>
         <div class="machine-list" id="set-machines-list"></div>
         <div class="row-actions" style="margin-top:10px">
@@ -1012,9 +1012,30 @@
         <div class="kv"><span class="k">时区</span><span class="v" id="timezone-pill">—</span></div>
         <div class="kv"><span class="k">访问控制</span><span class="v" id="about-auth">—</span></div>
         <div class="kv"><span class="k">使用文档</span><span class="v"><a data-docs="" href="https://20chuangge.github.io/lamplit/docs.html" target="_blank" rel="noreferrer">打开使用文档 ↗</a></span></div>
+        <div class="kv"><span class="k">反馈</span><span class="v"><a href="https://github.com/20chuangge/lamplit/issues" target="_blank" rel="noreferrer">提一个问题 ↗</a> · <a href="https://wj.qq.com/s2/28728882/7epm/" target="_blank" rel="noreferrer">填用户问卷 ↗</a></span></div>
         <div class="btn-row" id="about-update-row" hidden><button class="btn tiny" id="about-update-btn" type="button">检查更新</button></div>
       </section>
     </div>
+  </div>
+</div>
+
+<!-- =====================================================================
+     a browser on this computer pairs itself before it may decide (1.5.32)
+     ===================================================================== -->
+<div class="scrim" id="local-pair-scrim" aria-hidden="true"></div>
+<div class="modal modal-sm" id="local-pair-modal" role="dialog" aria-modal="true" aria-labelledby="local-pair-title" aria-hidden="true">
+  <div class="modal-head">
+    <span class="modal-title" id="local-pair-title">这一步要你本人确认</span>
+    <button class="icon-btn sm" id="local-pair-close" type="button" aria-label="关闭">✕</button>
+  </div>
+  <div class="modal-body">
+    <div class="row-note">批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。</div>
+    <div class="row-note">想在这个浏览器里用，就配对一次：配对码在 Lamplit 应用的 设置 → 手机和外网；从终端启动的，在终端的启动信息里。</div>
+    <input class="field" id="local-pair-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="8 位配对码" />
+    <div class="btn-row">
+      <button class="btn primary" id="local-pair-go" type="button">配对这个浏览器</button>
+    </div>
+    <div class="row-note" id="local-pair-msg" role="alert"></div>
   </div>
 </div>
 
@@ -1105,7 +1126,7 @@
 
     <div class="row-note">
       填完点「连接并自动配置」就行，剩下的都自动：
-      装依赖 → 部署 Lamplit → 配好每个 Bot 的桌面 → 自动配对并加进机器列表。
+      装依赖 → 部署 Lamplit → 配好每个助手的桌面 → 自动配对并加进机器列表。
       密码只用于这一次配置，不会保存。
     </div>
     <div class="row-note">支持 Linux（Ubuntu、Debian、Rocky 等）和 Windows 10/11。Windows 要先在「设置 → 系统 → 可选功能」里装好 OpenSSH 服务器，并用管理员账号。</div>
@@ -1158,7 +1179,7 @@
       </button>
       <div class="be-hero-fields">
         <input class="be-name" id="botedit-name-input" autocomplete="off" maxlength="40" aria-label="名字" placeholder="名字" />
-        <textarea class="be-role" id="botedit-role-input" rows="2" maxlength="160" aria-label="职责" placeholder="这个 Bot 负责什么"></textarea>
+        <textarea class="be-role" id="botedit-role-input" rows="2" maxlength="160" aria-label="职责" placeholder="这个助手负责什么"></textarea>
       </div>
     </div>
     <section class="be-section">
@@ -1268,7 +1289,7 @@
       <summary>找不到配对码？</summary>
       <ul>
         <li>配对码是 8 位数字，每天换一次。在已经连着这台机器的手机或浏览器上，打开 设置 → 手机和外网 就能看到。</li>
-        <li>在这台机器上打开终端运行 <code id="auth-curl">curl -s http://127.0.0.1:4390/api/pairing</code>，结果里的 code 就是（Windows 上用 curl.exe）。</li>
+        <li>在这台机器上：Lamplit 应用里打开 设置 → 手机和外网；从终端启动的，配对码打印在终端的启动信息里。</li>
         <li>这台机器是 Lamplit 帮你装的：回到这台电脑，在 设置 → 机器 → 添加机器 里用同样的地址再连一次，会重新配对，已经装好的部分不会重做。</li>
       </ul>
     </details>

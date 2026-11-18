@@ -513,7 +513,10 @@ export const REPLY_STYLE = [
 ];
 
 export function reachesSecrets(name, args = {}, { workspaceDir = '' } = {}) {
-  const SECRET_FILES = /(vault\.(key|json|mjs)|secrets\.json|local-key\b|x-lamplit-local|\brevealVault\b|\bputVault\b)/i;
+  const SECRET_FILES = /(vault\.(key|json|mjs)|secrets\.json|\brevealVault\b|\bputVault\b)/i;
+  // What lets a program act as the human (1.5.32): the local key, the token and
+  // paired sessions, the pairing code in the desktop app's log.
+  const OWNER_FILES = /(local-key\b|x-lamplit-local|\bsecurity\.json\b|\bdevices\.json\b|startup\.log\b|\bdata[\\/]+\*|\bdata[\\/]+loc\*|\bdata[\\/]+sec\*)/i;
   let text = name === 'shell' ? String(args.command || '')
     : name === 'fs_write' ? `${args.path || ''}\n${args.content || ''}`
       : name === 'fs_read' || name === 'fs_list' ? String(args.path || '')
@@ -525,6 +528,7 @@ export function reachesSecrets(name, args = {}, { workspaceDir = '' } = {}) {
   for (const ws of new Set([workspaceDir, String(workspaceDir).replace(/\\/g, '/')].filter(Boolean))) text = text.split(ws).join('<workspace>');
   text = text.replace(/desk-hub[\\/]+workspace\b/gi, '<workspace>');
   if (SECRET_FILES.test(text)) return '要碰 Lamplit 保险箱里的密钥或授权码（vault），每次都先问你';
+  if (OWNER_FILES.test(text)) return '要碰 Lamplit 的本机密钥或配对信息（拿到它就能替你批准），每次都先问你';
   if (name !== 'fs_read' && name !== 'fs_list' && HUB_MODULE.test(text)) return '要在脚本里直接调用 Lamplit 自己的模块（会绕过「连接应用」的审批），每次都先问你';
   return '';
 }
@@ -2456,7 +2460,7 @@ export class AgentRuntime {
     const secretReason = reachesSecrets(name, args, { workspaceDir: this.config.workspaceDir });
     // On a machine given to the bots and set to 放手 (1.5.24, the human: "让他们的权限都放开"),
     // scripts that use Lamplit's own modules run unasked; the vault's keys and codes still ask everywhere.
-    const vaultReason = /保险箱/.test(secretReason || '');
+    const vaultReason = /保险箱|本机密钥/.test(secretReason || '');
     if (secretReason && (vaultReason || !freeMachine) && verdict.decision !== DECISION.DENY) { verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: secretReason }; sticky = true; }
     if (name === 'cli_agent_run' && verdict.decision !== DECISION.DENY) sticky = true;
     // adb in the shell works the phone around the phone tool's rules (1.3.1): ask every time.

@@ -3425,3 +3425,13 @@
   .machine-row.current .machine-actions { width: auto; }
   .composer-box .mic-btn, .composer-box .send-btn { width: 40px; height: 40px; }
 }
+
+/* A long bot name stays on one line in the title bar (1.5.32). */
+.chat-title-text { overflow: hidden; }
+.chat-head .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Getting started, last step: the bots' own account (1.5.32). */
+.isolation-ask { display: grid; gap: 8px; margin: 4px 0 10px 46px; padding: 12px 14px; max-width: 560px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+.isolation-ask b { font-size: 13.5px; font-weight: 600; }
+.isolation-ask .btn-row { margin: 0; }
+@media (max-width: 760px) { .isolation-ask { margin-left: 0; } }

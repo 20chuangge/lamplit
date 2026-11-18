@@ -508,7 +508,16 @@ const INTENTS = [
   { id: 'memory', re: /\b(remember|memory|memorise|memorize|note that|keep in mind)\b|记住|记一下|别忘了/i },
   { id: 'read', re: /\b(read|open|cat|show me)\b.{0,40}(file|welcome|readme|note)|(读|打开)[^。，,]{0,10}(文件|welcome|readme|笔记)/i },
   { id: 'files', re: /\b(list|ls\b|what'?s in|workspace|directory|folder)\b|工作区|(列出|有哪些)[^。，,]{0,8}文件/i },
+  // The four things the empty chat suggests (1.5.32): each plays a short scripted
+  // run in demo mode, so a new user sees the product work before adding a key.
+  { id: 'demo_tidy', re: /下载文件夹|整理[^。]{0,8}(文件夹|下载)/ },
+  { id: 'demo_daily', re: /(每天|每周|每个工作日)[^。]{0,12}(给我|提醒|简报|发)|提醒我/ },
+  { id: 'demo_write', re: /帮我写|写一封|写一份|起草/ },
+  { id: 'demo_research', re: /上网查|查一下|搜一下|查查|查资料/ },
 ];
+
+/** Said at the end of every scripted demo (1.5.32). */
+const DEMO_END = '这是演示脚本。接入模型后，你可以用自己的话说任何事。';
 
 function detectIntent(text) {
   for (const intent of INTENTS) {
@@ -666,6 +675,58 @@ function mockPlan(text, botName) {
         },
       ];
 
+    case 'demo_tidy': {
+      const dir = '演示/下载';
+      const files = ['周报-11月.docx', '发票-11月.pdf', '截图-1118.png', 'Lamplit-Setup.exe'];
+      // Moving files is the step a human approves: one node script (the same on Windows and Linux).
+      const move = `node -e "const fs=require('fs'),p=require('path');const d='${dir}';const m={'.png':'图片','.docx':'文档','.pdf':'文档','.exe':'安装包'};for(const f of fs.readdirSync(d)){const t=m[p.extname(f)];if(t===undefined)continue;fs.mkdirSync(p.join(d,t),{recursive:true});fs.renameSync(p.join(d,f),p.join(d,t,f));}console.log('分好了')"`;
+      return [
+        { tool: 'task_plan', args: { goal: '整理下载文件夹（演示）', steps: ['在工作区放一个演示用的「下载」文件夹', '看看里面有什么，按类型分好', '你同意后，把文件移进子文件夹'] } },
+        ...files.map((f) => ({ tool: 'fs_write', args: { path: `${dir}/${f}`, content: '（演示文件，可以删掉）\n' } })),
+        { tool: 'task_step', args: { step: 1, status: 'done', note: `放好了 ${files.length} 个演示文件：${dir}` } },
+        { tool: 'fs_list', args: { path: dir } },
+        { tool: 'task_step', args: { step: 2, status: 'done', note: '图片 1 个、文档 2 个、安装包 1 个' } },
+        { tool: 'shell', args: { command: move, timeoutMs: 15000 } },
+        { tool: 'task_step', args: { step: 3, status: 'done', note: '移进了 图片 / 文档 / 安装包' } },
+        { tool: 'task_end', args: { done: true } },
+        { tool: 'task_finish', args: { summary: `在工作区建了「${dir}」，放了 4 个演示文件，按类型分进 图片、文档、安装包。移动文件这一步先问了你：同意了就已经分好，拒绝了文件就原样不动。真用的时候，它整理的是你自己的下载文件夹，同样先给你看打算怎么动。${DEMO_END}` } },
+      ];
+    }
+
+    case 'demo_daily':
+      return [
+        { tool: 'routine_create', args: { name: '早间简报（演示）', instruction: '看一下这台电脑的磁盘空间够不够，有异常就提醒我。', schedule: '0 8 * * *', enabled: false } },
+        { tool: 'routine_list', args: {} },
+        { tool: 'task_finish', args: { summary: `建好了一个定时任务「早间简报（演示）」：每天 08:00 跑一次。演示里先不打开，免得每天给你发演示消息；在 设置 → 定时任务 里能看到它，可以打开、改时间或删掉。接入模型后，它每天会真的去查、真的写简报。${DEMO_END}` } },
+      ];
+
+    case 'demo_write':
+      return [
+        {
+          tool: 'fs_write',
+          args: {
+            path: '演示/请假邮件.md',
+            content: ['主题：明天下午请半天假', '', '王经理您好：', '', '我明天（周四）下午需要去医院复查，想请半天假，下午 1 点后离开。手头的周报今天下班前发您，有急事可以打我电话。', '', '谢谢！', '', '小林', ''].join('\n'),
+          },
+        },
+        { tool: 'task_finish', args: { summary: `写好了一封请假邮件，存在 演示/请假邮件.md，点开就能看、能复制。接入模型后，它会按你说的情况、你要的语气来写，写完也能直接帮你发。${DEMO_END}` } },
+      ];
+
+    case 'demo_research':
+      return [
+        {
+          content: [
+            '演示模式不联网，这一条没法真的去查。接入模型后，它会这样做：打开几个网页查最新的信息，挑出 3 个，分别说优缺点和价格，每条后面附上出处链接，最后给一句建议。',
+            '',
+            '比如你问「适合新手的 AI 写作工具」，回答会长这样：',
+            '1. 某工具 A：上手最快，中文好；免费版每天有次数限制。（出处：官网定价页）',
+            '2. 某工具 B：……',
+            '',
+            `点下面的「接入真实模型」，填一个 DeepSeek 密钥就能真的查。${DEMO_END}`,
+          ].join('\n'),
+        },
+      ];
+
     case 'shell':
       return [
         { tool: 'shell', args: { command: 'node --version', timeoutMs: 15000 } },
@@ -723,8 +784,12 @@ function mockPlan(text, botName) {
       return [
         {
           content: zh
-            ? `我是${botName === 'the assistant' ? '助理' : botName}，现在是演示模式（还没接入真实模型）。` +
-              '可以让我看看工作区有哪些文件、读一个文件、记住一件事、运行一个命令——这些都会真的调用工具，需要你同意的会先问你。' +
+            ? `我是${botName === 'the assistant' ? '助理' : botName}，现在是演示模式（还没接入真实模型），回答是写好的脚本。\n\n` +
+              '可以点这几个试试，每个都会真的做一遍：\n' +
+              '- 整理下载文件夹：建一个演示文件夹，列任务清单，移动前先问你\n' +
+              '- 每天提醒我：建一个定时任务\n' +
+              '- 写一份东西：写一封请假邮件存进工作区\n' +
+              '- 上网查资料：看看接入模型后会怎么回答\n\n' +
               '到 设置 → 模型 接入真实模型后，我就能听懂任何话。'
             : `I'm ${botName}, working out of the shared workspace. ` +
               'Ask me to read or list files, remember something, run a shell command, save a skill, ' +
@@ -773,32 +838,38 @@ function groupFromMessages(messages) {
  * answers in the group and replies privately to the coordinator.
  */
 function mockGroupPlan(group, botName, text) {
+  // A Chinese request gets Chinese back (1.5.32: the group demo answered in English).
+  const zh = /[\u4e00-\u9fff]/.test(String(text || ''));
+  const say = (cn, en) => (zh ? cn : en);
   if (group.role === 'coordinator' && group.others.length) {
     return [
       {
         tool: 'group_post',
-        args: { group: group.id, text: `On it: ${shortQuote(text, 60)}. I will check with the team.` },
+        args: { group: group.id, text: say(`收到：${shortQuote(text, 60)}。我问问大家。`, `On it: ${shortQuote(text, 60)}. I will check with the team.`) },
       },
       {
         tool: 'bot_message',
         args: {
           botId: group.others[0],
-          text: `The group is working on: ${shortQuote(text, 80)}. One short opinion, please.`,
+          text: say(`群里在做：${shortQuote(text, 80)}。说一句你的看法。`, `The group is working on: ${shortQuote(text, 80)}. One short opinion, please.`),
         },
       },
-      { tool: 'task_finish', args: { summary: `Posted in the group and pulled in ${group.others[0]} for a second opinion.` } },
+      { tool: 'task_finish', args: { summary: say(`在群里回了话，也请 ${group.others[0]} 说了看法。`, `Posted in the group and pulled in ${group.others[0]} for a second opinion.`) } },
     ];
   }
 
   const spoken =
     group.role === 'coordinator'
-      ? `On it: ${shortQuote(text, 60)}. I am following this up in the group.`
-      : `I am ${botName}. Picked up the group task: ${shortQuote(text, 60)}.`;
+      ? say(`收到：${shortQuote(text, 60)}。我在群里跟进。`, `On it: ${shortQuote(text, 60)}. I am following this up in the group.`)
+      : say(`我是${botName}，接下了群里的活：${shortQuote(text, 60)}。`, `I am ${botName}. Picked up the group task: ${shortQuote(text, 60)}.`);
   return [
     { tool: 'group_post', args: { group: group.id, text: spoken } },
-    { tool: 'task_finish', args: { summary: `Posted in the group: ${shortQuote(spoken, 70)}` } },
+    { tool: 'task_finish', args: { summary: say(`在群里说了：${shortQuote(spoken, 70)}`, `Posted in the group: ${shortQuote(spoken, 70)}`) } },
   ];
 }
+
+/** The scripted run for a message in demo mode (tests read it). */
+export const demoPlan = (text, botName = '助理') => mockPlan(text, botName);
 
 function mockComplete(messages) {
   const lastUserIndex = messages.reduce(

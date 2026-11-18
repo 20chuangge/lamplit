@@ -57,6 +57,11 @@ export const DEFAULT_DENY_PATTERNS = [
   '\\bgit\\s+reset\\s+--hard\\b',
   '>\\s*/dev/(sd[a-z]|vd[a-z]|hd[a-z]|nvme\\d)',
   '\\bRemove-Item\\b.*-Recurse\\b',
+  // Windows: fetch a program and run it, or make something start by itself (1.5.32)
+  '\\bcertutil\\b[^\\n]*-urlcache\\b',
+  '\\bbitsadmin\\b[^\\n]*/transfer\\b',
+  '\\bschtasks\\b[^\\n]*/create\\b',
+  '\\breg\\s+add\\b[^\\n]*\\\\(Run|RunOnce|Winlogon)\\b',
 ];
 
 /**
@@ -584,6 +589,31 @@ export class ApprovalQueue {
       }
     }
     this.persist();
+  }
+
+  /**
+   * A deleted bot's cards (1.5.32): closed, so "N 个操作等你确认" does not keep a
+   * card nobody can open. -> the records closed.
+   */
+  cancelForBot(botId, reason = '已取消：助手已删除') {
+    const closed = [];
+    for (const record of [...this.records.values()]) {
+      if (record.botId !== botId) continue;
+      if (record.status === 'pending') {
+        this.settle(record.id, 'denied', reason, 'system');
+        closed.push({ ...this.records.get(record.id) });
+      } else if (record.status === 'awaiting_human') {
+        record.status = 'dismissed';
+        record.decidedAt = nowIso();
+        record.note = reason;
+        record.by = 'system';
+        this.records.set(record.id, record);
+        void this.onAudit({ kind: 'approval.resolved', ...record });
+        closed.push({ ...record });
+      }
+    }
+    if (closed.length) this.persist();
+    return closed;
   }
 
   /** Resolve any waiter belonging to a cancelled turn. */

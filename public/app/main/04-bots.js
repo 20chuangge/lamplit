@@ -140,7 +140,7 @@ function openBotEdit(botId, options = {}) {
   del.disabled = Boolean(bot.primary);
   del.textContent = state.deleteArmed ? `再点一次确认删除「${bot.name}」` : '删除这个助手';
   $('botedit-delete-note').textContent = bot.primary
-    ? '主助手不能删除；先把另一个助手设为主要再删这个。'
+    ? '主助理不能删：先把另一个助手设为主助理，再删这个。'
     : '删除会一并删掉它的记忆和对话记录，无法恢复。';
 
   $('botedit-sheet').classList.add('open');
@@ -200,7 +200,7 @@ async function saveBotEdit() {
 async function deleteBotFlow() {
   const bot = botById(state.botEditingId);
   if (!bot) return;
-  if (bot.primary) { setBotEditNote('主助手不能删除。'); return; }
+  if (bot.primary) { setBotEditNote('主助理不能删：先把另一个助手设为主助理，再删这个。'); return; }
   const button = $('botedit-delete');
   if (!state.deleteArmed) {
     state.deleteArmed = true;
@@ -209,8 +209,9 @@ async function deleteBotFlow() {
   }
   button.disabled = true;
   try {
-    await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'DELETE' });
+    const gone = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'DELETE' });
     closeBotEdit();
+    refreshPendingApprovals();
     state.bots = await api('/api/bots');
     await loadGroups();
     renderBots();
@@ -218,7 +219,10 @@ async function deleteBotFlow() {
       const next = state.bots.find((b) => b.primary) || state.bots[0];
       if (next) selectBot(next.id);
     }
-    toast(`已删除 ${bot.name}`);
+    // What it left behind went with it (1.5.32): say so, so nothing looks lost.
+    const c = gone?.cleared || {};
+    const left = [c.turns ? '停下了它正在做的事' : '', c.approvals ? `收起了 ${c.approvals} 张等你确认的卡片` : '', c.routinesOff ? `暂停了它的 ${c.routinesOff} 个定时任务` : ''].filter(Boolean);
+    toast(`已删除 ${bot.name}${left.length ? `：${left.join('，')}` : ''}`);
   } catch (err) {
     state.deleteArmed = false;
     button.disabled = false;
@@ -269,6 +273,7 @@ function hideToast() {
 window.deskNotify = (text, isError = false) => toast(String(text || ''), Boolean(isError));
 
 function toast(text, isError = false) {
+  if (!text) return; // already said another way (the local pairing dialog)
   const node = $('toast');
   node.textContent = text;
   node.className = `toast show${isError ? ' error' : ''}`;
@@ -306,9 +311,54 @@ async function api(path, options = {}) {
     const err = new Error(message);
     err.status = res.status;
     err.code = json && json.error ? json.error.code : undefined;
+    // Only the human may decide (1.5.32): a browser on this computer without the
+    // app's key gets a way to pair itself instead of a one-line refusal.
+    if (err.code === 'LOCAL_KEY_REQUIRED') {
+      if (state.auth) state.auth.authority = false;
+      localPairOpen(true);
+      err.message = '';
+    }
     throw err;
   }
   return json;
+}
+
+/* ---------------------------------------------------------------------
+   a browser on this computer, without the desktop app (1.5.32)
+   --------------------------------------------------------------------- */
+function localPairOpen(open) {
+  const modal = $('local-pair-modal');
+  const scrim = $('local-pair-scrim');
+  if (!modal || !scrim) return;
+  modal.classList.toggle('open', open);
+  modal.setAttribute('aria-hidden', open ? 'false' : 'true');
+  scrim.classList.toggle('show', open);
+  if (open) {
+    $('local-pair-msg').textContent = '';
+    $('local-pair-code').value = '';
+    if (!isMobile()) setTimeout(() => $('local-pair-code').focus(), 80);
+  }
+}
+
+async function pairThisBrowser() {
+  const code = normalizeCode($('local-pair-code').value);
+  const msg = $('local-pair-msg');
+  if (!code) { msg.textContent = '先输入配对码。'; return; }
+  const button = $('local-pair-go');
+  button.disabled = true;
+  try {
+    await api('/api/pair', { method: 'POST', body: { code, deviceName: '这台电脑上的浏览器' } });
+    if (state.auth) state.auth.authority = true;
+    localPairOpen(false);
+    toast('这个浏览器配好了：再点一次刚才的按钮。');
+    if (state.settingsOpen) loadSettings().catch(() => {});
+  } catch (err) {
+    msg.textContent = err.status === 429 ? '试得太多次了，等一分钟再试。'
+      : err.status === 401 ? '配对码不对，或者已经换了。配对码每天换一次，用过一次也会换。'
+        : (err.message || '配对没成功。');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 /* Clipboard with a non-secure-context fallback (phones on plain http LAN). */
@@ -455,7 +505,6 @@ function enterAuth(reason) {
   // Inside the desktop app on another machine: a way back (1.5.6), and the
   // command that shows this machine's code on the machine itself.
   $('auth-back').hidden = !(window.desk?.useLocal && !onLocalMachine());
-  $('auth-curl').textContent = `curl -s http://127.0.0.1:${location.port || (location.protocol === 'https:' ? 443 : 80)}/api/pairing`;
   setAuthMsg(reason || '');
   if (!isMobile()) setTimeout(() => $('auth-code').focus(), 80);
 }
@@ -791,6 +840,46 @@ function appendStarters(visible) {
     row.appendChild(chip);
   }
   messagesEl.appendChild(row);
+  appendIsolationAsk().catch(() => {});
+}
+
+/**
+ * The last step of getting started (1.5.32), asked once, on this computer: give
+ * the bots' commands a Windows account of their own. Without it a command runs
+ * as the human and could read the key that lets a program decide for them.
+ */
+const ISOLATION_ASKED = 'lamplit.isolationAsked';
+async function appendIsolationAsk() {
+  if (!window.desk || !onLocalMachine()) return;
+  try { if (localStorage.getItem(ISOLATION_ASKED)) return; } catch { return; }
+  const policy = await api('/api/policy').catch(() => null);
+  const sb = policy?.sandbox;
+  if (sb?.mode !== 'windows' || !['setup', 'off'].includes(sb.state) || messagesEl.querySelector('.isolation-ask')) return;
+  const done = () => { try { localStorage.setItem(ISOLATION_ASKED, '1'); } catch { /* asked again next time */ } card.remove(); };
+  const card = el('div', 'isolation-ask');
+  card.appendChild(el('b', '', '最后一步（可以跳过）：给机器人一个单独的账户？'));
+  card.appendChild(el('span', 'row-note', '开了以后，机器人执行的命令用一个隐藏的普通账户来跑，碰不到你的个人文件夹和 Lamplit 的密钥，没法替你点「同意」。要点一次管理员确认；以后在 设置 → 边界 里也能开。'));
+  const row = el('div', 'btn-row');
+  const yes = el('button', 'btn tiny primary', '设置单独账户');
+  yes.type = 'button';
+  yes.addEventListener('click', async () => { done(); await setupRunnerAccount(); });
+  const later = el('button', 'btn tiny', '以后再说');
+  later.type = 'button';
+  later.addEventListener('click', () => { done(); toast('好的。体检里会一直提醒这一项，在 设置 → 边界 里随时能开。'); });
+  row.append(yes, later);
+  card.appendChild(row);
+  messagesEl.appendChild(card);
+}
+
+/** Make the lamplit-runner account (a UAC prompt on this computer). */
+async function setupRunnerAccount() {
+  try {
+    const s = await api('/api/runner/setup', { method: 'POST', body: {} });
+    if (typeof renderSandboxState === 'function') renderSandboxState(s);
+    toast('在弹出的管理员确认里点「是」，几秒钟就设好。');
+  } catch (err) {
+    toast(err.message ? `没能开始设置：${err.message}` : '', true);
+  }
 }
 
 const ONBOARD_PROVIDERS = ['deepseek', 'moonshot', 'zhipu', 'qwen', 'siliconflow', 'openai'];
@@ -1012,7 +1101,7 @@ function renderBots() {
     menu.appendChild(el('div', 'menu-sep'));
     const delItem = mkItem('删除', () => openBotEdit(bot.id, { armDelete: true }), 'danger');
     delItem.disabled = Boolean(bot.primary);
-    delItem.title = bot.primary ? '主助手不能删除' : '';
+    delItem.title = bot.primary ? '主助理不能删' : '';
     menu.appendChild(delItem);
     more.addEventListener('click', (event) => {
       event.stopPropagation();

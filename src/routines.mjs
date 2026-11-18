@@ -25,8 +25,10 @@ const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'se
 const DOW_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 function cronError(message) {
-  const err = new Error(message);
+  // A schedule typed wrong is the request's fault (400, 1.5.32: it was a 500 in English).
+  const err = new Error(`时间的写法不对（${message}）。可以这样写：every 30 minutes（每 30 分钟）、0 8 * * *（每天 8:00）、0 8 * * 1-5（工作日 8:00）、once 2026-12-01 09:00（只跑一次）。`);
   err.code = 'CRON_INVALID';
+  err.status = 400;
   return err;
 }
 

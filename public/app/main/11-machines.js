@@ -1643,6 +1643,7 @@ function checkupAction(action) {
   if (action.kind === 'settings') openSettings(action.target);
   else if (action.kind === 'link') openSignInPage(action.url);
   else if (action.kind === 'firewall') fixFirewall().then(() => runCheckup());
+  else if (action.kind === 'runner') setupRunnerAccount().then(() => setTimeout(() => runCheckup(), 8000));
 }
 
 /** Above the chat, once a day: the check found something to fix. */

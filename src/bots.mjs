@@ -621,17 +621,44 @@ export async function getPrimaryBot(config) {
   return bots.find((b) => b.id === wanted) || bots.find((b) => b.primary) || bots[0];
 }
 
+/**
+ * Limits on what a person types about a bot (1.5.32): a 300-character name
+ * filled the title bar, a 5000-character role the empty chat. Two bots with one
+ * name made 「@名字」 in Feishu and hand-offs in a group find the wrong one.
+ */
+export const BOT_LIMITS = { name: 40, role: 200, persona: 4000 };
+function checkBotText(input = {}) {
+  const too = (field, label) => {
+    if (input[field] === undefined) return;
+    const n = [...String(input[field] || '').trim()].length;
+    if (n > BOT_LIMITS[field]) throw httpError(400, 'BOT_TOO_LONG', `${label}最多 ${BOT_LIMITS[field]} 个字（现在 ${n} 个）`);
+  };
+  too('name', '名字');
+  too('role', '职责');
+  too('persona', '人设');
+}
+const sameName = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
 export async function createBot(input = {}) {
-  const name = String(input.name || '').trim();
+  let name = String(input.name || '').trim();
   if (!name) {
-    throw httpError(400, 'BOT_INVALID', 'a bot needs a name');
+    throw httpError(400, 'BOT_INVALID', '助手要有一个名字');
   }
+  checkBotText(input);
   // A name in Chinese (or any non-Latin script) keeps its name; only the id,
   // which goes into file names and URLs, is made up.
   const id = slugifyId(input.id || name) || `bot-${Math.random().toString(36).slice(2, 8)}`;
 
   const existing = await readJson(botFile(id), null);
   if (existing) throw httpError(409, 'BOT_EXISTS', `a bot with id "${id}" already exists`);
+  const others = await listBots();
+  if (others.some((b) => sameName(b.name, name))) {
+    // A bot making a teammate gets the next free name (「研究员 2」); a person is told.
+    if (!input.uniqueName) throw httpError(400, 'BOT_NAME_TAKEN', `已经有一个叫「${name}」的助手了，换个名字吧`);
+    let n = 2;
+    while (others.some((b) => sameName(b.name, `${name} ${n}`))) n += 1;
+    name = `${name} ${n}`;
+  }
   // A bot deleted before 1.5.15 left its history and memory behind: a new one starts clean.
   await archiveBotLeftovers(id).catch(() => {});
 
@@ -669,6 +696,12 @@ export async function createBot(input = {}) {
 export async function updateBot(id, patch = {}) {
   const current = await readJson(botFile(id), null);
   if (!current) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${id}"`);
+  checkBotText(patch);
+  if (patch.name !== undefined) {
+    const next = String(patch.name || '').trim();
+    if (!next) throw httpError(400, 'BOT_INVALID', '助手要有一个名字');
+    if ((await listBots()).some((b) => b.id !== id && sameName(b.name, next))) throw httpError(400, 'BOT_NAME_TAKEN', `已经有一个叫「${next}」的助手了，换个名字吧`);
+  }
 
   // PATCH {avatar:{color}} must keep the shape the bot already had, so merge
   // into the stored avatar instead of replacing the whole object.

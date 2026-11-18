@@ -971,7 +971,7 @@ async function applyStrictPermissions() {
   const ok = await askConfirm({
     title: '收紧这台机器？',
     text: '审批级别改为「谨慎」，生成图片/视频每次先问，其他位置一律不许，sudo 先问，接管桌面改为「只能看」。机器人的工具授权不变；这些改动会写进审计。',
-    confirmLabel: '一键 strict',
+    confirmLabel: '一键最严',
   });
   if (!ok) return;
   await savePolicy(

@@ -4,7 +4,9 @@
    settings drawer
    --------------------------------------------------------------------- */
 async function loadSettings() {
-  const [s, p] = await Promise.allSettled([api('/api/settings'), api('/api/pairing')]);
+  // Without the app's key the code is not ours to see (1.5.32): do not ask for it.
+  const mayDecide = state.auth?.authority !== false;
+  const [s, p] = await Promise.allSettled([api('/api/settings'), mayDecide ? api('/api/pairing') : Promise.reject(new Error(''))]);
   state.settings = s.status === 'fulfilled' ? s.value : null;
   state.settingsError = s.status === 'rejected' ? s.reason : null;
   state.pairing = (state.settings && state.settings.pairing)
@@ -215,13 +217,16 @@ function renderPairing() {
   } catch { /* no address */ }
   loadTailscaleBox(Boolean(tailnet)).catch(() => {});
   const codeNode = $('pair-code');
-  codeNode.textContent = code ? formatPairCode(code) : '未生成';
+  codeNode.textContent = code ? formatPairCode(code) : (p.hidden ? '在 Lamplit 应用里看' : '未生成');
   codeNode.classList.toggle('empty', !code);
   $('pair-copy-url').disabled = !url;
   $('pair-copy-code').disabled = !code;
 
   const empty = $('pair-empty');
-  if (!code && !url) {
+  if (p.hidden) {
+    empty.hidden = false;
+    empty.textContent = '配对码只在 Lamplit 应用和已配对的设备上显示：这个浏览器还没配对。';
+  } else if (!code && !url) {
     empty.hidden = false;
     empty.textContent = `服务端没有提供配对信息（/api/pairing 404）。在同一局域网里，可以用 ${location.origin} 打开；如果这台机器要求认证，请在服务端配置里生成配对码。`;
   } else if (!code) {
@@ -1484,7 +1489,7 @@ function renderFeishu(v) {
   $('feishu-secret').placeholder = v.hasSecret ? '已保存（留空不改）' : '';
   $('feishu-enabled').checked = Boolean(v.enabled);
   const select = $('feishu-bot');
-  select.innerHTML = '<option value="">主助手</option>' + state.bots.map((b) => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}</option>`).join('');
+  select.innerHTML = '<option value="">主助理</option>' + state.bots.map((b) => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}</option>`).join('');
   select.value = v.botId || '';
   $('feishu-code').textContent = v.pairCode || '——';
   if (!v.appId) $('feishu-guide').open = true;

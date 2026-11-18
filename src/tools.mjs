@@ -1918,6 +1918,7 @@ export function createRegistry(deps) {
 
       const created = await ctx.bots.createBot({
         name,
+        uniqueName: true,
         role: String(args?.role ?? ''),
         // What every teammate needs, what its role calls for, and what was asked for.
         tools: grantsForNewBot({ role: args?.role, requested: Array.isArray(args?.tools) ? args.tools : [], known: new Set(tools.keys()), remote: machineMode() === 'remote' }),

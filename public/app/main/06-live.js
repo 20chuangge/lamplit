@@ -856,7 +856,9 @@ async function focusApprovalFromLink(target) {
  * looked missing), or not be loaded at all: then it is put at the bottom.
  */
 async function focusApprovalCard(approvalId, botId) {
-  if (botId && (isGroupMode() || state.botId !== botId)) await selectBot(botId);
+  // A card left by a bot that is gone (1.5.32): show it here, where it can still be answered.
+  const known = !botId || (state.bots || []).some((b) => b.id === botId);
+  if (botId && known && (isGroupMode() || state.botId !== botId)) await selectBot(botId);
   let card = approvalId ? await waitForApprovalCard(approvalId, 2500) : null;
   if (!card && approvalId) {
     const a = (state.approvals || []).find((x) => x.id === approvalId);

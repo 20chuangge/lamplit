@@ -41,13 +41,7 @@ function wireChrome() {
     for (const b of $('usage-scope').querySelectorAll('button')) b.classList.toggle('on', b === btn);
     loadUsage().catch(() => {});
   });
-  $('runner-setup')?.addEventListener('click', async () => {
-    try {
-      renderSandboxState(await api('/api/runner/setup', { method: 'POST', body: {} }));
-    } catch (err) {
-      toast(`没能开始设置：${err.message}`, true);
-    }
-  });
+  $('runner-setup')?.addEventListener('click', () => setupRunnerAccount());
   $('auth-back')?.addEventListener('click', async () => {
     const res = await window.desk.useLocal().catch((err) => ({ ok: false, error: err.message }));
     if (res && res.ok === false) setAuthMsg(res.error || '回不去这台电脑，重启 Lamplit 试试。');
@@ -596,6 +590,11 @@ function wireChrome() {
     }
   });
   $('pair-modal-close')?.addEventListener('click', () => pairModalOpen(false));
+  // A browser on this computer pairs itself to decide approvals (1.5.32).
+  $('local-pair-close')?.addEventListener('click', () => localPairOpen(false));
+  $('local-pair-scrim')?.addEventListener('click', () => localPairOpen(false));
+  $('local-pair-go')?.addEventListener('click', () => pairThisBrowser());
+  $('local-pair-code')?.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); pairThisBrowser(); } });
   $('pair-scrim')?.addEventListener('click', () => pairModalOpen(false));
   $('qr-refresh')?.addEventListener('click', () => requestPairLink(state.pairLinksPrefer || ''));
   $('qr-copy')?.addEventListener('click', () => copyText($('qr-url').textContent.trim(), '链接已复制'));

@@ -361,11 +361,19 @@ export function localKey(dir) {
   return key;
 }
 
-/** Is this local request the human's own app (it carries the local key)? Paired clients always are. */
-export function carriesLocalKey(req, auth, dir) {
+/**
+ * Is this local request the human's own app (it carries the local key)? Paired
+ * clients always are. So is a browser on this computer that the human paired
+ * with the code (1.5.32): it carries that device's cookie. A program cannot get
+ * the code - it is shown only to the app and to paired devices, and is not
+ * written to any log - so it cannot pair itself this way.
+ */
+export function carriesLocalKey(req, auth, dir, devices = null) {
   if (!auth || auth.mode !== 'local') return Boolean(auth?.authorized);
   const sent = String(req?.headers?.[LOCAL_KEY_HEADER] || '');
-  return Boolean(sent) && safeEqual(sent, localKey(dir));
+  if (sent && safeEqual(sent, localKey(dir))) return true;
+  const cookie = readCookie(req?.headers?.cookie, SESSION_COOKIE);
+  return Boolean(cookie && devices?.findBySession?.(cookie));
 }
 
 /**

@@ -49,6 +49,7 @@
     <a href="#media">Images, video, voice</a>
     <a href="#phone">Phone and Feishu</a>
     <a href="#more">Memory, skills, routines</a>
+    <a href="#data">Where my data goes</a>
     <a href="#update">Updates and data</a>
     <a href="#trouble">Troubleshooting</a>
   </nav>
@@ -94,7 +95,7 @@
     <ul>
       <li>Where you have to decide (which option, a sign-in, something only you know), the checklist waits at that step for your answer.</li>
       <li>After a restart, unfinished jobs pick up where they were.</li>
-      <li>To stop it: click <strong>Stop</strong> next to the message box, or just say "stop" or "cancel". The current step and the whole job stop; files already made stay.</li>
+      <li>To stop it: while it works, the button at the right of the message box turns into <strong>Stop</strong> (■); click it, or just say "stop" or "cancel". The current step and the whole job stop, cards waiting for you close, and files already made stay.</li>
     </ul>
 
     <h2 id="workspace">Workspace and files</h2>
@@ -221,7 +222,7 @@
 
     <h2 id="phone">Phone and Feishu</h2>
     <ol>
-      <li>On the computer open <strong>Settings → Phone &amp; away</strong> and turn on "Allow phone connections".</li>
+      <li>On the computer open <strong>Settings → Phone &amp; away</strong> and turn on "Allow phone connections" (the switch is in the desktop app only).</li>
       <li>Install the Android app and scan the code on the computer. Without scanning, open the address shown there in the phone's browser and enter the pairing code.</li>
       <li>Away from home: install <a href="https://tailscale.com/">Tailscale</a> on the phone and the computer; when the home network is out of reach it switches to Tailscale without pairing again.</li>
       <li>In the Android app, turn on "Let bots use this phone" and the bots can see the screen, tap, type and open apps. With the screen off they light it first; a phone with a lock code they ask you to unlock, and never type a code.</li>
@@ -237,8 +238,18 @@
     <ul>
       <li><strong>Memory</strong>: it keeps your habits and preferences; each assistant has its own, and there is one they share.</li>
       <li><strong>Skills</strong>: a workflow it has done can be saved as a skill and reused with one sentence.</li>
-      <li><strong>Routines</strong>: daily briefings and regular checks run on time, whether or not you are there. In the chat each run takes one line, "⏱ time · task · how often"; "Show instruction" lets you edit it, pause it or run it again now. A run that found nothing new does not disturb you.</li>
+      <li><strong>Routines</strong>: daily briefings and regular checks run on time, whether or not you are there. In the chat each run takes one line, "⏱ time · task · how often"; "Show instruction" lets you edit it, pause it or run it again now. A run that found nothing new does not disturb you. To change the time or delete one, use "Change time" and "Delete" on the Tasks tab of the panel at the top right.</li>
     </ul>
+
+    <h2 id="data">Where my data goes</h2>
+    <p>Lamplit has no accounts and no servers of ours: chats, memory, the vault, settings and the files in the workspace stay on your own computer (and the machines you add). No usage statistics are collected or sent. These are all the places Lamplit connects to by itself (checked line by line against the code for 1.5.33):</p>
+    <ul>
+      <li><strong>The model provider you chose</strong> (DeepSeek, Qwen, OpenAI…): each turn's messages, and the files and pages an assistant reads, go to it; the model needs them to work. Voice, vision, images and video go to the provider you set for them in Settings → Model. The checkup asks DeepSeek for your balance.</li>
+      <li><strong>Update checks</strong>: every few hours Lamplit asks GitHub (api.github.com) for the latest version number; the installer is downloaded from GitHub when you click Update.</li>
+      <li><strong>Your own machines</strong>: computers, servers and phones you add talk to each other directly (local network or Tailscale), through no one else's server. Adding a machine downloads Node from nodejs.org (or the npmmirror.com mirror), and TightVNC for Windows machines, then copies them over. The China relay runs on your own server and downloads its program from Go's site and the Aliyun mirror.</li>
+      <li><strong>What you let it use</strong>: web pages an assistant opens or fetches, apps you connect (Feishu, mail, GitHub, Notion…), coding assistants you hand work to. These connect only when used or turned on, and steps that change things ask you first.</li>
+    </ul>
+    <p>Passwords and codes live in an encrypted vault on this computer; they are typed into sign-in pages directly and never sent to the model. This website is on GitHub Pages; the installers behind the download buttons are on GitHub, Tencent Cloud and Gitee.</p>
 
     <h2 id="update">Updates and data</h2>
     <ul>
@@ -258,8 +269,8 @@
     <p>Android turns an app's accessibility switch off when the app is force-stopped (a cleaner, a swipe in recent apps). Lock Lamplit and allow auto-launch as above. To have it turn itself back on, grant once over USB debugging from a computer: <code>adb shell pm grant com.desk.assistant android.permission.WRITE_SECURE_SETTINGS</code> (on OPPO, first turn on "Disable permission monitoring" in Developer options).</p>
     <h3>Taking over shows an empty screen</h3>
     <p>Since 1.5.26 each assistant's browser opens on its own screen: take over from the chat of the assistant that asked. After the update, sign in once on that assistant's screen for each site.</p>
-    <h3>I cannot approve in a browser at 127.0.0.1</h3>
-    <p>Since 1.5.27 approving and changing permissions work only in the Lamplit app or on a paired device. Use the desktop app or the phone app.</p>
+    <h3>Approving in a browser says "This step needs you"</h3>
+    <p>Approving and changing permissions work only in the Lamplit app or on a paired device, so a program a bot runs cannot click "Allow" for you. Using Lamplit in a browser instead of the desktop app, pair that browser once: type the pairing code into the box that opens (in the Lamplit app under Settings → Phone &amp; away, or in the startup output if you started it from a terminal), and the step you clicked goes ahead. Use the code of the Lamplit at this address. Saving your first model key needs no pairing.</p>
     <h3>Switching machines or assistants is slow, the phone reaches the computer slowly</h3>
     <p>Open <strong>Settings → Machines → Network check</strong>. Hundreds of milliseconds between machines in one country usually means a proxy on the computer (Clash, V2Ray and the like) sends Tailscale's traffic abroad and back. Put <code>PROCESS-NAME,tailscaled.exe,DIRECT</code> first in the proxy rules, exclude the local networks in its TUN settings (<code>route-exclude-address</code>: 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12), then close all connections in the proxy. Do not exclude 100.64.0.0/10: that is Tailscale's own range.</p>
     <p><strong>The phone is slow on the same Wi-Fi as the computer</strong>: Windows Firewall most likely keeps the local network out (its first prompt was cancelled, or the home network is marked Public). <strong>Settings → Phone &amp; internet</strong> says so; click "Fix the firewall" and Yes on the admin prompt.</p>

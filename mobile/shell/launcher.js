@@ -788,7 +788,8 @@
                 if (minted.ok) {
                   const fresh = await minted.json();
                   const links = Array.isArray(fresh?.links) ? fresh.links : [];
-                  target = (await pickReachableLink(links, safeOrigin(hub))) || fresh?.url || target;
+                  const relayToken = isRelayLocal(hub) ? fresh?.token || '' : '';
+                  target = (relayToken && `${hub}/?pair=${encodeURIComponent(relayToken)}`) || (await pickReachableLink(links, safeOrigin(hub))) || fresh?.url || target;
                 }
               } catch {
                 /* keep the original door */

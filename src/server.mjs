@@ -269,6 +269,13 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       const v = state?.vision;
       return v?.apiKey ? { baseUrl: v.baseUrl, model: v.model, apiKey: v.apiKey } : null;
     },
+    // A relay just installed: remembered here (still off until the human turns it on).
+    onRelayTunnel: async ({ host, port, fingerprint, join }) => {
+      if (!state?.relayLink) throw Object.assign(new Error('relay link not started'), { code: 'REMOTE_RELAY_FAILED' });
+      const was = state.relayLink.view();
+      state.relayLink.configure({ host, port, relayFingerprint: fingerprint, join, enabled: was.enabled });
+      state.bus?.emit({ type: 'settings.changed', section: 'network' });
+    },
   });
 
   // Per-bot desktops read the VNC password the installer stored, if any.
@@ -2174,6 +2181,26 @@ route('GET', /^\/api\/relay-link$/, async (_req, _res, { state }) => {
   if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
   return { ...state.relayLink.view(), descriptor: state.relayLink.descriptor() };
 });
+// The same relay for the other machines (3.6): this computer hands its relay
+// settings - join secret included - to each machine it holds a token for, and
+// turns their link on. Each machine still gets its own id, key and certificate.
+//   POST /api/relay-link/share -> {machines:[{machine, ok, state?, error?}]}
+route('POST', /^\/api\/relay-link\/share$/, async (req, _res, { state }) => {
+  if (!mayDecide(req, state)) throw httpError(403, 'AUTHORITY_REQUIRED', 'only you can change how the machines are reached');
+  const mine = state.relayLink?.shareable?.();
+  if (!mine) throw httpError(409, 'RELAY_NOT_CONFIGURED', 'set up the relay on this computer first');
+  const machines = await Promise.all(state.peers.list().map(async (p) => {
+    const peer = state.peers.find(p.name);
+    try {
+      const view = await state.peers.json(peer, 'PUT', '/api/relay-link', { body: { ...mine, enabled: true }, timeoutMs: 10000, noRelay: true });
+      return { machine: peer.name, ok: true, state: view.state || '' };
+    } catch (err) {
+      return { machine: peer.name, ok: false, error: err.message };
+    }
+  }));
+  setTimeout(() => state.peers.learnRelays().catch(() => {}), 5000).unref();
+  return { machines };
+});
 route('PUT', /^\/api\/relay-link$/, async (req, _res, { body, state }) => {
   if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
   if (!mayDecide(req, state)) throw httpError(403, 'AUTHORITY_REQUIRED', 'only you can change how this computer is reached');
@@ -2389,12 +2416,13 @@ route('POST', /^\/api\/machines\/(?<name>[^/]+)\/handoff$/, async (_req, _res, {
     }
     throw err;
   }
-  if (!made?.url) throw httpError(409, 'MACHINE_NO_ADDRESS', `「${peer.name}」没有可用的手机地址`);
+  // Only the relay (第 1 步原型): the QR form is the door (pair= and relay= in one URL).
+  if (!made?.url && !made?.relay) throw httpError(409, 'MACHINE_NO_ADDRESS', `「${peer.name}」没有可用的手机地址`);
   // Every address the machine has (public, LAN, Tailscale): the phone opens the
   // first one it can reach. A VM's LAN address is often the computer's internal
   // network, while its Tailscale one works from the phone.
   const links = Array.isArray(made.links) ? made.links.filter((l) => l && typeof l.url === 'string') : [];
-  return { ok: true, machine: peer.name, url: made.url, links, qr: made.qr || null, expiresAt: made.expiresAt };
+  return { ok: true, machine: peer.name, url: made.url || made.qr, links, qr: made.qr || null, ...(made.relay ? { relay: made.relay } : {}), expiresAt: made.expiresAt };
 });
 
 // --- UI state / remote machines -------------------------------------------
@@ -2530,6 +2558,12 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
 //   GET  /api/relay        -> {relay:{state, message, host, port, stunPort, certName, at}|null, derpMap}
 //   GET  /api/peers/relays -> {machines:[{machine, relay, derpMap}]}
 route('POST', /^\/api\/remote\/relay$/, async (_req, _res, { body, state }) => ({ job: state.provisioner.startRelay(body || {}) }));
+// Lamplit's own relay, no Tailscale (第 1 步原型): install it over SSH; it lands in this computer's relay settings.
+//   POST /api/remote/relay-tunnel {host, sshPort?, username, password, publicIp?, port?} -> {job}
+route('POST', /^\/api\/remote\/relay-tunnel$/, async (req, _res, { body, state }) => {
+  if (!mayDecide(req, state)) throw httpError(403, 'AUTHORITY_REQUIRED', 'only you can set up a relay');
+  return { job: state.provisioner.startRelayTunnel(body || {}) };
+});
 function readRelay() {
   try {
     const relay = JSON.parse(fs.readFileSync(path.join(P.dataDir, 'relay.json'), 'utf8'));

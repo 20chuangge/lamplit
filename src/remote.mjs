@@ -46,6 +46,10 @@ const SETUP_SCRIPTS = {
 // The Tailscale relay in China (1.5.29): hub/derp-linux.sh, run with sudo in the background.
 const RELAY_SCRIPT = path.join(HERE, '..', 'hub', 'derp-linux.sh');
 export const RELAY_PORT = 33445;
+// Lamplit's own relay, no Tailscale (第 1 步原型): hub/relay-linux.sh installs hub/relay/relay.mjs.
+const TUNNEL_SCRIPT = path.join(HERE, '..', 'hub', 'relay-linux.sh');
+const TUNNEL_PROGRAM = path.join(HERE, '..', 'hub', 'relay', 'relay.mjs');
+export const TUNNEL_PORT = 34443;
 
 /** A public IPv4 address (not private, loopback or Tailscale's 100.64/10): what a relay must be reached on. */
 export function isPublicIpv4(ip) {
@@ -406,7 +410,7 @@ export async function nodePackage(kind, arch = 'x64') {
 
 /** modelToShare: () => {provider, baseUrl, model, apiKey} | null
  *  voiceToShare: () => {baseUrl, model, apiKey} | null  (speech-to-text) */
-export function createProvisioner({ modelToShare = () => null, voiceToShare = () => null, visionToShare = () => null } = {}) {
+export function createProvisioner({ modelToShare = () => null, voiceToShare = () => null, visionToShare = () => null, onRelayTunnel = async () => {} } = {}) {
   /** @type {Map<string, object>} */
   const jobs = new Map();
 
@@ -426,6 +430,8 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     timings: (job.timings || []).map((t) => ({ label: t.label, ms: t.ms })),
     desktopPending: Boolean(job.desktopPending),
     tailscale: job.tailscale || '',
+    // Lamplit's relay: where it is and its certificate - never its join secret.
+    ...(job.relayTunnel ? { relayTunnel: job.relayTunnel } : {}),
     startedAt: job.startedAt,
     finishedAt: job.finishedAt || null,
     log: job.log.slice(-24),
@@ -572,6 +578,58 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     } catch (err) {
       job.state = 'error';
       job.message = /^REMOTE_/.test(String(err?.code || '')) ? (err.message || '没能开始安装中转') : friendlySshError(err);
+      job.finishedAt = nowIso();
+    } finally {
+      try { client?.end(); } catch { /* closed */ }
+    }
+  }
+
+  /**
+   * Lamplit's own relay (第 1 步原型): over SSH, as root or with sudo, install
+   * hub/relay/relay.mjs as a service (a minute at most, so in the foreground)
+   * and take back its certificate fingerprint and join secret. Those go
+   * straight into this computer's relay settings (onRelayTunnel); the job the
+   * UI reads carries the address and fingerprint only.
+   */
+  async function runRelayTunnel(job, { host, sshPort, username, password, publicIp, port }) {
+    let client = null;
+    try {
+      phase(job, '连接 SSH');
+      setProgress(job, '正在连接 SSH…');
+      client = await connectSsh({ host, port: sshPort, username, password });
+      job.os = await detectOs(client);
+      if (job.os !== 'linux') throw remoteError('REMOTE_UNSUPPORTED_OS', '中转只能装在 Linux 服务器上。');
+      const identity = await execStream(client, 'id -u', { timeoutMs: 15000 });
+      const isRoot = identity.output.trim().split(/\s+/).pop() === '0';
+      let sudoPrefix = '';
+      if (!isRoot) {
+        const check = await execStream(client, "sudo -S -p '' -v", { stdin: `${password}\n`, timeoutMs: 15000 });
+        if (check.code !== 0) throw remoteError('REMOTE_NO_SUDO', '这个 SSH 账号不能 sudo；请换一个管理员账号。');
+        sudoPrefix = "sudo -S -p '' ";
+      }
+      phase(job, '上传并安装');
+      setProgress(job, '上传中转程序…');
+      await uploadFile(client, TUNNEL_PROGRAM, '/tmp/lamplit-relay.mjs');
+      await uploadFile(client, TUNNEL_SCRIPT, '/tmp/lamplit-relay-setup.sh');
+      setProgress(job, '安装并启动中转服务…');
+      const ran = await execStream(client, `${sudoPrefix}/bin/bash /tmp/lamplit-relay-setup.sh /tmp/lamplit-relay.mjs ${Number(port)}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 180000 });
+      await execStream(client, 'rm -f /tmp/lamplit-relay.mjs /tmp/lamplit-relay-setup.sh', { timeoutMs: 15000 }).catch(() => {});
+      const out = ran.output;
+      const field = (k) => (new RegExp(`^${k}=(.*)$`, 'm').exec(out)?.[1] || '').trim();
+      if (field('DESK_RELAY') !== 'ready') throw remoteError('REMOTE_RELAY_FAILED', field('DESK_RELAY_ERROR') || `没能装好中转（exit ${ran.code}）`);
+      const fingerprint = field('DESK_RELAY_FP');
+      const join = field('DESK_RELAY_JOIN');
+      if (!/^[0-9a-f]{64}$/.test(fingerprint) || join.length < 16) throw remoteError('REMOTE_RELAY_FAILED', '中转装好了，但没有拿到它的证书指纹');
+      phase(job, '记下中转');
+      await onRelayTunnel({ host: publicIp, port: Number(port), fingerprint, join });
+      phase(job, null);
+      job.relayTunnel = { host: publicIp, port: Number(port), fingerprint };
+      job.state = 'done';
+      job.message = `中转装好了（${publicIp}，TCP ${Number(port)}）。还差一步：在云服务器控制台的「安全组 / 防火墙」里放行 TCP ${Number(port)}，然后打开「通过中转连接」。`;
+      job.finishedAt = nowIso();
+    } catch (err) {
+      job.state = 'error';
+      job.message = /^REMOTE_/.test(String(err?.code || '')) ? (err.message || '没能装好中转') : friendlySshError(err);
       job.finishedAt = nowIso();
     } finally {
       try { client?.end(); } catch { /* closed */ }
@@ -777,6 +835,22 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       const job = { id: uid('prov'), kind: 'relay', state: 'running', message: '排队中…', step: 0, totalSteps: 3, address: host, os: '', hubPort: 0, hubUrl: '', pairCode: '', startedAt: nowIso(), finishedAt: null, log: [] };
       jobs.set(job.id, job);
       runRelay(job, { host, sshPort, username, password, publicIp });
+      return publicJob(job);
+    },
+
+    /** Lamplit's own relay on a Linux server (第 1 步原型): see runRelayTunnel. */
+    startRelayTunnel(input = {}) {
+      const host = assertHost(input.host);
+      const sshPort = assertPort(input.sshPort, 22, 'sshPort');
+      const port = assertPort(input.port, TUNNEL_PORT, 'port');
+      if (port < 1024) throw remoteError('REMOTE_BAD_PORT', '中转端口要在 1024–65535 之间');
+      const username = assertCredential(input.username, 'SSH username');
+      const password = assertCredential(input.password, 'SSH password');
+      const publicIp = String(input.publicIp || host).trim();
+      if (!isPublicIpv4(publicIp)) throw remoteError('REMOTE_RELAY_NEEDS_PUBLIC_IP', `中转要用这台服务器的公网 IP（${publicIp || '没填'} 不是）：在云服务器控制台里能看到`);
+      const job = { id: uid('prov'), kind: 'relay-tunnel', state: 'running', message: '排队中…', step: 0, totalSteps: 3, address: host, os: '', hubPort: 0, hubUrl: '', pairCode: '', startedAt: nowIso(), finishedAt: null, log: [] };
+      jobs.set(job.id, job);
+      runRelayTunnel(job, { host, sshPort, username, password, publicIp, port });
       return publicJob(job);
     },
 

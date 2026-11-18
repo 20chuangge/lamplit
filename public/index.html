@@ -800,6 +800,22 @@
           </div>
           <div class="row-note" id="relay-note" hidden></div>
         </details>
+        <details class="relay-box" id="tunnel-box">
+          <summary><span class="relay-title">不用 Tailscale 连回家（试验）</span><span class="relay-chip" id="tunnel-chip">关</span></summary>
+          <div class="row-note">这台电脑主动连到你的一台云服务器（中转）上，手机在外面用流量也能打开它，不用装 Tailscale。中转只转发加密的数据，看不到内容；证书的私钥只在这台电脑上。目前只支持 Lamplit 安卓 App。</div>
+          <label class="switch-row" for="tunnel-enabled"><input type="checkbox" id="tunnel-enabled" /> 通过中转连接</label>
+          <div class="relay-status" id="tunnel-status"></div>
+          <div class="relay-actions"><button class="btn tiny" id="tunnel-share" type="button" hidden>让其他机器也用这个中转</button><button class="btn tiny" id="tunnel-add" type="button" hidden>装到另一台服务器</button></div>
+          <div class="relay-form" id="tunnel-form">
+            <input class="field" id="tunnel-host" placeholder="云服务器的公网 IP" autocomplete="off" spellcheck="false" />
+            <input class="field" id="tunnel-ssh-port" placeholder="SSH 端口，默认 22" inputmode="numeric" autocomplete="off" />
+            <input class="field" id="tunnel-ssh-user" placeholder="SSH 用户名，例如 ubuntu 或 root" autocomplete="off" spellcheck="false" />
+            <input class="field" id="tunnel-ssh-pass" type="password" placeholder="SSH 密码（只用这一次，不保存）" autocomplete="off" />
+            <input class="field" id="tunnel-port" placeholder="中转端口，默认 34443" inputmode="numeric" autocomplete="off" />
+            <button class="btn tiny primary" id="tunnel-start" type="button">在这台服务器上装中转</button>
+          </div>
+          <div class="row-note" id="tunnel-note" hidden></div>
+        </details>
         <div id="desktop-mode-box" hidden>
           <label class="lbl" for="desktop-mode">这台机器上机器人的桌面</label>
           <select class="field" id="desktop-mode">

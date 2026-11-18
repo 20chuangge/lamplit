@@ -305,6 +305,11 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
         bytesOut: status.bytesOut + (tunnel?.mux.bytesOut || 0),
       };
     },
+    /** What another of the owner's machines needs to join the same relay (secret: only for the share route). */
+    shareable() {
+      if (!configured() || !cfg.join) return null;
+      return { host: cfg.host, port: Number(cfg.port), relayFingerprint: cfg.relayFingerprint, join: cfg.join };
+    },
     /** How a phone or a machine reaches this computer: null while off. */
     descriptor() {
       if (!cfg.enabled || !configured() || !ID_RE.test(String(cfg.id || ''))) return null;

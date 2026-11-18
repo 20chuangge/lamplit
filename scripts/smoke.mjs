@@ -4267,6 +4267,19 @@ async function scenarioMcp({ home, toolsMod }) {
       zhDocs.includes('<h2 id="data">我的数据去了哪</h2>') && enDocs.includes('<h2 id="data">Where my data goes</h2>') && zhDocs.includes('不收集使用统计') && zhDocs.includes('api.github.com')
       && zhDocs.includes('<strong>停止</strong>（■）') && zhDocs.includes('点「改时间」「删除」') && zhDocs.includes('这一步要你本人确认') && zhDocs.includes('（这个开关只在桌面应用里有）'));
   }
+  // 1.5.34: the eval's test bots were kept in the deleted bots' names (25 of them after one run).
+  {
+    const a = await api('/api/bots', { method: 'POST', body: { name: 'K34记名' } });
+    const b = await api('/api/bots', { method: 'POST', body: { name: 'K34不记名' } });
+    const ida = a.json?.bot?.id || a.json?.id;
+    const idb = b.json?.bot?.id || b.json?.id;
+    await api(`/api/bots/${encodeURIComponent(ida)}`, { method: 'DELETE' });
+    await api(`/api/bots/${encodeURIComponent(idb)}?forget=1`, { method: 'DELETE' });
+    const S = await import('../src/server.mjs');
+    const names = S.formerBotNames();
+    check('K34 deleting a bot keeps its name for the activity log; ?forget=1 (the eval\'s test bots) does not',
+      names[ida] === 'K34记名' && !(idb in names) && (await readText('./eval.mjs')).includes('?forget=1`, { method: \'DELETE\' })'), JSON.stringify({ ida, idb, names }));
+  }
   // 1.5.26: each bot has its own browser on its own screen; a takeover card waits for the tap.
   {
     const br = await readText('../src/browser.mjs');

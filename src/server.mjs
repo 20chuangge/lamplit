@@ -383,7 +383,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // approval cards (the badge kept counting one nobody could open) and its
   // routines (switched off, not deleted). The primary assistant is never
   // deleted here - the page and the bot_delete tool already said so.
-  const removeBot = async (id, cfg) => {
+  const removeBot = async (id, cfg, { forget = false } = {}) => {
     if (cfg && cfg.primaryBotId === id) throw httpError(400, 'BOT_PRIMARY_PROTECTED', '这是主助理，不能删：先把另一个助手设为主助理，再删这个。');
     const turns = (refs.runtime?.activeTurns() || []).filter((t) => t.botId === id);
     for (const t of turns) refs.runtime.cancel(t.turnId);
@@ -395,7 +395,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     }
     const gone = await getBot(id).catch(() => null);
     const result = await deleteBot(id, cfg);
-    if (gone?.name) rememberFormerName(id, gone.name);
+    if (gone?.name && !forget) rememberFormerName(id, gone.name);
     return { ...result, cleared: { turns: turns.length, approvals: cards.length, routinesOff } };
   };
   const botsApi = { listBots, getBot, createBot, updateBot, deleteBot: removeBot };
@@ -2691,8 +2691,8 @@ route('PATCH', /^\/api\/bots\/(?<id>[^/]+)$/, async (_req, _res, { params, body,
   return { bot: publicBot(fresh) };
 });
 
-route('DELETE', /^\/api\/bots\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
-  const result = await state.runtime.bots.deleteBot(params.id, state.config);
+route('DELETE', /^\/api\/bots\/(?<id>[^/]+)$/, async (_req, _res, { params, query, state }) => {
+  const result = await state.runtime.bots.deleteBot(params.id, state.config, { forget: query.get('forget') === '1' });
   state.bus.emit({ type: 'roster.changed', scope: 'bots', action: 'delete', botId: params.id });
   return result;
 });

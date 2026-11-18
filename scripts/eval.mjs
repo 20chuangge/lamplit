@@ -176,7 +176,8 @@ async function runTask(task, { runDir, wsRoot }) {
       for (const r of listOf(await api('/api/routines').catch(() => []), 'routines')) {
         if (r.botId === bot.id) await api(`/api/routines/${encodeURIComponent(r.id)}`, { method: 'DELETE' }).catch(() => {});
       }
-      await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'DELETE' }).catch((err) => console.warn(`  ! 机器人 ${bot.id} 没删掉：${err.message}`));
+      // ?forget=1: a test bot's name is not kept for the activity log (1.5.34).
+      await api(`/api/bots/${encodeURIComponent(bot.id)}?forget=1`, { method: 'DELETE' }).catch((err) => console.warn(`  ! 机器人 ${bot.id} 没删掉：${err.message}`));
       // Deleting a bot keeps its history in data/deleted-bots (1.5.15); an evaluation bot's is not worth keeping.
       try {
         const kept = path.join(DATA_DIR, 'deleted-bots');

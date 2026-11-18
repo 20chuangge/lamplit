@@ -5339,10 +5339,10 @@ async function scenarioV167() {
 async function scenarioDocs1513() {
   const page = (rel) => readText(`../site/${rel}`);
   const [zhHome, enHome, zhDocs, enDocs, siteJs] = await Promise.all([page('index.html'), page('en/index.html'), page('docs.html'), page('en/docs.html'), page('site.js')]);
-  check('D1 site: every page has its twin in the other language (data-other, hreflang, a 中文 / EN switch); a choice is kept; a browser that reads no Chinese goes to English once',
+  check('D1 site: every page has its twin in the other language (data-other, hreflang, a 中文 / EN switch); a choice is kept; a browser that reads no Chinese goes to English once; the Chinese pages link the user survey',
     zhHome.includes('data-other="en/"') && enHome.includes('data-other="../"') && zhDocs.includes('data-other="en/docs.html"') && enDocs.includes('data-other="../docs.html"')
     && [zhHome, zhDocs].every((p) => p.includes('data-lang-switch="en"') && p.includes('hreflang="en"')) && [enHome, enDocs].every((p) => p.includes('data-lang-switch="zh"') && p.includes('lang="en"'))
-    && enHome.includes('../style.css?v=1513') && siteJs.includes("localStorage.setItem(LANG, a.dataset.langSwitch)") && siteJs.includes('if (!chosen && lang === \'zh\' && !readsChinese'));
+    && enHome.includes('../style.css?v=1532') && zhHome.includes('id="survey"') && zhHome.includes('href="https://wj.qq.com/s2/') && zhDocs.includes('href="https://wj.qq.com/s2/') && siteJs.includes("localStorage.setItem(LANG, a.dataset.langSwitch)") && siteJs.includes('if (!chosen && lang === \'zh\' && !readsChinese'));
   const ids = ['machines', 'machine-home', 'machine-cloud', 'pitfalls'];
   check('D2 add-machine guide in both languages: home computer, cloud server (Tailscale auth key, 4390 kept closed), and the pitfalls: proxy vs 100.64.0.0/10, security group, AppArmor, the daily pairing code, Chinese user names, OpenSSH, bridged VMs',
     ids.every((id) => zhDocs.includes(`id="${id}"`) && enDocs.includes(`id="${id}"`))

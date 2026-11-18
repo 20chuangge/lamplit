@@ -190,6 +190,7 @@ function wireChrome() {
     if (!item || item.disabled) return;
     closeMenus();
     if (item.dataset.machineAdd) { openMachineModal(); return; }
+    if (item.dataset.appMachines) { try { window.NightshiftShell?.showMachines?.(); } catch { /* old app */ } return; }
     if (item.dataset.backOrigin) { location.assign(item.dataset.backOrigin); return; }
     if (item.dataset.handoffMenu) { handoffToMachine(item.dataset.handoffMenu, item); return; }
     if (item.dataset.machine !== undefined && !item.classList.contains('current')) switchMachine(item.dataset.machine);

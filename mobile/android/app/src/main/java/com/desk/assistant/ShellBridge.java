@@ -106,6 +106,22 @@ public class ShellBridge {
      * relay, pinned to the certificate fingerprint its pairing code carried
      * (launcher only; 第 1 步原型). Empty when it is not a relay address.
      */
+    /**
+     * Back to the app's own machine list (the launcher), from a machine's page:
+     * the same as the Back key, as a button people can see (第 2 步). Only a
+     * machine this phone paired with may ask; it only changes what is shown.
+     */
+    @JavascriptInterface
+    public boolean showMachines() {
+        if (!fromTrustedPage() || !(activity instanceof BridgeActivity)) return false;
+        activity.runOnUiThread(() -> {
+            com.getcapacitor.Bridge bridge = ((BridgeActivity) activity).getBridge();
+            if (bridge == null || bridge.getWebView() == null || bridge.getLocalUrl() == null) return;
+            bridge.getWebView().loadUrl(bridge.getLocalUrl());
+        });
+        return true;
+    }
+
     @JavascriptInterface
     public String relayLocal(final String host, final int port, final String id, final String fp) {
         if (!fromAppPage()) return "";

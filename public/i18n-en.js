@@ -2353,4 +2353,5 @@ window.DESK_I18N_EN = {
   "中转装好了，「通过中转连接」也已打开，但从这台电脑连不上 {0} 的 TCP {1}：云服务器的防火墙还没放行。{2}放行后点「再测一次」。{3}{4}": "The relay is installed and \"Connect through the relay\" is on, but this computer cannot reach TCP {1} on {0}: the cloud firewall does not allow it yet. {2} Then click \"Test again\".{3}{4}",
   "让这台机器也连上中转…": "Letting this machine join the relay too…",
   "你正在用的这台 · 经过中转": "The one you are using · through the relay",
+  "返回 App 的机器列表": "Back to the app's machine list",
 };

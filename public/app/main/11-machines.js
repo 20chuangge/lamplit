@@ -132,8 +132,13 @@ function renderMachineMenu() {
         <b>${escapeHtml(name)}</b>${off ? '<small class="off">离线</small>' : ''}
         <small>${escapeHtml(address)}</small>
       </button>`;
+    // Inside the Lamplit phone app: the way back to the app's own machine list
+    // (the Back key does the same, but nobody sees a key; 第 2 步, seen on a phone).
+    const appList = typeof window.NightshiftShell?.showMachines === 'function'
+      ? '<div class="menu-sep"></div><button type="button" role="menuitem" data-app-machines="1">返回 App 的机器列表</button>'
+      : '';
     if (!list.length && !back) {
-      menu.innerHTML = '<button type="button" disabled>正在读取机器列表…</button>';
+      menu.innerHTML = `<button type="button" disabled>正在读取机器列表…</button>${appList}`;
       return;
     }
     const rows = [];
@@ -148,7 +153,7 @@ function renderMachineMenu() {
           : row(m.name, m.tailnetUrl || m.url || '', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
       );
     }
-    menu.innerHTML = rows.join('');
+    menu.innerHTML = rows.join('') + appList;
     // The machine we came from is not a peer of this hub, so its state is unknown:
     // probe it once and mark it 离线 if it does not answer.
     if (back) {

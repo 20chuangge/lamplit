@@ -2357,4 +2357,8 @@ window.DESK_I18N_EN = {
   "不用 Tailscale：用你的云服务器中转（试验）": "Without Tailscale: relay through your cloud server (experimental)",
   "走中转": "via the relay",
   "中转在「本机」的 设置 → 手机和外网 里装（在这台电脑上点，它会经 SSH 装到云服务器）；装好后点「让其他机器也用这个中转」，这台机器就跟着连上。": "Install the relay from \"This computer\" in Settings → Phone & internet (it is installed over SSH from this computer); then click \"Let the other machines use this relay\" and this machine joins too.",
+  "检测中…": "Checking…",
+  "经中转过去…": "Going through the relay…",
+  "中转": "Relay",
+  "局域网": "LAN",
 };

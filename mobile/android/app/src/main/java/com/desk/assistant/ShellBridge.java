@@ -122,6 +122,26 @@ public class ShellBridge {
         return true;
     }
 
+    /**
+     * Open another machine from the app's own list (1.5.37): a machine's page
+     * cannot reach one that only the relay reaches (only the app runs relay
+     * forwarders), so it hands the switch to the launcher, which opens it the
+     * way its list does - LAN, Tailscale, then the relay - and carries the login.
+     */
+    @JavascriptInterface
+    public boolean openMachine(final String name) {
+        if (!fromTrustedPage() || !(activity instanceof BridgeActivity) || name == null) return false;
+        final String clean = name.trim();
+        if (clean.isEmpty() || clean.length() > 80) return false;
+        activity.runOnUiThread(() -> {
+            com.getcapacitor.Bridge bridge = ((BridgeActivity) activity).getBridge();
+            if (bridge == null || bridge.getWebView() == null || bridge.getLocalUrl() == null) return;
+            String base = bridge.getLocalUrl().replaceAll("/+$", "");
+            bridge.getWebView().loadUrl(base + "/#open=" + Uri.encode(clean));
+        });
+        return true;
+    }
+
     @JavascriptInterface
     public String relayLocal(final String host, final int port, final String id, final String fp) {
         if (!fromAppPage()) return "";

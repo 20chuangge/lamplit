@@ -1373,6 +1373,20 @@
       await store.set(KEYS.hub, state.hub);
     }
     await renderMachines();
+    // A machine's page asked to open another machine (NightshiftShell.openMachine,
+    // 1.5.37): it could not reach that one itself - only the relay goes there.
+    const open = /^#open=(.+)$/.exec(window.location.hash || '');
+    if (open) {
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+      const name = (() => { try { return decodeURIComponent(open[1]); } catch { return ''; } })();
+      await mergePeerMachines().catch(() => {});
+      const entry = name ? (await readHubs()).find((h) => h.name === name) : null;
+      if (entry) {
+        showConnected();
+        void enterMachine(entry);
+        return;
+      }
+    }
     if (state.hub) {
       showConnected();
       return;

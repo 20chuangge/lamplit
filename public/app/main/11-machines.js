@@ -14,7 +14,33 @@ let machineBridge = null;
 let selfMachineName = '';
 
 function onLocalMachine() {
+  // In the phone app, 127.0.0.1:14440-14499 is its relay forwarder: another machine, not this one.
+  if (throughPhoneRelay()) return false;
   return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/.test(location.origin);
+}
+
+/**
+ * The way from here to another machine, in words: the first of its addresses
+ * that answers (LAN or public, then Tailscale), else 「中转」 when it has a relay
+ * address and the phone app can use it, else 「连不上」.
+ */
+async function routeWords(m) {
+  const lanLike = (u) => { try { return !isPublicAddress(new URL(u).hostname); } catch { return false; } };
+  if (m.url && await reachable(m.url)) return lanLike(m.url) ? '局域网' : '外网';
+  if (m.tailnetUrl && await reachable(m.tailnetUrl)) return 'Tailscale';
+  if (m.relay && window.NightshiftShell?.openMachine) return '中转';
+  return '连不上';
+}
+
+/** A page the phone app opened through its relay forwarder (RelayLinks: 127.0.0.1:14440-14499). */
+function throughPhoneRelay(origin = location.origin) {
+  try {
+    const u = new URL(origin);
+    const port = Number(u.port);
+    return Boolean(window.NightshiftShell) && u.hostname === '127.0.0.1' && port >= 14440 && port <= 14499;
+  } catch {
+    return false;
+  }
 }
 
 function machineDisplayName() {
@@ -118,6 +144,9 @@ function renderMachineMenu() {
     // instead of a separate button.
     const list = (state.machinesCache && state.machinesCache.machines) || [];
     let back = cameFromMachine();
+    // The phone app's relay forwarder is a way to a machine, not a machine (1.5.37):
+    // that machine is in the list below already.
+    if (back && throughPhoneRelay(back.origin)) back = null;
     // Every machine now lists every other one, so the machine we came from is
     // usually in the list already (by name, or by one of its addresses): one row.
     if (back) {
@@ -150,10 +179,16 @@ function renderMachineMenu() {
       rows.push(
         m.self
           ? row(m.name, selfSub(), { current: true })
-          : row(m.name, m.tailnetUrl || m.url || '', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
+          : row(m.name, '检测中…', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
       );
     }
     menu.innerHTML = rows.join('') + appList;
+    // How this phone or browser would get there, in words (局域网 / Tailscale /
+    // 中转), not an address: 127.x, 100.x and IP:port meant nothing (1.5.37).
+    for (const m of list.filter((x) => !x.self)) {
+      const small = [...menu.querySelectorAll('[data-handoff-menu]')].find((b) => b.dataset.handoffMenu === m.name)?.querySelector('small:last-of-type');
+      if (small) void routeWords(m).then((words) => { if (small.isConnected) small.textContent = words; });
+    }
     // The machine we came from is not a peer of this hub, so its state is unknown:
     // probe it once and mark it 离线 if it does not answer.
     if (back) {
@@ -381,6 +416,12 @@ async function handoffToMachine(name, button) {
     let target = '';
     for (const url of candidates) {
       if (await reachable(url)) { target = url; break; }
+    }
+    // Only the relay goes there, and only the phone app can use it (its own
+    // forwarder): the app opens it from its machine list, with the login (1.5.37).
+    if (!target && res.relay && typeof window.NightshiftShell?.openMachine === 'function') {
+      if (button) button.textContent = '经中转过去…';
+      if (window.NightshiftShell.openMachine(name)) return;
     }
     if (!target) {
       const hostOf = (u) => { try { return new URL(u).host; } catch { return u; } };
@@ -1011,8 +1052,7 @@ function saveMachineFromModal() {
  * a page on 127.0.0.1:14440-14499 came through the relay (the app's forwarder, RelayLinks).
  */
 function selfSub() {
-  const port = Number(location.port);
-  return location.hostname === '127.0.0.1' && port >= 14440 && port <= 14499 ? '你正在用的这台 · 经过中转' : '你正在用的这台';
+  return throughPhoneRelay() ? '你正在用的这台 · 经过中转' : '你正在用的这台';
 }
 
 /** A job poll answers with the job itself (GET /api/remote/provision/:id); keep the last one when it fails. */

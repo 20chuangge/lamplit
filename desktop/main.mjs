@@ -317,11 +317,40 @@ async function reachMachine(url) {
   // login is the same one, copied to the door's address.
   const door = await relayDoor(url);
   if (door && await probeHub(door)) {
-    await copyLogin(url, door);
-    bootLog(`${url} unreachable, using the relay (${door})`);
+    // The login may live on either address (a cloud server is often paired on
+    // its Tailscale address, 1.5.1): take the one that still logs in through
+    // the door, as sharePeers does (seen on 1.5.36: copied from the public
+    // address, which had none, so the door showed the pairing page).
+    let loggedIn = false;
+    for (const from of await loginSources(url)) {
+      await copyLogin(from, door);
+      if (await doorAccepts(door)) { loggedIn = true; break; }
+    }
+    bootLog(`${url} unreachable, using the relay (${door})${loggedIn ? '' : '; no login it accepts'}`);
     return door;
   }
   return '';
+}
+
+/** The addresses of a machine that hold its pairing cookie here, its own address first. */
+async function loginSources(url) {
+  const alt = readMachines().find((m) => m.url === url)?.tailnetUrl || '';
+  const out = [];
+  for (const u of [url, alt].filter(Boolean)) {
+    const has = await session.defaultSession.cookies.get({ url: u, name: 'desk_session' }).catch(() => []);
+    if (has.length) out.push(u);
+  }
+  return out.length ? out : [url];
+}
+
+/** Does the machine behind this address take the login this app now holds for it? */
+async function doorAccepts(base) {
+  try {
+    const auth = await (await net.fetch(`${base.replace(/\/+$/, '')}/api/auth`, { signal: AbortSignal.timeout(8000) })).json();
+    return !(auth && auth.required && auth.authorized === false);
+  } catch {
+    return false;
+  }
 }
 
 /** The pairing cookie of a machine, copied to another address of the same machine. */

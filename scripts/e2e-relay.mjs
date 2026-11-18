@@ -229,6 +229,10 @@ async function main() {
   const viaDoor = doorUrl ? await fetch(`${doorUrl}/api/bots`, { headers: { authorization: `Bearer ${bPair.token}` } }).catch(() => null) : null;
   const doorPage = doorUrl ? await fetch(`${doorUrl}/`).then((r) => r.text()).catch(() => '') : '';
   check('A → B: a loopback door (127.0.0.N) opens B through the relay for the desktop window', /^http:\/\/127\.0\.0\.\d+:\d+$/.test(doorUrl) && !doorUrl.startsWith('http://127.0.0.1:') && viaDoor?.status === 200 && /<html/i.test(doorPage), JSON.stringify(door.body));
+  // The desktop window logs in with the pairing cookie it holds (1.5.37: 1.5.36's door got none).
+  const doorHost = doorUrl ? new URL(doorUrl).host : '';
+  const withCookie = doorUrl ? await fetch(`${doorUrl}/api/auth`, { headers: { cookie: `desk_session=${encodeURIComponent(bPair.token)}`, origin: `http://${doorHost}` } }).then((r) => r.json()).catch(() => null) : null;
+  check('A → B: the desktop window\'s cookie logs in through the door (same origin)', withCookie?.authorized === true && withCookie.mode === 'cookie', JSON.stringify(withCookie));
   const noAuth = doorUrl ? await fetch(`${doorUrl}/api/bots`).then((r) => r.status).catch(() => 0) : 0;
   check('A → B: through the door B still asks for its login (it counts as remote)', noAuth === 401);
   const again2 = await A.api('/api/remote/relay-door', { method: 'POST', body: { url: 'http://127.0.0.1:9' } });

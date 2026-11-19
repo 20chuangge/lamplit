@@ -143,7 +143,10 @@ export async function relayChecks({ check }) {
     const relayId = makeSelfSignedCert({ commonName: 'lamplit-relay' });
     const join = crypto.randomBytes(18).toString('base64url');
     const tapped = [];
-    const relay = createRelay({ identity: relayId, joinSecret: join, registryFile: path.join(tmp, 'machines.json'), tap: (tid, dir, bytes) => tapped.push({ tid, dir, bytes: Buffer.from(bytes) }), limits: { pingEveryMs: 500, deadAfterMs: 3000 } });
+    const relay = createRelay({ identity: relayId, joinSecret: join, registryFile: path.join(tmp, 'machines.json'), tap: (tid, dir, bytes) => tapped.push({ tid, dir, bytes: Buffer.from(bytes) }),
+      // Connections per IP are not what this relay tests (the strict relays below do): the
+      // retries further down would use up the 127.0.0.1 allowance and later checks were refused.
+      limits: { pingEveryMs: 500, deadAfterMs: 3000, connBurst: 10000, connPerIpPerMin: 100000 } });
     const relayPort = await listen(relay.server);
     cleanup.push(() => relay.close());
 
@@ -289,7 +292,7 @@ export async function relayChecks({ check }) {
     check('relay: with the computer gone, a connection is refused at once', (await errorCode(connectViaRelay(target, { timeoutMs: 3000 }))) !== null);
     // 1.5.39, seen live: a phone retrying while its computers restarted was blocked as a scanner.
     for (let i = 0; i < 45; i += 1) await errorCode(connectViaRelay(target, { timeoutMs: 2000 }));
-    check('relay: retrying a registered computer that is away (restarting, updating) does not block the phone as a scanner', relay.stats().blocked === 0, JSON.stringify(relay.stats()));
+    check('relay: retrying a registered computer that is away (restarting, updating) does not block the phone as a scanner', relay.stats().blocked === 0 && relay.stats().offline >= 45, JSON.stringify(relay.stats()));
 
     // ---------------------------------------------------------- limits
     const strict = createRelay({ identity: relayId, joinSecret: join, limits: { connBurst: 5, connPerIpPerMin: 5, missesPerIpPer10Min: 3, blockMs: 60000 } });

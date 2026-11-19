@@ -153,6 +153,18 @@ public class ShellBridge {
         return true;
     }
 
+    /**
+     * The phone's own network, for choosing a machine's address (NetHints,
+     * 1.5.39): the launcher, and a machine's page (its switcher would otherwise
+     * wait out every dead address). Only whether Tailscale is on and this
+     * phone's own subnets.
+     */
+    @JavascriptInterface
+    public String networkHints() {
+        if (!fromAppPage() && !fromMachinePage()) return "";
+        return NetHints.json();
+    }
+
     @JavascriptInterface
     public String relayLocal(final String host, final int port, final String id, final String fp) {
         if (!fromAppPage()) return "";

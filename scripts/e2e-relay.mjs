@@ -145,8 +145,11 @@ async function main() {
   const tested = await A.api('/api/relay-link/test', { method: 'POST' });
   check('A: 「再测一次」 reaches the relay port', tested.body?.ok === true, JSON.stringify(tested.body));
   const phone = (p, init = {}) => relayFetch(descA, p, init);
-  const paired = await (await phone('/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: link.token, client: 'app', deviceName: 'e2e phone' }) })).json();
+  const pairRes = await phone('/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: link.token, client: 'app', deviceName: 'e2e phone' }) });
+  const pairCookie = pairRes.headers.get('set-cookie') || '';
+  const paired = await pairRes.json();
   check('phone: paired through the relay', String(paired.token || '').length >= 16);
+  check('phone: through the relay the login cookie is named after this computer (machines on one loopback host keep their own)', pairCookie.startsWith(`desk_session_${descA.id.slice(0, 12)}=`), pairCookie.slice(0, 40));
   const auth = { authorization: `Bearer ${paired.token}` };
 
   // Latency: a small request, direct vs through the relay (both on this computer).
@@ -231,8 +234,13 @@ async function main() {
   check('A → B: a loopback door (127.0.0.N) opens B through the relay for the desktop window', /^http:\/\/127\.0\.0\.\d+:\d+$/.test(doorUrl) && !doorUrl.startsWith('http://127.0.0.1:') && viaDoor?.status === 200 && /<html/i.test(doorPage), JSON.stringify(door.body));
   // The desktop window logs in with the pairing cookie it holds (1.5.37: 1.5.36's door got none).
   const doorHost = doorUrl ? new URL(doorUrl).host : '';
-  const withCookie = doorUrl ? await fetch(`${doorUrl}/api/auth`, { headers: { cookie: `desk_session=${encodeURIComponent(bPair.token)}`, origin: `http://${doorHost}` } }).then((r) => r.json()).catch(() => null) : null;
-  check('A → B: the desktop window\'s cookie logs in through the door (same origin)', withCookie?.authorized === true && withCookie.mode === 'cookie', JSON.stringify(withCookie));
+  // Through the relay B names its login cookie after its own id (1.5.39), so two
+  // machines behind one loopback host (the phone app's 127.0.0.1:144xx) keep their own.
+  const cookieName = door.body?.cookieName || '';
+  const withCookie = doorUrl ? await fetch(`${doorUrl}/api/auth`, { headers: { cookie: `${cookieName}=${encodeURIComponent(bPair.token)}`, origin: `http://${doorHost}` } }).then((r) => r.json()).catch(() => null) : null;
+  check('A → B: the desktop window\'s cookie logs in through the door (same origin), under B\'s own cookie name', cookieName === `desk_session_${descB.id.slice(0, 12)}` && withCookie?.authorized === true && withCookie.mode === 'cookie', JSON.stringify({ cookieName, withCookie }));
+  const otherName = doorUrl ? await fetch(`${doorUrl}/api/auth`, { headers: { cookie: `desk_session_${descA.id.slice(0, 12)}=${encodeURIComponent(bPair.token)}`, origin: `http://${doorHost}` } }).then((r) => r.json()).catch(() => null) : null;
+  check('A → B: another machine\'s relay cookie is not B\'s login', otherName?.authorized === false, JSON.stringify(otherName));
   const noAuth = doorUrl ? await fetch(`${doorUrl}/api/bots`).then((r) => r.status).catch(() => 0) : 0;
   check('A → B: through the door B still asks for its login (it counts as remote)', noAuth === 401);
   const again2 = await A.api('/api/remote/relay-door', { method: 'POST', body: { url: 'http://127.0.0.1:9' } });

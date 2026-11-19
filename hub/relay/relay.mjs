@@ -803,6 +803,15 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
     const id = idFromSni(sni);
     const tunnel = id ? tunnels.get(id) : null;
     if (!tunnel) {
+      // A computer that registered here but is away right now (restarting, asleep,
+      // updating) is not a scan: its id is 130 random bits only its own devices
+      // know. Seen 1.5.39: a phone retrying while its computers restarted was
+      // blocked for 10 minutes. Only ids never seen here count toward the block.
+      if (id && registry[id]) {
+        counters.offline = (counters.offline || 0) + 1;
+        socket.destroy();
+        return;
+      }
       counters.misses += 1;
       if (!missLimiter.take(ip)) block(ip, 'too many connections to unknown computers');
       socket.destroy();

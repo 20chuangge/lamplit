@@ -115,6 +115,7 @@ import {
   clientIp,
   safeEqual,
   sessionCookieHeader,
+  sessionCookieName,
   createRateLimiter,
   createPairLinkStore,
   loadOrCreateSecurity,
@@ -788,11 +789,17 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 }
 
 /** One request handler for both sockets; the public one carries a flag. */
+/** The login cookie name through the relay: this machine's own (auth.mjs sessionCookieName, 1.5.39). */
+function relayCookieName(state) {
+  const id = String(state.relayLink?.view?.().id || '');
+  return id ? `desk_session_${id.slice(0, 12)}` : 'desk_session_relay';
+}
+
 function hubRequestHandler(state, viaPublic) {
   return (req, res) => {
     if (viaPublic) req.viaPublic = true;
     // Through the relay (relaylink.mjs): remote like the public door, whatever the socket says.
-    if (req.socket?.viaRelay) { req.viaPublic = true; req.viaRelay = true; }
+    if (req.socket?.viaRelay) { req.viaPublic = true; req.viaRelay = true; req.relayCookieName = relayCookieName(state); }
     handleRequest(req, res, state).catch((err) => {
       // Last-resort guard: no route may ever produce an unhandled rejection.
       console.error('[assistant] unhandled request error:', err);
@@ -806,7 +813,7 @@ function hubRequestHandler(state, viaPublic) {
 function attachHubUpgrade(server, state, viaPublic) {
   server.on('upgrade', (req, socket, head) => {
     if (viaPublic) req.viaPublic = true;
-    if (req.socket?.viaRelay) { req.viaPublic = true; req.viaRelay = true; }
+    if (req.socket?.viaRelay) { req.viaPublic = true; req.viaRelay = true; req.relayCookieName = relayCookieName(state); }
     const refuse = (status, text) => {
       try { socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); } catch { /* gone */ }
     };
@@ -2091,7 +2098,7 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
   const { device, sessionToken } = state.devices.add({ name: deviceName || describeAgent(userAgent), ip: clientIp(req), kind: deviceKind(userAgent), parent: link?.parent || '' });
   // Through the relay the phone app's page is http://127.0.0.1 (its own TLS
   // forwarder does the encryption), where a Secure cookie may not stick.
-  res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: (isSecureRequest(req) || Boolean(req.viaPublic)) && !req.viaRelay }));
+  res.setHeader('set-cookie', sessionCookieHeader(sessionToken, { secure: (isSecureRequest(req) || Boolean(req.viaPublic)) && !req.viaRelay, name: sessionCookieName(req) }));
   // A native app has no cookie jar it trusts across origins: when it says so, it
   // gets the per-device token in the body and sends it as `Authorization`.
   if (String(body?.client || '') === 'app') return { ok: true, device, token: sessionToken };
@@ -2426,12 +2433,15 @@ function setSelfMachineName(name) {
   try { writeJsonSyncAtomic(path.join(P.dataDir, 'machine.json'), { name: clean }); } catch { /* still applies until a restart */ }
 }
 
-route('GET', /^\/api\/machines$/, async (_req, _res, { state }) => {
+route('GET', /^\/api\/machines$/, async (_req, _res, { state, query }) => {
   const peers = state.peers.list();
   // Its Tailscale address too: a phone that refreshes this row from here must not lose it.
   const selfTailnet = tailnetUrl(state);
   const selfRelay = state.relayLink?.descriptor() || null;
   const self = { name: selfMachineName(), url: state.pairingUrl || null, ...(selfTailnet && selfTailnet !== state.pairingUrl ? { tailnetUrl: selfTailnet } : {}), ...(selfRelay ? { relay: selfRelay } : {}), online: true, self: true };
+  // ?self=1: this machine only, at once - the page's title must not wait for
+  // the other machines to be probed (1.5.39: the phone showed 127.0.0.1 meanwhile).
+  if (query.get('self') === '1') return { machines: [self] };
   const rest = await Promise.all(
     peers.map(async (peer) => {
       // list() deliberately hides tokens; the probe needs the real record, or it
@@ -2754,7 +2764,7 @@ route('GET', /^\/api\/remote\/reach$/, async (req, _res, { query, state }) => {
 // The desktop window on a machine that only the relay reaches (1.5.36): a
 // loopback door to it (openRelayForwarder), one per machine, kept while this
 // hub runs. Its own address and Tailscale are tried by the app first.
-//   POST /api/remote/relay-door {url: <machine address>}  loopback only -> {url: 'http://127.0.0.N:port'}
+//   POST /api/remote/relay-door {url: <machine address>}  loopback only -> {url: 'http://127.0.0.N:port', cookieName}
 const relayDoors = new Map(); // relay id -> {url, fp, host, close}
 route('POST', /^\/api\/remote\/relay-door$/, async (req, _res, { body, state }) => {
   if (req.viaPublic || !isLoopbackHost(clientIp(req))) throw httpError(403, 'LOCAL_ONLY', 'only the desktop app on this computer can ask this');
@@ -2766,14 +2776,16 @@ route('POST', /^\/api\/remote\/relay-door$/, async (req, _res, { body, state }) 
   if (!relay) throw httpError(409, 'NO_RELAY', `「${listed.name}」没有中转地址`);
   const had = relayDoors.get(relay.id);
   // Same machine, same certificate and relay: the same door (and the same cookies).
-  if (had && had.fp === relay.fp && had.relayAt === `${relay.host}:${relay.port}`) return { url: had.url };
+  // Through the relay that machine names its login cookie after its id (sessionCookieName, 1.5.39).
+  const cookieName = `desk_session_${relay.id.slice(0, 12)}`;
+  if (had && had.fp === relay.fp && had.relayAt === `${relay.host}:${relay.port}`) return { url: had.url, cookieName };
   had?.close();
   const used = new Set([...relayDoors.values()].map((d) => d.host));
   let n = 2;
   while (used.has(`127.0.0.${n}`) && n < 250) n += 1;
   const door = await openRelayForwarder(relay, { host: `127.0.0.${n}` });
   relayDoors.set(relay.id, { ...door, fp: relay.fp, relayAt: `${relay.host}:${relay.port}` });
-  return { url: door.url };
+  return { url: door.url, cookieName };
 });
 
 route('POST', /^\/api\/remote\/push-update$/, async (req, _res, { body, state }) => {

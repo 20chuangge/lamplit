@@ -287,6 +287,9 @@ export async function relayChecks({ check }) {
     check('relay: turning the link off closes the open connections', await Promise.race([closed, sleep(3000).then(() => false)]));
     check('relay: the relay forgets a tunnel that went away', await until(() => relay.tunnels.size === 0, 3000));
     check('relay: with the computer gone, a connection is refused at once', (await errorCode(connectViaRelay(target, { timeoutMs: 3000 }))) !== null);
+    // 1.5.39, seen live: a phone retrying while its computers restarted was blocked as a scanner.
+    for (let i = 0; i < 45; i += 1) await errorCode(connectViaRelay(target, { timeoutMs: 2000 }));
+    check('relay: retrying a registered computer that is away (restarting, updating) does not block the phone as a scanner', relay.stats().blocked === 0, JSON.stringify(relay.stats()));
 
     // ---------------------------------------------------------- limits
     const strict = createRelay({ identity: relayId, joinSecret: join, limits: { connBurst: 5, connPerIpPerMin: 5, missesPerIpPer10Min: 3, blockMs: 60000 } });
@@ -344,7 +347,8 @@ export async function relayChecks({ check }) {
     const srvUp = await until(() => srv.link.view().state === 'online', 5000);
     const srvDesc = srv.link.descriptor();
     check('relay dial: the server\'s own Lamplit connects on 127.0.0.1 and hands phones the public address', srvUp && srvDesc?.host === '198.51.100.7' && srv.link.view().dial === '127.0.0.1', JSON.stringify(srv.link.view()));
-    check('relay dial: a port test goes where the tunnel goes', (await srv.link.check()).ok === true);
+    const dialCheck = await srv.link.check();
+    check('relay dial: a port test goes where the tunnel goes', dialCheck.ok === true, JSON.stringify({ dialCheck, relay: relay.stats() }));
     const idBefore = srvDesc.id;
     const fpBefore = srvDesc.fp;
     const gone = srv.link.forget();

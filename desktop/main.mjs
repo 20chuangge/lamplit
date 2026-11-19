@@ -315,7 +315,7 @@ async function reachMachine(url) {
   // Neither (Tailscale off, or never installed): through Lamplit's relay (1.5.36).
   // This computer's hub opens a loopback door to that machine (127.0.0.N); the
   // login is the same one, copied to the door's address.
-  const door = await relayDoor(url);
+  const { url: door, cookieName } = await relayDoor(url);
   if (door && await probeHub(door)) {
     // The login may live on either address (a cloud server is often paired on
     // its Tailscale address, 1.5.1): take the one that still logs in through
@@ -323,7 +323,7 @@ async function reachMachine(url) {
     // address, which had none, so the door showed the pairing page).
     let loggedIn = false;
     for (const from of await loginSources(url)) {
-      await copyLogin(from, door);
+      await copyLogin(from, door, cookieName);
       if (await doorAccepts(door)) { loggedIn = true; break; }
     }
     bootLog(`${url} unreachable, using the relay (${door})${loggedIn ? '' : '; no login it accepts'}`);
@@ -353,21 +353,24 @@ async function doorAccepts(base) {
   }
 }
 
-/** The pairing cookie of a machine, copied to another address of the same machine. */
-async function copyLogin(from, to) {
+/**
+ * The pairing cookie of a machine, copied to another address of the same machine.
+ * rename: through the relay the machine names its login cookie after its id (1.5.39).
+ */
+async function copyLogin(from, to, rename = '') {
   try {
     for (const c of await session.defaultSession.cookies.get({ url: from })) {
       await session.defaultSession.cookies.set({
-        url: to, name: c.name, value: c.value, path: c.path || '/', httpOnly: c.httpOnly,
+        url: to, name: rename && c.name === 'desk_session' ? rename : c.name, value: c.value, path: c.path || '/', httpOnly: c.httpOnly,
         ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}), ...(c.sameSite ? { sameSite: c.sameSite } : {}),
       });
     }
   } catch (err) { bootLog(`cookie copy to ${to} failed: ${err.message}`); }
 }
 
-/** A loopback door to a machine through the relay, from this computer's hub ('' when it has no relay address). */
+/** A loopback door to a machine through the relay, from this computer's hub: {url, cookieName} ({} when it has no relay address). */
 async function relayDoor(url) {
-  if (HUB_MODE || !serverPort) return '';
+  if (HUB_MODE || !serverPort) return {};
   try {
     const res = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/relay-door`, {
       method: 'POST',
@@ -375,10 +378,11 @@ async function relayDoor(url) {
       body: JSON.stringify({ url }),
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) return '';
-    return String((await res.json())?.url || '');
+    if (!res.ok) return {};
+    const j = await res.json();
+    return { url: String(j?.url || ''), cookieName: String(j?.cookieName || '') };
   } catch {
-    return '';
+    return {};
   }
 }
 

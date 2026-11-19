@@ -354,7 +354,10 @@ async function apiRequest(path, options = {}) {
   }
 
   // A wrong code in the 「配对这个浏览器」 box is not a lost login (1.5.33: it threw the whole page out).
-  if (res.status === 401 && path !== '/api/pair') enterAuth('这台设备的授权已失效，请重新配对。');
+  // Not while the page is spending a one-time code from its address (boot): the
+  // requests that start before it is spent are refused, and that is no reason
+  // to show the pairing screen (1.5.39: it stayed up after pairing had worked).
+  if (res.status === 401 && path !== '/api/pair' && !pairingFromAddress) enterAuth('这台设备的授权已失效，请重新配对。');
 
   const text = await res.text();
   let json = null;
@@ -590,19 +593,35 @@ async function checkAuth() {
   }
 }
 
-/* A phone can be handed a pairing code through ?pair=CODE. Consume it once. */
+/* While a one-time code from the address is being spent (boot), a refused request is expected. */
+let pairingFromAddress = false;
+
+/* A phone can be handed a pairing code through ?pair=CODE. Consume it once, in place. */
+function hasPairParam() {
+  try { return Boolean(new URL(location.href).searchParams.get('pair')); } catch { return false; }
+}
+
+/** The code out of the address, unused (this page is logged in already). */
+function dropPairParam() {
+  try {
+    const url = new URL(location.href);
+    url.searchParams.delete('pair');
+    history.replaceState(null, '', url.toString());
+  } catch { /* keep the address */ }
+}
+
+/** Pair with the code in the address; the cookie it sets serves this page from now on. -> paired? */
 async function consumePairParam() {
   let url;
   try { url = new URL(location.href); } catch { return false; }
   const code = url.searchParams.get('pair');
   if (!code) return false;
   url.searchParams.delete('pair');
+  history.replaceState(null, '', url.toString());
   try {
     await api('/api/pair', { method: 'POST', body: { code: code.replace(/\s+/g, '') } });
-    location.replace(url.toString());
     return true;
   } catch {
-    history.replaceState(null, '', url.toString());
     return false;
   }
 }
@@ -679,6 +698,8 @@ async function connectDevice() {
    boot
    --------------------------------------------------------------------- */
 async function boot() {
+  // Before anything asks the hub: requests refused while a code in the address is still to be spent are expected.
+  pairingFromAddress = hasPairParam();
   initTheme();
   wireChrome();
   initTimezone();
@@ -696,15 +717,31 @@ async function boot() {
     showFatal(err);
     return;
   }
+  // A one-time code in the address (?pair=, the phone app opening a machine):
+  // spent quietly before anything shows - not after the pairing screen, and no
+  // reload (1.5.39: on the relay every switch showed 配对 and loaded twice).
+  // Already logged in here: dropped unused.
+  if (hasPairParam()) {
+    if (auth.required && !auth.authorized) {
+      pairingFromAddress = true;
+      if (await consumePairParam()) {
+        // Logged in now. Whatever started before (machine list, screens) was
+        // refused: start again, once, as a logged-in page - no pairing screen shown.
+        location.replace(location.href);
+        return;
+      }
+      pairingFromAddress = false;
+    } else {
+      dropPairParam();
+    }
+  }
+  pairingFromAddress = false;
   state.auth = auth;
 
   if (auth.required && !auth.authorized) {
     enterAuth('');
-    await consumePairParam();
     return;
   }
-
-  if (await consumePairParam()) return; // navigated away, pairing done
 
 
   try {
@@ -722,13 +759,16 @@ async function boot() {
     return;
   }
 
+  const target = approvalTarget();
+  // A phone opens on the home page (the list of bots): it is there before the
+  // page shows, not after the settings load - meanwhile an empty chat showed (1.5.39).
+  if (!target && isMobile() && state.bots.length) openSidebar();
   $('app').classList.remove('is-hidden');
   applyShellConfig();
 
   // Settings, the voice list and the groups do not wait for each other: on a
   // phone over a slow link every round trip is most of a second.
   // (The voice list is in before the chat renders: whether replies get "read aloud".)
-  const target = approvalTarget();
   renderBots();
   await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);
   const primary = state.bots.find((b) => b.primary) || state.bots[0];

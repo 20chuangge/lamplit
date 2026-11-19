@@ -377,6 +377,14 @@ public class NightshiftWatcher extends Service {
      */
     private final Map<String, String[]> routes = new java.util.concurrent.ConcurrentHashMap<>();
 
+    private static String hostOf(String url) {
+        try {
+            return new URL(url).getHost();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     static boolean isLanAddress(String url) {
         String host;
         try {
@@ -435,7 +443,8 @@ public class NightshiftWatcher extends Service {
         String best = null;
         if (!isLanAddress(hub)) {
             for (String other : others) {
-                if (isLanAddress(other) && answers(other)) {
+                // Only a LAN address on this phone's own Wi-Fi subnet (1.5.39): the others time out.
+                if (isLanAddress(other) && NetHints.onSameLan(hostOf(other)) && answers(other)) {
                     best = other;
                     break;
                 }
@@ -444,7 +453,9 @@ public class NightshiftWatcher extends Service {
         if (best == null) {
             java.util.List<String> relays = new java.util.ArrayList<>();
             for (String other : others) if (RelayLinks.isRelayLocal(other)) relays.add(other);
-            if (relays.isEmpty() || RelayLinks.isRelayLocal(hub) || answers(hub)) {
+            // The machine's own address only when this phone can use it now (same Wi-Fi,
+            // or Tailscale on): away from home it went straight to the relay after a timeout.
+            if (relays.isEmpty() || RelayLinks.isRelayLocal(hub) || (NetHints.mayReach(hub) && answers(hub))) {
                 best = hub;
             } else {
                 for (String relay : relays) {

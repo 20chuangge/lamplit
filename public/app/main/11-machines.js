@@ -26,11 +26,18 @@ function onLocalMachine() {
  */
 async function routeWords(m) {
   const lanLike = (u) => { try { return !isPublicAddress(new URL(u).hostname); } catch { return false; } };
-  if (m.url && await reachable(m.url)) return lanLike(m.url) ? '局域网' : '外网';
-  if (m.tailnetUrl && await reachable(m.tailnetUrl)) return 'Tailscale';
-  if (m.relay && window.NightshiftShell?.openMachine) return '中转';
+  // Only what this phone can use now, all at once (1.5.39: one by one, each
+  // dead address cost 4 s and the menu said 检测中… for up to 8 s).
+  const tries = [m.url, m.tailnetUrl].filter((u) => u && phoneCanUse(u));
+  // With a relay the app can use, an address that has not answered in 1 s is not the way.
+  const viaRelay = Boolean(m.relay && window.NightshiftShell?.openMachine);
+  const first = await firstReachable(tries, viaRelay ? 1000 : 4000);
+  if (first && first === m.url) return lanLike(m.url) ? '局域网' : '外网';
+  if (first) return 'Tailscale';
+  if (viaRelay) return '中转';
   return '连不上';
 }
+
 
 /** A page the phone app opened through its relay forwarder (RelayLinks: 127.0.0.1:14440-14499). */
 function throughPhoneRelay(origin = location.origin) {
@@ -49,7 +56,8 @@ function machineDisplayName() {
   // (through the relay it is a loopback door, 127.0.0.N: 1.5.37).
   const row = machineBridge?.machines?.find((m) => m.url === location.origin || m.tailnetUrl === location.origin)
     || (machineBridge?.current ? machineBridge.machines?.find((m) => m.url === machineBridge.current) : null);
-  return row?.name || selfMachineName || state.computer?.host?.hostname || location.hostname;
+  // Through the phone's relay forwarder the address is 127.0.0.1: a name, or nothing yet.
+  return row?.name || selfMachineName || state.computer?.host?.hostname || (throughPhoneRelay() ? '' : location.hostname);
 }
 
 /** How this page reached its machine, in words: 中转 (the desktop's door 127.0.0.N or the phone's forwarder), Tailscale (100.x), else the host name. */
@@ -57,6 +65,7 @@ function pageRouteWords() {
   const h = location.hostname;
   if (throughPhoneRelay() || (/^127\.0\.0\.\d+$/.test(h) && h !== '127.0.0.1')) return '中转';
   if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return 'Tailscale';
+  if (/^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+/.test(h)) return '局域网';
   return h;
 }
 
@@ -118,6 +127,13 @@ async function refreshMachines() {
   // Browser / phone: no desktop bridge, but the hub knows its own hostname, so
   // the sidebar can say "ubuntu" instead of "100.64.0.5".
   if (!machineBridge) {
+    // Its own name first, at once; the full list waits for the others to be probed.
+    if (!selfMachineName) {
+      api('/api/machines?self=1').then((data) => {
+        const mine = (data?.machines || []).find((m) => m.self);
+        if (mine?.name && !selfMachineName) { selfMachineName = mine.name; syncMachineBranding(); }
+      }).catch(() => {});
+    }
     try {
       const data = await api('/api/machines');
       state.machinesCache = { at: Date.now(), machines: data?.machines || [] };
@@ -425,10 +441,12 @@ async function handoffToMachine(name, button) {
     const order = { lan: 0, tailnet: 1, public: 2 };
     const ranked = (Array.isArray(res.links) ? [...res.links] : []).sort((x, y) => (order[x.kind] ?? 1) - (order[y.kind] ?? 1));
     const candidates = [...new Set([...ranked.map((l) => l.url), res.url].filter(Boolean))];
-    let target = '';
-    for (const url of candidates) {
-      if (await reachable(url)) { target = url; break; }
-    }
+    // Only those this phone can use now, tried together, the best-ranked that
+    // answers wins (1.5.39: one by one, 4 s per dead address, 12 s on a hotspot).
+    const usable = candidates.filter(phoneCanUse);
+    // In the app with a relay to fall back on, give the direct addresses 1 s, not 4 each.
+    const canRelay = Boolean(res.relay && typeof window.NightshiftShell?.openMachine === 'function');
+    let target = await firstReachable(usable, canRelay ? 1000 : 4000);
     // Only the relay goes there, and only the phone app can use it (its own
     // forwarder): the app opens it from its machine list, with the login (1.5.37).
     if (!target && res.relay && typeof window.NightshiftShell?.openMachine === 'function') {

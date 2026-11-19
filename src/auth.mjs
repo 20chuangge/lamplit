@@ -289,7 +289,7 @@ export function evaluateAuth(req, security, devices, proxy = {}) {
 
   // A cookie rides along with whatever page triggers the request; SameSite=Lax
   // stops most of that, this stops the rest (another port on the same host).
-  const cookie = isSameOriginRequest(req) ? readCookie(req?.headers?.cookie, SESSION_COOKIE) : '';
+  const cookie = isSameOriginRequest(req) ? readCookie(req?.headers?.cookie, sessionCookieName(req)) : '';
   if (cookie && security?.token && safeEqual(cookie, security.token)) {
     return { required: true, authorized: true, mode: 'cookie', local: false, address };
   }
@@ -372,8 +372,19 @@ export function carriesLocalKey(req, auth, dir, devices = null) {
   if (!auth || auth.mode !== 'local') return Boolean(auth?.authorized);
   const sent = String(req?.headers?.[LOCAL_KEY_HEADER] || '');
   if (sent && safeEqual(sent, localKey(dir))) return true;
-  const cookie = readCookie(req?.headers?.cookie, SESSION_COOKIE);
+  const cookie = readCookie(req?.headers?.cookie, sessionCookieName(req));
   return Boolean(cookie && devices?.findBySession?.(cookie));
+}
+
+/**
+ * The login cookie's name for this request (1.5.39). Through the relay the
+ * phone app reaches every machine at 127.0.0.1:<its own port>, and cookies are
+ * kept per host, not per port: one name let each machine overwrite the
+ * other's login (seen: switching between two relay machines asked to pair
+ * again). So through the relay each machine uses a name of its own.
+ */
+export function sessionCookieName(req) {
+  return req?.relayCookieName || SESSION_COOKIE;
 }
 
 /**
@@ -405,14 +416,14 @@ export function isAuthExemptPath(method, pathname) {
   return false;
 }
 
-export function sessionCookieHeader(token, { secure = false } = {}) {
+export function sessionCookieHeader(token, { secure = false, name = SESSION_COOKIE } = {}) {
   // On plain HTTP (a LAN) there is no `Secure`, because the browser would drop
   // the cookie entirely. Over HTTPS - directly or through a trusted proxy - it
   // is added so the cookie can never travel in the clear. HttpOnly keeps the
   // token away from page scripts, SameSite=Lax blocks cross-site sends.
   const flags = ['HttpOnly', 'SameSite=Lax', 'Path=/', `Max-Age=${SESSION_MAX_AGE_SECONDS}`];
   if (secure) flags.splice(1, 0, 'Secure');
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; ${flags.join('; ')}`;
+  return `${name}=${encodeURIComponent(token)}; ${flags.join('; ')}`;
 }
 
 // ---------------------------------------------------------------------------

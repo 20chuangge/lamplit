@@ -369,7 +369,10 @@
       if (!token) continue;
       let data;
       try {
-        const res = await fetch(entry.url + '/api/machines', { headers: { authorization: 'Bearer ' + token } });
+        // The address that answered last (the row's label), not always the saved
+        // one: away from home that is the relay, and the LAN one only timed out (1.5.39).
+        const base = entry.best && [entry.url, ...(entry.alt || [])].includes(entry.best) ? entry.best : entry.url;
+        const res = await fetch(base + '/api/machines', { headers: { authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(8000) });
         if (!res.ok) continue;
         data = await res.json();
       } catch {
@@ -743,7 +746,7 @@
     // The row stays under its own address even when the other one answered;
     // a login is the machine's, whichever address carries it.
     await rememberHub(entry.url);
-    const token = (await store.get(KEYS.tokenFor(hub))) || (await store.get(KEYS.tokenFor(entry.url)));
+    let token = (await store.get(KEYS.tokenFor(hub))) || (await store.get(KEYS.tokenFor(entry.url)));
     // Whoever we came through gets a row in the target's switcher.
     const origin = await originFor(hub);
     if (token) {
@@ -752,7 +755,15 @@
           method: 'POST',
           headers: { authorization: `Bearer ${token}` },
         });
-        if (res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          // That login is gone there (replaced by a newer one from this phone,
+          // or removed): forget it and get a fresh door from the machine that
+          // told us about this one, instead of landing on the pairing page (1.5.39).
+          for (const key of [KEYS.tokenFor(hub), KEYS.tokenFor(entry.url)]) {
+            if ((await store.get(key).catch(() => null)) === token) await store.remove(key).catch(() => {});
+          }
+          token = '';
+        } else if (res.ok) {
           const made = await res.json();
           const links = Array.isArray(made?.links) ? made.links : [];
           // Through the relay the computer cannot know this phone's local
@@ -769,7 +780,8 @@
       } catch {
         /* fall back to the plain address below */
       }
-    } else if (entry.via) {
+    }
+    if (!token && entry.via) {
       // Never paired with this machine directly: the hub that told us about it
       // can hand out a one-time door (its own credential never leaves the hub).
       // The door is single-use, so spend it on the *app* pairing first (that is
@@ -857,11 +869,16 @@
    * network), then Tailscale, then the public one. '' when none answers.
    */
   async function bestAddress(urls) {
-    const list = [...new Set((urls || []).filter(Boolean))];
-    if (!list.length) return '';
+    const all = [...new Set((urls || []).filter(Boolean))];
+    if (!all.length) return '';
+    // Only the routes this phone can use now (1.5.39): no Tailscale address while
+    // its Tailscale is off, no LAN address off that LAN. They only timed out
+    // (4.5 s each, 5-10 s per switch on a hotspot). Nothing left: try them all.
+    const usable = all.filter(mayUseNow);
+    const list = usable.length ? usable : all;
     // The relay is the long way round, but a domestic one is still shorter than Funnel's.
     const kindRank = { '局域网': 0, Tailscale: 1, '中转': 2, '外网': 3 };
-    const up = await Promise.all(list.map((u) => probe(u)));
+    const up = await firstAnswers(list, kindRank);
     if (!up.some(Boolean)) {
       // A Tailscale connection that goes through a relay (DERP) can need more
       // than the first few seconds to answer: one longer try before "离线".
@@ -872,6 +889,75 @@
     const ok = list.filter((_, i) => up[i]);
     ok.sort((a, b) => (kindRank[linkKind(a)] ?? 3) - (kindRank[linkKind(b)] ?? 3));
     return ok[0] || '';
+  }
+
+  /**
+   * Probe every address at once, but do not wait for the slow ones: as soon as
+   * one answers, give the better-ranked ones still out GRACE_MS more, then stop.
+   * -> [true|false per address] (false also for "still waiting").
+   */
+  const GRACE_MS = 800;
+  function firstAnswers(list, kindRank) {
+    return new Promise((resolve) => {
+      const up = list.map(() => false);
+      const settled = list.map(() => false);
+      let left = list.length;
+      let timer = null;
+      let done = false;
+      const finish = () => { if (!done) { done = true; clearTimeout(timer); resolve(up); } };
+      const rank = (u) => kindRank[linkKind(u)] ?? 3;
+      list.forEach((u, i) => {
+        probe(u).then((ok) => {
+          if (done) return;
+          up[i] = ok;
+          settled[i] = true;
+          left -= 1;
+          if (left === 0) { finish(); return; }
+          const best = list.reduce((r, v, j) => (up[j] ? Math.min(r, rank(v)) : r), 99);
+          if (best === 99) return;
+          // Nothing better-ranked is still out: done now.
+          if (list.every((v, j) => settled[j] || rank(v) >= best)) { finish(); return; }
+          if (!timer) timer = setTimeout(finish, GRACE_MS);
+        });
+      });
+    });
+  }
+
+  /** The phone's own network (NetHints in the app), re-read at most every 10 s. */
+  function netHints() {
+    const shell = globalThis.NightshiftShell;
+    if (!shell || typeof shell.networkHints !== 'function') return null;
+    if (netHints.cache && Date.now() - netHints.at < 10000) return netHints.cache;
+    try {
+      const raw = shell.networkHints();
+      netHints.cache = raw ? JSON.parse(raw) : null;
+    } catch {
+      netHints.cache = null;
+    }
+    netHints.at = Date.now();
+    return netHints.cache;
+  }
+
+  const ipToInt = (ip) => ip.split('.').reduce((n, p) => ((n << 8) | (Number(p) & 255)) >>> 0, 0);
+
+  /** Can this phone use `url` right now: Tailscale only with Tailscale on, a LAN address only on that LAN. */
+  function mayUseNow(url) {
+    const hints = netHints();
+    if (!hints) return true;
+    let u;
+    try { u = new URL(url); } catch { return true; }
+    const kind = linkKind(url);
+    if (kind === 'Tailscale') return Boolean(hints.tailscale);
+    const host = u.hostname;
+    if (kind === '局域网' && /^(10|172|192)\.\d+\.\d+\.\d+$/.test(host)) {
+      return (hints.lan || []).some((cidr) => {
+        const [ip, bits] = String(cidr).split('/');
+        const b = Math.max(8, Math.min(32, Number(bits) || 24));
+        const mask = b === 32 ? 0xffffffff : (0xffffffff << (32 - b)) >>> 0;
+        return /^\d+\.\d+\.\d+\.\d+$/.test(ip) && ((ipToInt(ip) & mask) >>> 0) === ((ipToInt(host) & mask) >>> 0);
+      });
+    }
+    return true;
   }
 
   async function loadInfo() {
@@ -1383,11 +1469,22 @@
     if (open) {
       history.replaceState(null, '', window.location.pathname + window.location.search);
       const name = (() => { try { return decodeURIComponent(open[1]); } catch { return ''; } })();
-      await mergePeerMachines().catch(() => {});
-      const entry = name ? (await readHubs()).find((h) => h.name === name) : null;
+      // Already in the list: open it now. Learning the list again first asked
+      // every machine at every address, the dead ones too (1.5.39: seconds).
+      let entry = name ? (await readHubs()).find((h) => h.name === name) : null;
+      if (!entry && name) {
+        await mergePeerMachines().catch(() => {});
+        entry = (await readHubs()).find((h) => h.name === name) || null;
+      }
       if (entry) {
-        showConnected();
-        void enterMachine(entry);
+        // Not the list (1.5.39: it flashed on every switch): say where we are going.
+        show('booting');
+        dom.bootingText.textContent = `正在打开「${entry.name || hostLabel(entry.url)}」…`;
+        dom.bootingUrl.textContent = '';
+        // Still here a while later (it did not open): back to the list, which says why.
+        void enterMachine(entry).catch(() => {}).finally(() => setTimeout(() => {
+          if (state.view === 'booting') showConnected();
+        }, 3000));
         return;
       }
     }

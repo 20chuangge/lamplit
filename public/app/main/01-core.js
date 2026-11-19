@@ -465,3 +465,60 @@ function chatCachePut(key, items) {
   try { localStorage.setItem(CHAT_CACHE, JSON.stringify(all)); } catch { /* full or private: no cache */ }
   return true;
 }
+
+// --- the phone app's network (1.5.39): which addresses it can use right now ---
+/** This phone's own network, from the app (NetHints): {tailscale, lan:['a.b.c.d/n']} or null. */
+function phoneNet() {
+  if (phoneNet.cache !== undefined && Date.now() - phoneNet.at < 10000) return phoneNet.cache;
+  let net = null;
+  try {
+    const raw = window.NightshiftShell?.networkHints?.();
+    net = raw ? JSON.parse(raw) : null;
+  } catch { net = null; }
+  phoneNet.cache = net;
+  phoneNet.at = Date.now();
+  return net;
+}
+
+/** Can this phone use `url` now: a Tailscale address only with Tailscale on, a LAN one only on that LAN. Unknown: yes. */
+function phoneCanUse(url) {
+  const net = phoneNet();
+  if (!net) return true;
+  let host = '';
+  let https = false;
+  try { const u = new URL(url); host = u.hostname; https = u.protocol === 'https:'; } catch { return true; }
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host) || (/\.ts\.net$/i.test(host) && !https)) return Boolean(net.tailscale);
+  if (/^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+/.test(host) && /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    const toInt = (ip) => ip.split('.').reduce((n, p) => ((n << 8) | (Number(p) & 255)) >>> 0, 0);
+    return (net.lan || []).some((cidr) => {
+      const [ip, bits] = String(cidr).split('/');
+      const b = Math.max(8, Math.min(32, Number(bits) || 24));
+      const mask = b === 32 ? 0xffffffff : (0xffffffff << (32 - b)) >>> 0;
+      return /^\d+\.\d+\.\d+\.\d+$/.test(ip) && ((toInt(ip) & mask) >>> 0) === ((toInt(host) & mask) >>> 0);
+    });
+  }
+  return true;
+}
+
+/**
+ * The first of the urls (in their order) that answers within waitMs, or '' (1.5.39).
+ * An earlier one still trying is waited for; a later one never jumps ahead.
+ */
+function firstReachable(urls, waitMs = 4000) {
+  const list = (urls || []).filter(Boolean);
+  if (!list.length) return Promise.resolve('');
+  return new Promise((resolve) => {
+    const got = list.map(() => null);
+    let done = false;
+    const decide = () => {
+      if (done) return;
+      for (let i = 0; i < list.length; i += 1) {
+        if (got[i] === null) return;
+        if (got[i]) { done = true; resolve(list[i]); return; }
+      }
+      done = true;
+      resolve('');
+    };
+    list.forEach((u, i) => reachable(u, waitMs).then((ok) => { got[i] = ok; decide(); }));
+  });
+}

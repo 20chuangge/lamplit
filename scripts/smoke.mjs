@@ -2584,6 +2584,17 @@ async function scenarioPairing() {
     !/token|Bearer/i.test(machines.text),
     machines.text.slice(0, 240),
   );
+  // 1.5.39: the page's own name does not wait for the other machines; a phone opens on the bot list, not an empty chat.
+  {
+    const selfOnly = await api('/api/machines?self=1');
+    const mach = await readText('../public/app/main/11-machines.js');
+    const bots = await readText('../public/app/main/04-bots.js');
+    const homeAt = bots.indexOf("if (!target && isMobile() && state.bots.length) openSidebar();");
+    check('N39 self name at once: /api/machines?self=1 is this machine only; the page asks it first and never names itself 127.0.0.1 through the phone relay; a phone shows the bot list before the page shows',
+      selfOnly.status === 200 && selfOnly.json?.machines?.length === 1 && selfOnly.json.machines[0].self === true && selfOnly.json.machines[0].name === selfEntry?.name
+      && mach.includes("api('/api/machines?self=1')") && mach.includes("(throughPhoneRelay() ? '' : location.hostname)")
+      && homeAt > 0 && homeAt < bots.indexOf("$('app').classList.remove('is-hidden');"), selfOnly.text.slice(0, 200));
+  }
   const unknownHandoff = await api('/api/machines/no-such-machine/handoff', { method: 'POST' });
   check(
     'a handoff to a machine that does not exist is a 404',
@@ -3394,7 +3405,7 @@ function shanghaiWeekday(ts) {
     {
       const srvSrc = await readText('../src/server.mjs');
       const page = await readText('../public/index.html');
-      check('switching machines hands over every address and the phone opens the first it can reach (a VM Tailscale address when its LAN one is internal to the computer)', srvSrc.includes('return { ok: true, machine: peer.name, url: made.url || linkInCode(made.qr), links, qr: made.qr || null,') && page.includes('for (const url of candidates) {') && page.includes('const next = new URL(target);'));
+      check('switching machines hands over every address and the phone opens the first it can reach (a VM Tailscale address when its LAN one is internal to the computer)', srvSrc.includes('return { ok: true, machine: peer.name, url: made.url || linkInCode(made.qr), links, qr: made.qr || null,') && page.includes('let target = await firstReachable(usable, canRelay ? 1000 : 4000);') && page.includes('const next = new URL(target);'));
       check('a long toast stays a rounded box, not an oval', /.toast {[^}]*border-radius: 16px;/.test(page));
     }
     check('opening a machine keeps the phone on the address it already uses (LAN, Tailscale) and takes the public one last', launcher.includes('return { lan: 1, tailnet: 2, public: 3 }[l.kind] ?? 2;') && launcher.includes('await pickReachableLink(links, safeOrigin(hub))') && !launcher.includes('await pickReachableLink(links)'));
@@ -4227,7 +4238,7 @@ async function scenarioMcp({ home, toolsMod }) {
     const bots = await readText('../public/app/main/04-bots.js');
     check('K33 A4 getting started in a browser here: with no model set yet the model may be saved without the app\'s key (the model fields only); anything else still needs it; a wrong pairing code stays in the dialog; the code asked for is this address\'s',
       srv.includes("if (auth?.mode !== 'local' || method !== 'PUT' || pathname !== '/api/settings') return false;") && srv.includes("if (state.apiKey || (state.settings?.provider && state.settings.provider !== 'mock')) return false;")
-      && other.status === 403 && bots.includes("if (res.status === 401 && path !== '/api/pair') enterAuth(") && page.includes('id="local-pair-host"')
+      && other.status === 403 && bots.includes("if (res.status === 401 && path !== '/api/pair' && !pairingFromAddress) enterAuth(") && page.includes('id="local-pair-host"')
       && bots.includes('state.afterPair = { path, options };'), JSON.stringify({ other: other.status, provider: before.provider }));
   }
   // 1.5.33 (the beginner's report, B and C items; what was queued)
@@ -7131,6 +7142,10 @@ async function scenarioV165() {
     check('T6 replies: every bot is told to answer like a colleague in a chat - the point first, most replies 1-4 sentences, long material in a file',
       /capable colleague in a chat/.test(text) && /1-4 sentences/.test(text) && /goes into a workspace file/.test(text)
       && agentSrc.includes('      ...REPLY_STYLE,\n') && !agentSrc.includes('Details, steps and lists come after'), text.slice(0, 200));
+    check('N39 replies, every bot: results in the chat (a file only an archive), links as clickable [打开…](…), judge before asking (worth it, priority, why), propose then 「这样行吗？」 with one question at most, a last line on what now and what next - and brevity still wins',
+      text.includes('结果直接写在聊天里') && text.includes('文件只是存档') && text.includes('[打开…](https://…)') && text.includes('不要给裸网址')
+      && text.includes('每条说值不值得做、优先级和一句理由') && text.includes('「这样行吗？」') && text.includes('一条消息最多问一个问题')
+      && text.includes('他现在要做什么，你接下来做什么') && text.includes('能两句说完就两句'), text.slice(-400));
     check('T6 replies: nothing important is dropped - numbers, decisions, risks, what is not done and what the human must do stay; steps, tool talk and openers go; hand-offs to teammates stay factual',
       /numbers and facts the human relies on, decisions, risks, what is not done or not verified, and what they must do/.test(text)
       && /Leave out how you got there/.test(text) && /To a teammate .*facts only/.test(text));
@@ -8162,7 +8177,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const { tailnetAddress } = await import('../src/auth.mjs');
       check('away: tailnet detection does not crash and only returns 100.64/10 addresses', (() => { const a = tailnetAddress(); return a === null || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(a); })());
       const main = await readText('../desktop/main.mjs');
-      check('away: the client falls back to the Tailscale address and carries the pairing over', /async function reachMachine\(url\)/.test(main) && /await copyLogin\(url, alt\)/.test(main) && /cookies\.set\(\{\s*url: to/.test(main) && /const door = await relayDoor\(url\)/.test(main) && /for \(const from of await loginSources\(url\)\)/.test(main) && /if \(await doorAccepts\(door\)\)/.test(main) && /for \(const u of \[url, alt\]\.filter\(Boolean\)\)/.test(main) && /const reach = target \? await reachMachine\(target\)/.test(main) && /patchMachine\(url, \{ tailnetUrl/.test(main));
+      check('away: the client falls back to the Tailscale address and carries the pairing over', /async function reachMachine\(url\)/.test(main) && /await copyLogin\(url, alt\)/.test(main) && /cookies\.set\(\{\s*url: to/.test(main) && /const \{ url: door, cookieName \} = await relayDoor\(url\)/.test(main) && /await copyLogin\(from, door, cookieName\)/.test(main) && /for \(const from of await loginSources\(url\)\)/.test(main) && /if \(await doorAccepts\(door\)\)/.test(main) && /for \(const u of \[url, alt\]\.filter\(Boolean\)\)/.test(main) && /const reach = target \? await reachMachine\(target\)/.test(main) && /patchMachine\(url, \{ tailnetUrl/.test(main));
       check('away: a system proxy that does not bypass 100.64/10 is bypassed in this app only; addresses are relearned every few minutes', main.includes('async function tailnetDirect()') && main.includes('100.64.0.0/10;*.local') && main.includes('for (const m of readMachines()) learnTailnet(m.url)'));
       check('away: the page knows which machine it is when opened through Tailscale', /m\.tailnetUrl === location\.origin/.test(page) && /id="pair-tailnet"/.test(page));
     }
@@ -9103,6 +9118,28 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         await merge(store, KEYS, fakeFetch, async () => {});
         const rows = JSON.parse(mem.get('desk.hubs'));
         check('phone list: one row per machine with its other address kept, the hub names win, stale addresses go', rows.length === 3 && rows.map((r) => r.name).join(',') === 'LAPTOP,Rocky,win11' && rows.find((r) => r.name === 'Rocky').alt?.length === 1 && !rows.some((r) => r.name === 'localhost.localdomain'));
+        // 1.5.39: only the routes this phone can use now, and no waiting for the slow ones.
+        const routeFns = (hints, delays) => {
+          const probed = [];
+          const probe = (u) => { probed.push(u); return new Promise((r) => setTimeout(() => r(delays[u] !== undefined), delays[u] ?? 4500)); };
+          const shell = { NightshiftShell: { networkHints: () => JSON.stringify(hints) } };
+          const fns = new Function('globalThis', 'probe', ["const ipToInt = (ip) => ip.split('.').reduce((n, p) => ((n << 8) | (Number(p) & 255)) >>> 0, 0);", 'const GRACE_MS = 800;', grab('linkKind'), grab('netHints'), grab('mayUseNow'), grab('firstAnswers'), grab('bestAddress')].join('\n') + '\nreturn { mayUseNow, bestAddress };')(shell, probe);
+          return { ...fns, probed };
+        };
+        const LAN = 'http://192.168.1.5:14390';
+        const TS = 'http://100.64.0.5:14390';
+        const RELAY = 'http://127.0.0.1:14444';
+        const away = routeFns({ tailscale: false, lan: ['172.20.10.9/28'] }, { [RELAY]: 60 });
+        const t0r = Date.now();
+        const awayBest = await away.bestAddress([LAN, TS, RELAY]);
+        const awayMs = Date.now() - t0r;
+        check('phone route: on a hotspot with Tailscale off, the LAN and Tailscale addresses are not tried; the relay is used at once',
+          !away.mayUseNow(LAN) && !away.mayUseNow(TS) && away.mayUseNow(RELAY) && awayBest === RELAY && awayMs < 1000 && away.probed.join() === RELAY, JSON.stringify({ awayBest, awayMs, probed: away.probed }));
+        const home = routeFns({ tailscale: false, lan: ['192.168.1.3/24'] }, { [LAN]: 40, [RELAY]: 10 });
+        const t1r = Date.now();
+        const homeBest = await home.bestAddress([LAN, TS, RELAY]);
+        check('phone route: at home the LAN wins over a faster relay, without waiting for the rest',
+          home.mayUseNow(LAN) && homeBest === LAN && Date.now() - t1r < 1000, JSON.stringify({ homeBest, ms: Date.now() - t1r }));
       }
       {
         // N2: scanning without Google - our own pairing code, read back by the vendored jsQR.
@@ -9335,7 +9372,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         const javaSrc = await readText('../mobile/android/app/src/main/java/com/desk/assistant/NightshiftWatcher.java');
         check('N29 phone: the background link reaches a machine on its LAN address when that answers (same Wi-Fi), else the paired one; a failure looks again',
           javaSrc.includes('String url = via(hub) + "/api/stream";') && javaSrc.includes('postJson(via(hub) + "/api/phone/agent", token, body);')
-          && javaSrc.includes('postJson(via(hub) + "/api/phone/jobs/" + jobId, token, reply);') && javaSrc.includes('forgetRoute(hub);') && javaSrc.includes('isLanAddress(other) && answers(other)'));
+          && javaSrc.includes('postJson(via(hub) + "/api/phone/jobs/" + jobId, token, reply);') && javaSrc.includes('forgetRoute(hub);') && javaSrc.includes('isLanAddress(other) && NetHints.onSameLan(hostOf(other)) && answers(other)')
+          // 1.5.39: only routes this phone can use now (same Wi-Fi subnet, Tailscale on), else straight to the relay.
+          && javaSrc.includes('(NetHints.mayReach(hub) && answers(hub))'));
         const RM = await import('../src/remote.mjs');
         const map = RM.derpMapFor({ host: '203.0.113.9', port: 33445, stunPort: 3478, certName: 'sha256-raw:' + 'ab'.repeat(32) });
         check('N29 relay: only a public IPv4 can be the relay; the Tailscale policy text pins its self-signed certificate',

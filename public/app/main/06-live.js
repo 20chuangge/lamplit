@@ -37,7 +37,11 @@ async function send() {
   scrollToBottom(true);
 
   try {
-    if (isGroupMode()) {
+    if (isGroupMode() && isRemoteId(state.groupId)) {
+      // Another machine's group (1.5.43): passed on, or kept until that machine is back.
+      const res = await api(remoteGroupApi(state.groupId, '/message'), { method: 'POST', body: { text, attachments } });
+      if (res?.queued) { myRow.remove(); await loadOutbox(); }
+    } else if (isGroupMode()) {
       await api(`/api/groups/${encodeURIComponent(state.groupId)}/message`, { method: 'POST', body: { text, attachments } });
     } else if (isRemoteId(state.botId)) {
       // A bot on another machine (1.5.42): this hub passes it on, or keeps it until that machine is back.

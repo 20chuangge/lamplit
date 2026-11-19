@@ -12,8 +12,11 @@ KEY_SRC="$1"
 NAME="$2"
 KEY=/root/.desk-tailscale.key
 
-( umask 077; head -c 400 "$KEY_SRC" | tr -d '\r\n ' > "$KEY" )
-shred -u "$KEY_SRC" 2>/dev/null || rm -f "$KEY_SRC"
+# "-": install only; the human logs in with the link `tailscale up` prints (1.5.43).
+if [ "$KEY_SRC" != "-" ]; then
+  ( umask 077; head -c 400 "$KEY_SRC" | tr -d '\r\n ' > "$KEY" )
+  shred -u "$KEY_SRC" 2>/dev/null || rm -f "$KEY_SRC"
+fi
 trap 'shred -u "$KEY" 2>/dev/null || rm -f "$KEY"' EXIT
 
 # Adding a machine installs the desktop and the browser at the same time; the
@@ -36,6 +39,8 @@ for attempt in 1 2 3; do
 done
 command -v tailscale >/dev/null 2>&1 || { echo "DESK_TS=failed download"; exit 1; }
 systemctl enable --now tailscaled >/dev/null 2>&1 || true
+
+if [ "$KEY_SRC" = "-" ]; then echo "DESK_TS=installed"; exit 0; fi
 
 # The device name in the Tailscale admin console: the name given in Nightshift.
 HOSTNAME_ARG=()

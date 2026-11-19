@@ -1093,6 +1093,7 @@ function markSeen() {
   if (item) item.unread = false;
   // A bot on another machine: its machine keeps what was seen (1.5.42).
   if (!isGroupMode() && isRemoteId(state.botId)) { api(remoteApi(state.botId, '/seen'), { method: 'POST', body: {} }).catch(() => {}); return; }
+  if (isGroupMode() && isRemoteId(state.groupId)) { api(remoteGroupApi(state.groupId, '/seen'), { method: 'POST', body: {} }).catch(() => {}); return; }
   api('/api/attention/seen', { method: 'POST', body: { key } }).catch(() => {});
 }
 

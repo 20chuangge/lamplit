@@ -423,6 +423,10 @@ export function isAuthorityRequest(method, pathname, body = {}) {
   // screen, and the messages waiting for a machine that is off. This hub uses
   // that machine's token, so none of it may come from a bot's own command here.
   if (/^\/api\/peers\/[^/]+\/bots\/[^/]+\//.test(p)) return true;
+  // Another machine's group (1.5.43): the same rules as its bots.
+  if (/^\/api\/peers\/[^/]+\/groups\/[^/]+\//.test(p)) return true;
+  // Tailscale on this machine and the others (1.5.43): installing, logging in, removing, sharing.
+  if (m === 'POST' && /^\/api\/tailscale\/(install|login|uninstall|share)$/.test(p)) return true;
   if (/^\/api\/peers\/outbox(\/|$)/.test(p)) return true;
   // A file in another machine's workspace, read through this hub with that
   // machine's token: the human's file cards only, not a program here (1.5.42).

@@ -230,10 +230,15 @@ function homeTime(ts) {
 
 /** The home page's search: bots and groups whose name, role or last message match. */
 function filterHome() {
-  const q = String($('home-search')?.value || '').trim().toLowerCase();
-  for (const row of document.querySelectorAll('#bot-list .bot, #group-list .group')) {
+  const q = String($('home-search')?.value || $('roster-search')?.value || '').trim().toLowerCase();
+  for (const row of document.querySelectorAll('#bot-list .bot, #bot-list .group, #group-list .group')) {
     const hay = row.dataset.search || row.textContent.toLowerCase();
     row.hidden = Boolean(q) && !hay.includes(q);
+  }
+  // 「全部机器」 (1.5.43): a search looks inside folded machines too; 「最近」 and empty machines step aside.
+  for (const sec of document.querySelectorAll('#bot-list .roster-sec')) {
+    sec.classList.toggle('searching', Boolean(q));
+    sec.hidden = Boolean(q) && (sec.classList.contains('recent') || !sec.querySelector('.bot:not([hidden]), .group:not([hidden])'));
   }
 }
 

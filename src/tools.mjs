@@ -179,7 +179,22 @@ function decodeOutput(buffer) {
   }
 }
 
+/**
+ * cmd.exe's mkdir already makes the folders in between, and it takes `-p` for
+ * one more folder to make: `mkdir -p posts/x` left a folder called 「-p」 in the
+ * workspace (1.5.43, the user's own chat). The habit from Linux is dropped.
+ */
+export function windowsShellFix(command) {
+  return String(command ?? '').replace(/(^|[&|;(]\s*)(mkdir|md)\s+-p\s+/gi, '$1$2 ');
+}
+
+/** A path part that looks like a command option (「-p」, 「-rf」): almost always a command typed as a path. */
+export function optionLikePath(p) {
+  return String(p || '').split(/[\\/]+/).some((part) => /^-/.test(part));
+}
+
 function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHELL_OUTPUT, sandbox = null, runner = null }) {
+  if (process.platform === 'win32') command = windowsShellFix(command);
   return new Promise((resolve) => {
     let settled = false;
     // Raw bytes, decoded once at the end: a multi-byte character may be split
@@ -651,6 +666,7 @@ export function createRegistry(deps) {
       additionalProperties: false,
     },
     async run(args, ctx) {
+      if (optionLikePath(args?.path)) throw toolError('FS_OPTION_LIKE', `"${args.path}" has a part that looks like a command option (like -p), not a file or folder name. Use the real path.`);
       const r = resolvePath(ctx.workspaceDir, args?.path);
       if (!args?.path) throw toolError('FS_BAD_ARGS', 'fs_write needs a path');
       const content = String(args?.content ?? '');
@@ -680,6 +696,7 @@ export function createRegistry(deps) {
       additionalProperties: false,
     },
     async run(args, ctx) {
+      if (optionLikePath(args?.path)) throw toolError('FS_OPTION_LIKE', `"${args.path}" looks like a command option, not a folder name (on Windows, mkdir makes the folders in between without -p). Use the real folder path.`);
       const r = resolvePath(ctx.workspaceDir, args?.path);
       if (!args?.path) throw toolError('FS_BAD_ARGS', 'fs_mkdir needs a path');
       await fsp.mkdir(r.abs, { recursive: true });

@@ -76,10 +76,10 @@ function syncMachineBranding() {
   const name = machineDisplayName();
   const host = state.computer?.host;
   const os = host ? (host.platform === 'win32' ? 'Windows' : host.platform === 'linux' ? 'Linux' : host.platform) : '';
-  if ($('machine-name')) $('machine-name').textContent = name;
+  const grouped = local && rosterGrouped(); if ($('machine-name')) $('machine-name').textContent = grouped ? '全部机器' : name;
   if ($('pc-title')) $('pc-title').textContent = `${name}的屏幕`;
   if ($('machine-sub')) {
-    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local ? (rosterGrouped() ? '全部机器' : '这台电脑') : [os, pageRouteWords()].filter(Boolean).join(' · '))}`;
+    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local ? (grouped ? `${(state.peerRoster || []).length + 1} 台 · 这台是 ${name}` : '这台电脑') : [os, pageRouteWords()].filter(Boolean).join(' · '))}`;
   }
   if ($('about-origin')) $('about-origin').textContent = location.origin;
   if ($('timezone-pill')) $('timezone-pill').textContent = timezoneLabel(effectiveTimezone());
@@ -582,30 +582,9 @@ async function checkBusy() {
 
 /** Settings → 手机和外网: install Tailscale on a machine already added (one given to the bots). */
 let tsWatch = null;
-async function loadTailscaleBox(onTailnet) {
-  const box = $('ts-install');
-  if (!box) return;
-  const t = await api('/api/tailscale');
-  box.hidden = onTailnet || !t.canInstall;
-  const st = $('ts-state');
-  st.textContent = t.status?.state === 'running' ? '正在安装 Tailscale，通常 1–3 分钟…'
-    : t.status?.state === 'failed' ? `上次没装好：${t.status.detail}`
-      : t.status?.state === 'done' ? t.status.detail : '';
-  clearTimeout(tsWatch);
-  if (t.status?.state === 'running') tsWatch = setTimeout(() => loadSettings().then(() => renderPairing()).catch(() => {}), 6000);
-}
-
-async function installTailscale() {
-  const key = $('ts-key').value.trim();
-  if (!/^tskey-auth-/.test(key)) { toast(/^tskey-api-/.test(key) ? '这是 API 访问令牌，不是 Auth key：在 Tailscale 后台点「Generate auth key」' : 'Tailscale 密钥应该是 tskey-auth- 开头的 Auth key', true); return; }
-  try {
-    await api('/api/tailscale/install', { method: 'POST', body: { authKey: key } });
-    $('ts-key').value = '';
-    $('ts-state').textContent = '正在安装 Tailscale，通常 1–3 分钟…';
-    clearTimeout(tsWatch);
-    tsWatch = setTimeout(() => loadSettings().then(() => renderPairing()).catch(() => {}), 6000);
-  } catch (err) { toast(err.message, true); }
-}
+// 1.5.43: the Tailscale card (one click here and on the other machines) - in the roster part.
+async function loadTailscaleBox() { clearTimeout(tsWatch); return renderTailscaleCard(); }
+async function installTailscale() { return installTailscaleHere(); }
 
 /** A public address (a cloud host), not the LAN, Tailscale or this computer. */
 function isPublicAddress(host) {
@@ -1029,7 +1008,7 @@ function fillZoneSelect(select, current) {
 }
 
 function openMachineModal() {
-  $('vnc-name').value = '';
+  $('vnc-name').value = ''; resetOutsideChoice();
   for (const chip of document.querySelectorAll('#vnc-name-chips [data-name]')) chip.classList.remove('on');
   $('vnc-addr').value = '';
   $('vnc-ssh-user').value = 'ubuntu';
@@ -1063,9 +1042,9 @@ function saveMachineFromModal() {
   if (!address) return fail('IP 地址看起来不对，例子：192.168.1.20');
   const password = $('vnc-ssh-pass').value;
   if (!password) return fail('还需要那台机器的 SSH 密码，才能自动配置。');
-  const tsKey = $('vnc-ts-key')?.value.trim() || '';
-  if (tsKey && /^tskey-api-/.test(tsKey)) return fail('这是 API 访问令牌（tskey-api-），不能用来加设备：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，用 tskey-auth- 开头的那种。');
-  if (tsKey && !/^tskey-auth-/.test(tsKey)) return fail('Tailscale 密钥应该是 tskey-auth- 开头的 Auth key。');
+  const reach = outsideChoice(); // 只在家里用 / Tailscale / 自建中转 (1.5.43)
+  if (reach.error) return fail(reach.error);
+
   note.hidden = true;
   startRemoteProvision({
     name: $('vnc-name').value.trim(),
@@ -1074,7 +1053,7 @@ function saveMachineFromModal() {
     username: $('vnc-ssh-user').value.trim() || 'ubuntu',
     password,
     desktop: $('vnc-desktop')?.value === 'full' ? 'full' : 'light',
-    ...($('vnc-ts-key')?.value.trim() ? { tailscaleKey: $('vnc-ts-key').value.trim() } : {}),
+    ...reach.options,
   });
 }
 

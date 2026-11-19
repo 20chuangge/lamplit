@@ -379,7 +379,9 @@ async function apiRequest(path, options = {}) {
       if ($('local-pair-why')) {
         $('local-pair-why').textContent = /^\/api\/peers\//.test(path)
           ? '和别的机器上的助手说话、看它的文件，只能在 Lamplit 应用里，或者在配对过的设备上：这样机器人自己跑的程序没法借这台电脑去指挥别的机器。'
-          : '批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。';
+          : /^\/api\/tailscale\//.test(path)
+            ? '装软件、改这台电脑怎么连网，只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你装、替你卸。'
+            : '批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。';
       }
       localPairOpen(true);
       // Said whole where the page shows it (1.5.33: 「保存失败：」 and nothing after).
@@ -436,7 +438,7 @@ async function pairThisBrowser() {
     }
     if (state.settingsOpen) loadSettings().catch(() => {});
     // A chat with a bot on another machine opens now (1.5.42).
-    if (isRemoteId(state.botId) && !isGroupMode()) { state.remoteStreamId = null; connectRemoteStream(); loadMessages(); loadOutbox({ render: false }).then(() => renderBots()); }
+    if (remoteChatMachine()) { state.remoteStreamId = null; connectRemoteStream(); (isGroupMode() ? loadGroupMessages() : loadMessages()); loadOutbox({ render: false }).then(() => renderBots()); }
   } catch (err) {
     msg.textContent = err.status === 429 ? '试得太多次了，等一分钟再试。'
       : err.status === 401 ? '配对码不对，或者已经换了。配对码每天换一次，用过一次也会换。'
@@ -1199,13 +1201,22 @@ function renderBots() {
     list.appendChild(row);
   }
 
-  // 「全部机器」 (1.5.42): this machine's bots under its own name, the other machines' below.
+  // 「全部机器」 (1.5.42, laid out in 1.5.43): 「最近」, then one section per machine, groups first.
   const grouped = rosterGrouped();
-  if (grouped) list.appendChild(machineGroupHead(machineDisplayName(), { self: true, count: state.bots.length }));
+  const sideHead = list.parentElement?.querySelector('.side-head'); if (sideHead) sideHead.hidden = grouped;
+  if ($('roster-search-wrap') && !grouped) $('roster-search-wrap').hidden = true;
+  if (grouped) { renderRosterSidebar(list); filterHome(); if ($('perm-summary')) renderPermOverview(); return; }
   // The primary bot is always on top; the rest by their newest message (like a chat app).
   const when = (b) => Date.parse(b.preview?.ts || '') || 0;
   const ordered = [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || when(b) - when(a));
-  for (const bot of ordered) {
+  for (const bot of ordered) list.appendChild(botRow(bot));
+  filterHome();
+  if ($('perm-summary')) renderPermOverview();
+}
+
+/** One of this machine's bots in the sidebar: face, name, status line, its menu. */
+function botRow(bot) {
+  {
     const active = !isGroupMode() && bot.id === state.botId;
     const row = el('div', `bot${active ? ' active' : ''}${bot.primary ? ' is-primary' : ''}`);
     row.dataset.bot = bot.id;
@@ -1288,11 +1299,8 @@ function renderBots() {
       event.preventDefault();
       toggleMenu(menu, more);
     });
-    list.appendChild(row);
+    return row;
   }
-  if (grouped) renderRemoteGroups(list);
-  filterHome();
-  if ($('perm-summary')) renderPermOverview();
 }
 
 async function selectBot(id, { keepHome = false } = {}) {

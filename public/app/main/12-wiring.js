@@ -54,6 +54,9 @@ function wireChrome() {
   });
   $('sidebar-close').addEventListener('click', closeSidebar);
   $('home-search')?.addEventListener('input', filterHome);
+  $('roster-search')?.addEventListener('input', filterHome);
+  // 「它在外面怎么连」 (1.5.43): the Tailscale key appears with Tailscale.
+  document.querySelectorAll('input[name="vnc-outside"]').forEach((r) => r.addEventListener('change', syncOutsideChoice));
   $('sidebar-scrim').addEventListener('click', closeSidebar);
 
   $('settings-btn').addEventListener('click', () => {
@@ -365,6 +368,11 @@ function wireChrome() {
   $('voice-save')?.addEventListener('click', () => saveVoice(false));
   $('vnc-addr')?.addEventListener('input', updatePublicHint);
   $('ts-go')?.addEventListener('click', installTailscale);
+  // The Tailscale card (1.5.43): each step asks first.
+  $('tsx-install')?.addEventListener('click', installTailscaleHere);
+  $('tsx-login')?.addEventListener('click', loginTailscaleHere);
+  $('tsx-uninstall')?.addEventListener('click', uninstallTailscaleHere);
+  $('tsx-share')?.addEventListener('click', shareTailscale);
   $('busy-close')?.addEventListener('click', () => { busyWatch.dismissed = true; $('busy-banner').hidden = true; });
   setTimeout(checkBusy, 20000);
   $('botedit-voice-try')?.addEventListener('click', async () => {

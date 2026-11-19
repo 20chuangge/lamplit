@@ -50,6 +50,8 @@ try {
     if ((Get-Service Tailscale -ErrorAction SilentlyContinue).Status -eq 'Running') { break }
     Start-Sleep -Seconds 2
   }
+  # "-": install only; the human logs in with the link `tailscale up` prints (1.5.43).
+  if ($KeyFile -eq '-') { Say 'DESK_TS=installed'; exit 0 }
   $tsArgs = @('up', "--auth-key=file:$KeyFile", '--unattended')
   if ($Name) { $tsArgs += "--hostname=$Name" }
   & $exe @tsArgs 2>&1 | ForEach-Object { Say "$_" }
@@ -62,5 +64,5 @@ try {
 } catch {
   Say "DESK_TS=failed other $($_.Exception.Message)"
 } finally {
-  Remove-Item -Force $KeyFile -ErrorAction SilentlyContinue
+  if ($KeyFile -ne '-') { Remove-Item -Force $KeyFile -ErrorAction SilentlyContinue }
 }

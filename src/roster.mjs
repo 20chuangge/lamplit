@@ -49,6 +49,36 @@ export function tagRemoteEvent(ev, machine, botId) {
   return { ...ev, botId: `${botId}@${machine}`, machine };
 }
 
+/**
+ * A group's event from that machine (1.5.43): only that group's, its id made
+ * "id@machine". Its members keep their ids there; the page reads them against
+ * the group's own member list, never as this machine's bots.
+ */
+export function tagRemoteGroupEvent(ev, machine, groupId) {
+  if (!ev || typeof ev !== 'object' || NOT_PASSED.has(ev.type)) return null;
+  if (ev.to) return null;
+  if (ev.groupId !== groupId) return null;
+  return { ...ev, groupId: `${groupId}@${machine}`, machine };
+}
+
+/**
+ * A bot's avatar from another machine, safe to draw here (1.5.43): a known
+ * kind of shape, a colour, and a picture only through this hub - never an
+ * address the other machine names. Anything else is dropped.
+ */
+export function safeAvatar(raw, machine, botId) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  if (typeof raw.shape === 'string' && /^[a-z][a-z-]{0,23}$/.test(raw.shape)) out.shape = raw.shape;
+  if (typeof raw.color === 'string' && /^#[0-9a-f]{3,8}$/i.test(raw.color)) out.color = raw.color;
+  const id = cleanBotId(botId);
+  if ((raw.hasImage || raw.imageUrl) && id) {
+    out.hasImage = true;
+    out.imageUrl = `/api/peers/${encodeURIComponent(machine)}/avatar/${encodeURIComponent(id)}`;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 const isUnreachable = (err) => err?.code === 'PEER_UNREACHABLE' || err?.code === 'PEER_PROXY_ERROR';
 
 export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpload = null, audit = async () => {}, selfName = () => '', streamIdleMs = 45000 } = {}) {
@@ -73,34 +103,49 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
     try { await fsp.chmod(outboxFile, 0o600); } catch { /* Windows */ }
   };
 
-  const slimBot = (b) => ({ id: String(b.id), name: String(b.name || b.id).slice(0, 80), role: String(b.role || '').slice(0, 200), primary: Boolean(b.primary) });
+  const slimBot = (b) => ({ id: String(b.id), name: String(b.name || b.id).slice(0, 80), role: String(b.role || '').slice(0, 200), primary: Boolean(b.primary), ...(b.avatar ? { avatar: b.avatar } : {}) });
+  const slimPreview = (p) => (p && typeof p === 'object' ? { preview: { ts: String(p.ts || ''), role: String(p.role || ''), text: String(p.text || '').slice(0, 200) } } : {});
+  /** A group of that machine: its name and members (their ids there), the coordinator, the last line. */
+  const slimGroup = (g, machine) => ({
+    id: String(g.id),
+    name: String(g.name || '未命名群组').slice(0, 80),
+    coordinatorId: String(g.coordinatorId || ''),
+    members: (Array.isArray(g.members) ? g.members : []).filter((m) => m && typeof m === 'object' && m.id).slice(0, 12).map((m) => {
+      const avatar = safeAvatar(m.avatar, machine, m.id);
+      return { id: String(m.id), name: String(m.name || m.id).slice(0, 80), role: String(m.role || '').slice(0, 200), ...(avatar ? { avatar } : {}) };
+    }),
+    ...slimPreview(g.preview),
+  });
 
   async function askOne(name) {
     const peer = peers.find(name);
     if (!peer) return null;
     try {
-      const [data, att] = await Promise.all([
+      const [data, att, grp] = await Promise.all([
         peers.json(peer, 'GET', '/api/bots', { timeoutMs: 5000 }),
         peers.json(peer, 'GET', '/api/attention', { timeoutMs: 5000 }).catch(() => null),
+        peers.json(peer, 'GET', '/api/groups', { timeoutMs: 5000 }).catch(() => []),
       ]);
       const list = (Array.isArray(data) ? data : data?.bots || []).filter((b) => b && b.id);
-      const bots = list.map((b) => ({
-        ...slimBot(b),
-        ...(b.preview && typeof b.preview === 'object' ? { preview: { ts: b.preview.ts || '', role: b.preview.role || '', text: String(b.preview.text || '').slice(0, 200) } } : {}),
-      }));
-      // The status lines (1.5.40) of that machine's bots, under their names here.
+      // Each bot's own face (1.5.43), drawn safely here.
+      const bots = list.map((b) => ({ ...slimBot({ ...b, avatar: safeAvatar(b.avatar, name, b.id) }), ...slimPreview(b.preview) }));
+      const groups = (Array.isArray(grp) ? grp : grp?.groups || []).filter((g) => g && g.id).slice(0, 50).map((g) => slimGroup(g, name));
+      // The status lines (1.5.40) of that machine's bots and groups, under their names here.
       const attention = {};
       for (const [key, item] of Object.entries(att?.items || {})) {
-        const m = /^bot:(.+)$/.exec(key);
-        if (m && bots.some((b) => b.id === m[1]) && item && typeof item === 'object') attention[`bot:${m[1]}@${name}`] = item;
+        const m = /^(bot|group):(.+)$/.exec(key);
+        if (!m || !item || typeof item !== 'object') continue;
+        if (m[1] === 'bot' ? bots.some((b) => b.id === m[2]) : groups.some((g) => g.id === m[2])) attention[`${m[1]}:${m[2]}@${name}`] = item;
       }
-      const row = { at: Date.now(), online: true, bots, attention };
+      const row = { at: Date.now(), online: true, bots, groups, attention };
       live.set(name, row);
-      const slim = bots.map(slimBot);
-      if (JSON.stringify(known[name]?.bots || []) !== JSON.stringify(slim)) { known[name] = { bots: slim }; void saveKnown(); }
+      const slim = { bots: bots.map(slimBot), groups: groups.map(({ preview, ...g }) => g) };
+      if (JSON.stringify(known[name] || {}) !== JSON.stringify(slim)) { known[name] = slim; void saveKnown(); }
       return row;
     } catch {
-      const row = { at: Date.now(), online: false, bots: (live.get(name)?.bots || known[name]?.bots || []).map(slimBot), attention: {} };
+      const was = live.get(name) || known[name] || {};
+      // Their last lines stay (1.5.43 test: its bots dropped out of 「最近」 while it was off).
+      const row = { at: Date.now(), online: false, bots: (was.bots || []).map((b) => ({ ...slimBot(b), ...slimPreview(b.preview) })), groups: was.groups || [], attention: {} };
       live.set(name, row);
       return row;
     }
@@ -116,9 +161,9 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
       await inflight;
     }
     const out = names.map((machine) => {
-      const row = live.get(machine) || { online: false, bots: (known[machine]?.bots || []), attention: {} };
+      const row = live.get(machine) || { online: false, bots: (known[machine]?.bots || []), groups: known[machine]?.groups || [], attention: {} };
       const queued = queue.filter((i) => i.machine === machine).length;
-      return { machine, online: Boolean(row.online), bots: row.bots, attention: row.attention || {}, ...(queued ? { queued } : {}) };
+      return { machine, online: Boolean(row.online), bots: row.bots, groups: row.groups || [], attention: row.attention || {}, ...(queued ? { queued } : {}) };
     });
     // A machine that is back gets what waited for it.
     if (out.some((m) => m.online && m.queued)) void flush().catch(() => {});
@@ -133,8 +178,8 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
    * attachments go to that machine first and are named by their path there.
    * Only text, attachments and a hand-off's limits go over.
    */
-  async function send(peer, botId, { text, attachments = [], handoff = null } = {}) {
-    if (!botId) {
+  async function send(peer, botId, { text, attachments = [], handoff = null, groupId = '' } = {}) {
+    if (!botId && !groupId) {
       // A hand-off to "that machine" (machine_switch): its main assistant.
       const data = await peers.json(peer, 'GET', '/api/bots', { timeoutMs: 8000 });
       botId = (Array.isArray(data) ? data : data?.bots || []).find((b) => b.primary)?.id || '';
@@ -147,6 +192,14 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
       const up = await peers.json(peer, 'POST', '/api/uploads', { raw: file.bytes, headers: { 'x-file-name': encodeURIComponent(file.name), [VIA]: '1' }, timeoutMs: 120000 });
       if (up?.path) carried.push({ path: up.path });
     }
+    if (groupId) {
+      const sent = await peers.json(peer, 'POST', `/api/groups/${encodeURIComponent(groupId)}/message`, {
+        body: { text: String(text || ''), ...(carried.length ? { attachments: carried } : {}) },
+        headers: { [VIA]: '1' },
+        timeoutMs: 20000,
+      });
+      return { ...sent, groupId };
+    }
     const out = await peers.json(peer, 'POST', `/api/bots/${encodeURIComponent(botId)}/message`, {
       body: { text: String(text || ''), ...(carried.length ? { attachments: carried } : {}), ...(handoff ? { handoff } : {}) },
       headers: { [VIA]: '1' },
@@ -156,7 +209,7 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
   }
 
   /** Send now, or keep it here until that machine answers (it is off). */
-  async function deliver({ machine, botId, text, attachments = [], from = null }) {
+  async function deliver({ machine, botId, groupId = '', text, attachments = [], from = null }) {
     await load();
     const peer = peers.find(machine);
     if (!peer) throw Object.assign(new Error('没有这台机器（可能已经从「机器」里删掉了）'), { code: 'PEER_NOT_FOUND' });
@@ -164,18 +217,19 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
     // Messages already waiting go first: their order is the human's order.
     if (!queue.some((i) => i.machine === peer.name)) {
       try {
-        return await send(peer, botId, { text, attachments, handoff });
+        return await send(peer, botId, { text, attachments, handoff, groupId });
       } catch (err) {
         if (!isUnreachable(err)) throw err;
       }
     }
-    if (queue.length >= 100 || queue.filter((i) => i.machine === peer.name && i.botId === botId).length >= 20) {
+    if (queue.length >= 100 || queue.filter((i) => i.machine === peer.name && i.botId === botId && (i.groupId || '') === groupId).length >= 20) {
       throw Object.assign(new Error(`「${peer.name}」连不上，等它的消息已经太多了，先别再发`), { code: 'OUTBOX_FULL' });
     }
     const item = {
       id: `q_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       machine: peer.name,
       botId: botId || '',
+      ...(groupId ? { groupId } : {}),
       text: String(text || ''),
       ...(attachments.length ? { attachments: attachments.map((a) => ({ path: a.path })) } : {}),
       ...(from ? { from: { botId: String(from.botId || ''), name: String(from.name || '') } } : {}),
@@ -185,9 +239,9 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
     await saveQueue();
     if (live.has(peer.name)) live.get(peer.name).online = false;
     await audit({ kind: 'peer.queued', machine: peer.name, botId: item.botId, queueId: item.id });
-    bus?.emit({ type: 'peer.outbox', machine: peer.name, botId: item.botId ? `${item.botId}@${peer.name}` : '', queueId: item.id, state: 'queued' });
+    bus?.emit({ type: 'peer.outbox', machine: peer.name, botId: item.botId ? `${item.botId}@${peer.name}` : '', ...(groupId ? { groupId: `${groupId}@${peer.name}` } : {}), queueId: item.id, state: 'queued' });
     void flush().catch(() => {});
-    return { queued: true, queueId: item.id, message: OFFLINE_WORDS, machine: peer.name, botId: item.botId };
+    return { queued: true, queueId: item.id, message: OFFLINE_WORDS, machine: peer.name, botId: item.botId, ...(groupId ? { groupId } : {}) };
   }
 
   let flushing = null;
@@ -204,12 +258,12 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
         if (!peer || peer.name !== item.machine) { off.add(item.machine); continue; }
         try {
           const handoff = item.from ? { depth: 1, chain: [item.from.botId || 'bot'], budgetLeft: 6, from: { bot: item.from.name || '', machine: selfName() } } : null;
-          const out = await send(peer, item.botId, { text: item.text, attachments: item.attachments || [], handoff });
+          const out = await send(peer, item.botId, { text: item.text, attachments: item.attachments || [], handoff, groupId: item.groupId || '' });
           queue = queue.filter((i) => i.id !== item.id);
           await saveQueue();
           sent += 1;
           await audit({ kind: 'peer.delivered', machine: item.machine, botId: out.botId, queueId: item.id, turnId: out.turnId || null });
-          bus?.emit({ type: 'peer.outbox', machine: item.machine, botId: `${out.botId}@${item.machine}`, queueId: item.id, turnId: out.turnId || '', state: 'sent' });
+          bus?.emit({ type: 'peer.outbox', machine: item.machine, botId: out.botId ? `${out.botId}@${item.machine}` : '', ...(item.groupId ? { groupId: `${item.groupId}@${item.machine}` } : {}), queueId: item.id, turnId: out.turnId || '', state: 'sent' });
         } catch (err) {
           if (isUnreachable(err)) { off.add(item.machine); continue; }
           // That bot is gone, or the machine refuses: the human is told, the message is not lost silently.
@@ -229,7 +283,9 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
    * The link dropping is said in plain words; this keeps trying, and says so
    * when it is back (the window then reloads the chat: the turn went on there).
    */
-  async function pipeStream(peer, botId, req, res) {
+  async function pipeStream(peer, botId, req, res, { groupId = '' } = {}) {
+    const who = groupId ? { groupId: `${groupId}@${peer.name}` } : { botId: `${botId}@${peer.name}` };
+    const query = groupId ? `groupId=${encodeURIComponent(groupId)}` : `botId=${encodeURIComponent(botId)}`;
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
@@ -260,9 +316,9 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
       const watchdog = setInterval(() => { if (Date.now() - heard > streamIdleMs) attempt.abort(); }, Math.min(5000, Math.max(100, Math.floor(streamIdleMs / 4))));
       watchdog.unref?.();
       try {
-        const up = await peers.call(peer, 'GET', `/api/stream?botId=${encodeURIComponent(botId)}`, { headers: { accept: 'text/event-stream', [VIA]: '1' }, timeoutMs: 6 * 3600 * 1000, signal: attempt.signal });
+        const up = await peers.call(peer, 'GET', `/api/stream?${query}`, { headers: { accept: 'text/event-stream', [VIA]: '1' }, timeoutMs: 6 * 3600 * 1000, signal: attempt.signal });
         if (!up.ok || !up.body) { await up.body?.cancel?.().catch(() => {}); throw Object.assign(new Error(`HTTP ${up.status}`), { code: 'PEER_UNREACHABLE' }); }
-        if (down || wasUp) write({ type: 'peer.link', state: 'up', machine: peer.name, botId: `${botId}@${peer.name}` });
+        if (down || wasUp) write({ type: 'peer.link', state: 'up', machine: peer.name, ...who });
         down = false;
         wasUp = true;
         const decoder = new TextDecoder();
@@ -279,7 +335,7 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
               if (!line.startsWith('data:')) continue;
               let ev;
               try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
-              const out = tagRemoteEvent(ev, peer.name, botId);
+              const out = groupId ? tagRemoteGroupEvent(ev, peer.name, groupId) : tagRemoteEvent(ev, peer.name, botId);
               if (out) write(out);
             }
           }
@@ -290,10 +346,10 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
       } catch (err) {
         if (closed) break;
         if (err?.code === 'PEER_UNAUTHORIZED') {
-          write({ type: 'peer.link', state: 'refused', machine: peer.name, botId: `${botId}@${peer.name}`, text: err.message });
+          write({ type: 'peer.link', state: 'refused', machine: peer.name, ...who, text: err.message });
           break;
         }
-        if (!down) write({ type: 'peer.link', state: 'down', machine: peer.name, botId: `${botId}@${peer.name}`, text: LINK_DOWN_WORDS });
+        if (!down) write({ type: 'peer.link', state: 'down', machine: peer.name, ...who, text: LINK_DOWN_WORDS });
         down = true;
       } finally {
         clearInterval(watchdog);

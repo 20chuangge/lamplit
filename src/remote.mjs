@@ -756,7 +756,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     }
   }
 
-  async function run(job, { host, sshPort, username, password, hubPort, tailscaleKey = '', tailscaleName = '', desktop = '' }) {
+  async function run(job, { host, sshPort, username, password, hubPort, tailscaleKey = '', tailscaleName = '', desktop = '', outside = '' }) {
     let client = null;
     try {
       phase(job, '连接 SSH');
@@ -914,8 +914,14 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       // from here). Linux: over this SSH session, never in the clear. Windows:
       // over HTTP like the model, when it answers. The relay server itself,
       // added as a machine, reaches its relay on 127.0.0.1.
+      // How it is reached from outside (1.5.43 「添加机器」): 自建中转 joins this
+      // computer's relay; 「只在家里用」 and Tailscale do not. An older page sends
+      // no choice: then it joins when this computer uses a relay, as before.
       const relay = relayToShare();
-      if (relay) {
+      if (outside === 'relay' && !relay) {
+        job.warning = job.warning || '这台电脑还没有自建中转，所以没能让它连上中转。在「设置 → 手机和外网」里装好中转后，点「让其他机器也用这个中转」。';
+      }
+      if (relay && (outside === 'relay' || !outside)) {
         setProgress(job, '让这台机器也连上中转…');
         const settings = { ...relay, enabled: true, ...(relay.host === host ? { dial: '127.0.0.1' } : {}) };
         let joined = '';
@@ -1000,7 +1006,9 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       const username = assertCredential(input.username, 'SSH username');
       const password = assertCredential(input.password, 'SSH password');
       // Optional, Linux only: a Tailscale auth key (tskey-auth-…) to join the human's tailnet.
-      const tailscaleKey = String(input.tailscaleKey || '').trim();
+      const outside = ['home', 'tailscale', 'relay'].includes(input.outside) ? input.outside : '';
+      // A Tailscale key counts only when Tailscale is the way chosen (or nothing was chosen: an older page).
+      const tailscaleKey = outside && outside !== 'tailscale' ? '' : String(input.tailscaleKey || '').trim();
       // Only an auth key adds a device; an API access token (tskey-api-) looks alike but is refused by Tailscale.
       if (tailscaleKey && /^tskey-api-/.test(tailscaleKey)) {
         throw remoteError('REMOTE_BAD_TAILSCALE_KEY', '这是 Tailscale 的 API 访问令牌（tskey-api-），不能用来加设备：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，用 tskey-auth- 开头的那种。');
@@ -1031,7 +1039,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           jobs.delete(id);
         }
       }
-      run(job, { host, sshPort, username, password, hubPort, tailscaleKey, tailscaleName: tailscaleDeviceName(input.name || host), desktop: input.desktop === 'full' ? 'full' : input.desktop === 'light' ? 'light' : '' });
+      run(job, { host, sshPort, username, password, hubPort, tailscaleKey, tailscaleName: tailscaleDeviceName(input.name || host), desktop: input.desktop === 'full' ? 'full' : input.desktop === 'light' ? 'light' : '', outside });
       return publicJob(job);
     },
     get(id) {

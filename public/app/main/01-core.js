@@ -424,7 +424,8 @@ function cssEscape(value) {
 const FOLD_LONG_AT = 260;
 const FOLD_LINE_AT = 70;
 function foldBubble(bubble, text, mode = 'long') {
-  if (!mode || !bubble) return;
+  // A bot's reply to you never folds (1.5.43, the user: annoying); a hand-over line between bots does.
+  if (!mode || mode === 'long' || !bubble) return;
   const size = String(text || '').replace(/[*#>`_\-|]/g, '').replace(/\s+/g, ' ').trim().length;
   if (size <= (mode === 'line' ? FOLD_LINE_AT : FOLD_LONG_AT)) return;
   const body = el('div', 'bubble-body');

@@ -15,13 +15,16 @@ function botById(id) {
 }
 
 function groupById(id) {
+  if (String(id || '').includes('@')) return remoteGroupById(id);
   return state.groups.find((g) => g.id === id) || null;
 }
 
 /** A member of the open group by id - also one that lives on another machine ("botId@machine"). */
 function groupMemberById(id) {
   const group = groupById(state.groupId);
-  const m = (group?.members || []).find((x) => x && typeof x === 'object' && x.id === id);
+  // In another machine's group a member is "id@machine" here, plain "id" in its events (1.5.43).
+  const there = group?.remote ? `${id}@${group.remote.machine}` : '';
+  const m = (group?.members || []).find((x) => x && typeof x === 'object' && (x.id === id || (there && x.id === there)));
   return m ? { ...m, name: m.name || id } : null;
 }
 
@@ -95,8 +98,14 @@ function renderGroups() {
   // point the sidebar needs; the header comes back as soon as one exists.
   const section = $('groups-section');
   if (section) section.hidden = state.groups.length === 0 && state.groupsSupported;
+  // 「全部机器」 (1.5.43): the groups are in their machine's section of the list above.
+  if (rosterGrouped()) { if (section) section.hidden = true; list.innerHTML = ''; renderBots(); return; }
+  for (const group of state.groups) list.appendChild(groupRow(group));
+}
 
-  for (const group of state.groups) {
+/** One of this machine's groups in the sidebar. */
+function groupRow(group) {
+  {
     const members = groupMembers(group);
     const row = el('div', `group${group.id === state.groupId ? ' active' : ''}`);
     row.dataset.group = group.id;
@@ -149,7 +158,7 @@ function renderGroups() {
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openGroup(group.id); }
     });
     row.addEventListener('contextmenu', (event) => { event.preventDefault(); toggleMenu(menu, more); });
-    list.appendChild(row);
+    return row;
   }
 }
 
@@ -290,6 +299,7 @@ async function openGroup(id) {
   renderDecisionStrip();
   await loadGroupMessages();
   connectStream();
+  connectRemoteStream();
   markSeen();
 }
 
@@ -311,13 +321,15 @@ async function loadGroupMessages() {
   const cached = chatCacheGet(cacheKey);
   if (cached) { state.groupMessages = cached; renderMessages(); }
   try {
-    const items = await api(`/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`);
+    const items = await api(isRemoteId(groupId) ? remoteGroupApi(groupId, '/messages?limit=200') : `/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`);
     if (state.groupId !== groupId) return;
     const fresh = Array.isArray(items) ? items : (items && items.messages) || [];
     if (!chatCachePut(cacheKey, fresh) && cached && cached.length === fresh.length) return;
     state.groupMessages = fresh;
   } catch (err) {
     if (err.status === 401) return;
+    // Another machine's group that cannot be read now: said in words (1.5.43).
+    if (isRemoteId(groupId)) { if (err.code === 'LOCAL_KEY_REQUIRED' && state.groupId === groupId) showPairNeeded(groupId); if (err.code !== 'LOCAL_KEY_REQUIRED' && state.groupId === groupId) { if (!cached) { state.groupMessages = []; renderMessages(); } else appendQueuedMessages(); showRemoteDown(err.status === 404 ? `「${remoteOf(groupId).machine}」上没有这个群了` : LINK_DOWN_WORDS); } return; }
     if (err.status === 404) {
       state.groupMessages = [];
       toast('服务端还没提供群组消息接口（404）', true);
@@ -336,10 +348,11 @@ function senderOf(item) {
   if (!item) return null;
   if (item.from && item.from !== 'user') {
     const far = groupMemberById(item.from);
+    if (far && isRemoteId(state.groupId)) return far; // its own member, not this machine's bot of that id
     // A member deleted since: its name from the history, never its id (1.5.41: 「bot-ioeiz8」).
     return botById(item.from) || far || { id: item.from, name: item.name || (item.from.includes('@') ? item.from : '已删除的助手') };
   }
-  if (item.botId) return botById(item.botId) || { id: item.botId, name: item.name || '已删除的助手' };
+  if (item.botId) return (isRemoteId(state.groupId) && groupMemberById(item.botId)) || botById(item.botId) || { id: item.botId, name: item.name || '已删除的助手' };
   return null;
 }
 
@@ -405,6 +418,7 @@ function renderGroupMessages() {
       }
     }
   }
+  appendQueuedMessages(); // another machine's group: what waits for that machine (1.5.43 test)
   updateComposerMode();
   scrollToBottom(true);
 }
@@ -425,7 +439,7 @@ function planCard(planId, fallbackText = '') {
   card.appendChild(el('div', 'plan-head', isGroupMode() ? '任务板' : '任务'));
   if (fallbackText) card.appendChild(el('div', 'plan-fallback', fallbackText));
   const known = state.plans.get(planId);
-  const url = isGroupMode() && state.groupId ? `/api/groups/${encodeURIComponent(state.groupId)}/plans/${encodeURIComponent(planId)}`
+  const url = isGroupMode() && state.groupId ? (isRemoteId(state.groupId) ? remoteGroupApi(state.groupId, `/plans/${encodeURIComponent(planId)}`) : `/api/groups/${encodeURIComponent(state.groupId)}/plans/${encodeURIComponent(planId)}`)
     : state.botId ? (isRemoteId(state.botId) ? remoteApi(state.botId, `/plans/${encodeURIComponent(planId)}`) : `/api/bots/${encodeURIComponent(state.botId)}/plans/${encodeURIComponent(planId)}`) : '';
   if (known) fillPlanCard(card, known);
   else if (url) {
@@ -647,6 +661,8 @@ function renderGroupItem(item) {
    --------------------------------------------------------------------- */
 /** New group, or (with an id) the group's details: name, members, coordinator. */
 function openGroupModal(groupId = null) {
+  // Another machine's group is changed on that machine (1.5.43).
+  if (isRemoteId(groupId)) { toast(`这个群在「${remoteOf(groupId).machine}」上：要改名字或成员，在左上角切到那台再改。`); return; }
   closeMenus();
   if (!state.groupsSupported) {
     toast('服务端还没有群组接口（404）', true);
@@ -877,9 +893,22 @@ function remoteApi(id, rest = '') {
   const far = remoteOf(id);
   return `/api/peers/${encodeURIComponent(far.machine)}/bots/${encodeURIComponent(far.botId)}${rest}`;
 }
-/** The machine of the 1:1 chat on screen when its bot is on another machine, else ''. */
+/** This hub's route for a group on another machine (1.5.43): /api/peers/<machine>/groups/<id><rest>. */
+function remoteGroupApi(id, rest = '') {
+  const far = remoteOf(id);
+  return `/api/peers/${encodeURIComponent(far.machine)}/groups/${encodeURIComponent(far.botId)}${rest}`;
+}
+/** The machine of the chat on screen (a bot's or, 1.5.43, a group's) when it is another machine, else ''. */
 function remoteChatMachine() {
-  return !isGroupMode() && isRemoteId(state.botId) ? remoteOf(state.botId).machine : '';
+  if (isGroupMode()) return isRemoteId(state.groupId) ? remoteOf(state.groupId).machine : '';
+  return isRemoteId(state.botId) ? remoteOf(state.botId).machine : '';
+}
+/** 「撤销」 of a turn: here, or on the machine of the chat on screen. */
+function chatUndoUrl() {
+  if (!remoteChatMachine()) return '/api/undo';
+  if (!isGroupMode()) return remoteApi(state.botId, '/undo');
+  const group = groupById(state.groupId);
+  return remoteApi(group?.coordinatorId || groupMembers(group)[0]?.id || `x@${remoteChatMachine()}`, '/undo');
 }
 /** A file a reply names: from this machine, or from the machine the chat's bot is on. */
 function chatFileUrl(path) {
@@ -887,7 +916,8 @@ function chatFileUrl(path) {
   return machine ? remoteFileUrl(machine, path) : `/api/workspace/file?path=${encodeURIComponent(path)}`;
 }
 function chatStatUrl(path) {
-  return remoteChatMachine() ? remoteApi(state.botId, `/stat?path=${encodeURIComponent(path)}`) : `/api/workspace/stat?path=${encodeURIComponent(path)}`;
+  if (!remoteChatMachine()) return `/api/workspace/stat?path=${encodeURIComponent(path)}`;
+  return isGroupMode() ? remoteGroupApi(state.groupId, `/stat?path=${encodeURIComponent(path)}`) : remoteApi(state.botId, `/stat?path=${encodeURIComponent(path)}`);
 }
 
 /** A bot on another machine as the page draws it (name, role, its machine, whether that answers). */
@@ -897,7 +927,28 @@ function remoteBotById(id) {
   const m = (state.peerRoster || []).find((x) => x.machine === far.machine);
   const b = m?.bots?.find((x) => x.id === far.botId);
   if (!b) return null;
-  return { id, name: b.name, role: b.role || '', primary: Boolean(b.primary), mainThere: Boolean(b.primary), preview: b.preview || null, remote: { machine: far.machine, botId: far.botId, online: Boolean(m.online) } };
+  return { id, name: b.name, role: b.role || '', primary: Boolean(b.primary), mainThere: Boolean(b.primary), preview: b.preview || null, ...(b.avatar ? { avatar: b.avatar } : {}), remote: { machine: far.machine, botId: far.botId, online: Boolean(m.online) } };
+}
+
+/**
+ * A group on another machine as the page draws it (1.5.43): its members as
+ * "id@machine" (each opens its own chat here), the coordinator likewise.
+ */
+function remoteGroupById(id) {
+  const far = remoteOf(id);
+  if (!far) return null;
+  const m = (state.peerRoster || []).find((x) => x.machine === far.machine);
+  const g = m?.groups?.find((x) => x.id === far.botId);
+  if (!g) return null;
+  const there = (mid) => (String(mid).includes('@') ? String(mid) : `${mid}@${far.machine}`);
+  return {
+    id,
+    name: g.name,
+    coordinatorId: g.coordinatorId ? there(g.coordinatorId) : '',
+    members: (g.members || []).map((x) => ({ ...x, id: there(x.id) })),
+    preview: g.preview || null,
+    remote: { machine: far.machine, groupId: far.botId, online: Boolean(m.online) },
+  };
 }
 
 /** 「全部机器」 with other machines to show. */
@@ -926,7 +977,7 @@ async function loadRoster() {
     }
   }
   // What the sidebar says is what the chat says, on every look (1.5.42 test: grey name, no line in the chat).
-  const open = !isGroupMode() && isRemoteId(state.botId) ? botById(state.botId) : null;
+  const open = isGroupMode() ? (isRemoteId(state.groupId) ? groupById(state.groupId) : null) : (isRemoteId(state.botId) ? botById(state.botId) : null);
   if (open?.remote && !open.remote.online) showRemoteDown();
   else if (open?.remote && messagesEl.querySelector('.link-down-line')) { hideRemoteDown(); loadMessages(); }
 }
@@ -934,7 +985,7 @@ async function loadRoster() {
 /** The messages waiting here for a machine that is off (only the human may see them). */
 async function loadOutbox({ render = true } = {}) {
   try { state.outbox = (await api('/api/peers/outbox', { quiet: true }))?.items || []; } catch { state.outbox = []; }
-  if (render) { renderBots(); if (remoteChatMachine()) loadMessages(); }
+  if (render) { renderBots(); if (remoteChatMachine()) (isGroupMode() ? loadGroupMessages() : loadMessages()); }
 }
 
 /** Under the chat's title: its machine's state, in words. */
@@ -944,74 +995,183 @@ function remoteChatSub(bot) {
   return bot.role || `在「${bot.remote.machine}」上`;
 }
 
-/** A machine's heading in the sidebar: its name, 「离线」 when it does not answer. */
-function machineGroupHead(name, { self = false, online = true, count = 0 } = {}) {
-  const head = el('div', `machine-group${online ? '' : ' off'}`);
-  head.appendChild(el('span', 'mg-name', name));
-  if (self) head.appendChild(el('span', 'mg-tag', '这台'));
-  if (!online) head.appendChild(el('span', 'mg-tag off', '离线'));
-  head.title = self ? `${name}：你正在用的这台电脑上的助手` : online ? `「${name}」上的助手：点开就聊，不用切换窗口` : `「${name}」现在连不上。给它的助手发消息，开机后会接着做。`;
-  if (count === 0 && !self) head.appendChild(el('span', 'mg-empty', '还不知道它上面有哪些助手'));
-  return head;
+/*
+ * 「全部机器」's sidebar (1.5.43, the layout the user picked): 「最近」 - the last
+ * five chats, bots and groups of every machine, each 「· 机器名」 - then one
+ * section per machine that folds (remembered per machine), its groups first,
+ * then its bots. Folded, its row says what is in it and what waits. Over ten
+ * chats, a search box finds one on any machine.
+ */
+const RECENT_MAX = 5;
+const SEARCH_FROM = 10;
+const COLLAPSED_KEY = 'lamplit.roster.collapsed';
+function collapsedMachines() {
+  try { const v = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+function setCollapsed(machine, on) {
+  const all = collapsedMachines();
+  if (on) all[machine] = true; else delete all[machine];
+  try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(all)); } catch { /* this time only */ }
 }
 
-/** Every other machine's bots, under the machine's name (renderBots calls this after this machine's own). */
-function renderRemoteGroups(list) {
-  const names = new Map();
-  for (const b of state.bots) names.set(b.name, (names.get(b.name) || 0) + 1);
-  for (const m of state.peerRoster) for (const b of m.bots || []) names.set(b.name, (names.get(b.name) || 0) + 1);
-  for (const m of state.peerRoster) {
-    list.appendChild(machineGroupHead(m.machine, { online: m.online, count: (m.bots || []).length }));
-    const ordered = [...(m.bots || [])].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || (Date.parse(b.preview?.ts || '') || 0) - (Date.parse(a.preview?.ts || '') || 0));
-    for (const b of ordered) {
-      const id = `${b.id}@${m.machine}`;
-      const bot = remoteBotById(id);
-      if (!bot) continue;
-      const active = !isGroupMode() && state.botId === id;
-      const row = el('div', `bot remote${active ? ' active' : ''}${m.online ? '' : ' off'}`);
-      row.dataset.bot = id;
-      row.setAttribute('role', 'button');
-      row.tabIndex = 0;
-      row.setAttribute('aria-pressed', active ? 'true' : 'false');
-      const av = avatarNode(bot, 38, 'bot-av');
-      av.setAttribute('role', 'img');
-      av.setAttribute('aria-label', `${bot.name} 的头像`);
-      const text = el('div', 'bot-text');
-      const nameRow = el('div', 'bot-name');
-      nameRow.appendChild(el('span', 'bot-name-text', bot.name));
-      // Two bots of one name: the machine's name next to it (「助理 · 云服务器」).
-      if ((names.get(bot.name) || 0) > 1) nameRow.appendChild(el('span', 'bot-machine-tag', m.machine));
-      if (b.primary) nameRow.appendChild(el('span', 'badge', '主'));
-      if (!m.online) nameRow.appendChild(el('span', 'bot-off-tag', '离线'));
-      text.appendChild(nameRow);
-      const last = b.preview?.text ? truncate(plainPreview(b.preview.text), 60) : '';
-      const waiting = (state.outbox || []).filter((q) => q.machine === m.machine && (q.botId === b.id || (!q.botId && b.primary))).length;
-      const line = waiting
-        ? { kind: 'needs', text: `有 ${waiting} 条消息等它那台电脑开机` }
-        : m.online ? rosterLine(`bot:${id}`, { idle: bot.role || last || '还没有消息', last }) : { kind: '', text: bot.role || '那台电脑现在连不上' };
-      text.appendChild(rosterLineNode(line));
-      row.dataset.search = `${bot.name} ${bot.role || ''} ${m.machine} ${last}`.toLowerCase();
-      row.appendChild(av);
-      row.appendChild(text);
-      const when = m.online ? homeTime(b.preview?.ts) : '';
-      if (when) row.appendChild(el('span', 'bot-time', when));
-      const badge = m.online ? attentionBadge(`bot:${id}`) : null;
-      if (badge) row.appendChild(badge);
-      row.addEventListener('click', () => selectBot(id));
-      row.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectBot(id); }
-      });
-      list.appendChild(row);
-    }
+/** Every chat of every machine, as the sidebar lists them. */
+function rosterChats() {
+  const here = machineDisplayName();
+  const ts = (x) => Date.parse(x?.preview?.ts || '') || 0;
+  const machines = [{
+    machine: here,
+    self: true,
+    online: true,
+    groups: (state.groups || []).map((g) => ({ kind: 'group', id: g.id, key: `group:${g.id}`, ts: ts(g), row: () => groupRow(g) })),
+    bots: [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || ts(b) - ts(a))
+      .map((b) => ({ kind: 'bot', id: b.id, key: `bot:${b.id}`, ts: ts(b), row: () => botRow(b) })),
+  }];
+  for (const m of state.peerRoster || []) {
+    machines.push({
+      machine: m.machine,
+      self: false,
+      online: Boolean(m.online),
+      // A message waiting for that machine counts as the chat's latest (1.5.43 test: 「最近」 left it out until it went).
+      groups: (m.groups || []).map((g) => ({ kind: 'group', id: `${g.id}@${m.machine}`, key: `group:${g.id}@${m.machine}`, ts: Math.max(ts(g), waitingAt(m.machine, '', g.id)), row: () => remoteGroupRow(m, g) })),
+      bots: [...(m.bots || [])].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || ts(b) - ts(a))
+        .map((b) => ({ kind: 'bot', id: `${b.id}@${m.machine}`, key: `bot:${b.id}@${m.machine}`, ts: Math.max(ts(b), waitingAt(m.machine, b.id, '')), row: () => remoteBotRow(m, b) })),
+    });
   }
+  return machines;
+}
+
+/** When the newest message waiting here for that machine was written (0: none). */
+function waitingAt(machine, botId, groupId) {
+  return Math.max(0, ...(state.outbox || []).filter((q) => q.machine === machine && (groupId ? q.groupId === groupId : !q.groupId && q.botId === botId)).map((q) => Date.parse(q.at) || 0));
+}
+
+/** How many of a machine's chats wait on the human. */
+function waitingIn(items) {
+  return items.filter((i) => { const it = attentionItem(i.key); return it?.needsYou || it?.asking; }).length;
+}
+
+function renderRosterSidebar(list) {
+  const machines = rosterChats();
+  const all = machines.flatMap((m) => [...m.groups, ...m.bots].map((i) => ({ ...i, machine: m.machine })));
+  $('bot-count').textContent = String(all.length);
+  const wrap = $('roster-search-wrap');
+  if (wrap) wrap.hidden = all.length <= SEARCH_FROM;
+  // 最近: the newest five, whichever machine.
+  const recent = all.filter((i) => i.ts).sort((a, b) => b.ts - a.ts).slice(0, RECENT_MAX);
+  if (recent.length) {
+    const sec = el('div', 'roster-sec recent');
+    sec.appendChild(el('div', 'roster-head recent-head', '最近'));
+    for (const item of recent) {
+      const row = item.row();
+      row.classList.add('recent-row');
+      row.querySelector('.bot-name')?.appendChild(el('span', 'recent-machine', `· ${item.machine}`));
+      row.dataset.search = `${row.dataset.search || ''} ${item.machine}`.toLowerCase();
+      sec.appendChild(row);
+    }
+    list.appendChild(sec);
+  }
+  const folded = collapsedMachines();
+  for (const m of machines) {
+    const items = [...m.groups, ...m.bots];
+    const sec = el('div', `roster-sec machine${folded[m.machine] ? ' collapsed' : ''}${m.online ? '' : ' off'}`);
+    sec.dataset.machine = m.machine;
+    const head = el('button', 'roster-head machine-head');
+    head.type = 'button';
+    head.setAttribute('aria-expanded', folded[m.machine] ? 'false' : 'true');
+    head.appendChild(el('span', 'rh-caret', folded[m.machine] ? '▸' : '▾'));
+    head.appendChild(el('span', 'rh-name', m.machine));
+    if (m.self) head.appendChild(el('span', 'rh-tag', '· 这台'));
+    if (!m.online && !folded[m.machine]) head.appendChild(el('span', 'rh-tag off', '离线')); // folded, the summary says it (once)
+    const waits = waitingIn(items);
+    // Folded, the row says what is inside and what waits (「2 群 · 9 个 · 1 件事等你」).
+    const summary = !m.online ? '离线'
+      : [m.groups.length ? `${m.groups.length} 群` : '', `${m.bots.length} 个`, waits ? `${waits} 件事等你` : ''].filter(Boolean).join(' · ');
+    head.appendChild(el('span', `rh-count${waits ? ' needs' : ''}`, folded[m.machine] ? summary : `${items.length} 个`));
+    head.title = m.self ? `${m.machine}：你正在用的这台电脑` : m.online ? `「${m.machine}」上的助手和群组：点开就聊，不用切换窗口` : `「${m.machine}」现在连不上。给它的助手发消息，开机后会接着做。`;
+    head.addEventListener('click', () => { setCollapsed(m.machine, !sec.classList.contains('collapsed')); renderBots(); });
+    sec.appendChild(head);
+    const body = el('div', 'roster-body');
+    for (const item of items) body.appendChild(item.row());
+    if (!items.length) body.appendChild(el('div', 'roster-empty', m.self ? '还没有助手' : '还不知道它上面有哪些助手'));
+    sec.appendChild(body);
+    list.appendChild(sec);
+  }
+}
+
+/** A bot on another machine, in the sidebar. */
+function remoteBotRow(m, b) {
+  const id = `${b.id}@${m.machine}`;
+  const bot = remoteBotById(id) || { id, name: b.name, role: b.role || '' };
+  const active = !isGroupMode() && state.botId === id;
+  const row = el('div', `bot remote${active ? ' active' : ''}${m.online ? '' : ' off'}`);
+  row.dataset.bot = id;
+  row.setAttribute('role', 'button');
+  row.tabIndex = 0;
+  row.setAttribute('aria-pressed', active ? 'true' : 'false');
+  const av = avatarNode(bot, 38, 'bot-av');
+  av.setAttribute('role', 'img');
+  av.setAttribute('aria-label', `${bot.name} 的头像`);
+  const text = el('div', 'bot-text');
+  const nameRow = el('div', 'bot-name');
+  nameRow.appendChild(el('span', 'bot-name-text', bot.name));
+  if (b.primary) nameRow.appendChild(el('span', 'badge', '主'));
+  if (!m.online) nameRow.appendChild(el('span', 'bot-off-tag', '离线'));
+  text.appendChild(nameRow);
+  const last = b.preview?.text ? truncate(plainPreview(b.preview.text), 60) : '';
+  const waiting = (state.outbox || []).filter((q) => q.machine === m.machine && !q.groupId && (q.botId === b.id || (!q.botId && b.primary))).length;
+  const line = waiting
+    ? { kind: 'needs', text: `有 ${waiting} 条消息等它那台电脑开机` }
+    : m.online ? rosterLine(`bot:${id}`, { idle: bot.role || last || '还没有消息', last }) : { kind: '', text: bot.role || '那台电脑现在连不上' };
+  text.appendChild(rosterLineNode(line));
+  row.dataset.search = `${bot.name} ${bot.role || ''} ${m.machine} ${last}`.toLowerCase();
+  row.appendChild(av);
+  row.appendChild(text);
+  const when = m.online ? homeTime(b.preview?.ts) : '';
+  if (when) row.appendChild(el('span', 'bot-time', when));
+  const badge = m.online ? attentionBadge(`bot:${id}`) : null;
+  if (badge) row.appendChild(badge);
+  row.addEventListener('click', () => selectBot(id));
+  row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectBot(id); } });
+  return row;
+}
+
+/** A group on another machine, in the sidebar (1.5.43). */
+function remoteGroupRow(m, g) {
+  const id = `${g.id}@${m.machine}`;
+  const group = remoteGroupById(id) || { id, name: g.name, members: [] };
+  const members = groupMembers(group);
+  const row = el('div', `group remote${state.groupId === id ? ' active' : ''}${m.online ? '' : ' off'}`);
+  row.dataset.group = id;
+  row.setAttribute('role', 'button');
+  row.tabIndex = 0;
+  row.appendChild(stackOf(members, 30, null, 2));
+  const text = el('div', 'bot-text');
+  const nameRow = el('div', 'bot-name');
+  nameRow.appendChild(el('span', 'bot-name-text', g.name || '未命名群组'));
+  if (!m.online) nameRow.appendChild(el('span', 'bot-off-tag', '离线'));
+  text.appendChild(nameRow);
+  const last = g.preview?.text ? truncate(plainPreview(g.preview.text), 60) : '';
+  const waiting = (state.outbox || []).filter((q) => q.machine === m.machine && q.groupId === g.id).length;
+  const line = waiting
+    ? { kind: 'needs', text: `有 ${waiting} 条消息等它那台电脑开机` }
+    : m.online ? rosterLine(`group:${id}`, { idle: members.length ? `${members.length} 位成员 · ${members.map((b) => b.name).join('、')}` : (last || '还没有消息'), last, group: true })
+      : { kind: '', text: '那台电脑现在连不上' };
+  text.appendChild(rosterLineNode(line));
+  row.dataset.search = `${g.name || ''} ${members.map((b) => b.name).join(' ')} ${m.machine} ${last}`.toLowerCase();
+  row.appendChild(text);
+  const badge = m.online ? attentionBadge(`group:${id}`) : null;
+  if (badge) row.appendChild(badge);
+  row.addEventListener('click', () => openGroup(id));
+  row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openGroup(id); } });
+  return row;
 }
 
 /** The messages waiting for this chat's machine, under the chat: what was written, and why it waits. */
 function appendQueuedMessages() {
-  const far = remoteOf(state.botId);
-  if (!far || isGroupMode()) return;
-  const bot = botById(state.botId);
-  const mine = (state.outbox || []).filter((q) => q.machine === far.machine && (q.botId === far.botId || (!q.botId && bot?.mainThere)));
+  const far = remoteOf(isGroupMode() ? state.groupId : state.botId);
+  if (!far) return;
+  const bot = isGroupMode() ? null : botById(state.botId);
+  const mine = (state.outbox || []).filter((q) => q.machine === far.machine && (isGroupMode() ? q.groupId === far.botId : !q.groupId && (q.botId === far.botId || (!q.botId && bot?.mainThere))));
   for (const old of messagesEl.querySelectorAll('.queued-row, .queued-line')) old.remove();
   if (mine.length) messagesEl.querySelector('.link-down-line')?.remove();
   for (const q of mine) {
@@ -1039,7 +1199,12 @@ function appendQueuedMessages() {
 /** The local hub said what happened to a waiting message: sent once the machine was back, or not. */
 function onOutboxEvent(ev) {
   if (ev.state === 'failed' && ev.text) toast(ev.text, true);
-  if (ev.state === 'sent' && ev.botId === state.botId && !isGroupMode()) toast('那台电脑连上了，刚才的消息已经交给它');
+  const open = isGroupMode() ? state.groupId : state.botId;
+  if (ev.state === 'sent' && (isGroupMode() ? ev.groupId : ev.botId) === open) {
+    toast('那台电脑连上了，刚才的消息已经交给它');
+    // Its answer is on its way: the live link may still be coming back, so read the chat meanwhile.
+    state.remoteStreamId = null; connectRemoteStream(); watchRemoteReply(open);
+  }
   loadOutbox().then(() => loadRoster()).catch(() => {});
 }
 
@@ -1055,12 +1220,28 @@ function remoteChatOnScreen(botId) {
 /** A remote chat could not be read: its machine is off (or the bot is gone). Said in words; true when handled. */
 function remoteChatFailed(botId, err, cached) {
   if (state.botId !== botId) return true;
-  if (err.code === 'LOCAL_KEY_REQUIRED') return true; // the pairing box is open
+  if (err.code === 'LOCAL_KEY_REQUIRED') { showPairNeeded(botId); return true; } // never the last chat's messages under this one's name
   // Not the last chat's messages under this one's name: what is known here (what waits for it).
   if (remoteChatOnScreen(botId)) appendQueuedMessages();
   else if (!cached) { state.messages = []; renderMessages(); }
   showRemoteDown(err.status === 404 ? `「${remoteOf(botId).machine}」上没有这个助手了` : LINK_DOWN_WORDS);
   return true;
+}
+
+/**
+ * This browser may not read a chat of another machine (not paired, or its pairing was lost - 1.5.43
+ * test: the last chat stayed on screen under this one's name and sending failed without a word):
+ * the screen is emptied and says what to do, with the pairing button.
+ */
+function showPairNeeded(id) {
+  const machine = remoteOf(id)?.machine || '那台机器';
+  if (isGroupMode()) state.groupMessages = []; else state.messages = [];
+  messagesEl.innerHTML = ''; messagesEl.dataset.chat = '';
+  const line = el('div', 'status-line pair-needed-line');
+  line.appendChild(el('span', null, `这个浏览器还没配对（或者配对失效了），看不到「${machine}」上的对话。配对一次就好。`));
+  line.appendChild(pairButton(() => { state.remoteStreamId = null; connectRemoteStream(); (isGroupMode() ? loadGroupMessages() : loadMessages()); }));
+  messagesEl.appendChild(line);
+  hideTyping();
 }
 
 /** The chat's machine does not answer: one plain line, no error (it goes on there, or when it is back). */
@@ -1081,37 +1262,58 @@ function hideRemoteDown() {
 
 /** That bot's events, live, through this hub (a second stream next to this machine's own). */
 function connectRemoteStream() {
-  const id = !isGroupMode() && isRemoteId(state.botId) ? state.botId : '';
+  const group = isGroupMode();
+  const id = group ? (isRemoteId(state.groupId) ? state.groupId : '') : (isRemoteId(state.botId) ? state.botId : '');
   if (state.remoteStream && state.remoteStreamId === id) return;
   if (state.remoteStream) { state.remoteStream.close(); state.remoteStream = null; }
   state.remoteStreamId = id;
   if (!id) return;
   const far = remoteOf(id);
   let es;
-  try { es = new EventSource(remoteApi(id, '/stream')); } catch { return; }
+  try { es = new EventSource(group ? remoteGroupApi(id, '/stream') : remoteApi(id, '/stream')); } catch { return; }
   state.remoteStream = es;
   es.onmessage = (event) => {
     let ev;
     try { ev = JSON.parse(event.data); } catch { return; }
-    if (state.remoteStreamId !== id || state.botId !== id) return;
+    if (state.remoteStreamId !== id || (group ? state.groupId : state.botId) !== id) return;
     if (ev.type === 'peer.link') {
       if (ev.state === 'down') { showRemoteDown(LINK_DOWN_WORDS); setWorking(false); }
       else if (ev.state === 'refused') showRemoteDown(ev.text || LINK_DOWN_WORDS);
-      else { hideRemoteDown(); loadMessages(); refreshWorking(); loadRoster(); }
+      else { hideRemoteDown(); if (group) loadGroupMessages(); else { loadMessages(); refreshWorking(); } loadRoster(); }
       return;
     }
-    if (ev.type === 'turn.end') setTimeout(() => loadRoster(), 1200); // its sidebar line follows (1.5.42 test)
+    // Its sidebar line follows (1.5.42 test); seen here, it is not 「新」 there (1.5.43 test: a blue dot stayed).
+    if (ev.type === 'turn.end') { clearInterval(state.remoteReplyWatch); if (document.visibilityState === 'visible') markSeen(); setTimeout(() => loadRoster(), 1200); }
     // Its cards are answered through the inbox: the card says which machine (1.5.41).
     if (ev.type === 'approval.request') {
-      ev.from = { machine: far.machine, botName: botById(id)?.name || '' };
+      ev.from = { machine: far.machine, botName: group ? (groupMemberById(ev.botId)?.name || ev.botName || '') : (botById(id)?.name || '') };
       refreshInbox({ notify: false });
     }
     handleEvent(ev);
   };
   es.onerror = () => {
-    // Refused (not paired) or this hub went away: EventSource gives up on a refusal.
-    if (es.readyState === 2 && state.remoteStreamId === id) { state.remoteStream = null; state.remoteStreamId = ''; }
+    // Refused (not paired) or this hub went away: EventSource gives up on a refusal. Try again in a
+    // while, as long as this chat is open (1.5.43 test: after pairing or a drop the replies never came).
+    if (es.readyState === 2 && state.remoteStreamId === id) {
+      state.remoteStream = null; state.remoteStreamId = '';
+      clearTimeout(state.remoteStreamRetry);
+      state.remoteStreamRetry = setTimeout(() => { if ((group ? state.groupId : state.botId) === id) connectRemoteStream(); }, 8000);
+    }
   };
+}
+
+/**
+ * A reply is due in the remote chat on screen (its message just went out after the machine came
+ * back): read the chat every few seconds for a while, whatever the live link does.
+ */
+function watchRemoteReply(id) {
+  clearInterval(state.remoteReplyWatch);
+  let left = 30;
+  state.remoteReplyWatch = setInterval(() => {
+    const open = isGroupMode() ? state.groupId : state.botId;
+    if (open !== id || (left -= 1) < 0) { clearInterval(state.remoteReplyWatch); return; }
+    (isGroupMode() ? loadGroupMessages() : loadMessages()).catch?.(() => {});
+  }, 4000);
 }
 
 /** A bot on another machine: its waiting cards, from the inbox, answered through it. */
@@ -1249,7 +1451,235 @@ function setRosterView(view) {
     if (primary) selectBot(primary.id);
   }
   renderBots();
+  renderGroups(); // this machine's groups have their own section again (1.5.43 test: they vanished)
   syncMachineBranding();
   renderMachineMenu();
   toast(state.view === 'all' ? '全部机器：每台机器上的助手都在左边' : `只看「${machineDisplayName()}」`);
+}
+
+/*
+ * 「出门在外，怎么连上它？」 when adding a machine (1.5.43, the paused relay plan's
+ * 「三种方式」): only at home (the default), Tailscale (its key), our own relay
+ * (the one set up in 设置 → 手机和外网), or Lamplit's relay - not yet.
+ */
+function resetOutsideChoice() {
+  const home = document.querySelector('input[name="vnc-outside"][value="home"]');
+  if (home) home.checked = true;
+  if ($('vnc-ts-key')) $('vnc-ts-key').value = '';
+  syncOutsideChoice();
+  // Whether this computer has a relay to share: said on the choice itself.
+  api('/api/relay-link').then((view) => {
+    const has = Boolean(view?.hasJoin && view?.host);
+    const relay = document.querySelector('input[name="vnc-outside"][value="relay"]');
+    if (relay) relay.disabled = !has;
+    if ($('vnc-relay-note')) $('vnc-relay-note').textContent = has ? '用你在「设置 → 手机和外网」里装好的中转，新机器装好后自动连上' : '这台电脑还没装自建中转：先在「设置 → 手机和外网」里装好，再回来选它';
+  }).catch(() => {});
+}
+function syncOutsideChoice() {
+  const way = document.querySelector('input[name="vnc-outside"]:checked')?.value || 'home';
+  if ($('vnc-ts')) $('vnc-ts').hidden = way !== 'tailscale';
+}
+/** The choice as the setup takes it: {options} or {error}. */
+function outsideChoice() {
+  const way = document.querySelector('input[name="vnc-outside"]:checked')?.value || 'home';
+  if (way !== 'tailscale') return { options: { outside: way === 'relay' ? 'relay' : 'home' } };
+  const key = $('vnc-ts-key')?.value.trim() || '';
+  if (!key) return { error: '选了 Tailscale，还要贴一个 Tailscale 密钥（tskey-auth- 开头）。不想用的话，选「只在家里用」。' };
+  if (/^tskey-api-/.test(key)) return { error: '这是 API 访问令牌（tskey-api-），不能用来加设备：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，用 tskey-auth- 开头的那种。' };
+  if (!/^tskey-auth-/.test(key)) return { error: 'Tailscale 密钥应该是 tskey-auth- 开头的 Auth key。' };
+  return { options: { outside: 'tailscale', tailscaleKey: key } };
+}
+
+/*
+ * Tailscale, the way the relay card works (1.5.43): one click to install here,
+ * log in on Tailscale's own page (the link opens on the device in your hand),
+ * one click to remove it, and 「让其他机器也用 Tailscale」 - each machine then
+ * shows its own login link, or joins at once with a pasted auth key (used once,
+ * never kept). Every step asks first.
+ */
+const TS_STATE_WORDS = { missing: '没装', 'needs-login': '要登录', starting: '启动中', running: '已连上', stopped: '没在运行' };
+const TS_UNINSTALL_WORDS = '会删掉这台机器上的 Tailscale 程序，这台就不在你的 Tailscale 网络里了。你的 Tailscale 账号和其他机器都不受影响；这台机器在 Tailscale 后台的记录要你自己在 login.tailscale.com 删。';
+const tsOpened = new Set(); // login links already opened for the human
+let tsCardTimer = null;
+
+/** Ask first; a step that is not destructive gets a plain button, not a red one. */
+async function askStep(title, text, label, { danger = false } = {}) {
+  const answer = askConfirm({ title, text, confirmLabel: label });
+  if (!danger) $('confirm-ok')?.classList.remove('danger');
+  return answer;
+}
+
+async function renderTailscaleCard() {
+  const box = $('tsx-box');
+  if (!box) return;
+  clearTimeout(tsCardTimer);
+  let t;
+  try { t = await api('/api/tailscale'); } catch { return; }
+  const busy = t.job?.state === 'running';
+  const chip = $('tsx-chip');
+  if (chip) {
+    chip.textContent = busy ? (t.job.kind === 'uninstall' ? '正在卸载…' : '正在安装…') : (TS_STATE_WORDS[t.state] || '—');
+    chip.className = `relay-chip${t.state === 'running' && !busy ? ' ok' : ''}`;
+  }
+  const lines = [];
+  if (busy) lines.push(t.job.detail || '正在进行…');
+  else if (t.job?.state === 'failed') lines.push(t.job.detail || '上次没成功');
+  if (t.state === 'running') lines.push(t.address ? `这台的 Tailscale 地址：${t.address}。${t.url ? `Lamplit 已经认出它：${t.url}` : 'Lamplit 过一会儿会认出它。'}` : '已连上。');
+  if (t.state === 'needs-login' && !busy) lines.push('装好了，还要登录：点「登录 Tailscale」，在打开的 Tailscale 页面里用你的账号登录。登录完这里会变成「已连上」。');
+  if (t.state === 'stopped' && t.installed && !busy) lines.push('装好了，但没在运行：点「登录 Tailscale」把它连上。');
+  $('tsx-status').textContent = lines.join('\n');
+  const byhand = $('tsx-byhand');
+  if (byhand) {
+    byhand.innerHTML = '';
+    byhand.hidden = t.installed || t.can?.install !== false;
+    if (!byhand.hidden) {
+      byhand.appendChild(el('div', null, t.can.words || '这台电脑要你自己装 Tailscale。'));
+      if (t.can.byHand) byhand.appendChild(el('code', 'tsx-cmd', t.can.byHand));
+    }
+  }
+  $('tsx-install').hidden = busy || t.installed || t.can?.install === false;
+  $('tsx-login').hidden = busy || !t.installed || t.state === 'running';
+  $('tsx-uninstall').hidden = busy || !t.installed;
+  // The login link: opened once on this device, and kept as a button.
+  if (t.loginUrl && !tsOpened.has(t.loginUrl)) { tsOpened.add(t.loginUrl); openLinkHere(t.loginUrl); }
+  renderTailscaleMachines().catch(() => {});
+  if (busy || t.state === 'needs-login' || t.state === 'starting') tsCardTimer = setTimeout(() => { if (box.offsetParent) renderTailscaleCard(); }, 3000);
+}
+
+async function renderTailscaleMachines() {
+  const list = $('tsx-machines');
+  if (!list) return;
+  let data;
+  try { data = await api('/api/tailscale/machines'); } catch { return; }
+  const rows = data?.machines || [];
+  list.innerHTML = '';
+  if (!rows.length) { list.appendChild(el('div', 'row-note', '还没有其他机器。')); return; }
+  for (const m of rows) {
+    const row = el('div', 'tsx-machine');
+    row.appendChild(el('b', null, m.machine));
+    const busy = m.job?.state === 'running';
+    const words = m.error ? m.error
+      : busy ? (m.job.detail || '正在安装…')
+        : m.job?.state === 'failed' ? (m.job.detail || '没装好')
+          : m.state === 'running' ? (m.address ? `已连上 · ${m.address}` : '已连上')
+            : m.state === 'needs-login' ? '装好了，还要登录'
+              : m.installed ? '装好了，没在运行' : '没装';
+    row.appendChild(el('span', `tsx-words${m.state === 'running' ? ' ok' : ''}`, words));
+    if (m.loginUrl) {
+      const go = el('button', 'btn tiny', '打开它的登录页');
+      go.type = 'button';
+      go.addEventListener('click', () => openLinkHere(m.loginUrl));
+      row.appendChild(go);
+    }
+    list.appendChild(row);
+  }
+  // Each machine's own line says where it stands now: the 「开始装了」 from the share goes (1.5.43 test).
+  if (!rows.some((m) => m.job?.state === 'running') && $('tsx-share-state')) $('tsx-share-state').textContent = '';
+  if (rows.some((m) => m.job?.state === 'running' || m.state === 'needs-login')) setTimeout(() => { if (list.offsetParent) renderTailscaleMachines(); }, 4000);
+}
+
+async function installTailscaleHere() {
+  const win = /Windows/i.test(navigator.userAgent);
+  if (!(await askStep('在这台电脑上装 Tailscale？', `${win ? 'Windows 会弹出「是否允许此应用更改你的设备」，点「是」。' : ''}装好后会打开 Tailscale 的登录页，用你的 Tailscale 账号登录就行。`, '装上'))) return;
+  try {
+    await api('/api/tailscale/install', { method: 'POST', body: {} });
+  } catch (err) { if (!err.quiet) toast(err.message, true); }
+  renderTailscaleCard();
+}
+async function loginTailscaleHere() {
+  try {
+    const out = await api('/api/tailscale/login', { method: 'POST', body: {} });
+    if (out?.loginUrl) { tsOpened.add(out.loginUrl); openLinkHere(out.loginUrl); } else toast('正在要登录链接，稍等几秒…');
+  } catch (err) { if (!err.quiet) toast(err.message, true); }
+  setTimeout(renderTailscaleCard, 1500);
+}
+async function uninstallTailscaleHere() {
+  if (!(await askStep('卸载这台电脑上的 Tailscale？', TS_UNINSTALL_WORDS, '卸载', { danger: true }))) return;
+  try {
+    await api('/api/tailscale/uninstall', { method: 'POST', body: {} });
+  } catch (err) { if (!err.quiet) toast(err.message, true); }
+  renderTailscaleCard();
+}
+async function shareTailscale() {
+  const key = $('tsx-key')?.value.trim() || '';
+  if (key && !/^tskey-auth-/.test(key)) { toast(/^tskey-api-/.test(key) ? '这是 API 访问令牌，不是 Auth key：在 Tailscale 后台点「Generate auth key」' : 'Tailscale 密钥应该是 tskey-auth- 开头的 Auth key', true); return; }
+  const text = key
+    ? '每台机器都会装上 Tailscale，并用你贴的密钥直接加入你的网络。密钥只用这一次，不保存。'
+    : '每台机器都会装上 Tailscale，装好后下面会出现它自己的登录链接，一台台点开、用你的账号登录。';
+  if (!(await askStep('让其他机器也用 Tailscale？', text, '开始'))) return;
+  const say = $('tsx-share-state');
+  if (say) say.textContent = '正在告诉其他机器…';
+  try {
+    const out = await api('/api/tailscale/share', { method: 'POST', body: key ? { authKey: key } : {} });
+    if ($('tsx-key')) $('tsx-key').value = '';
+    const list = out?.machines || [];
+    if (say) say.textContent = list.length ? list.map((m) => (m.ok ? `「${m.machine}」：开始装了` : `「${m.machine}」：没成功（${m.error || ''}）`)).join('\n') : '还没有其他机器。';
+  } catch (err) { if (say) say.textContent = err.message; }
+  setTimeout(() => renderTailscaleMachines().catch(() => {}), 2000);
+}
+
+/*
+ * A turn's changed files (1.5.43, the user's own chat): small words in the
+ * reply's action row (「改了 2 个文件」, next to 朗读), the names and 撤销 behind
+ * a click, and 撤销 asks first. A name like 「-p」 (a folder Windows' cmd made
+ * for `mkdir -p`) is never listed, and never put back.
+ */
+function optionLikeName(name) { return /^-/.test(String(name || '')); }
+
+function changesChip(turnId, all) {
+  const changes = (all || []).filter((c) => !String(c.path || '').split(/[\\/]/).some(optionLikeName));
+  if (!changes.length) return null;
+  // The file's name only, on Windows too (1.5.33: 「演示\下载\周报.docx」).
+  const names = [...new Set(changes.map((c) => c.path.split(/[\\/]/).pop()))];
+  const deleted = changes.filter((c) => c.kind === 'delete').length;
+  const what = deleted && deleted === changes.length ? '删了' : deleted ? '改动了' : '改了';
+  const wrap = el('span', 'changes-wrap');
+  const chip = el('button', 'changes-chip', `${what} ${names.length} 个文件`);
+  chip.type = 'button';
+  chip.title = '看这一轮改了哪些文件；7 天内可以撤销';
+  const pop = el('div', 'changes-pop');
+  pop.hidden = true;
+  pop.appendChild(el('div', 'changes-names', truncate(names.join('、'), 240)));
+  const done = state.undone.has(turnId);
+  const btn = el('button', 'btn ghost tiny', done ? '已撤销' : '撤销');
+  btn.type = 'button';
+  btn.disabled = done;
+  btn.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const label = names.length === 1 ? names[0] : `${names[0]} 等 ${names.length} 个文件`;
+    if (!(await askStep(`把 ${label} 恢复成这一轮之前的样子？`, '这一轮对这些文件做的改动会撤掉，文件回到这一轮之前的样子（7 天内有效）。', '恢复'))) return;
+    btn.disabled = true;
+    try {
+      const res = await api(chatUndoUrl(), { method: 'POST', body: { ids: changes.map((c) => c.id) } });
+      const failed = (res.results || []).filter((r) => !r.ok);
+      const already = failed.length > 0 && failed.every((f) => /已经撤销过/.test(f.error || '')); // after a reload the button is back (1.5.41 test)
+      if (failed.length === (res.results || []).length && !already) throw new Error(failed[0]?.error || '没能撤销');
+      state.undone.add(turnId); btn.textContent = '已撤销';
+      for (const card of messagesEl.querySelectorAll('.att-doc')) card.recheck?.(); // a file undone says so (1.5.41)
+      toast(already ? '这一轮的改动已经撤销过了' : failed.length ? `撤销了一部分：${failed.map((f) => `${f.path || f.id}（${f.error}）`).join('；')}` : '已恢复成这一轮之前的样子');
+    } catch (err) {
+      btn.disabled = false;
+      toast(`没能撤销：${err.message}`, true);
+    }
+  });
+  pop.appendChild(btn);
+  chip.addEventListener('click', (event) => { event.stopPropagation(); pop.hidden = !pop.hidden; });
+  wrap.appendChild(chip);
+  wrap.appendChild(pop);
+  return wrap;
+}
+
+/** Put it under the reply it belongs to: in the bubble's action row, next to 朗读. */
+function placeChanges(node) {
+  if (!node) return;
+  const bubble = messagesEl.lastElementChild?.querySelector?.('.bubble');
+  if (!bubble) { const line = el('div', 'changes-line'); line.appendChild(node); messagesEl.appendChild(line); return; }
+  let row = bubble.querySelector('.bubble-actions');
+  if (!row) {
+    row = el('div', 'bubble-actions');
+    const speak = [...bubble.children].find((c) => c.classList?.contains('speak-btn'));
+    if (speak) row.appendChild(speak);
+    bubble.appendChild(row);
+  }
+  row.appendChild(node);
 }

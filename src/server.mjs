@@ -94,6 +94,7 @@ import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
 import { createRoster, cleanBotId } from './roster.mjs';
+import { createTailscale, authKeyProblem, safeLoginUrl } from './tailscale.mjs';
 import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
 import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
@@ -4063,6 +4064,90 @@ route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/desktop$/, a
   } catch (err) { throw peerFailure(err, peer); }
 });
 
+// --- another machine's groups (1.5.43): the same as its bots, by the human only ---------
+//   GET  /api/peers/:m/groups/:gid/messages?limit=   that group's chat, read from there
+//   POST /api/peers/:m/groups/:gid/message {text, attachments?} -> {turnId} | {queued, message}
+//   GET  /api/peers/:m/groups/:gid/stream            its events, live (SSE), as "gid@machine"
+//   GET  /api/peers/:m/groups/:gid/plans/:planId     its task board
+//   POST /api/peers/:m/groups/:gid/seen              its new result was seen
+function remoteGroupTarget(req, state, params) {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const peer = exactPeer(state, params.machine);
+  if (!peer) throw httpError(404, 'PEER_NOT_FOUND', '没有这台机器（可能已经从「机器」里删掉了）');
+  const groupId = cleanBotId(params.gid);
+  if (!groupId) throw httpError(400, 'BAD_GROUP_ID', '没有这个群');
+  return { peer, groupId };
+}
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/messages$/, async (req, _res, { params, state, query }) => {
+  const { peer, groupId } = remoteGroupTarget(req, state, params);
+  const limit = Math.min(Number(query.get('limit')) || 200, 1000);
+  try {
+    return await passOn(state, peer, 'GET', `/api/groups/${encodeURIComponent(groupId)}/messages?limit=${limit}`, { timeoutMs: 20000 });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/message$/, async (req, _res, { params, body, state }) => {
+  const { peer, groupId } = remoteGroupTarget(req, state, params);
+  const text = String(body?.text ?? '').trim();
+  const attachments = await checkAttachments(state, body?.attachments);
+  if (!text && !attachments.length) throw httpError(400, 'EMPTY_MESSAGE', 'text is required');
+  if (text.length > 20000) throw httpError(400, 'MESSAGE_TOO_LONG', 'text is limited to 20000 characters');
+  try {
+    const out = await state.roster.deliver({ machine: peer.name, botId: '', groupId, text, attachments: attachments.map((a) => ({ path: a.path })) });
+    if (!out.queued) await audit({ kind: 'peer.group.message', machine: peer.name, groupId, turnId: out.turnId || null });
+    return out.queued ? out : { turnId: out.turnId, groupId: `${groupId}@${peer.name}`, machine: peer.name };
+  } catch (err) {
+    if (err.code === 'OUTBOX_FULL') throw httpError(429, err.code, err.message);
+    if (err.status) throw err;
+    throw peerFailure(err, peer);
+  }
+});
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/stream$/, async (req, res, { params, state }) => {
+  const { peer, groupId } = remoteGroupTarget(req, state, params);
+  await state.roster.pipeStream(peer, '', req, res, { groupId });
+  return undefined;
+});
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/plans\/(?<planId>[\w-]+)$/, async (req, _res, { params, state }) => {
+  const { peer, groupId } = remoteGroupTarget(req, state, params);
+  try {
+    return await passOn(state, peer, 'GET', `/api/groups/${encodeURIComponent(groupId)}/plans/${encodeURIComponent(params.planId)}`, { timeoutMs: 10000 });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/stat$/, async (req, _res, { params, state, query }) => {
+  const { peer } = remoteGroupTarget(req, state, params);
+  const p = peerPath(query.get('path'));
+  try {
+    return await passOn(state, peer, 'GET', `/api/workspace/stat?path=${encodeURIComponent(p)}`, { timeoutMs: 8000 });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/seen$/, async (req, _res, { params, state }) => {
+  const { peer, groupId } = remoteGroupTarget(req, state, params);
+  try {
+    return await passOn(state, peer, 'POST', '/api/attention/seen', { body: { key: `group:${groupId}` }, timeoutMs: 6000 });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+
+// A bot's avatar picture on another machine (1.5.43): fetched there with that
+// machine's token, passed on only as a picture (png, jpeg, webp, gif - never
+// svg or html), so the sidebar shows each bot's own face. A face is not a
+// chat: any signed-in page of this hub may show it.
+//   GET /api/peers/:m/avatar/:botId -> the picture
+const AVATAR_TYPES = /^image\/(png|jpeg|webp|gif)$/i;
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/avatar\/(?<id>[^/]+)$/, async (req, res, { params, state }) => {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const peer = exactPeer(state, params.machine);
+  const botId = cleanBotId(params.id);
+  if (!peer || !botId) throw httpError(404, 'AVATAR_NOT_FOUND', 'no such avatar');
+  let r;
+  try { r = await state.peers.call(peer, 'GET', `/api/bots/${encodeURIComponent(botId)}/avatar?v=1`, { timeoutMs: 8000, headers: { [VIA_HEADER]: '1' } }); } catch { throw httpError(502, 'PEER_UNREACHABLE', `「${peer.name}」现在连不上`); }
+  const type = String(r.headers.get('content-type') || '').split(';')[0].trim();
+  if (!r.ok || !AVATAR_TYPES.test(type)) { await r.body?.cancel?.().catch(() => {}); throw httpError(404, 'AVATAR_NOT_FOUND', 'no picture'); }
+  const bytes = Buffer.from(await r.arrayBuffer());
+  if (bytes.length > 2 * 1024 * 1024) throw httpError(413, 'AVATAR_TOO_LARGE', 'picture too large');
+  res.writeHead(200, { 'content-type': type, 'content-length': bytes.length, 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=600', 'content-security-policy': "default-src 'none'" });
+  res.end(bytes);
+  return undefined;
+});
+
 route('GET', /^\/api\/peers\/outbox$/, async (req, _res, { state }) => {
   if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
   return { items: await state.roster.outbox.list() };
@@ -4371,80 +4456,103 @@ route('GET', /^\/api\/media\/jobs$/, async (_req, _res, { query, state }) => {
   };
 });
 
-// --- Tailscale on a machine already added -----------------------------------------
-//   GET  /api/tailscale            -> {address, canInstall, status:{state:'idle'|'running'|'done'|'failed', detail}}
-//   POST /api/tailscale/install    {authKey}   install and join, in the background
-// Only on a machine given to the bots (the hub has the rights there); on the
-// human's own computer they install the Tailscale app themselves.
+// --- Tailscale, the way the relay card works (1.5.43) ---------------------------------
+//   GET  /api/tailscale            -> {installed, state, address, loginUrl, job, can, url}
+//   POST /api/tailscale/install    {authKey?}  install here, then log in (the link, or the key once)
+//   POST /api/tailscale/login      -> {loginUrl}   a new login link
+//   POST /api/tailscale/uninstall  remove it from this machine
+//   POST /api/tailscale/share      {authKey?, machines?}  ask the other machines to install it
+//   GET  /api/tailscale/machines   -> {machines:[{machine, installed, state, address, loginUrl, error?}]}
+// Installing, logging in, removing and sharing are the human's only (auth.mjs
+// isAuthorityRequest), like the relay's. A pasted key is used once: it goes to
+// a file Tailscale reads; it is never stored, logged or put in a URL.
+// DESK_TAILSCALE_SIMULATE=1 (tests only) walks the card through without installing anything.
 
-const TS_LOG = process.platform === 'win32' ? path.join(process.env.ProgramData || 'C:\\ProgramData', 'Nightshift', 'tailscale.log') : '/var/log/desk-tailscale.log';
-let tsLaunchFailedAt = 0; // the hub gave up on an installer that never started (the log may be root-owned)
-const TS_LAUNCH_FAILED = '安装程序没能启动（密钥已删掉）；再点一次试试，还不行就到那台机器上手动装 Tailscale';
-function tailscaleStatus() {
-  if (tsLaunchFailedAt && Date.now() - tsLaunchFailedAt < 30 * 60 * 1000) return { state: 'failed', detail: TS_LAUNCH_FAILED };
-  let text = '';
-  let at = 0;
-  try { text = fs.readFileSync(TS_LOG, 'utf8'); at = fs.statSync(TS_LOG).mtimeMs; } catch { return { state: 'idle', detail: '' }; }
-  const m = [...text.matchAll(/DESK_TS=(done|failed)\s*(\S*)\s*(.*)/g)].pop();
-  if (!m) return Date.now() - at < 15 * 60 * 1000 ? { state: 'running', detail: '正在安装 Tailscale…' } : { state: 'idle', detail: '' };
-  if (m[1] === 'done') return { state: 'done', detail: m[2] ? `已加入你的网络：${m[2]}` : '已加入你的网络' };
-  const why = m[2] === 'launch' ? TS_LAUNCH_FAILED
-    : m[2] === 'key' ? '密钥不对：要 tskey-auth- 开头、没过期、没用过的 Auth key'
-    : m[2] === 'download' ? '下载不了 Tailscale（这台机器连不上 tailscale.com？）'
-      : (`${m[2]} ${m[3]}`.trim() || '安装失败');
-  return { state: 'failed', detail: why };
+let tailscaleMod = null;
+function tailscaleHere(state) {
+  if (!tailscaleMod) {
+    tailscaleMod = createTailscale({
+      hubDir: fileURLToPath(new URL('../hub/', import.meta.url)),
+      cli: () => tailscaleCli(),
+      name: () => selfMachineName(),
+    });
+  }
+  return tailscaleMod;
 }
 
-route('GET', /^\/api\/tailscale$/, async (_req, _res, { state }) => ({
-  address: tailnetUrl(state),
-  canInstall: process.env.DESK_MACHINE_MODE === 'remote' && ['linux', 'win32'].includes(process.platform),
-  status: tailscaleStatus(),
-}));
+route('GET', /^\/api\/tailscale$/, async (_req, _res, { state }) => {
+  const ts = tailscaleHere(state);
+  const [st, can] = await Promise.all([ts.status(), ts.can()]);
+  // Lamplit's own address on it, once it is up: the way the other devices come in.
+  return { ...st, can, url: tailnetUrl(state) || '', address: st.address || '' };
+});
 
-route('POST', /^\/api\/tailscale\/install$/, async (_req, _res, { body, state }) => {
-  if (process.env.DESK_MACHINE_MODE !== 'remote') throw httpError(400, 'TS_LOCAL', '这是你自己的电脑：请直接安装 Tailscale 客户端并登录');
+route('POST', /^\/api\/tailscale\/install$/, async (req, _res, { body, state }) => {
   const key = String(body?.authKey || '').trim();
-  if (/^tskey-api-/.test(key)) throw httpError(400, 'TS_API_KEY', '这是 API 访问令牌（tskey-api-），不能用来加设备：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」');
-  if (!/^tskey-auth-[A-Za-z0-9-]{10,200}$/.test(key)) throw httpError(400, 'TS_BAD_KEY', 'Tailscale 密钥应该是 tskey-auth- 开头的 Auth key');
-  if (tailscaleStatus().state === 'running') throw httpError(409, 'TS_RUNNING', '已经在安装了，稍等');
-  const { tailscaleDeviceName } = await import('./remote.mjs');
-  const name = tailscaleDeviceName(state.uiState?.machine?.name || os.hostname());
-  const keyFile = path.join(os.tmpdir(), `desk-tailscale-${crypto.randomBytes(6).toString('hex')}.key`);
-  fs.writeFileSync(keyFile, `${key}\n`, { mode: 0o600 });
-  tsLaunchFailedAt = 0;
-  const hubDir = fileURLToPath(new URL('../hub/', import.meta.url)); // next to the code, not the data
-  try { fs.writeFileSync(TS_LOG, 'start\n'); } catch { /* root-owned on Linux: the script writes it */ }
-  if (process.platform === 'win32') {
-    // Not detached: from the hub's background task (session 0), a detached
-    // PowerShell exits at once with code 0 and runs nothing (seen on win11).
-    const child = spawnChild('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(hubDir, 'tailscale-windows.ps1'), '-KeyFile', keyFile, ...(name ? ['-Name', name] : [])], { stdio: 'ignore', windowsHide: true });
-    child.on('error', () => {});
-    child.unref();
-  } else {
-    // The hub's account may use sudo without a password on a machine given to the bots.
-    const cmd = `/bin/bash '${path.join(hubDir, 'tailscale-linux.sh')}' '${keyFile}' '${name}' > ${TS_LOG} 2>&1`;
-    const child = spawnChild('sudo', ['-n', 'systemd-run', '--unit=desk-tailscale-setup', '--collect', '--quiet', '/bin/bash', '-c', cmd], { detached: true, stdio: 'ignore' });
-    child.on('error', () => {});
-    child.unref();
+  try {
+    const job = await tailscaleHere(state).install({ authKey: key });
+    await audit({ kind: 'tailscale.install', withKey: Boolean(key), by: req.headers[VIA_HEADER] ? 'peer' : 'human' });
+    return { ok: true, job };
+  } catch (err) {
+    if (err.code === 'TS_BY_HAND') throw httpError(409, err.code, err.command ? `${err.message}\n${err.command}` : err.message);
+    throw httpError(err.code === 'TS_RUNNING' ? 409 : 400, err.code || 'TS_FAILED', err.message);
   }
-  // Safety net for an installer that never started (no sudo, a launch that did
-  // nothing): after 90 s, remove the key and say so, never "installing…"
-  // forever. "Started" is the installer's own word for it: on Linux it takes
-  // the key file over at once; on Windows the key waits in its file until the
-  // last step (download and install come first), so look for its own log line.
-  setTimeout(() => {
-    if (!fs.existsSync(keyFile)) return;
-    if (process.platform === 'win32') {
-      let log = '';
-      try { log = fs.readFileSync(TS_LOG, 'utf8'); } catch { /* none yet */ }
-      if (/^start \d{4}-/m.test(log)) return; // it is running; it removes the key itself
+});
+
+route('POST', /^\/api\/tailscale\/login$/, async (_req, _res, { state }) => {
+  const out = await tailscaleHere(state).login();
+  if (out.error) throw httpError(502, 'TS_LOGIN_FAILED', `没能开始登录：${out.error}`);
+  await audit({ kind: 'tailscale.login' });
+  return { loginUrl: out.loginUrl || '' };
+});
+
+route('POST', /^\/api\/tailscale\/uninstall$/, async (_req, _res, { state }) => {
+  try {
+    const job = await tailscaleHere(state).uninstall();
+    await audit({ kind: 'tailscale.uninstall' });
+    return { ok: true, job };
+  } catch (err) {
+    if (err.code === 'TS_BY_HAND') throw httpError(409, err.code, err.command ? `${err.message}\n${err.command}` : err.message);
+    throw httpError(err.code === 'TS_RUNNING' ? 409 : 400, err.code || 'TS_FAILED', err.message);
+  }
+});
+
+route('POST', /^\/api\/tailscale\/share$/, async (req, _res, { body, state }) => {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const key = String(body?.authKey || '').trim();
+  if (key && authKeyProblem(key)) throw httpError(400, 'TS_BAD_KEY', authKeyProblem(key));
+  const only = Array.isArray(body?.machines) ? body.machines.map(String) : null;
+  const machines = await Promise.all(state.peers.list().filter((p) => !only || only.includes(p.name)).map(async ({ name }) => {
+    const peer = state.peers.find(name);
+    try {
+      const out = await state.peers.json(peer, 'POST', '/api/tailscale/install', { body: key ? { authKey: key } : {}, headers: { [VIA_HEADER]: '1' }, timeoutMs: 20000 });
+      return { machine: name, ok: true, state: out?.job?.state || 'running' };
+    } catch (err) {
+      return { machine: name, ok: false, error: err.code === 'PEER_UNREACHABLE' ? '现在连不上' : err.code === 'NOT_FOUND' ? '那台的 Lamplit 太旧，先更新它' : err.message };
     }
-    try { fs.unlinkSync(keyFile); } catch { /* gone */ }
-    try { fs.appendFileSync(TS_LOG, 'DESK_TS=failed launch\n'); } catch { /* root-owned log */ }
-    tsLaunchFailedAt = Date.now();
-  }, 90000).unref();
-  await audit({ kind: 'tailscale.install', name });
-  return { ok: true, status: { state: 'running', detail: '正在安装 Tailscale…' } };
+  }));
+  await audit({ kind: 'tailscale.share', withKey: Boolean(key), machines: machines.map((m) => ({ machine: m.machine, ok: m.ok })) });
+  return { machines };
+});
+
+route('GET', /^\/api\/tailscale\/machines$/, async (_req, _res, { state }) => {
+  const machines = await Promise.all(state.peers.list().map(async ({ name }) => {
+    const peer = state.peers.find(name);
+    try {
+      const t = await state.peers.json(peer, 'GET', '/api/tailscale', { timeoutMs: 8000 });
+      return {
+        machine: name,
+        installed: t.installed !== undefined ? Boolean(t.installed) : Boolean(t.address),
+        state: String(t.state || (t.address ? 'running' : 'missing')),
+        address: /^100\.\d+\.\d+\.\d+$/.test(String(t.address || '')) ? t.address : (String(t.address || '').match(/100\.\d+\.\d+\.\d+/)?.[0] || ''),
+        loginUrl: safeLoginUrl(t.loginUrl),
+        job: t.job && typeof t.job === 'object' ? { state: String(t.job.state || ''), detail: String(t.job.detail || '').slice(0, 200) } : null,
+      };
+    } catch {
+      return { machine: name, error: '现在连不上' };
+    }
+  }));
+  return { machines };
 });
 
 // --- daily briefing -----------------------------------------------------------

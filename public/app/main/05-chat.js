@@ -22,7 +22,10 @@ async function loadMessages() {
   // A slow machine can answer after the human moved to another chat: that
   // answer belongs to a chat no longer on screen.
   if (state.botId !== botId || isGroupMode()) return;
-  if (!chatCachePut(cacheKey, messages) && cached && cached.length === messages.length) return;
+  // Nothing new only when nothing new is on screen too: a remote chat on screen was not repainted from the
+  // saved copy, which another tab may have brought up to date (1.5.43 test: a reply that never showed).
+  const sameAsShown = !remoteChatOnScreen(botId) || JSON.stringify(state.messages) === JSON.stringify(messages);
+  if (!chatCachePut(cacheKey, messages) && cached && cached.length === messages.length && sameAsShown) return;
   state.messages = messages;
   renderMessages();
 }
@@ -79,7 +82,7 @@ function renderMessages() {
       }
       // The end of a turn that changed files: what changed, and 撤销 (1.5.8).
       if (item.turnId && turnEnds.get(item.turnId) === items.indexOf(item) && changesByTurn.has(item.turnId)) {
-        messagesEl.appendChild(changesLine(item.turnId, changesByTurn.get(item.turnId)));
+        placeChanges(changesLine(item.turnId, changesByTurn.get(item.turnId)));
       }
     }
     // The last ended turn's result goes at the bottom only while it is the newest
@@ -116,36 +119,8 @@ function turnChanges(messages) {
 }
 
 state.undone = state.undone || new Set();
-function changesLine(turnId, changes) {
-  const line = el('div', 'changes-line');
-  // The file's name only, on Windows too (1.5.33: 「演示\下载\周报.docx」).
-  const names = [...new Set(changes.map((c) => c.path.split(/[\\/]/).pop()))];
-  const deleted = changes.filter((c) => c.kind === 'delete').length;
-  const what = deleted && deleted === changes.length ? '删了' : deleted ? '改动了' : '改了';
-  line.appendChild(el('span', null, `这一轮${what} ${names.length} 个文件：${truncate(names.slice(0, 4).join('、'), 60)}${names.length > 4 ? ' 等' : ''}`));
-  const done = state.undone.has(turnId);
-  const btn = el('button', 'btn ghost tiny', done ? '已撤销' : '撤销');
-  btn.type = 'button';
-  btn.disabled = done;
-  btn.title = '把这一轮改过、删过的文件恢复成之前的样子（7 天内有效）';
-  btn.addEventListener('click', async () => {
-    btn.disabled = true;
-    try {
-      const res = await api(remoteChatMachine() ? remoteApi(state.botId, '/undo') : '/api/undo', { method: 'POST', body: { ids: changes.map((c) => c.id) } });
-      const failed = (res.results || []).filter((r) => !r.ok);
-      const already = failed.length > 0 && failed.every((f) => /已经撤销过/.test(f.error || '')); // after a reload the button is back (1.5.41 test)
-      if (failed.length === (res.results || []).length && !already) throw new Error(failed[0]?.error || '没能撤销');
-      state.undone.add(turnId); btn.textContent = '已撤销';
-      for (const card of messagesEl.querySelectorAll('.att-doc')) card.recheck?.(); // a file undone says so (1.5.41)
-      toast(already ? '这一轮的改动已经撤销过了' : failed.length ? `撤销了一部分：${failed.map((f) => `${f.path || f.id}（${f.error}）`).join('；')}` : '已恢复成这一轮之前的样子');
-    } catch (err) {
-      btn.disabled = false;
-      toast(`没能撤销：${err.message}`, true);
-    }
-  });
-  line.appendChild(btn);
-  return line;
-}
+/** The turn's changed files: small words in the reply's action row; names and 撤销 (asked first) behind a click (1.5.43). */
+function changesLine(turnId, changes) { return changesChip(turnId, changes); }
 
 /* --- videos being made in the background ------------------------------------
    "视频生成中 · 已等 3 分 · 通常约 6 分钟": shown at the bottom of the chat that

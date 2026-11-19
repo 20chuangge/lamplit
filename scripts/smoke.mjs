@@ -220,6 +220,9 @@ async function main() {
     await stage('1.5.41: one inbox - another machine\'s cards are answered here', scenarioInbox1541);
     await stage('1.5.41: the small things the step-one test found', scenarioSmall1541);
     await stage('1.5.42: one roster - the other machines\' bots are talked to from here', scenarioRoster1542);
+    await stage('1.5.43: the rest of step three - groups, avatars, the sidebar by machine, three ways to reach a machine', scenarioRoster1543);
+    await stage('1.5.43: Tailscale the way the relay card works', scenarioTailscale1543);
+    await stage('1.5.43: undo asks first, sits under the reply, never lists 「-p」; replies do not fold', scenarioUndoFold1543);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -266,6 +269,8 @@ function pointEnvAt(target) {
   process.env.ASSIST_WORKSPACE_DIR = path.join(target, 'workspace');
   process.env.ASSIST_MODEL_PROVIDER = 'mock';
   process.env.ASSIST_COUNT_DEMO_USAGE = '1'; // the usage checks run on the demo model (1.5.33: it is not counted for people)
+  // Never the real Tailscale of the computer the tests run on (1.5.43: install / remove are one click now).
+  process.env.DESK_TAILSCALE_SIMULATE = '1';
   delete process.env.ASSIST_API_KEY;
   // The browser tools auto-detect Chrome/Edge, so a *missing* binary is simulated
   // by pointing CHROME_PATH at a file that does not exist: that keeps the
@@ -4229,7 +4234,7 @@ async function scenarioMcp({ home, toolsMod }) {
     const chat = await readText('../public/app/main/05-chat.js');
     check('K33 A2 the line 「这一轮改了 N 个文件 · 撤销」 shows with steps hidden (a slim row per file change), and names the file on Windows too',
       srv.includes("? { id: m.id, role: 'tool', name: m.name, ok: true, turnId: m.turnId, ts: m.ts, output: { undo: m.output.undo, path: m.output.path || '' } }")
-      && chat.includes('c.path.split(/[\\\\/]/).pop()'));
+      && (chat + await readText('../public/app/main/03-groups.js')).includes('c.path.split(/[\\\\/]/).pop()'));
     const page = await readText('../public/index.html');
     check('K33 A3 a stop button while the bot works (it says 「停下」); 「停下」 and the stop close the turn\'s waiting cards',
       page.includes('id="stop-btn"') && live.includes("box.classList.toggle('working', Boolean(state.working && !isGroupMode()));") && live.includes("$('composer').value = '停下';")
@@ -5915,7 +5920,8 @@ async function scenarioDist158() {
   check('U3 wiring: fs_write and fs_delete snapshot first and return the undo id; fs_list hides .trash; POST /api/undo; the turn\'s changes line with 撤销 under the reply',
     tools.includes("const undo = r.inWorkspace ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: args?.mode === 'append' ? 'append' : 'write' }) : null;")
     && tools.includes("await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: 'delete' })") && tools.includes("e.name !== TRASH_DIR")
-    && serverSrc.includes("route('POST', /^\\/api\\/undo$/") && chat.includes('function changesLine(') && chat.includes("'/api/undo'"));
+    && serverSrc.includes("route('POST', /^\\/api\\/undo$/") && chat.includes('function changesLine(')
+    && (chat.includes("'/api/undo'") || ((chat + await readText('../public/app/main/03-groups.js')).includes('api(chatUndoUrl(),') && (await readText('../public/app/main/03-groups.js')).includes("return '/api/undo';"))));
 
   const botsPart = await readText('../public/app/main/04-bots.js');
   const onboarding = botsPart.slice(botsPart.indexOf('const ONBOARD_PROVIDERS'), botsPart.indexOf('// end of first run'));
@@ -8524,7 +8530,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       try { createProvisioner({}).start({ host: '10.0.0.5', username: 'u', password: 'p', tailscaleKey: 'tskey-api-abcdefghij-XYZ' }); } catch (x) { apiCode = x.code + ':' + x.message; }
       check('tailscale key: an API access token (tskey-api-) is refused with what to make instead; only tskey-auth- passes', apiCode.startsWith('REMOTE_BAD_TAILSCALE_KEY') && apiCode.includes('Generate auth key'));
     }
-    check('tailscale key: optional field in the add-machine form', page.includes('id="vnc-ts-key"') && page.includes('tailscaleKey: $(\'vnc-ts-key\').value.trim()'));
+    check('tailscale key: optional field in the add-machine form', page.includes('id="vnc-ts-key"') && (page.includes('tailscaleKey: $(\'vnc-ts-key\').value.trim()') || page.includes("return { options: { outside: 'tailscale', tailscaleKey: key } };")));
   }
   // Step 14: the daily briefing, and routines that only speak up when something changed.
   {
@@ -8734,7 +8740,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('video progress: the chat asks how its videos are going, with a typical time from recent ones', jobs.status === 200 && Array.isArray(jobs.json?.jobs) && 'typicalSec' in (jobs.json || {}) && page.includes('async function renderVideoJobs()') && page.includes("'通常 3–15 分钟'"), `status ${jobs.status} ${JSON.stringify(jobs.json).slice(0,160)}`);
     const srv = await readText('../src/server.mjs');
     check('other machines: a page found there keeps its own title', srv.includes("find((x) => x.name === page)?.title") && page.includes('elsewhereTitles.get(file.path)'));
-    check('switching chats: a slow machine\'s late answer for a chat already left is not shown in the new one', page.includes('if (state.botId !== botId || isGroupMode()) return;\n  if (!chatCachePut(cacheKey, messages) && cached && cached.length === messages.length) return;\n  state.messages = messages;'));
+    check('switching chats: a slow machine\'s late answer for a chat already left is not shown in the new one', page.includes('if (state.botId !== botId || isGroupMode()) return;\n  if (!chatCachePut(cacheKey, messages) && cached && cached.length === messages.length) return;\n  state.messages = messages;')
+      || /if \(state\.botId !== botId \|\| isGroupMode\(\)\) return;\n(  \/\/[^\n]*\n)*  const sameAsShown = [^\n]*\n  if \(!chatCachePut\(cacheKey, messages\) && cached && cached\.length === messages\.length && sameAsShown\) return;\n  state\.messages = messages;/.test(page));
     const fsSrc = await readText('../src/feishu.mjs');
     check('feishu: the bot is told the channel carries pictures, videos and voice (it said "only text")', fsSrc.includes('飞书这条通道能收文字、图片和语音') && fsSrc.includes('所以别说飞书只能发文字'));
   }
@@ -8805,14 +8812,14 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const rm = await readText('../src/remote.mjs');
     check('tailscale on Windows: ASCII-only installer (PowerShell 5 safe), key from a file, unattended, key removed', ![...ps].some((c) => c.charCodeAt(0) > 127) && ps.includes('"--auth-key=file:$KeyFile"') && ps.includes("'--unattended'") && ps.includes('Remove-Item -Force $KeyFile'));
     check('tailscale on Windows: the key goes over SSH stdin into an admins-only file, and setup starts the installer', rm.includes("icacls $p /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F'") && rm.includes('endInput: true, timeoutMs: 30000') && winSetup.includes('[string]$TailscaleKeyFile') && winSetup.includes("hub\\tailscale-windows.ps1"));
-    check('tailscale on Windows: the installer downloads with curl.exe (PowerShell 5 downloads crawl), and a key that waits for the last step is not taken away', ps.includes("'System32\\curl.exe'") && ps.includes("$ProgressPreference = 'SilentlyContinue'") && (await readText('../src/server.mjs')).includes('if (/^start \\d{4}-/m.test(log)) return;'));
+    check('tailscale on Windows: the installer downloads with curl.exe (PowerShell 5 downloads crawl), and a key that waits for the last step is not taken away', ps.includes("'System32\\curl.exe'") && ps.includes("$ProgressPreference = 'SilentlyContinue'") && (await readText('../src/tailscale.mjs')).includes('Gone in 20 minutes at the latest'));
+    // 1.5.43: Tailscale is one click on every machine (this computer too) - see scenarioTailscale1543.
+    // The tests run in its simulate mode (pointEnvAt): nothing is installed on the computer running them.
     const ts = await api('/api/tailscale');
-    const local = await api('/api/tailscale/install', { method: 'POST', body: { authKey: 'tskey-auth-abcdefghijkl' } });
-    check('tailscale on a machine already added: offered only on machines given to the bots; this computer is told to install the app', ts.status === 200 && ts.json?.canInstall === false && 'status' in ts.json && local.status === 400 && local.json?.error?.code === 'TS_LOCAL');
-    const srv = await readText('../src/server.mjs');
-    check('tailscale on a machine already added: key file 0600, sudo -n systemd-run on Linux, the installer on Windows; results worded from DESK_TS codes', srv.includes('{ mode: 0o600 }') && srv.includes("spawnChild('sudo', ['-n', 'systemd-run'") && srv.includes("path.join(hubDir, 'tailscale-windows.ps1')") && srv.includes("m[2] === 'key' ?") && page.includes("api('/api/tailscale/install'"));
-    const winLaunch = srv.split('\n').find((l) => l.includes("'tailscale-windows.ps1'), '-KeyFile', keyFile")) || '';
-    check('tailscale on a machine already added: Windows launches the installer attached (a detached one runs nothing from the hub task); a key the installer never took is deleted after 90 s and reported', winLaunch && !winLaunch.includes('detached: true') && srv.includes('if (!fs.existsSync(keyFile)) return;') && srv.includes('DESK_TS=failed launch') && srv.includes('const TS_LAUNCH_FAILED'));
+    check('tailscale: the card reads where Tailscale stands here (installed, logged in, address) and what one click can do on this machine', ts.status === 200 && 'state' in (ts.json || {}) && 'can' in (ts.json || {}) && ts.json?.simulated === true);
+    const tsm = await readText('../src/tailscale.mjs');
+    check('tailscale: a pasted key goes to a file only this account reads (0600) and is gone within 20 minutes at most; machines given to the bots use the hub\'s own installers', tsm.includes('{ mode: 0o600 }') && tsm.includes('20 * 60 * 1000') && tsm.includes("'tailscale-windows.ps1'") && tsm.includes("'tailscale-linux.sh'") && page.includes("api('/api/tailscale/install'"));
+    check('tailscale: the hub\'s installers can install without a key (the human then logs in with the link)', (await readText('../hub/tailscale-linux.sh')).includes('if [ "$KEY_SRC" = "-" ]; then echo "DESK_TS=installed"; exit 0; fi') && ps.includes("if ($KeyFile -eq '-') { Say 'DESK_TS=installed'; exit 0 }"));
     const sh = await readText('../hub/setup-linux.sh');
     check('Rocky / RHEL 10: no X11 stack, so Wayland screens (cage + wayvnc) instead of "not supported"; the UI still knows the unsupported state for older hubs', sh.includes('EL_MAJOR:-0}" -ge 10 ]; then') && sh.includes('pm_install cage wayvnc') && page.includes("setup.state === 'unsupported'"));
     const h = await api('/api/health');
@@ -9370,8 +9377,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const chatSrc = await readText('../public/app/main/05-chat.js');
       const coreSrc = await readText('../public/app/main/01-core.js');
       const groupSrc = await readText('../public/app/main/03-groups.js');
-      check('U28 replies: long replies fold behind 展开; a bot-to-bot message is one line with its words behind a click (1.5.40; two folded lines before)',
-        coreSrc.includes('function foldBubble(') && chatSrc.includes('foldBubble(bubble, text, fold);') && groupSrc.includes("return handoffRow({ sender, target, text: item.text || '', state: item.handoffState || '', ts: item.ts });")
+      check('U28 replies: a reply to you never folds (1.5.43, the user\'s choice); a bot-to-bot message is one line with its words behind a click (1.5.40)',
+        coreSrc.includes('function foldBubble(') && chatSrc.includes('foldBubble(bubble, text, fold);') && coreSrc.includes("if (!mode || mode === 'long' || !bubble) return;") && groupSrc.includes("return handoffRow({ sender, target, text: item.text || '', state: item.handoffState || '', ts: item.ts });")
         && chatSrc.includes("const row = handoffRow({ sender, target: botById(state.botId), text: item.text || '', state: item.handoffState || '', ts: item.ts });"));
       check('U28 switching: a chat shows what this browser had at once, then the machine\'s answer',
         coreSrc.includes('function chatCachePut(') && chatSrc.includes('const cached = chatCacheGet(cacheKey);') && groupSrc.includes('const cached = chatCacheGet(cacheKey);'));
@@ -11105,4 +11112,305 @@ async function scenarioRoster1542() {
     await fsp.rm(otherHome, { recursive: true, force: true }).catch(() => {});
     await fsp.rm(path.join(process.env.ASSIST_WORKSPACE_DIR, 'uploads', '2026-11-19', 'here.txt'), { force: true }).catch(() => {});
   }
+}
+
+/**
+ * 1.5.43, the rest of step three (from the user's own use of 1.5.42): every
+ * machine's groups in the roster and talked to from here (the same rules as a
+ * remote bot), each bot's own avatar, the 「全部机器」 title, a sidebar with
+ * 「最近」 and one section per machine, and three ways to reach a new machine.
+ */
+async function scenarioRoster1543() {
+  const otherHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-smoke-r43-'));
+  await seedHome(otherHome);
+  let other = null;
+  let fake = null;
+  const peerName = '书房电脑';
+  const cloudName = '云服务器';
+  const cloudToken = 'cloudTOKEN-1543-abcdefgh';
+  const seen = [];
+  const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  try {
+    other = await startServerChild(otherHome, {
+      ASSIST_DATA_DIR: path.join(otherHome, 'data'),
+      ASSIST_WORKSPACE_DIR: path.join(otherHome, 'workspace'),
+    });
+    const B = other.url;
+    const bKey = fsSync.readFileSync(path.join(otherHome, 'data', 'local-key'), 'utf8').trim();
+    const bToken = JSON.parse(fsSync.readFileSync(path.join(otherHome, 'data', 'security.json'), 'utf8')).token;
+    const aToken = JSON.parse(fsSync.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8')).token;
+    const bApi = async (p, { method = 'GET', body, key = true, headers = {} } = {}) => {
+      const res = await rawFetch(`${B}${p}`, {
+        method,
+        headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(key ? { 'x-lamplit-local': bKey } : {}), ...headers },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* not json */ }
+      return { status: res.status, json, text };
+    };
+    // 云服务器 stands in: its bots carry avatars (one an image, one with a bad colour), its groups, an svg "avatar".
+    fake = http.createServer(async (req, res) => {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      let body = null;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* none */ }
+      const url = new URL(req.url, 'http://x');
+      seen.push({ method: req.method, path: url.pathname, headers: { ...req.headers }, body });
+      const send = (status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+      if (url.pathname === '/api/health') return send(200, { ok: true });
+      if (url.pathname === '/api/bots' && req.method === 'GET') {
+        return send(200, [
+          { id: 'chief', name: '助理', role: '主助理', primary: true, avatar: { shape: 'circle', color: '#2a9d8f', hasImage: true, imageUrl: 'https://evil.example/x.png' } },
+          { id: 'pen', name: '小笔', role: '写东西', avatar: { shape: 'squircle;x', color: 'red;background:url(https://evil.example/)', hasImage: false } },
+          { id: 'svg', name: '图标', role: '', avatar: { shape: 'circle', color: '#123', hasImage: true } },
+        ]);
+      }
+      if (url.pathname === '/api/groups' && req.method === 'GET') {
+        return send(200, [{ id: 'g-job', name: '求职组', coordinatorId: 'chief', members: [{ id: 'chief', name: '助理', avatar: { shape: 'circle', color: '#2a9d8f', hasImage: true, imageUrl: '/api/bots/chief/avatar?v=3' } }, { id: 'pen', name: '小笔' }], preview: { text: '简历改好了', ts: new Date().toISOString() } }]);
+      }
+      if (url.pathname === '/api/attention') return send(200, { items: { 'group:g-job': { needsYou: 1 } } });
+      if (url.pathname === '/api/bots/chief/avatar') { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(PNG); }
+      if (url.pathname === '/api/bots/svg/avatar') { res.writeHead(200, { 'content-type': 'image/svg+xml' }); return res.end('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'); }
+      if (url.pathname === '/api/groups/g-job/message' && req.method === 'POST') return send(200, { turnId: 'turn_g1', groupId: 'g-job' });
+      if (url.pathname === '/api/groups/g-job/messages') return send(200, [{ role: 'user', text: '在吗', ts: new Date().toISOString() }]);
+      return send(404, { error: { code: 'NOT_FOUND', message: 'no' } });
+    });
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+    const C = `http://127.0.0.1:${fake.address().port}`;
+    await api('/api/peers', { method: 'PUT', body: { self: { name: '客厅电脑' }, peers: [{ name: peerName, url: B, token: bToken }, { name: cloudName, url: C, token: cloudToken }] } });
+    await bApi('/api/peers', { method: 'PUT', body: { peers: [{ name: '客厅电脑', url: base, token: aToken }] } });
+
+    // --- groups of another machine: listed, read, sent to - by the human only ---------------
+    const made = await bApi('/api/groups', { method: 'POST', body: { name: '内容组', members: ['chief', 'ops'], coordinatorId: 'chief' } });
+    const gid = made.json?.group?.id || made.json?.id;
+    const roster = await api('/api/peers/roster?fresh=1');
+    const study = (roster.json?.machines || []).find((m) => m.machine === peerName);
+    const cloud = (roster.json?.machines || []).find((m) => m.machine === cloudName);
+    check('R43-1 the roster lists the other machines\' groups too (name, members), with their status under "group:id@machine"',
+      Boolean(gid) && (study?.groups || []).some((g) => g.id === gid && g.name === '内容组' && (g.members || []).length === 2)
+      && (cloud?.groups || []).some((g) => g.id === 'g-job' && g.name === '求职组') && cloud?.attention?.['group:g-job@云服务器']?.needsYou === 1,
+      roster.text.slice(0, 500));
+    const gpath = (m, g, rest) => `/api/peers/${encodeURIComponent(m)}/groups/${encodeURIComponent(g)}${rest}`;
+    const noKey = { 'x-no-local-key': '1' };
+    const gUnpaired = await api(gpath(peerName, gid || 'x', '/message'), { method: 'POST', body: { text: '大家好' }, headers: noKey });
+    const gRead = await api(gpath(peerName, gid || 'x', '/messages'), { headers: noKey });
+    const gHop = await rawFetch(`${base}${gpath(peerName, gid || 'x', '/message')}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${aToken}`, 'x-lamplit-via': 'x' }, body: JSON.stringify({ text: '大家好' }) });
+    const authMod = await import('../src/auth.mjs');
+    check('R43-2 another machine\'s group is the human\'s only: not paired (or a program here) cannot send or read; a passed-on call is not passed on; the routes are authority routes',
+      gUnpaired.status === 403 && gRead.status === 403 && gHop.status === 403
+      && ['POST /message', 'GET /messages', 'GET /stream', 'POST /seen'].every((x) => { const [m, p] = x.split(' '); return authMod.isAuthorityRequest(m, `/api/peers/a/groups/g${p}`); }),
+      `${gUnpaired.status} ${gRead.status} ${gHop.status}`);
+    const gSend = await api(gpath(peerName, gid || 'x', '/message'), { method: 'POST', body: { text: '大家好，开个会' } });
+    await waitUntil(async () => ((await api(gpath(peerName, gid || 'x', '/messages?limit=50'))).json || []).some((m) => /开个会/.test(m.text || '')), 15000, 'the group message there').catch(() => {});
+    const gList = await api(gpath(peerName, gid || 'x', '/messages?limit=50'));
+    check('R43-3 the human talks to that group from here: the message runs there, the group\'s chat is read from there',
+      gSend.status === 200 && Boolean(gSend.json?.turnId) && (gList.json || []).some((m) => /开个会/.test(m.text || '')), `${gSend.status} ${gList.text.slice(0, 200)}`);
+    seen.length = 0;
+    await api(gpath(cloudName, 'g-job', '/message'), { method: 'POST', body: { text: '帮我改简历', handoff: { depth: 1 } } });
+    const gMsg = seen.find((r) => r.method === 'POST' && r.path === '/api/groups/g-job/message');
+    check('R43-4 a group message goes with that machine\'s own token, marked as passed on, with only what the human wrote',
+      gMsg?.headers?.authorization === `Bearer ${cloudToken}` && Boolean(gMsg?.headers?.['x-lamplit-via']) && !gMsg?.headers?.['x-lamplit-local'] && gMsg?.body?.text === '帮我改简历' && gMsg?.body?.handoff === undefined,
+      JSON.stringify(gMsg || {}).slice(0, 300));
+
+    // --- each bot's own avatar, safely ----------------------------------------------------
+    const chief = (cloud?.bots || []).find((b) => b.id === 'chief');
+    const pen = (cloud?.bots || []).find((b) => b.id === 'pen');
+    const member = (cloud?.groups || [])[0]?.members?.find((m) => m.id === 'chief');
+    check('R43-5 a remote bot keeps its own avatar (colour, shape); a picture is fetched through this hub, never from an address the other machine names; bad colours and shapes are dropped',
+      chief?.avatar?.color === '#2a9d8f' && chief?.avatar?.shape === 'circle' && chief?.avatar?.hasImage === true
+      && chief?.avatar?.imageUrl === `/api/peers/${encodeURIComponent(cloudName)}/avatar/chief` && !JSON.stringify(cloud).includes('evil.example')
+      && pen && !pen.avatar?.color && !pen.avatar?.shape
+      && member?.avatar?.imageUrl === `/api/peers/${encodeURIComponent(cloudName)}/avatar/chief`,
+      JSON.stringify(cloud?.bots || []).slice(0, 400));
+    const pic = await rawFetch(`${base}/api/peers/${encodeURIComponent(cloudName)}/avatar/chief`, { headers: { 'x-lamplit-local': fsSync.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'local-key'), 'utf8').trim() } });
+    const picBytes = Buffer.from(await pic.arrayBuffer());
+    const svg = await api(`/api/peers/${encodeURIComponent(cloudName)}/avatar/svg`);
+    const badId = await api(`/api/peers/${encodeURIComponent(cloudName)}/avatar/..%2Fsettings`);
+    check('R43-6 the avatar picture comes through this hub as a picture only (png/jpeg/webp/gif, never svg or html), with no-sniff',
+      pic.status === 200 && /^image\/png/.test(pic.headers.get('content-type') || '') && pic.headers.get('x-content-type-options') === 'nosniff' && picBytes.equals(PNG)
+      && svg.status !== 200 && !svg.text.includes('<script') && badId.status >= 400,
+      `${pic.status} ${svg.status} ${badId.status}`);
+
+    // --- the page --------------------------------------------------------------------------
+    const page = await readText('../public/index.html');
+    const en = await readText('../public/i18n-en.js');
+    check('R43-7 「全部机器」 is the title in that view, with 「N 台 · 这台是 …」 under it; one machine shows its own name',
+      page.includes("$('machine-name').textContent = grouped ? '全部机器' : name;") && page.includes('台 · 这台是 ${') && en.includes('"全部机器"'));
+    check('R43-8 the sidebar: 「最近」 (5 chats, bots and groups, each 「· 机器名」), then one section per machine that folds (remembered), groups first, a summary when folded, a search box over 10',
+      page.includes("el('div', 'roster-head recent-head', '最近')") && page.includes('const RECENT_MAX = 5;') && page.includes("const COLLAPSED_KEY = 'lamplit.roster.collapsed';")
+      && page.includes('id="roster-search"') && page.includes('找助手或群组') && page.includes('const SEARCH_FROM = 10;') && page.includes('件事等你') && page.includes('群 · ')
+      && en.includes('"最近"') && en.includes('"找助手或群组"'));
+    check('R43-9 another machine\'s group opens here like a remote bot: its chat, its live stream and its sending go through this hub',
+      page.includes("remoteGroupApi(") && page.includes('function remoteGroupById(') && page.includes("'/stream'") && /isRemoteId\(state\.groupId\)/.test(page));
+    check('R43-10 adding a machine: how to reach it from outside is a choice of three (Tailscale, 自建中转, Lamplit 中转 即将推出), 「只在家里用」 by default, and the limit is said plainly',
+      page.includes('name="vnc-outside"') && page.includes('value="home"') && page.includes('value="tailscale"') && page.includes('value="relay"') && page.includes('Lamplit 中转') && page.includes('即将推出')
+      && page.includes('只在家里用') && page.includes('添加时这台电脑还要能直接连到它') && en.includes('"只在家里用"'));
+    const remoteSrc = await readText('../src/remote.mjs');
+    check('R43-11 the choice reaches the setup: 「只在家里用」 does not join the relay; 自建中转 joins it (and says so when this computer has none)',
+      /outside === 'relay'/.test(remoteSrc) && remoteSrc.includes("const outside = ['home', 'tailscale', 'relay'].includes(input.outside) ? input.outside : ''"));
+    // What the 1.5.43 beginner test found.
+    check('R43-12 「只看这台」 brings this machine\'s groups back; a group message waiting for its machine shows in that group\'s chat; folded and offline says 「离线」 once',
+      page.includes("renderGroups(); // this machine's groups have their own section again") && page.includes("appendQueuedMessages(); // another machine's group: what waits for that machine")
+      && page.includes("if (!m.online && !folded[m.machine]) head.appendChild(el('span', 'rh-tag off', '离线'));"));
+    check('R43-13 the live link of a remote chat comes back by itself (after pairing, after a drop), the chat is read again while a reply that waited is due, and a reply seen here is not left 「新」',
+      page.includes('state.remoteStreamRetry = setTimeout(') && page.includes('function watchRemoteReply(id) {') && page.includes("if (remoteChatMachine()) { state.remoteStreamId = null; connectRemoteStream();")
+      && page.includes("if (ev.type === 'turn.end') { clearInterval(state.remoteReplyWatch); if (document.visibilityState === 'visible') markSeen();"));
+    check('R43-15 a remote chat this browser may not read empties the screen and says to pair (never the last chat under its name); the pairing box gives the reason for installing software; the share line steps aside for each machine\'s own',
+      page.includes('function showPairNeeded(id) {') && page.includes("if (err.code === 'LOCAL_KEY_REQUIRED') { showPairNeeded(botId); return true; }")
+      && page.includes("if (err.code === 'LOCAL_KEY_REQUIRED' && state.groupId === groupId) showPairNeeded(groupId);")
+      && page.includes('装软件、改这台电脑怎么连网，只能在 Lamplit 应用里') && page.includes("$('tsx-share-state').textContent = '';"));
+    check('R43-16 a remote chat on screen is redrawn when what is shown differs from the machine\'s answer, even when this browser\'s saved copy already matches it (another tab); a message waiting for a machine puts its chat in 「最近」',
+      page.includes('const sameAsShown = !remoteChatOnScreen(botId) || JSON.stringify(state.messages) === JSON.stringify(messages);')
+      && page.includes('cached.length === messages.length && sameAsShown) return;') && page.includes('function waitingAt(machine, botId, groupId) {'));
+    // A machine that went away keeps its bots' last lines (their place in 「最近」).
+    await new Promise((r) => fake.close(r));
+    fake = null;
+    const away = await api('/api/peers/roster?fresh=1');
+    const awayCloud = (away.json?.machines || []).find((m) => m.machine === cloudName);
+    check('R43-14 a machine that is off keeps its chats in 「最近」 (their last lines stay)',
+      awayCloud?.online === false && (awayCloud.groups || []).some((g) => g.preview?.ts) && Array.isArray(awayCloud.bots), away.text.slice(0, 300));
+  } finally {
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
+    if (fake) await new Promise((r) => fake.close(r));
+    if (other?.child) await stopProcess(other.child);
+    await fsp.rm(otherHome, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * 1.5.43: Tailscale the way the relay card works - one click to install on this
+ * machine and log in (the human opens the login link; Lamplit never sees the
+ * password), one click to remove it, and 「让其他机器也用 Tailscale」. A pasted
+ * auth key is used once: never stored, logged, put in a URL or on a command
+ * line. No step here runs the real Tailscale of the computer the tests run on.
+ */
+async function scenarioTailscale1543() {
+  const TS = await import('../src/tailscale.mjs').catch(() => ({}));
+  const { EventEmitter } = await import('node:events');
+  const has = typeof TS.createTailscale === 'function';
+  check('TS-1 the status of Tailscale is read as the card needs it: running with its 100.x address, or waiting for a login with a Tailscale login link only',
+    has && TS.parseStatus({ BackendState: 'Running', Self: { TailscaleIPs: ['100.101.102.103', 'fd7a::1'] } }).address === '100.101.102.103'
+    && TS.parseStatus({ BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/abc123' }).loginUrl === 'https://login.tailscale.com/a/abc123'
+    && TS.parseStatus({ BackendState: 'NeedsLogin', AuthURL: 'https://evil.example/a/abc' }).loginUrl === ''
+    && TS.loginUrlIn('To authenticate, visit:\n\n\thttps://login.tailscale.com/a/1f2e3d\n') === 'https://login.tailscale.com/a/1f2e3d'
+    && TS.loginUrlIn('visit https://evil.example/login.tailscale.com/a/x') === '');
+  check('TS-2 how it goes on: Windows with winget (it asks for administrator rights), Linux with the official script (sudo without a password, else one line for the human), macOS by hand - said plainly',
+    has && TS.installPlan({ platform: 'win32', remoteMode: false }).argv.join(' ').includes('winget install --id tailscale.tailscale')
+    && TS.installPlan({ platform: 'linux', remoteMode: false, sudoOk: true }).argv.join(' ').includes('https://tailscale.com/install.sh')
+    && TS.installPlan({ platform: 'linux', remoteMode: false, sudoOk: false }).kind === 'terminal'
+    && TS.installPlan({ platform: 'darwin', remoteMode: false }).kind === 'manual'
+    && TS.uninstallPlan({ platform: 'win32', remoteMode: false }).argv.join(' ').includes('winget uninstall --id tailscale.tailscale')
+    && /其他机器都不受影响/.test(TS.UNINSTALL_WORDS || ''));
+  // A pasted key: only ever a file the command reads, gone afterwards.
+  if (has) {
+    const calls = [];
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-smoke-ts-'));
+    const fakeChild = () => { const e = new EventEmitter(); e.stdout = new EventEmitter(); e.stderr = new EventEmitter(); e.kill = () => e.emit('close', 0); setTimeout(() => { e.stdout.emit('data', 'Success.'); e.emit('close', 0); }, 50); return e; };
+    let installed = false;
+    const ts = TS.createTailscale({
+      platform: 'win32', remoteMode: false, tmpDir: tmp, simulate: false,
+      run: async (cmd, args) => { calls.push([cmd, ...args].join(' ')); if (args[0] === 'status') return installed ? { code: 0, stdout: JSON.stringify({ BackendState: 'NeedsLogin' }) } : { code: -1, missing: true, stdout: '', stderr: '' }; installed = true; return { code: 0, stdout: 'Successfully installed', stderr: '' }; },
+      spawn: (cmd, args) => { calls.push([cmd, ...args].join(' ')); return fakeChild(); },
+    });
+    const key = 'tskey-auth-kSMOKE1543-abcdefghijklmnop';
+    await ts.install({ authKey: key });
+    await waitUntil(async () => calls.some((c) => / up /.test(` ${c} `)), 5000, 'tailscale up').catch(() => {});
+    await sleep(300);
+    const left = await fsp.readdir(tmp).catch(() => []);
+    check('TS-3 a pasted auth key is used once: the commands only name a file holding it (--auth-key=file:), never the key; the file is gone afterwards',
+      calls.some((c) => c.includes('winget install')) && calls.some((c) => /--auth-key=file:/.test(c)) && !calls.some((c) => c.includes(key)) && !left.length,
+      JSON.stringify({ calls, left }));
+    const bad = await ts.install({ authKey: 'tskey-api-abcdefghijklmnop' }).then(() => 'ok', (e) => e.code);
+    check('TS-3b an API token is refused with what to make instead', bad === 'TS_BAD_KEY');
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // --- the routes: the human's only; 「让其他机器也用 Tailscale」 -----------------------
+  const noKey = { 'x-no-local-key': '1' };
+  const auth = await import('../src/auth.mjs');
+  const unpaired = await Promise.all(['/api/tailscale/install', '/api/tailscale/login', '/api/tailscale/uninstall', '/api/tailscale/share'].map((p) => api(p, { method: 'POST', body: {}, headers: noKey })));
+  check('TS-4 installing, logging in, removing and sharing Tailscale are the human\'s only (a program here, or a browser not paired, is refused)',
+    unpaired.every((r) => r.status === 403) && ['install', 'login', 'uninstall', 'share'].every((x) => auth.isAuthorityRequest('POST', `/api/tailscale/${x}`)) && !auth.isAuthorityRequest('GET', '/api/tailscale'),
+    unpaired.map((r) => r.status).join(' '));
+  const seen = [];
+  const fake = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    let body = null;
+    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* none */ }
+    seen.push({ method: req.method, url: req.url, headers: { ...req.headers }, body });
+    const send = (s, d) => { res.writeHead(s, { 'content-type': 'application/json' }); res.end(JSON.stringify(d)); };
+    if (req.url === '/api/tailscale') return send(200, { installed: true, state: 'needs-login', address: '', loginUrl: 'https://login.tailscale.com/a/peer1', job: { state: 'idle' } });
+    if (req.url === '/api/tailscale/install' && req.method === 'POST') return send(200, { ok: true, job: { kind: 'install', state: 'running' } });
+    return send(404, { error: { code: 'NOT_FOUND', message: 'no' } });
+  });
+  await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+  const C = `http://127.0.0.1:${fake.address().port}`;
+  const token = 'tsPeerTOKEN-1543-abcdefgh';
+  try {
+    await api('/api/peers', { method: 'PUT', body: { peers: [{ name: '旧笔记本', url: C, token }] } });
+    const key = 'tskey-auth-kSHARE1543-abcdefghijklmnop';
+    const shared = await api('/api/tailscale/share', { method: 'POST', body: { authKey: key } });
+    const sent = seen.find((r) => r.method === 'POST' && r.url === '/api/tailscale/install');
+    const audit = await api('/api/audit?limit=50');
+    check('TS-5 「让其他机器也用 Tailscale」 asks each machine to install it, with that machine\'s token, passed on once; a pasted key goes in the body only - never in a URL, never in the log here',
+      shared.status === 200 && (shared.json?.machines || []).some((m) => m.machine === '旧笔记本' && m.ok)
+      && sent?.headers?.authorization === `Bearer ${token}` && Boolean(sent?.headers?.['x-lamplit-via']) && sent?.body?.authKey === key
+      && !seen.some((r) => String(r.url).includes('tskey')) && !audit.text.includes(key),
+      `${shared.text.slice(0, 200)} ${JSON.stringify(sent || {}).slice(0, 200)}`);
+    seen.length = 0;
+    await api('/api/tailscale/share', { method: 'POST', body: {} });
+    const plain = seen.find((r) => r.method === 'POST' && r.url === '/api/tailscale/install');
+    const hop = await rawFetch(`${base}/api/tailscale/share`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${JSON.parse(fsSync.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8')).token}`, 'x-lamplit-via': 'x' }, body: '{}' });
+    check('TS-5b without a key, each machine installs and shows its own login link; a call another hub passed on is not passed on',
+      plain && !plain.body?.authKey && hop.status === 403, `${JSON.stringify(plain || {}).slice(0, 120)} ${hop.status}`);
+    const machines = await api('/api/tailscale/machines');
+    check('TS-6 each machine says where it stands: installed, logged in or not, its address, its login link',
+      (machines.json?.machines || []).some((m) => m.machine === '旧笔记本' && m.installed === true && m.state === 'needs-login' && m.loginUrl === 'https://login.tailscale.com/a/peer1'),
+      machines.text.slice(0, 300));
+  } finally {
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
+    await new Promise((r) => fake.close(r));
+  }
+
+  const page = await readText('../public/index.html');
+  const en = await readText('../public/i18n-en.js');
+  check('TS-7 the card in 设置 → 手机和外网: install, log in (the link opens on the device in your hand), remove (what it removes, asked first), 「让其他机器也用 Tailscale」 with an optional key, one line per machine',
+    page.includes('id="tsx-box"') && page.includes('id="tsx-install"') && page.includes('id="tsx-login"') && page.includes('id="tsx-uninstall"') && page.includes('id="tsx-share"') && page.includes('id="tsx-machines"')
+    && page.includes('让其他机器也用 Tailscale') && page.includes('openLinkHere(') && page.includes("askStep('卸载这台电脑上的 Tailscale？', TS_UNINSTALL_WORDS, '卸载', { danger: true })") && page.includes('其他机器都不受影响')
+    && en.includes('"让其他机器也用 Tailscale"'));
+}
+
+/**
+ * 1.5.43 (the user's own chat): the undo line was a loose row at the left edge,
+ * undid on one click, and listed 「-p」 - a folder Windows' cmd makes for
+ * `mkdir -p a/b`. And long replies folded, which the user finds annoying.
+ */
+async function scenarioUndoFold1543() {
+  const T = await import('../src/tools.mjs');
+  const fix = typeof T.windowsShellFix === 'function' ? T.windowsShellFix : (s) => s;
+  check('UF-1 on Windows `mkdir -p a/b` makes the folders, not a folder called 「-p」 (cmd\'s mkdir already makes the folders in between)',
+    fix('mkdir -p posts\\2026-11-19-ops-ep1') === 'mkdir posts\\2026-11-19-ops-ep1' && fix('cd x && md -p a b') === 'cd x && md a b'
+    && fix('echo hi') === 'echo hi' && fix('mkdir posts') === 'mkdir posts' && fix('git commit -p') === 'git commit -p');
+  const ws = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-smoke-uf-'));
+  const reg = T.createRegistry({ workspaceDir: ws, config: { policy: {} }, getRuntime: () => { throw new Error('no'); }, getRoutines: () => { throw new Error('no'); } });
+  const ctx = { workspaceDir: ws, bot: { id: 'chief' } };
+  const tryRun = async (name, args) => { try { await reg.get(name).run(args, ctx); return 'ok'; } catch (err) { return err.code || err.message; } };
+  const mk = await tryRun('fs_mkdir', { path: '-p' });
+  const wr = await tryRun('fs_write', { path: '-p/posts/a.md', content: 'x' });
+  const ok = await tryRun('fs_write', { path: 'posts/2026-11-19-ops-ep1/成稿.md', content: '稿子' });
+  const dirs = await fsp.readdir(ws).catch(() => []);
+  check('UF-2 a file tool refuses a path that looks like a command option (「-p」, 「-rf」): nothing is made; ordinary paths are fine',
+    mk === 'FS_OPTION_LIKE' && wr === 'FS_OPTION_LIKE' && ok === 'ok' && !dirs.includes('-p'), JSON.stringify({ mk, wr, ok, dirs }));
+  await fsp.rm(ws, { recursive: true, force: true }).catch(() => {});
+
+  const page = await readText('../public/index.html');
+  const core = await readText('../public/app/main/01-core.js');
+  check('UF-3 the turn\'s changes sit in the reply\'s action row as small words 「改了 2 个文件」; a click shows the names and 撤销; 撤销 asks first (「把 成稿.md 恢复成这一轮之前的样子？」 恢复 / 取消); a name like 「-p」 is never listed',
+    page.includes("el('button', 'changes-chip'") && page.includes('恢复成这一轮之前的样子？') && page.includes("'恢复'") && page.includes('function optionLikeName(')
+    && page.includes("bubble.querySelector('.bubble-actions')") && page.includes("toast(already ? '这一轮的改动已经撤销过了'"));
+  check('UF-4 a bot\'s reply to you never folds; only a hand-over line between bots does',
+    /function foldBubble\(bubble, text, mode = 'long'\) \{\s+\/\/[^\n]*\n\s+if \(!mode \|\| mode === 'long' \|\| !bubble\) return;/.test(core));
 }

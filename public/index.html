@@ -80,6 +80,7 @@
       <div class="sidebar-scroll">
         <div class="side-section">
           <div class="side-head"><span>助手</span><span id="bot-count" class="count">0</span></div>
+          <div class="roster-search" id="roster-search-wrap" hidden><input id="roster-search" type="search" placeholder="找助手或群组" autocomplete="off" aria-label="找助手或群组" /></div>
           <div class="bot-list" id="bot-list"></div>
         </div>
 
@@ -995,16 +996,33 @@
         <div class="row-note">移除一台设备后，那台手机刷新就会回到配对页；其它的设备不受影响。</div>
         <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外怎么用</div>
         <div class="row-note" id="outside-state">—</div>
-        <div class="ts-install" id="ts-install" hidden>
-          <div class="row-note">直接在这台机器上装好 Tailscale：在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，把 tskey-auth- 开头的密钥贴在这里。密钥只用这一次，用完就删掉。</div>
-          <div class="btn-row">
-            <input class="field" id="ts-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
-            <button class="btn" id="ts-go" type="button">装上 Tailscale</button>
+        <div class="pair-card" id="tsx-box">
+          <div class="pair-row" style="align-items:center">
+            <div>
+              <div class="pair-label">用 Tailscale（免费）：你的机器连成一个私人网络</div>
+              <div class="pair-hint">装好、用你的 Tailscale 账号登录后，手机和其他机器在哪儿都连得上这台。登录在 Tailscale 自己的页面上，Lamplit 碰不到你的 Tailscale 密码。</div>
+            </div>
+            <span class="relay-chip" id="tsx-chip">—</span>
           </div>
-          <div class="row-note" id="ts-state"></div>
+          <div class="relay-status" id="tsx-status"></div>
+          <div class="row-note" id="tsx-byhand" hidden></div>
+          <div class="relay-actions">
+            <button class="btn tiny" id="tsx-install" type="button" hidden>装上 Tailscale</button>
+            <button class="btn tiny" id="tsx-login" type="button" hidden>登录 Tailscale</button>
+            <button class="btn tiny" id="tsx-uninstall" type="button" hidden>卸载 Tailscale</button>
+          </div>
+          <div class="pair-label" style="margin-top:12px">其他机器</div>
+          <div class="tsx-machines" id="tsx-machines"><div class="row-note">还没有其他机器。</div></div>
+          <details class="vault-add" id="tsx-key-box">
+            <summary>用 Auth key 一次加入（可选：不用一台台登录）</summary>
+            <div class="row-note">在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，生成一个 tskey-auth- 开头的密钥贴在这里。它只用这一次，用来让每台机器直接加入你的网络；不保存、不写进记录。</div>
+            <input class="field" id="tsx-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
+          </details>
+          <div class="relay-actions"><button class="btn tiny" id="tsx-share" type="button">让其他机器也用 Tailscale</button></div>
+          <div class="row-note" id="tsx-share-state"></div>
         </div>
         <details class="vault-add" id="outside-guide">
-          <summary>用 Tailscale（免费，几分钟装好）</summary>
+          <summary>手机上怎么用 Tailscale</summary>
           <ol class="feishu-steps">
             <li>在这台机器、你的电脑和手机上都装 <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Tailscale</a>，用同一个账号登录。Linux 机器上运行 <code>curl -fsSL https://tailscale.com/install.sh | sh</code>，再运行 <code>sudo tailscale up</code>，按提示登录。</li>
             <li>装好后，这里会出现这台机器的 Tailscale 地址（100 开头）。</li>
@@ -1185,12 +1203,19 @@
     </select>
     <div class="row-note">以后也能在「设置 → 机器」里改。Windows 机器和 Rocky / RHEL 10 没有这个选择，会忽略它。</div>
 
-    <details class="vault-add" id="vnc-ts">
-      <summary>在外面也要连上它（可选，Tailscale）</summary>
+    <div class="form-label" style="margin-top:8px">出门在外，怎么连上它？</div>
+    <div class="outside-choice" id="vnc-outside" role="radiogroup" aria-label="出门在外，怎么连上它？">
+      <label><input type="radio" name="vnc-outside" value="home" checked /> <b>只在家里用</b><small>和这台电脑在同一个网络里就能用，不用额外设置</small></label>
+      <label><input type="radio" name="vnc-outside" value="tailscale" /> <b>Tailscale</b><small>两台都装上 Tailscale，在哪儿都连得上</small></label>
+      <label><input type="radio" name="vnc-outside" value="relay" /> <b>自建中转（试验）</b><small id="vnc-relay-note">用你在「设置 → 手机和外网」里装好的中转</small></label>
+      <label class="soon"><input type="radio" name="vnc-outside" value="lamplit" disabled /> <b>Lamplit 中转</b><span class="soon-tag">即将推出</span><small>不用自己准备服务器</small></label>
+    </div>
+    <div id="vnc-ts" hidden>
       <div class="row-note">在 Tailscale 后台的 Settings → Keys 里点「Generate auth key」，生成一个 Auth key（tskey-auth- 开头；不是 API access token），贴在这里。配置时会顺便装好 Tailscale 并加入你的网络；密钥只用这一次，用完就从那台机器上删掉。Linux 和 Windows 都可以。</div>
       <div class="row-note"><a href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">打开 Tailscale 密钥页面</a></div>
       <input class="field" id="vnc-ts-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
-    </details>
+    </div>
+    <div class="row-note" id="vnc-outside-limit">添加时这台电脑还要能直接连到它（SSH 和 Lamplit 的端口，在同一个网络里或者它有公网地址）。只经过中转就把一台新机器加进来，现在还做不到，下一版再做。</div>
 
     <div class="row-note">
       填完点「连接并自动配置」就行，剩下的都自动：

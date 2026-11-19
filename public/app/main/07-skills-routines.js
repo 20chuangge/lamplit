@@ -17,7 +17,7 @@ function renderSkills() {
   const list = $('skills-list');
   list.innerHTML = '';
   $('skills-count').textContent = String(state.skills.length);
-  const bot = state.bots.find((b) => b.id === state.botId);
+  const bot = botById(state.botId);
   const granted = new Set((bot && bot.skills) || []);
 
   for (const skill of state.skills) {
@@ -264,6 +264,7 @@ async function createRoutine() {
    --------------------------------------------------------------------- */
 async function loadMemory() {
   if (!state.botId) return;
+  if (isRemoteId(state.botId)) { renderRemoteMemoryNote(); return; }
   try {
     const data = await api(`/api/bots/${state.botId}/memory`);
     $('memory-title').textContent = `记忆 · ${data.entries.length} 条`;

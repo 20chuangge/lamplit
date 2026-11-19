@@ -196,7 +196,7 @@ function wireChrome() {
     if (item.dataset.appMachines) { try { window.NightshiftShell?.showMachines?.(); } catch { /* old app */ } return; }
     if (item.dataset.backOrigin) { location.assign(item.dataset.backOrigin); return; }
     if (item.dataset.handoffMenu) { handoffToMachine(item.dataset.handoffMenu, item); return; }
-    if (item.dataset.machine !== undefined && !item.classList.contains('current')) switchMachine(item.dataset.machine);
+    if (item.dataset.view || item.dataset.machine !== undefined) pickMachineRow(item);
   });
   $('set-machines-list')?.addEventListener('click', onMachineListClick);
   $('set-add-machine')?.addEventListener('click', () => { closeSettings(); openMachineModal(); });
@@ -205,6 +205,14 @@ function wireChrome() {
   $('vnc-scrim').addEventListener('click', closeMachineModal);
   $('about-update-btn')?.addEventListener('click', () => checkForUpdate({ fresh: true, manual: true }));
   $('vnc-save').addEventListener('click', saveMachineFromModal);
+  // 「它是哪台？」 (1.5.42): a tap fills the name; 「自己写」 puts the cursor there.
+  $('vnc-name-chips')?.addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-name]');
+    if (!chip) return;
+    for (const c of document.querySelectorAll('#vnc-name-chips [data-name]')) c.classList.toggle('on', c === chip);
+    if (chip.dataset.name === '*') { $('vnc-name').value = ''; $('vnc-name').focus(); return; }
+    $('vnc-name').value = chip.dataset.name;
+  });
   $('vnc-modal').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && event.target.matches('input')) {
       event.preventDefault();

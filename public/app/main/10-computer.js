@@ -70,7 +70,8 @@ function renderPcWho() {
   // The title names the bot whose screen this is, in a 1:1 chat too (11-15:
   // it still said 图表师 while the human looked at 主笔).
   const bot = botById(current);
-  if ($('pc-title') && bot) $('pc-title').textContent = `${bot.name}的屏幕`;
+  const far = remoteOf(current); // a bot on another machine says where (1.5.42): two of one name are told apart
+  if ($('pc-title') && bot) $('pc-title').textContent = far ? `「${far.machine}」上${bot.name}的屏幕` : `${bot.name}的屏幕`;
   if (!group) return;
   box.innerHTML = '';
   for (const bot of groupMembers(group)) {
@@ -99,6 +100,7 @@ async function loadComputer() {
     // Ask for THIS bot's desktop: every bot has its own screen, so the viewer
     // must not fall back to whatever the machine happens to be showing.
     const target = pcTargetBotId();
+    if (isRemoteId(target)) { await loadRemoteComputer(target); return; }
     const scope = target ? `?botId=${encodeURIComponent(target)}` : '';
     data = await api(`/api/computer${scope}`);
   } catch (err) {
@@ -170,6 +172,25 @@ async function refreshScreen() {
     note.style.display = 'block';
     return;
   }
+  // That machine has not answered yet for this bot: nothing of this computer meanwhile (screen-panel retest: a flash of it).
+  const target = pcTargetBotId();
+  if (isRemoteId(target) && !screenIsFor(target)) {
+    if (img) img.style.display = 'none';
+    if (note) { note.textContent = '正在打开屏幕…'; note.style.display = 'block'; }
+    if (!refreshScreen.loading) refreshScreen.loading = loadComputer().catch(() => {}).finally(() => { refreshScreen.loading = null; });
+    return;
+  }
+  // A bot on another machine (1.5.42): its own screen comes through this hub, or a word why not -
+  // never this computer's picture under its name (final retest: 「小笔的屏幕」 showed this one).
+  if (state.computer?.remote && !state.computer?.desktop?.perBot) {
+    if (img) img.style.display = 'none';
+    if (note) {
+      note.textContent = state.computer.note || `这个助手在「${state.computer.remote.machine}」上，这里看不到它的屏幕。`;
+      if (state.computer.locked) note.appendChild(pairButton(() => loadComputer()));
+      note.style.display = 'block';
+    }
+    return;
+  }
   if (state.computer?.desktop?.perBot) return;   // live view is already embedded
   if (!img) return;
   // Not known yet whether this bot has its own screen (a slow link, the first
@@ -194,6 +215,7 @@ async function refreshScreen() {
     const res = await fetch(`/api/computer/screenshot?ts=${Date.now()}`, { credentials: 'same-origin' });
     // The bot's live view may have arrived while this was on its way.
     if (state.computer?.desktop?.perBot) return;
+    if (isRemoteId(pcTargetBotId())) return; // or the panel moved to a bot on another machine (1.5.42)
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       img.style.display = 'none';
@@ -204,6 +226,7 @@ async function refreshScreen() {
       return;
     }
     const blob = await res.blob();
+    if (isRemoteId(pcTargetBotId())) return;
     if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
     const url = URL.createObjectURL(blob);
     img.dataset.url = url;

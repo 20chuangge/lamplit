@@ -878,7 +878,8 @@ function readLocalKey() {
   return localKeyValue;
 }
 function sendLocalKey() {
-  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['http://127.0.0.1/*', 'http://127.0.0.1:*/*', 'http://localhost/*', 'http://localhost:*/*'] }, (details, done) => {
+  // ws:// too (1.5.42): the screen of a bot on another machine comes through this computer's hub.
+  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['http://127.0.0.1/*', 'http://127.0.0.1:*/*', 'http://localhost/*', 'http://localhost:*/*', 'ws://127.0.0.1/*', 'ws://127.0.0.1:*/*', 'ws://localhost/*', 'ws://localhost:*/*'] }, (details, done) => {
     const key = localKeyValue || readLocalKey();
     let ownHub = false;
     try { ownHub = Number(new URL(details.url).port) === Number(serverPort); } catch { /* not a url */ }
@@ -1132,10 +1133,22 @@ ipcMain.on('shell:close', (event) => {
   BrowserWindow.fromWebContents(event.sender)?.close();
 });
 
+// This computer's own name (1.5.42): the switcher names it, never 「本机」.
+let localNameCache = '';
+async function localMachineName() {
+  if (localNameCache || !serverPort) return localNameCache;
+  try {
+    const health = await (await net.fetch(`${localUrl().replace(/\/+$/, '')}/api/health`, { signal: AbortSignal.timeout(2000) })).json();
+    localNameCache = String(health?.name || '').slice(0, 60);
+  } catch { /* asked again next time */ }
+  return localNameCache;
+}
+
 // Machine list for the web UI (sidebar switcher, Settings → 机器).
-handle('desk:list-machines', () => ({
+handle('desk:list-machines', async () => ({
   current: remoteHub || '',
   local: !remoteHub,
+  localName: await localMachineName(),
   // This computer's own hub: an app's sign-in comes back to it (loopback is the
   // only plain-http address apps accept) and it passes the answer on.
   localUrl: serverPort ? localUrl().replace(/\/+$/, '') : '',
@@ -1844,9 +1857,11 @@ if (!gotLock) {
         console.log(`[desk] server ready on http://127.0.0.1:${port}/ (home: ${HOME})`);
       }
 
-      // Reopen the machine used last time. If it does not answer (the VM is
-      // asleep), start on this computer; the machine list still has it.
-      const candidate = normalizeHub(process.env.DESK_HUB_URL || '') || readHub();
+      // The window opens on 「全部机器」 (1.5.42 一个花名册): this computer, with
+      // every machine's bots in its sidebar. Picking one machine in the top
+      // left still works, for that session only. DESK_HUB_URL (a developer's
+      // own hub) still opens that one.
+      const candidate = normalizeHub(process.env.DESK_HUB_URL || '');
       // Away from home the LAN address does not answer: try its Tailscale address.
       const reach = candidate && !DEV_URL ? await reachMachine(candidate) : '';
       if (reach) {

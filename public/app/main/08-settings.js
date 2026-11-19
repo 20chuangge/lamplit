@@ -805,6 +805,11 @@ state.attention = { items: {} };
 state.otherMachines = [];
 let attentionTimer = null;
 
+/** A chat's status: this machine's, or (1.5.42) a bot's on another machine, from the roster. */
+function attentionItem(key) {
+  return state.attention?.items?.[key] || state.peerAttention?.[key] || null;
+}
+
 function currentChatKey() {
   if (isGroupMode()) return state.groupId ? `group:${state.groupId}` : null;
   return state.botId ? `bot:${state.botId}` : null;
@@ -812,7 +817,7 @@ function currentChatKey() {
 
 /** The status mark for one sidebar row, or null when there is nothing to say. */
 function attentionBadge(key) {
-  const item = state.attention?.items?.[key];
+  const item = attentionItem(key);
   if (!item) return null;
   // The chat on screen has no "new result": the human is looking at it.
   const unread = item.unread && key !== currentChatKey();
@@ -853,7 +858,7 @@ function attentionBadge(key) {
  * -> {text, kind: 'needs' | 'working' | 'unread' | '', tail?: 'n/m' of its checklist}
  */
 function rosterLine(key, { idle = '', last = '', group = false } = {}) {
-  const item = state.attention?.items?.[key];
+  const item = attentionItem(key);
   const brief = (s, n = 60) => truncate(plainPreview(String(s || '')), n);
   // What matters comes first, the kind of wait in a word or not at all (1.5.41):
   // the orange 「!」 already says it waits on you, and a narrow list cut
@@ -1084,8 +1089,10 @@ function syncTypingWithAttention() {
 function markSeen() {
   const key = currentChatKey();
   if (!key || document.visibilityState !== 'visible') return;
-  const item = state.attention?.items?.[key];
+  const item = attentionItem(key);
   if (item) item.unread = false;
+  // A bot on another machine: its machine keeps what was seen (1.5.42).
+  if (!isGroupMode() && isRemoteId(state.botId)) { api(remoteApi(state.botId, '/seen'), { method: 'POST', body: {} }).catch(() => {}); return; }
   api('/api/attention/seen', { method: 'POST', body: { key } }).catch(() => {});
 }
 
@@ -1192,7 +1199,14 @@ async function notifyHuman({ title, body = '', tag = '' }) {
 /** A notification was clicked: go to what it was about. */
 window.deskNotificationClick = async (tag) => {
   const [what, key, kind] = String(tag || '').split('|');
-  if (what === 'machine') { if (key && key !== location.origin) switchMachine(key === 'local' ? '' : key); return; }
+  // Someone there waits for a word (1.5.42): its chat opens here, no window switch.
+  if (what === 'machine') {
+    const name = (machineBridge?.machines || []).find((m) => m.url === key)?.name || '';
+    const waiting = (state.peerRoster || []).find((m) => m.machine === name)?.bots?.find((b) => { const it = state.peerAttention?.[`bot:${b.id}@${name}`]; return it?.needsYou || it?.asking; });
+    if (name && waiting && onLocalMachine()) { await selectBot(`${waiting.id}@${name}`); return; }
+    if (key && key !== location.origin) switchMachine(key === 'local' ? '' : key);
+    return;
+  }
   // Another machine's card: opened here, in the inbox, where it can be answered (1.5.41).
   if (what === 'inbox') {
     let machine = key || '';

@@ -9,13 +9,13 @@ async function loadMessages() {
   const botId = state.botId;
   const cacheKey = `bot:${botId}:${state.showProcess ? 1 : 0}`;
   const cached = chatCacheGet(cacheKey);
-  if (cached) { state.messages = cached; renderMessages(); }
+  if (cached && !remoteChatOnScreen(botId)) { state.messages = cached; renderMessages(); }
   let messages;
   try {
-    // Steps hidden: their long output stays on the machine (a phone loads the chat in a fraction).
-    messages = await api(`/api/bots/${botId}/messages?limit=200${state.showProcess ? '' : '&compact=1'}`);
+    // Steps hidden: their long output stays on the machine. A bot on another machine: read from there (1.5.42).
+    messages = await api(`${isRemoteId(botId) ? remoteApi(botId, '/') : `/api/bots/${botId}/`}messages?limit=200${state.showProcess ? '' : '&compact=1'}`);
   } catch (err) {
-    if (err.status === 401) return;
+    if (err.status === 401 || (isRemoteId(botId) && remoteChatFailed(botId, err, cached))) return; // 1.5.42: its machine is off
     if (state.botId === botId && !isGroupMode()) toast(`无法加载对话：${err.message}`, true);
     return;
   }
@@ -53,7 +53,7 @@ function renderMessages() {
     if (last > i) { items.splice(i, 1); items.splice(last, 0, it); }
   }
 
-  messagesEl.innerHTML = '';
+  messagesEl.innerHTML = ''; messagesEl.dataset.chat = state.botId || '';
   const changesByTurn = turnChanges(state.messages);
   // A turn's own last message: a new message sent in the middle splits a turn in two (1.5.40), the line still shows once.
   const turnEnds = new Map();
@@ -131,7 +131,7 @@ function changesLine(turnId, changes) {
   btn.addEventListener('click', async () => {
     btn.disabled = true;
     try {
-      const res = await api('/api/undo', { method: 'POST', body: { ids: changes.map((c) => c.id) } });
+      const res = await api(remoteChatMachine() ? remoteApi(state.botId, '/undo') : '/api/undo', { method: 'POST', body: { ids: changes.map((c) => c.id) } });
       const failed = (res.results || []).filter((r) => !r.ok);
       const already = failed.length > 0 && failed.every((f) => /已经撤销过/.test(f.error || '')); // after a reload the button is back (1.5.41 test)
       if (failed.length === (res.results || []).length && !already) throw new Error(failed[0]?.error || '没能撤销');
@@ -152,7 +152,7 @@ function changesLine(turnId, changes) {
    asked, updated until the video is there. */
 const videoWatch = { timer: null, data: null, key: '' };
 async function renderVideoJobs() {
-  clearTimeout(videoWatch.timer);
+  clearTimeout(videoWatch.timer); if (remoteChatMachine()) return appendQueuedMessages(); // 1.5.42: its videos are made there
   const key = currentChatKey();
   const q = isGroupMode() ? `groupId=${encodeURIComponent(state.groupId)}` : `botId=${encodeURIComponent(state.botId || '')}`;
   let data;
@@ -195,7 +195,7 @@ function daySeparator(ts) {
 }
 
 function emptyState() {
-  if (state.unconfigured && !state.mockAck) return onboardingCard();
+  if (state.unconfigured && !state.mockAck && !remoteChatMachine()) return onboardingCard();
   return welcomeCard();
 }
 
@@ -570,7 +570,7 @@ function attachmentNode(file) {
     }, true);
     return card;
   }
-  const url = `/api/workspace/file?path=${encodeURIComponent(file.path)}`;
+  const url = chatFileUrl(file.path); // from the machine of the chat's bot (1.5.42)
   if (file.video) {
     const box = el('div', 'att-video');
     const v = document.createElement('video');
@@ -1554,7 +1554,7 @@ function openPageViewer(name, title, machine = null) {
 /** Text (markdown when it looks like it) plus the images it points at. */
 /** botId: whose words these are (its voice reads them aloud); the open chat's bot when not given. */
 function fillBubble(bubble, raw, system = false, botId = '', fold = 'long') {
-  let text = system ? raw : localBoardAsk(humanizeIds(raw));
+  let text = system ? raw : localBoardAsk(humanizeIds(withoutFetchedNote(raw)));
   if (!system && looksMarkdown(text)) {
     bubble.classList.add('md');
     bubble.innerHTML = mdToHtml(text);
@@ -1563,7 +1563,7 @@ function fillBubble(bubble, raw, system = false, botId = '', fold = 'long') {
   if (system) return;
   foldBubble(bubble, text, fold);
   decorateMentions(bubble);
-  const images = mentionedImages(text);
+  const images = fetchedHere(raw, mentionedImages(text));
   if (images.length) {
     const list = el('div', 'att-list');
     for (const f of images) list.appendChild(attachmentNode(f));
@@ -1706,7 +1706,7 @@ function mcpToolText(name) {
 }
 
 function toolNameLabel(name) {
-  return (TOOL_TEXT[name] && TOOL_TEXT[name].label) || mcpToolText(name)?.label || name || '操作';
+  return (TOOL_TEXT[name] && TOOL_TEXT[name].label) || mcpToolText(name)?.label || INTERNAL_TOOL_WORDS[name] || (/^[a-z]+(_[a-z]+)+$/.test(name || '') ? '处理' : name) || '操作';
 }
 
 function safeArgs(raw) {

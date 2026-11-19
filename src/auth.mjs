@@ -418,6 +418,16 @@ export function sessionCookieName(req) {
 export function isAuthorityRequest(method, pathname, body = {}) {
   const m = String(method || 'GET').toUpperCase();
   const p = String(pathname || '');
+  // A bot on another machine, talked to through this hub (1.5.42 一个花名册):
+  // sending, reading its chat, following it live, stopping, undoing, its
+  // screen, and the messages waiting for a machine that is off. This hub uses
+  // that machine's token, so none of it may come from a bot's own command here.
+  if (/^\/api\/peers\/[^/]+\/bots\/[^/]+\//.test(p)) return true;
+  if (/^\/api\/peers\/outbox(\/|$)/.test(p)) return true;
+  // A file in another machine's workspace, read through this hub with that
+  // machine's token: the human's file cards only, not a program here (1.5.42).
+  // A group's automatic fetch goes to that machine directly and is not this route.
+  if (/^\/api\/peers\/[^/]+\/file$/.test(p)) return true;
   if (m === 'GET') return p === '/api/pairing';
   if (/^\/api\/approvals\/[^/]+$/.test(p) && m === 'POST') return true;
   // Another machine's card, answered here and passed on (1.5.41 一个待办箱).

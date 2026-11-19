@@ -2442,7 +2442,7 @@ export class AgentRuntime {
       const r = await askPeerBot(peers, peer, {
         botId: member.remote.botId,
         text: prompt,
-        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」` } },
+        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」`, machine: this.machineName?.() || '' } },
         workspaceDir: this.config.workspaceDir,
       });
       status = r.status === 'success' ? 'success' : (r.status || 'failed');

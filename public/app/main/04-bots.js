@@ -370,10 +370,17 @@ async function apiRequest(path, options = {}) {
     err.code = json && json.error ? json.error.code : undefined;
     // Only the human may decide (1.5.32): a browser on this computer without the
     // app's key gets a way to pair itself instead of a one-line refusal.
+    // A request the page made by itself (options.quiet, 1.5.42 test): no box; the place that asked says it.
+    if (err.code === 'LOCAL_KEY_REQUIRED' && options.quiet) { err.quiet = true; throw err; }
     if (err.code === 'LOCAL_KEY_REQUIRED') {
       if (state.auth) state.auth.authority = false;
       // Done for them once the browser is paired (1.5.33: 「再点一次刚才的按钮」 was one step too many).
       state.afterPair = { path, options };
+      if ($('local-pair-why')) {
+        $('local-pair-why').textContent = /^\/api\/peers\//.test(path)
+          ? '和别的机器上的助手说话、看它的文件，只能在 Lamplit 应用里，或者在配对过的设备上：这样机器人自己跑的程序没法借这台电脑去指挥别的机器。'
+          : '批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。';
+      }
       localPairOpen(true);
       // Said whole where the page shows it (1.5.33: 「保存失败：」 and nothing after).
       err.message = '这一步要先把这个浏览器配对一次（看弹出的对话框）。';
@@ -428,6 +435,8 @@ async function pairThisBrowser() {
       toast('这个浏览器配好了。');
     }
     if (state.settingsOpen) loadSettings().catch(() => {});
+    // A chat with a bot on another machine opens now (1.5.42).
+    if (isRemoteId(state.botId) && !isGroupMode()) { state.remoteStreamId = null; connectRemoteStream(); loadMessages(); loadOutbox({ render: false }).then(() => renderBots()); }
   } catch (err) {
     msg.textContent = err.status === 429 ? '试得太多次了，等一分钟再试。'
       : err.status === 401 ? '配对码不对，或者已经换了。配对码每天换一次，用过一次也会换。'
@@ -799,6 +808,9 @@ async function boot() {
   refreshInbox({ notify: false });
   let inboxTick = 0;
   setInterval(() => { inboxTick += 1; if (!document.hidden || inboxTick % 3 === 0) refreshInbox(); }, 20000);
+  // The other machines' bots in this sidebar (1.5.42 一个花名册): every 20 s on screen.
+  loadRoster();
+  setInterval(whenVisible(loadRoster), 20000);
   // A phone with the screen off used to keep polling (and re-drawing ~1.5 MB
   // screenshots every 5s). Background tabs now stay quiet until they come back.
   document.addEventListener('visibilitychange', () => {
@@ -867,6 +879,8 @@ function hasConversation() {
 }
 
 function composerBlocked() {
+  // A bot on another machine uses that machine's model (1.5.42).
+  if (remoteChatMachine()) return false;
   return state.unconfigured && !state.mockAck && !hasConversation();
 }
 
@@ -909,10 +923,11 @@ function updateComposerMode() {
     const pad = padName(title);
     input.placeholder = `给${pad}${title}${pad}发消息…`;
   }
-  $('mock-banner').hidden = !(state.unconfigured && !blocked);
+  const far = remoteChatMachine();
+  $('mock-banner').hidden = !(state.unconfigured && !blocked) || Boolean(far);
   $('composer-hint').textContent = blocked
     ? '还没接入模型 · 去左下角「设置」看看'
-    : '需要动你电脑的操作，会先问过你';
+    : far ? `它在「${far}」上做事：要动那台电脑的操作，会先问过你` : '需要动你电脑的操作，会先问过你';
 }
 
 function refreshMockState() {
@@ -1153,7 +1168,7 @@ async function refreshRoster() {
     const before = state.bots.map((b) => b.id).join(',');
     state.bots = bots;
     if (typeof loadGroups === 'function') await loadGroups().catch(() => {});
-    if (!isGroupMode() && !bots.some((b) => b.id === state.botId)) {
+    if (!isGroupMode() && !isRemoteId(state.botId) && !bots.some((b) => b.id === state.botId)) {
       const next = bots.find((b) => b.primary) || bots[0];
       if (next) {
         await selectBot(next.id);
@@ -1184,6 +1199,9 @@ function renderBots() {
     list.appendChild(row);
   }
 
+  // 「全部机器」 (1.5.42): this machine's bots under its own name, the other machines' below.
+  const grouped = rosterGrouped();
+  if (grouped) list.appendChild(machineGroupHead(machineDisplayName(), { self: true, count: state.bots.length }));
   // The primary bot is always on top; the rest by their newest message (like a chat app).
   const when = (b) => Date.parse(b.preview?.ts || '') || 0;
   const ordered = [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || when(b) - when(a));
@@ -1272,6 +1290,7 @@ function renderBots() {
     });
     list.appendChild(row);
   }
+  if (grouped) renderRemoteGroups(list);
   filterHome();
   if ($('perm-summary')) renderPermOverview();
 }
@@ -1291,19 +1310,22 @@ async function selectBot(id, { keepHome = false } = {}) {
   // Picking a teammate always dismisses the drawers, on any width (not the
   // chat a phone loads behind its home page at start).
   if (!keepHome) { closeSidebar(); closePanel(); }
-  const bot = state.bots.find((b) => b.id === id);
+  const bot = botById(id);
   renderBots();
   if (!bot) return;
 
   renderBotHead(bot);
-  $('chat-title').textContent = bot.name;
-  $('chat-sub').textContent = bot.role || '还没有设定职责';
+  // A bot on another machine: its name with the machine's (「助理 · 云服务器」, 1.5.42).
+  const far = remoteOf(id);
+  $('chat-title').textContent = far ? `${bot.name} · ${far.machine}` : bot.name;
+  $('chat-sub').textContent = far ? remoteChatSub(bot) : (bot.role || '还没有设定职责');
   $('bot-memory-title').textContent = `${bot.name} 的记忆`;
   state.liveTurn = null;
   setWorking(false);
   refreshWorking();
   updateComposerMode();
   connectStream();
+  connectRemoteStream();
   // Its own screen and its own routines, not the last chat's.
   followScreen();
   if (state.tab === 'activity') renderRoutines();

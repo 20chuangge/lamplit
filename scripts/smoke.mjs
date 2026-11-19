@@ -219,6 +219,7 @@ async function main() {
     await stage('1.5.40: a group\'s task board outlives a restart', scenarioBoardRestart);
     await stage('1.5.41: one inbox - another machine\'s cards are answered here', scenarioInbox1541);
     await stage('1.5.41: the small things the step-one test found', scenarioSmall1541);
+    await stage('1.5.42: one roster - the other machines\' bots are talked to from here', scenarioRoster1542);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -5699,7 +5700,7 @@ async function scenarioFiles1511() {
   const main = await readText('../desktop/main.mjs');
   const live = await readText('../public/app/main/06-live.js');
   check('F2 documents: a card with 预览 (PDF, where the browser can show one) and 下载; checked here, then on the other machines, else no card; PDFs inline only when asked; the desktop window has the PDF viewer',
-    live.includes('function docCard(') && live.includes("navigator.pdfViewerEnabled !== false") && live.includes("api(`/api/workspace/stat?path=")
+    live.includes('function docCard(') && live.includes("navigator.pdfViewerEnabled !== false") && (live.includes("api(`/api/workspace/stat?path=") || (live.includes('api(chatStatUrl(file.path))') && (await readText('../public/app/main/03-groups.js')).includes('`/api/workspace/stat?path=${encodeURIComponent(path)}`')))
     && live.includes('findElsewhere(file.path).then((machine) => {\n      if (!machine) { card.remove(); return; }') && chat.includes('if (file.pdf || file.doc) return docCard(file, url);')
     && serverSrc.includes("route('GET', /^\\/api\\/workspace\\/stat$/") && serverSrc.includes("(mime === 'application/pdf' && query.get('inline') === '1')")
     && main.includes('plugins: true'));
@@ -5833,7 +5834,7 @@ async function scenarioXhs159() {
   const chat = await readText('../public/app/main/05-chat.js');
   const routinesUi = await readText('../public/app/main/07-skills-routines.js');
   check('X2 wiring: every reply bubble and the routine list go through it; the bots are told to use names and times in words',
-    chat.includes('let text = system ? raw : localBoardAsk(humanizeIds(raw));') && routinesUi.includes('scheduleText(rt.schedule)')
+    (chat.includes('let text = system ? raw : localBoardAsk(humanizeIds(raw));') || chat.includes('let text = system ? raw : localBoardAsk(humanizeIds(withoutFetchedNote(raw)));')) && routinesUi.includes('scheduleText(rt.schedule)')
     && agentSrc.includes('Never show internal ids (g-…, bot-…, rt_…), cron lines or browser profile names to the human'));
 
   const Br = await import('../src/browser.mjs');
@@ -7092,7 +7093,8 @@ async function scenarioV165() {
     const page = await readText('../public/index.html');
     check('T2 screen: switching to another bot (or group) reloads the screen panel for it, and its title names that bot',
       page.includes('function followScreen()') && /async function selectBot[\s\S]{0,1600}followScreen\(\);/.test(page)
-      && page.includes("if ($('pc-title') && bot) $('pc-title').textContent = `${bot.name}的屏幕`;\n  if (!group) return;"));
+      && (page.includes("if ($('pc-title') && bot) $('pc-title').textContent = `${bot.name}的屏幕`;\n  if (!group) return;")
+        || page.includes("if ($('pc-title') && bot) $('pc-title').textContent = far ? `「${far.machine}」上${bot.name}的屏幕` : `${bot.name}的屏幕`;\n  if (!group) return;")));
   }
 
   // --- T3: the task panel shows this chat's routines ------------------------------------
@@ -9840,13 +9842,20 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     check('the assistant is granted machine_list and machine_switch', ['machine_list', 'machine_switch'].every((t) => seed.tools.includes(t)));
     const reported = await api('/api/ui/state', { method: 'POST', body: { patch: { machines: [{ name: '本机', url: 'local', current: true }, { name: 'Ubuntu', url: 'http://10.0.0.5:4390' }] } } });
     check('the window can report its machine list', reported.json?.ui?.machines?.length === 2, reported.text);
-    const ctx = { app: { uiView: () => ({ machines: reported.json.ui.machines }), applyUi: (patch) => { ctx.sent = patch; } }, bot: { id: 'chief' } };
+    const ctx = { app: { uiView: () => ({ machines: reported.json.ui.machines }), applyUi: (patch) => { ctx.sent = patch; } }, bot: { id: 'chief', name: '助理' } };
     const listed = await registry.get('machine_list').run({}, ctx);
-    check('machine_list returns the reported machines', listed.machines.length === 2);
-    await registry.get('machine_switch').run({ machine: 'ubuntu', task: '打开 bilibili' }, ctx);
-    check('machine_switch asks the window to switch and carries the task',
-      ctx.sent?.switchMachine?.target === 'http://10.0.0.5:4390' && ctx.sent.switchMachine.message === '打开 bilibili');
-    const missing = await errorCode(() => registry.get('machine_switch').run({ machine: 'nowhere' }, ctx));
+    check('machine_list returns the reported machines, by name (no addresses)', listed.machines.length === 2 && !JSON.stringify(listed).includes('10.0.0.5'));
+    // 1.5.42 一个花名册: the task goes to that machine's main assistant; the window stays.
+    const handed = [];
+    const reg = toolsMod.createRegistry({
+      workspaceDir: process.env.ASSIST_WORKSPACE_DIR, config: { policy: {} }, getRuntime: () => { throw new Error('no'); }, getRoutines: () => { throw new Error('no'); },
+      getPeers: () => ({ find: (r) => (/ubuntu/i.test(String(r)) ? { name: 'Ubuntu' } : null), list: () => [{ name: 'Ubuntu' }] }),
+      getRoster: () => ({ selfName: () => '客厅电脑', primaryOf: () => 'chief', deliver: async (x) => { handed.push(x); return { turnId: 't1' }; } }),
+    });
+    const moved = await reg.get('machine_switch').run({ machine: 'ubuntu', task: '打开 bilibili' }, ctx);
+    check('machine_switch hands the task to the main assistant of that machine and leaves the window where it is',
+      moved.handedOff === true && handed[0]?.machine === 'Ubuntu' && handed[0]?.botId === 'chief' && handed[0]?.text === '打开 bilibili' && handed[0]?.from?.botId === 'chief' && !ctx.sent, JSON.stringify({ moved, handed, sent: ctx.sent }));
+    const missing = await errorCode(() => reg.get('machine_switch').run({ machine: 'nowhere' }, ctx));
     check('machine_switch refuses an unknown machine', missing === 'MACHINE_NOT_FOUND', missing);
     const stored = await api('/api/ui/state');
     check('a switch command is never stored as UI state', !('switchMachine' in (stored.json || {})));
@@ -10706,7 +10715,7 @@ async function scenarioSmall1541() {
     check('S41-12 a turn cut off by a restart shows its notice once (no English 「needs_attention - …」 line under it)', page.includes("last.status !== 'needs_attention'"));
     check('S41-13 English: 撤销 is Undo; the cancel reasons, the board states, the board\'s question and a hand-over\'s names are translated',
       en.includes('"撤销": "Undo"') && en.includes('"你发了新消息。"') && en.includes('"你让它停下了。"') && en.includes('"{0}/{1} · {2}"') && en.includes('"需要你回复一下："')
-      && page.includes("who.appendChild(el('span', null, sender?.name || '助手'));") && page.includes('let text = system ? raw : localBoardAsk(humanizeIds(raw));') && page.includes('String(text).startsWith(BOARD_ASK_LEAD)'));
+      && page.includes("who.appendChild(el('span', null, sender?.name || '助手'));") && (page.includes('let text = system ? raw : localBoardAsk(humanizeIds(raw));') || page.includes('let text = system ? raw : localBoardAsk(humanizeIds(withoutFetchedNote(raw)));')) && page.includes('String(text).startsWith(BOARD_ASK_LEAD)'));
     check('S41-14 alone, the main assistant\'s tip does not promise to hand work to others; the group tip names who there is',
       page.includes('if ((state.bots || []).length <= 1) return `有什么事直接跟「') && page.includes('现在只有「${primary.name}」一位助手，群里至少要两位。') && !page.includes("others[0] || '某某'"));
     check('S41-15 the log says 「你允许了 X 的这一步」, not 「你拒绝了 turn_…」; 演示模式, not 「mock 不需要密钥」; an undone file\'s card says it is gone; a paired click finishes the card',
@@ -10775,5 +10784,325 @@ async function scenarioSmall1541() {
       page.includes("if (ev.type === 'approval.decided' && ev.approvalId) {") && srv.includes('这张卡是应用重启前留下的。你没有允许') && !srv.includes('from a card restored after a restart')
       && en.includes('"1 位成员 · {0}": "1 member · {0}"') && page.includes("parts.filter(Boolean).forEach((p, i) => {")
       && page.includes("toast(already ? '这一轮的改动已经撤销过了'") && page.includes("for (const id of ['new-bot-name', 'new-bot-role']) {"));
+  }
+}
+
+/**
+ * 1.5.42 第三步「一个花名册」: the bots on the human's other machines are in this
+ * window's sidebar and are talked to from here. Only the human may drive them
+ * through this hub; the hub uses the same machine token as a group's remote
+ * member; a card is still answered only through the inbox (「只有你能批准」).
+ */
+async function scenarioRoster1542() {
+  const otherHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-smoke-roster-'));
+  await seedHome(otherHome);
+  let other = null;
+  let fake = null;
+  const peerName = '书房电脑';
+  const cloudName = '云服务器';
+  const offName = '旧笔记本';
+  const cloudToken = 'cloudTOKEN-1234567890abcd';
+  const seen = []; // what the stand-in 云服务器 was asked: method, path, headers, body
+  // An SSE reader for any stream path on this hub.
+  const sse = async (p, headers = {}) => {
+    const controller = new AbortController();
+    const res = await fetch(`${base}${p}`, { signal: controller.signal, headers: { accept: 'text/event-stream', ...headers } });
+    const events = [];
+    if (res.ok) {
+      (async () => {
+        const decoder = new TextDecoder();
+        let buffer = '';
+        try {
+          for await (const chunk of res.body) {
+            buffer += decoder.decode(chunk, { stream: true });
+            let split;
+            while ((split = buffer.indexOf('\n\n')) !== -1) {
+              const frame = buffer.slice(0, split);
+              buffer = buffer.slice(split + 2);
+              for (const line of frame.split('\n')) if (line.startsWith('data:')) { try { events.push(JSON.parse(line.slice(5).trim())); } catch { /* comment */ } }
+            }
+          }
+        } catch { /* closed */ }
+      })();
+    } else {
+      await res.text().catch(() => '');
+    }
+    return { status: res.status, events, close: () => controller.abort() };
+  };
+  try {
+    other = await startServerChild(otherHome, {
+      ASSIST_DATA_DIR: path.join(otherHome, 'data'),
+      ASSIST_WORKSPACE_DIR: path.join(otherHome, 'workspace'),
+    });
+    const B = other.url;
+    const bKey = fsSync.readFileSync(path.join(otherHome, 'data', 'local-key'), 'utf8').trim();
+    const bToken = JSON.parse(fsSync.readFileSync(path.join(otherHome, 'data', 'security.json'), 'utf8')).token;
+    const aToken = JSON.parse(fsSync.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8')).token;
+    const bApi = async (p, { method = 'GET', body, key = true, headers = {} } = {}) => {
+      const res = await rawFetch(`${B}${p}`, {
+        method,
+        headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(key ? { 'x-lamplit-local': bKey } : {}), ...headers },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* not json */ }
+      return { status: res.status, json, text };
+    };
+    const bMessages = async (botId = 'ops') => ((await bApi(`/api/bots/${botId}/messages?limit=200`)).json || []);
+    const bPending = async () => ((await bApi('/api/approvals?status=pending')).json || []);
+
+    // A stand-in for 云服务器: a Lamplit that writes down what it is asked.
+    fake = http.createServer(async (req, res) => {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const raw = Buffer.concat(chunks);
+      let body = null;
+      try { body = JSON.parse(raw.toString('utf8')); } catch { body = raw.length ? { bytes: raw.length } : null; }
+      const url = new URL(req.url, 'http://x');
+      seen.push({ method: req.method, path: url.pathname, query: url.search, headers: { ...req.headers }, body });
+      const send = (status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+      if (url.pathname === '/api/health') return send(200, { ok: true, name: cloudName });
+      if (url.pathname === '/api/bots' && req.method === 'GET') return send(200, [{ id: 'chief', name: '助理', role: '主助理', primary: true }]);
+      if (url.pathname === '/api/attention') return send(200, { items: { 'bot:chief': { working: false, needsYou: 0, unread: false } } });
+      if (url.pathname === '/api/uploads' && req.method === 'POST') return send(200, { path: 'uploads/2026-11-19/there.txt', name: 'there.txt', size: raw.length, mime: 'text/plain' });
+      if (/^\/api\/bots\/chief\/message$/.test(url.pathname) && req.method === 'POST') return send(200, { turnId: `turn_fake${seen.length}`, botId: 'chief' });
+      if (/^\/api\/bots\/chief\/messages$/.test(url.pathname)) return send(200, []);
+      return send(404, { error: { code: 'NOT_FOUND', message: 'no' } });
+    });
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+    const C = `http://127.0.0.1:${fake.address().port}`;
+
+    const setPeers = (extra = []) => api('/api/peers', { method: 'PUT', body: { self: { name: '客厅电脑' }, peers: [{ name: peerName, url: B, token: bToken }, { name: cloudName, url: C, token: cloudToken }, ...extra] } });
+    await setPeers();
+    await bApi('/api/peers', { method: 'PUT', body: { peers: [{ name: '客厅电脑', url: base, token: aToken }] } });
+    const remote = (machine, botId, rest = '') => `/api/peers/${encodeURIComponent(machine)}/bots/${encodeURIComponent(botId)}${rest}`;
+
+    // --- 1. every machine's bots, by machine -----------------------------------------
+    const roster = await api('/api/peers/roster');
+    const study = (roster.json?.machines || []).find((m) => m.machine === peerName);
+    const cloud = (roster.json?.machines || []).find((m) => m.machine === cloudName);
+    check('RC-1 GET /api/peers/roster lists each other machine with its bots by name, and whether it answers',
+      roster.status === 200 && study?.online === true && (study.bots || []).some((b) => b.id === 'ops' && b.name) && cloud?.online === true && (cloud.bots || []).some((b) => b.id === 'chief' && b.name === '助理' && b.primary),
+      roster.text.slice(0, 400));
+
+    // --- 2. only the human drives a bot over there through this hub ----------------
+    const before = (await bMessages()).length;
+    const noKey = { 'x-no-local-key': '1' };
+    const unpairedSend = await api(remote(peerName, 'ops', '/message'), { method: 'POST', body: { text: '你好' }, headers: noKey });
+    const unpairedRead = await api(remote(peerName, 'ops', '/messages'), { headers: noKey });
+    const unpairedStream = await sse(remote(peerName, 'ops', '/stream'), noKey);
+    unpairedStream.close();
+    const unpairedQueue = await api('/api/peers/outbox', { headers: noKey });
+    await sleep(300);
+    check('RC-2 a program (or a browser that is not paired) on this computer cannot send to, read or follow a bot on another machine through this hub',
+      unpairedSend.status === 403 && unpairedSend.json?.error?.code === 'LOCAL_KEY_REQUIRED' && unpairedRead.status === 403 && unpairedStream.status === 403 && unpairedQueue.status === 403
+      && (await bMessages()).length === before,
+      `${unpairedSend.status} ${unpairedRead.status} ${unpairedStream.status} ${unpairedQueue.status}`);
+    const authMod = await import('../src/auth.mjs');
+    check('RC-2b a remote chat (send, read, follow, stop, undo, the screen) and the waiting queue are things only the human may do; the roster of names is not',
+      ['POST /message', 'GET /messages', 'GET /stream', 'POST /turns/t1/cancel', 'GET /turns', 'POST /undo', 'GET /desktop'].every((x) => { const [m, p] = x.split(' '); return authMod.isAuthorityRequest(m, `/api/peers/a/bots/b${p}`); })
+      && authMod.isAuthorityRequest('GET', '/api/peers/outbox') && authMod.isAuthorityRequest('POST', '/api/peers/outbox/flush')
+      && !authMod.isAuthorityRequest('GET', '/api/peers/roster'));
+    const hop = await rawFetch(`${base}${remote(peerName, 'ops', '/message')}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${aToken}`, 'x-lamplit-via': 'x' }, body: JSON.stringify({ text: '你好' }) });
+    const detour = await bApi(`/api/peers/${encodeURIComponent('客厅电脑')}/bots/chief/message`, { method: 'POST', key: false, body: { text: '你好' } });
+    await sleep(300);
+    check('RC-3 a call another hub passed on is never passed on again, and a program on 书房电脑 cannot drive this machine\'s bots by a detour through its hub',
+      hop.status === 403 && detour.status === 403 && (await bMessages()).length === before, `${hop.status} ${detour.status}`);
+
+    // --- 3. the same machine token as a group's remote member --------------------------
+    seen.length = 0;
+    await fsp.mkdir(path.join(process.env.ASSIST_WORKSPACE_DIR, 'uploads', '2026-11-19'), { recursive: true });
+    await fsp.writeFile(path.join(process.env.ASSIST_WORKSPACE_DIR, 'uploads', '2026-11-19', 'here.txt'), 'hello there');
+    const toCloud = await api(remote(cloudName, 'chief', '/message'), { method: 'POST', body: { text: '帮我看看', attachments: [{ path: 'uploads/2026-11-19/here.txt' }], handoff: { depth: 1 }, voiceCall: true } });
+    const msg = seen.find((r) => r.method === 'POST' && r.path === '/api/bots/chief/message');
+    const up = seen.find((r) => r.method === 'POST' && r.path === '/api/uploads');
+    check('RC-4 a message to a bot over there goes with that machine\'s own token (the one groups use), marked as passed on, and never with this computer\'s key or login',
+      toCloud.status === 200 && Boolean(toCloud.json?.turnId) && msg?.headers?.authorization === `Bearer ${cloudToken}` && Boolean(msg?.headers?.['x-lamplit-via'])
+      && !msg?.headers?.['x-lamplit-local'] && !msg?.headers?.cookie,
+      JSON.stringify({ status: toCloud.status, body: toCloud.json, headers: msg?.headers }).slice(0, 400));
+    check('RC-4b only what the human wrote goes over: the attachment is sent to that machine first and named by its path there; no hand-off or voice-call flags',
+      up?.headers?.authorization === `Bearer ${cloudToken}` && msg?.body?.text === '帮我看看' && JSON.stringify(msg?.body?.attachments) === JSON.stringify([{ path: 'uploads/2026-11-19/there.txt' }])
+      && msg?.body?.handoff === undefined && msg?.body?.voiceCall === undefined,
+      JSON.stringify(msg?.body).slice(0, 300));
+    const srvSrc = await readText('../src/server.mjs');
+    const rosterSrc = await readText('../src/roster.mjs').catch(() => '');
+    check('RC-4c the remote chat uses the hub\'s peer link (state.peers), the same one runRemoteGroupTurn / askPeerBot use',
+      /state\.peers\.(call|json)\(/.test(rosterSrc + srvSrc) && /peers\.(call|json)\(peer, 'POST', `\/api\/bots\/\$\{encodeURIComponent\(botId\)\}\/message`/.test(rosterSrc));
+
+    // --- 4. it works like a local chat ------------------------------------------------------
+    const stream = await sse(remote(peerName, 'ops', '/stream'));
+    await sleep(500);
+    const hi = await api(remote(peerName, 'ops', '/message'), { method: 'POST', body: { text: '你好' } });
+    const turnId = hi.json?.turnId;
+    await waitUntil(async () => (await bMessages()).some((m) => m.turnId === turnId && m.role === 'status'), 20000, 'the turn on 书房电脑 ends').catch(() => {});
+    // A change on 书房电脑 that is not about this bot (its machine list) must not come through.
+    await bApi('/api/peers', { method: 'PUT', body: { peers: [{ name: '客厅电脑', url: base, token: aToken }] } });
+    await sleep(800);
+    stream.close();
+    const viaHere = await api(remote(peerName, 'ops', '/messages?limit=50'));
+    check('RC-5 a message sent from here runs on 书房电脑 and its answer is read from here',
+      hi.status === 200 && Boolean(turnId) && (viaHere.json || []).some((m) => m.turnId === turnId && m.role === 'assistant'),
+      `${hi.status} ${viaHere.text.slice(0, 300)}`);
+    const ends = stream.events.filter((e) => e.type === 'turn.end');
+    check('RC-6 its progress comes back live: the events of that bot only, tagged with the machine (botId "ops@书房电脑"); nothing else from that machine (its settings, its window commands)',
+      stream.status === 200 && ends.some((e) => e.turnId === turnId && e.botId === `ops@${peerName}` && e.machine === peerName)
+      && !stream.events.some((e) => ['settings.changed', 'ui.command', 'roster.changed'].includes(e.type)),
+      JSON.stringify(stream.events.map((e) => [e.type, e.botId])).slice(0, 400));
+
+    // --- 5. 「只有你能批准」 still holds ------------------------------------------------------
+    const ask = await api(remote(peerName, 'ops', '/message'), { method: 'POST', body: { text: 'Write a note outside the workspace: zeta' } });
+    let card = null;
+    await waitUntil(async () => { card = (await bPending())[0] || null; return Boolean(card); }, 15000, 'a card on 书房电脑').catch(() => {});
+    const sneak = await api(remote(peerName, 'ops', `/approvals/${encodeURIComponent(card?.id || 'x')}`), { method: 'POST', body: { decision: 'approve' } });
+    const sneak2 = await api(`/api/peers/${encodeURIComponent(peerName)}/bots/ops/..%2F..%2Fapprovals%2F${encodeURIComponent(card?.id || 'x')}`, { method: 'POST', body: { decision: 'approve' } });
+    check('RC-7 a card from a remote chat is not answered through the chat\'s link (no such route, no path tricks): it still waits on 书房电脑',
+      ask.status === 200 && Boolean(card) && sneak.status === 404 && sneak2.status >= 400 && (await bPending()).some((a) => a.id === card.id && a.status === 'pending'),
+      `${ask.status} ${sneak.status} ${sneak2.status}`);
+    const no = card ? await api(`/api/inbox/${encodeURIComponent(peerName)}/${encodeURIComponent(card.id)}`, { method: 'POST', body: { decision: 'deny' } }) : { status: 0 };
+    const unpairedNo = card ? await api(`/api/inbox/${encodeURIComponent(peerName)}/${encodeURIComponent(card.id)}`, { method: 'POST', body: { decision: 'approve' }, headers: noKey }) : { status: 0 };
+    check('RC-7b the card is answered through the inbox, by the human only', no.status === 200 && no.json?.approval?.status === 'denied' && unpairedNo.status === 403, `${no.status} ${unpairedNo.status}`);
+    await waitUntil(async () => !((await bApi('/api/attention')).json?.items?.['bot:ops']?.working), 15000, 'ops idle').catch(() => {});
+
+    // --- 5b. a file on that machine: only the human reads it through this hub (2026-11-19) ------
+    await fsp.mkdir(path.join(otherHome, 'workspace', 'notes'), { recursive: true });
+    await fsp.writeFile(path.join(otherHome, 'workspace', 'notes', 'secret.txt'), 'only for you');
+    const fileUrl = `/api/peers/${encodeURIComponent(peerName)}/file?path=${encodeURIComponent('notes/secret.txt')}`;
+    const fileByProgram = await api(fileUrl, { headers: noKey });
+    const fileHop = await rawFetch(`${base}${fileUrl}`, { headers: { authorization: `Bearer ${aToken}`, 'x-lamplit-via': 'x' } });
+    const fileByHuman = await api(fileUrl);
+    check('RC-13 a file on another machine is read through this hub by the human only: a program (or an unpaired browser) here is refused, a call another hub passed on is not passed on, the human\'s app gets it',
+      fileByProgram.status === 403 && fileByProgram.json?.error?.code === 'LOCAL_KEY_REQUIRED' && !fileByProgram.text.includes('only for you')
+      && fileHop.status === 403 && fileByHuman.status === 200 && fileByHuman.text === 'only for you',
+      `${fileByProgram.status} ${fileHop.status} ${fileByHuman.status}`);
+    check('RC-13b fetching a file from another machine is one of the things only the human may do; finding which machine has it (names only) is not',
+      authMod.isAuthorityRequest('GET', '/api/peers/x/file') && !authMod.isAuthorityRequest('GET', '/api/peers/locate'));
+    const cross = await readText('../src/crossmachine.mjs');
+    check('RC-13c a group\'s automatic fetch goes to the other machine itself with its token (peers.call), not through this hub\'s file route',
+      cross.includes("peers.call(peer, 'GET', `/api/workspace/file?path=${encodeURIComponent(rel)}`") && !cross.includes('/api/peers/'));
+
+    // --- 5c. what the beginner test found (2026-11-19) ------------------------------------------
+    const handed = await bApi('/api/bots/ops/message', { method: 'POST', key: false, headers: { authorization: `Bearer ${bToken}` }, body: { text: '写一份周末采购清单，存成文件。', handoff: { depth: 1, chain: ['chief'], budgetLeft: 6, from: { bot: '助理', machine: '客厅电脑' } } } });
+    await waitUntil(async () => (await bMessages()).some((m) => m.turnId === handed.json?.turnId && m.role === 'status'), 20000, 'the hand-over turn ends').catch(() => {});
+    const handedRow = (await bMessages()).find((m) => m.turnId === handed.json?.turnId && m.role === 'user');
+    check('RC-14 work handed over from another machine is one hand-over line in that chat (「客厅电脑的助理 → …」): the words as sent, no note about tools in what the human reads',
+      handed.status === 200 && handedRow?.fromBot === '客厅电脑的助理' && handedRow?.text === '写一份周末采购清单，存成文件。' && !/file_send|派给你的活/.test(handedRow?.text || ''),
+      JSON.stringify(handedRow || handed.json).slice(0, 300));
+    const pageNow = await readText('../public/index.html');
+    const rosterSrcNow = await readText('../src/roster.mjs');
+    check('RC-15 a remote chat whose machine is off keeps what is on screen (the last turn, a card undone) instead of an older saved copy; a message typed elsewhere shows live; the pairing box says why for another machine',
+      pageNow.includes('if (cached && !remoteChatOnScreen(botId))') && pageNow.includes("if (remoteChatOnScreen(botId)) appendQueuedMessages();")
+      && pageNow.includes("ev.source === 'chat' && ev.text && !ev.aside && !isGroupMode() && ev.botId === state.botId && !sentHere(ev.text)")
+      && pageNow.includes('和别的机器上的助手说话、看它的文件') && rosterSrcNow.includes("from: { bot: from.name || '', machine: selfName() }"));
+
+    // --- 5d. what the file-route retest found (2026-11-19) -------------------------------------
+    const pg5 = await readText('../public/index.html');
+    const noteRe = /const FETCHED_NOTE = (\/.+\/);/.exec(pg5)?.[1] || '';
+    let noteOk = false;
+    try {
+      const re = new Function(`return ${noteRe};`)();
+      const raw = '写好了：out/a.md\n\n（「书房电脑」上的这些文件已经取回这台机器：out/a.md → from-machines/书房电脑/2026-11-19/a.md）';
+      const m = re.exec(raw);
+      noteOk = raw.replace(re, '') === '写好了：out/a.md' && m?.[2] === 'out/a.md → from-machines/书房电脑/2026-11-19/a.md';
+    } catch { /* checked below */ }
+    check('RC-16 without pairing: a file of another machine says where it is and offers pairing (viewer and pictures); what the page asks by itself (the screen, the queue) opens no pairing box; a group shows one card per fetched file, without the note; the new-group hint counts the other machines\' bots',
+      pg5.includes("if (err.code === 'LOCAL_KEY_REQUIRED' && options.quiet) { err.quiet = true; throw err; }") && pg5.includes("api(remoteApi(id, '/desktop'), { quiet: true })")
+      && pg5.includes("api('/api/peers/outbox', { quiet: true })") && pg5.includes('lockedNote(decodeURIComponent(far[1])') && pg5.includes("document.addEventListener('error', (event) => {")
+      && pg5.includes('fetchedHere(raw, mentionedImages(text))') && pg5.includes('humanizeIds(withoutFetchedNote(raw))') && noteOk
+      && pg5.includes("...(state.peerRoster || []).flatMap((m) => (m.bots || []).map((b) => `${m.machine}的${b.name}`))"), noteRe.slice(0, 80));
+
+    // --- 5e. the second retest (2026-11-19) ----------------------------------------------------
+    // A machine that vanishes without closing the link (off, network gone): the stream goes
+    // silent rather than ending. That must still be said: 「连不上了，连上后接着看结果」.
+    {
+      const R = await import('../src/roster.mjs');
+      const silent = { find: () => ({ name: '书房电脑' }), list: () => [{ name: '书房电脑' }],
+        call: async (_peer, _m, _p, { signal } = {}) => ({ ok: true, status: 200, body: new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(': connected\n\n')); signal?.addEventListener('abort', () => { try { c.error(new Error('aborted')); } catch { /* closed */ } }); } }) }),
+        json: async () => ({}) };
+      const roster = R.createRoster({ peers: silent, cacheFile: path.join(os.tmpdir(), `rc-cache-${Date.now()}.json`), outboxFile: path.join(os.tmpdir(), `rc-out-${Date.now()}.json`), streamIdleMs: 400 });
+      const written = [];
+      const reqStub = new (await import('node:events')).EventEmitter();
+      const resStub = Object.assign(new (await import('node:events')).EventEmitter(), { writeHead() {}, write(s) { written.push(String(s)); return true; }, end() {} });
+      const done = roster.pipeStream({ name: '书房电脑' }, 'ops', reqStub, resStub);
+      await sleep(1500);
+      reqStub.emit('close');
+      await Promise.race([done, sleep(6000)]);
+      check('RC-17 a link to another machine that goes silent (the machine vanished without closing it) is taken as down and said in plain words',
+        written.some((s) => s.includes('"type":"peer.link"') && s.includes('"state":"down"') && s.includes('连不上了，连上后接着看结果')), written.join('').slice(0, 300));
+    }
+    const pg6 = await readText('../public/index.html');
+    check('RC-18 the open chat of a bot whose machine the sidebar shows offline always carries 「连不上了，连上后接着看结果」 (unless a waiting message says it), and goes when it is back; the working line names a step in words, never a tool name like task_plan',
+      pg6.includes("if (open?.remote && !open.remote.online) showRemoteDown();") && pg6.includes("else if (open?.remote && messagesEl.querySelector('.link-down-line')) { hideRemoteDown(); loadMessages(); }")
+      && /const INTERNAL_TOOL_WORDS = \{[^}]*task_plan: '[^']+'/.test(pg6) && pg6.includes("INTERNAL_TOOL_WORDS[name] || (/^[a-z]+(_[a-z]+)+$/.test(name || '') ? '处理' : name)"));
+    // The screen panel on a bot of another machine (final retest): never this computer's picture under its name.
+    const pc = await readText('../public/app/main/10-computer.js');
+    const shot = pc.indexOf("fetch(`/api/computer/screenshot?ts=");
+    const guard = pc.indexOf('if (state.computer?.remote && !state.computer?.desktop?.perBot) {');
+    check('RC-19 the screen panel on a bot of another machine shows its screen, or says why not with a pair button - never this computer\'s own screenshot',
+      guard > 0 && shot > guard && pc.includes('if (state.computer.locked) note.appendChild(pairButton(') && pg6.includes('locked: err.code === \'LOCAL_KEY_REQUIRED\''),
+      `${guard} ${shot}`);
+    const waitGuard = pc.indexOf('if (isRemoteId(target) && !screenIsFor(target)) {');
+    const g6 = await readText('../public/app/main/03-groups.js');
+    check('RC-20 while another machine\'s answer is on its way, the panel shows 「正在打开屏幕…」, not this computer\'s last picture (screen-panel retest: a flash of it)',
+      waitGuard > 0 && waitGuard < guard && waitGuard < shot && g6.includes("if ($('pc-screen')) $('pc-screen').style.display = 'none'; // nothing of this computer while that machine answers") && pc.includes('if (isRemoteId(pcTargetBotId())) return; // or the panel moved to a bot on another machine (1.5.42)') && pc.replace(/\r\n/g, '\n').includes('const blob = await res.blob();\n    if (isRemoteId(pcTargetBotId())) return;'),
+      `${waitGuard} ${guard} ${shot}`);
+
+    // --- 6. a machine that is off: queued, said in plain words, sent when it is back ----------
+    await setPeers([{ name: offName, url: 'http://127.0.0.1:9', token: 'offTOKEN-1234567890abcd' }]);
+    const queued = await api(remote(offName, 'chief', '/message'), { method: 'POST', body: { text: '明早帮我备份照片' } });
+    check('RC-8 a message to a bot whose machine cannot be reached is kept here and the human is told in plain words',
+      queued.status === 200 && queued.json?.queued === true && queued.json?.message === '它那台电脑现在连不上，开机后我接着做' && Boolean(queued.json?.queueId),
+      queued.text.slice(0, 300));
+    const box = await api('/api/peers/outbox');
+    const offRoster = await api('/api/peers/roster?fresh=1');
+    check('RC-8b the waiting message is listed for its chat; the machine is listed as not answering',
+      (box.json?.items || []).some((i) => i.machine === offName && i.botId === 'chief' && i.text === '明早帮我备份照片')
+      && (offRoster.json?.machines || []).some((m) => m.machine === offName && m.online === false),
+      `${box.text.slice(0, 200)} ${offRoster.text.slice(0, 300)}`);
+    seen.length = 0;
+    await setPeers([{ name: offName, url: C, token: cloudToken }]);
+    const flushed = await api('/api/peers/outbox/flush', { method: 'POST', body: {} });
+    const delivered = seen.find((r) => r.method === 'POST' && r.path === '/api/bots/chief/message' && r.body?.text === '明早帮我备份照片');
+    const boxAfter = await api('/api/peers/outbox');
+    check('RC-9 once that machine answers, the waiting message is sent (with its token) and leaves the queue',
+      flushed.status === 200 && Boolean(delivered) && delivered.headers.authorization === `Bearer ${cloudToken}` && !(boxAfter.json?.items || []).length,
+      `${flushed.text.slice(0, 200)} ${boxAfter.text.slice(0, 200)}`);
+
+    // --- 7. the link drops: plain words, and the bots stay listed ---------------------------
+    await new Promise((r) => fake.close(r));
+    fake = null;
+    const gone = await api('/api/peers/roster?fresh=1');
+    const goneCloud = (gone.json?.machines || []).find((m) => m.machine === cloudName);
+    check('RC-10 a machine that went away is listed as not answering, with the bots it had (greyed in the sidebar), not dropped',
+      goneCloud?.online === false && (goneCloud.bots || []).some((b) => b.id === 'chief' && b.name === '助理'), gone.text.slice(0, 300));
+    const lost = await sse(remote(cloudName, 'chief', '/stream'));
+    await sleep(1500);
+    lost.close();
+    check('RC-10b following a chat on a machine that cannot be reached says 「连不上了，连上后接着看结果」, not an error',
+      lost.status === 200 && lost.events.some((e) => e.type === 'peer.link' && e.state === 'down' && e.machine === cloudName && e.text === '连不上了，连上后接着看结果'),
+      JSON.stringify(lost.events).slice(0, 300));
+
+    // --- 8. no window jumps; names, not addresses -------------------------------------------
+    const tools = await readText('../src/tools.mjs');
+    const ms = /name: 'machine_switch',[\s\S]*?\n  \}\);/.exec(tools)?.[0] || '';
+    check('RC-11 machine_switch hands the task to that machine and leaves the window where it is',
+      Boolean(ms) && !ms.includes('switchMachine') && /window stays/i.test(ms));
+    const page = await readText('../public/index.html');
+    const en = await readText('../public/i18n-en.js');
+    const desk = await readText('../desktop/main.mjs');
+    check('RC-12 the page: a 「全部机器」 view (the default), bots grouped by machine, a remote chat through this hub, 「离线」 and the plain words, the machine tag on a name',
+      page.includes('全部机器') && page.includes('/api/peers/roster') && page.includes('它那台电脑现在连不上，开机后我接着做') && page.includes('连不上了，连上后接着看结果')
+      && /remoteApi\(/.test(page) && page.includes(' · ${') && en.includes('"全部机器"') && en.includes('"它那台电脑现在连不上，开机后我接着做"'));
+    check('RC-12b adding a machine asks 「它是哪台？」 with choices; the top left names this machine, not 「本机」',
+      page.includes('它是哪台？') && page.includes('书房电脑') && page.includes('旧笔记本') && page.includes('云服务器') && !/if \(onLocalMachine\(\)\) return '本机';/.test(page)
+      && en.includes('"它是哪台？"'));
+    check('RC-12c the desktop app opens on 「全部机器」 (this computer), not on the machine used last',
+      !/normalizeHub\(process\.env\.DESK_HUB_URL \|\| ''\) \|\| readHub\(\)/.test(desk));
+  } finally {
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
+    if (fake) await new Promise((r) => fake.close(r));
+    if (other?.child) await stopProcess(other.child);
+    await fsp.rm(otherHome, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(path.join(process.env.ASSIST_WORKSPACE_DIR, 'uploads', '2026-11-19', 'here.txt'), { force: true }).catch(() => {});
   }
 }

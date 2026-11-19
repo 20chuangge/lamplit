@@ -1,0 +1,332 @@
+// One roster (1.5.42 第三步「一个花名册」): the bots on the human's other machines
+// sit in this window's sidebar, grouped by machine, and are talked to from here.
+//
+// This hub only passes things on. A remote bot's chat stays on its own machine
+// (nothing is copied here for keeping); this hub reads it from there, hands the
+// human's message over and brings the bot's progress back as it happens. It
+// talks to the other machine exactly as a group's remote member does: through
+// the peer link (peers.call / peers.json) with that machine's own token, and
+// every call it passes on is marked, so no machine passes it on again.
+//
+// Only the human may drive a bot over there through this hub: the routes are
+// "authority" routes (auth.mjs isAuthorityRequest), like answering a card.
+//
+//   roster.list({fresh})            -> [{machine, online, bots, attention, queued}]
+//   roster.send(peer, botId, msg)   -> {turnId} (throws PEER_UNREACHABLE when it is off)
+//   roster.deliver({...})           -> {turnId} | {queued, queueId, message}
+//   roster.outbox.list() / remove(id) / flush()
+//   roster.pipeStream(peer, botId, req, res)   that bot's events, live, as SSE
+
+import fsp from 'node:fs/promises';
+import { readJson, writeJsonAtomic } from './store.mjs';
+
+/** What the human reads when a message waits for a machine that is off. */
+export const OFFLINE_WORDS = '它那台电脑现在连不上，开机后我接着做';
+/** What a chat says when the link to its machine drops mid-turn. */
+export const LINK_DOWN_WORDS = '连不上了，连上后接着看结果';
+/** The header a hub sets on a call it passes on (auth.mjs VIA_HEADER). */
+const VIA = 'x-lamplit-via';
+
+/** A bot id as the routes take it: no slashes, no dots-only parts. */
+export function cleanBotId(raw) {
+  let id = String(raw || '');
+  try { id = decodeURIComponent(id); } catch { return ''; }
+  return /^[\w.-]{1,80}$/.test(id) && !/^\.+$/.test(id) ? id : '';
+}
+
+/** Events that belong to the machine over there, not to the chat on screen here. */
+const NOT_PASSED = new Set(['ui.command', 'settings.changed', 'roster.changed', 'feishu.changed', 'attention.changed', 'usage.alert', 'inbox.changed']);
+
+/**
+ * One event from that machine's stream as this window sees it: only the
+ * chosen bot's, tagged with the machine, its id made "id@machine" (the same
+ * name a group's remote member has). Anything else is dropped (null).
+ */
+export function tagRemoteEvent(ev, machine, botId) {
+  if (!ev || typeof ev !== 'object' || NOT_PASSED.has(ev.type)) return null;
+  if (ev.to) return null; // a phone step meant for one device over there
+  if (ev.botId !== botId) return null;
+  return { ...ev, botId: `${botId}@${machine}`, machine };
+}
+
+const isUnreachable = (err) => err?.code === 'PEER_UNREACHABLE' || err?.code === 'PEER_PROXY_ERROR';
+
+export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpload = null, audit = async () => {}, selfName = () => '', streamIdleMs = 45000 } = {}) {
+  // machine -> {at, online, bots, attention}; bots outlive a machine going away.
+  const live = new Map();
+  let known = {}; // machine -> {bots:[{id,name,role,primary}]} kept on disk for machines that are off
+  let loaded = false;
+  let inflight = null;
+  let queue = [];
+
+  async function load() {
+    if (loaded) return;
+    loaded = true;
+    const raw = await readJson(cacheFile, {}).catch(() => ({}));
+    known = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const q = await readJson(outboxFile, []).catch(() => []);
+    queue = Array.isArray(q) ? q.filter((i) => i && i.id && i.machine && typeof i.text === 'string') : [];
+  }
+  const saveKnown = () => writeJsonAtomic(cacheFile, known).catch(() => {});
+  const saveQueue = async () => {
+    await writeJsonAtomic(outboxFile, queue).catch(() => {});
+    try { await fsp.chmod(outboxFile, 0o600); } catch { /* Windows */ }
+  };
+
+  const slimBot = (b) => ({ id: String(b.id), name: String(b.name || b.id).slice(0, 80), role: String(b.role || '').slice(0, 200), primary: Boolean(b.primary) });
+
+  async function askOne(name) {
+    const peer = peers.find(name);
+    if (!peer) return null;
+    try {
+      const [data, att] = await Promise.all([
+        peers.json(peer, 'GET', '/api/bots', { timeoutMs: 5000 }),
+        peers.json(peer, 'GET', '/api/attention', { timeoutMs: 5000 }).catch(() => null),
+      ]);
+      const list = (Array.isArray(data) ? data : data?.bots || []).filter((b) => b && b.id);
+      const bots = list.map((b) => ({
+        ...slimBot(b),
+        ...(b.preview && typeof b.preview === 'object' ? { preview: { ts: b.preview.ts || '', role: b.preview.role || '', text: String(b.preview.text || '').slice(0, 200) } } : {}),
+      }));
+      // The status lines (1.5.40) of that machine's bots, under their names here.
+      const attention = {};
+      for (const [key, item] of Object.entries(att?.items || {})) {
+        const m = /^bot:(.+)$/.exec(key);
+        if (m && bots.some((b) => b.id === m[1]) && item && typeof item === 'object') attention[`bot:${m[1]}@${name}`] = item;
+      }
+      const row = { at: Date.now(), online: true, bots, attention };
+      live.set(name, row);
+      const slim = bots.map(slimBot);
+      if (JSON.stringify(known[name]?.bots || []) !== JSON.stringify(slim)) { known[name] = { bots: slim }; void saveKnown(); }
+      return row;
+    } catch {
+      const row = { at: Date.now(), online: false, bots: (live.get(name)?.bots || known[name]?.bots || []).map(slimBot), attention: {} };
+      live.set(name, row);
+      return row;
+    }
+  }
+
+  /** Every other machine, with its bots - the ones it had when it is off. */
+  async function list({ fresh = false } = {}) {
+    await load();
+    const names = peers.list().map((p) => p.name);
+    const stale = names.filter((n) => fresh || !live.has(n) || Date.now() - live.get(n).at > 15000);
+    if (stale.length) {
+      if (!inflight || fresh) inflight = Promise.all(stale.map(askOne)).finally(() => { inflight = null; });
+      await inflight;
+    }
+    const out = names.map((machine) => {
+      const row = live.get(machine) || { online: false, bots: (known[machine]?.bots || []), attention: {} };
+      const queued = queue.filter((i) => i.machine === machine).length;
+      return { machine, online: Boolean(row.online), bots: row.bots, attention: row.attention || {}, ...(queued ? { queued } : {}) };
+    });
+    // A machine that is back gets what waited for it.
+    if (out.some((m) => m.online && m.queued)) void flush().catch(() => {});
+    return out;
+  }
+
+  const isOnline = (machine) => Boolean(live.get(machine)?.online);
+  const primaryOf = (machine) => (live.get(machine)?.bots || known[machine]?.bots || []).find((b) => b.primary)?.id || '';
+
+  /**
+   * Hand the human's message (or a bot's hand-off) to a bot over there: its
+   * attachments go to that machine first and are named by their path there.
+   * Only text, attachments and a hand-off's limits go over.
+   */
+  async function send(peer, botId, { text, attachments = [], handoff = null } = {}) {
+    if (!botId) {
+      // A hand-off to "that machine" (machine_switch): its main assistant.
+      const data = await peers.json(peer, 'GET', '/api/bots', { timeoutMs: 8000 });
+      botId = (Array.isArray(data) ? data : data?.bots || []).find((b) => b.primary)?.id || '';
+      if (!botId) throw Object.assign(new Error(`「${peer.name}」上没有主助理`), { code: 'BOT_NOT_FOUND' });
+    }
+    const carried = [];
+    for (const a of attachments) {
+      if (!readUpload) break;
+      const file = await readUpload(a.path);
+      const up = await peers.json(peer, 'POST', '/api/uploads', { raw: file.bytes, headers: { 'x-file-name': encodeURIComponent(file.name), [VIA]: '1' }, timeoutMs: 120000 });
+      if (up?.path) carried.push({ path: up.path });
+    }
+    const out = await peers.json(peer, 'POST', `/api/bots/${encodeURIComponent(botId)}/message`, {
+      body: { text: String(text || ''), ...(carried.length ? { attachments: carried } : {}), ...(handoff ? { handoff } : {}) },
+      headers: { [VIA]: '1' },
+      timeoutMs: 20000,
+    });
+    return { ...out, botId };
+  }
+
+  /** Send now, or keep it here until that machine answers (it is off). */
+  async function deliver({ machine, botId, text, attachments = [], from = null }) {
+    await load();
+    const peer = peers.find(machine);
+    if (!peer) throw Object.assign(new Error('没有这台机器（可能已经从「机器」里删掉了）'), { code: 'PEER_NOT_FOUND' });
+    const handoff = from ? { depth: 1, chain: [from.botId || 'bot'], budgetLeft: 6, from: { bot: from.name || '', machine: selfName() } } : null;
+    // Messages already waiting go first: their order is the human's order.
+    if (!queue.some((i) => i.machine === peer.name)) {
+      try {
+        return await send(peer, botId, { text, attachments, handoff });
+      } catch (err) {
+        if (!isUnreachable(err)) throw err;
+      }
+    }
+    if (queue.length >= 100 || queue.filter((i) => i.machine === peer.name && i.botId === botId).length >= 20) {
+      throw Object.assign(new Error(`「${peer.name}」连不上，等它的消息已经太多了，先别再发`), { code: 'OUTBOX_FULL' });
+    }
+    const item = {
+      id: `q_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      machine: peer.name,
+      botId: botId || '',
+      text: String(text || ''),
+      ...(attachments.length ? { attachments: attachments.map((a) => ({ path: a.path })) } : {}),
+      ...(from ? { from: { botId: String(from.botId || ''), name: String(from.name || '') } } : {}),
+      at: new Date().toISOString(),
+    };
+    queue.push(item);
+    await saveQueue();
+    if (live.has(peer.name)) live.get(peer.name).online = false;
+    await audit({ kind: 'peer.queued', machine: peer.name, botId: item.botId, queueId: item.id });
+    bus?.emit({ type: 'peer.outbox', machine: peer.name, botId: item.botId ? `${item.botId}@${peer.name}` : '', queueId: item.id, state: 'queued' });
+    void flush().catch(() => {});
+    return { queued: true, queueId: item.id, message: OFFLINE_WORDS, machine: peer.name, botId: item.botId };
+  }
+
+  let flushing = null;
+  /** Send what waits, in order, per machine; a machine still off keeps its messages. */
+  function flush() {
+    if (flushing) return flushing;
+    flushing = (async () => {
+      await load();
+      let sent = 0;
+      const off = new Set();
+      for (const item of [...queue]) {
+        if (off.has(item.machine)) continue;
+        const peer = peers.find(item.machine);
+        if (!peer || peer.name !== item.machine) { off.add(item.machine); continue; }
+        try {
+          const handoff = item.from ? { depth: 1, chain: [item.from.botId || 'bot'], budgetLeft: 6, from: { bot: item.from.name || '', machine: selfName() } } : null;
+          const out = await send(peer, item.botId, { text: item.text, attachments: item.attachments || [], handoff });
+          queue = queue.filter((i) => i.id !== item.id);
+          await saveQueue();
+          sent += 1;
+          await audit({ kind: 'peer.delivered', machine: item.machine, botId: out.botId, queueId: item.id, turnId: out.turnId || null });
+          bus?.emit({ type: 'peer.outbox', machine: item.machine, botId: `${out.botId}@${item.machine}`, queueId: item.id, turnId: out.turnId || '', state: 'sent' });
+        } catch (err) {
+          if (isUnreachable(err)) { off.add(item.machine); continue; }
+          // That bot is gone, or the machine refuses: the human is told, the message is not lost silently.
+          queue = queue.filter((i) => i.id !== item.id);
+          await saveQueue();
+          await audit({ kind: 'peer.undelivered', machine: item.machine, botId: item.botId, queueId: item.id, error: err.message });
+          bus?.emit({ type: 'peer.outbox', machine: item.machine, botId: item.botId ? `${item.botId}@${item.machine}` : '', queueId: item.id, state: 'failed', text: `没能交给「${item.machine}」：${err.message}` });
+        }
+      }
+      return { sent, waiting: queue.length };
+    })().finally(() => { flushing = null; });
+    return flushing;
+  }
+
+  /**
+   * That bot's events, as they happen there, passed to this window (SSE).
+   * The link dropping is said in plain words; this keeps trying, and says so
+   * when it is back (the window then reloads the chat: the turn went on there).
+   */
+  async function pipeStream(peer, botId, req, res) {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    res.write('retry: 3000\n: connected\n\n');
+    let closed = false;
+    const controller = new AbortController();
+    const write = (ev) => {
+      if (closed) return;
+      try { res.write(`data: ${JSON.stringify(ev)}\n\n`); } catch { closed = true; }
+    };
+    const heartbeat = setInterval(() => { if (!closed) { try { res.write(`: ping ${Date.now()}\n\n`); } catch { closed = true; } } }, 15000);
+    heartbeat.unref?.();
+    const stop = () => { closed = true; clearInterval(heartbeat); controller.abort(); };
+    req.on('close', stop);
+    res.on('close', stop);
+    let down = false;
+    let wasUp = false;
+    while (!closed) {
+      // One try: given up when that machine says nothing for a while (it pings every 15 s).
+      // A machine switched off or cut from the network leaves the link silent, not closed (1.5.42 test).
+      const attempt = new AbortController();
+      const onStop = () => attempt.abort();
+      controller.signal.addEventListener('abort', onStop, { once: true });
+      let heard = Date.now();
+      const watchdog = setInterval(() => { if (Date.now() - heard > streamIdleMs) attempt.abort(); }, Math.min(5000, Math.max(100, Math.floor(streamIdleMs / 4))));
+      watchdog.unref?.();
+      try {
+        const up = await peers.call(peer, 'GET', `/api/stream?botId=${encodeURIComponent(botId)}`, { headers: { accept: 'text/event-stream', [VIA]: '1' }, timeoutMs: 6 * 3600 * 1000, signal: attempt.signal });
+        if (!up.ok || !up.body) { await up.body?.cancel?.().catch(() => {}); throw Object.assign(new Error(`HTTP ${up.status}`), { code: 'PEER_UNREACHABLE' }); }
+        if (down || wasUp) write({ type: 'peer.link', state: 'up', machine: peer.name, botId: `${botId}@${peer.name}` });
+        down = false;
+        wasUp = true;
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for await (const chunk of up.body) {
+          if (closed) break;
+          heard = Date.now();
+          buffer += decoder.decode(chunk, { stream: true });
+          let split;
+          while ((split = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, split);
+            buffer = buffer.slice(split + 2);
+            for (const line of frame.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              let ev;
+              try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+              const out = tagRemoteEvent(ev, peer.name, botId);
+              if (out) write(out);
+            }
+          }
+          if (buffer.length > 1024 * 1024) buffer = '';
+        }
+        if (closed) break;
+        throw Object.assign(new Error('stream ended'), { code: 'PEER_UNREACHABLE' });
+      } catch (err) {
+        if (closed) break;
+        if (err?.code === 'PEER_UNAUTHORIZED') {
+          write({ type: 'peer.link', state: 'refused', machine: peer.name, botId: `${botId}@${peer.name}`, text: err.message });
+          break;
+        }
+        if (!down) write({ type: 'peer.link', state: 'down', machine: peer.name, botId: `${botId}@${peer.name}`, text: LINK_DOWN_WORDS });
+        down = true;
+      } finally {
+        clearInterval(watchdog);
+        controller.signal.removeEventListener('abort', onStop);
+      }
+      await new Promise((r) => setTimeout(r, down ? 5000 : 1000).unref?.());
+    }
+    stop();
+    try { res.end(); } catch { /* gone */ }
+  }
+
+  return {
+    load,
+    list,
+    isOnline,
+    primaryOf,
+    send,
+    deliver,
+    flush,
+    pipeStream,
+    outbox: {
+      list: async () => { await load(); return queue.map((i) => ({ ...i })); },
+      async remove(id) {
+        await load();
+        const hit = queue.find((i) => i.id === id);
+        if (!hit) return null;
+        queue = queue.filter((i) => i.id !== id);
+        await saveQueue();
+        bus?.emit({ type: 'peer.outbox', machine: hit.machine, botId: hit.botId ? `${hit.botId}@${hit.machine}` : '', queueId: id, state: 'removed' });
+        return hit;
+      },
+      flush,
+    },
+    selfName,
+  };
+}

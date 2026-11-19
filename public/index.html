@@ -778,7 +778,7 @@
       <section class="dsec" id="sec-machines">
         <div class="dsec-head">机器</div>
         <div class="dsec-hint">
-          每台机器有自己的一套助手、记忆、工作区和桌面。选中哪台，整个界面就是哪台；左上角也能切换。
+          每台机器有自己的一套助手、记忆、工作区和桌面。「全部机器」里能看到每台机器上的助手，点开就聊；只想看某一台，在左上角选它。
         </div>
         <div class="machine-list" id="set-machines-list"></div>
         <div class="row-actions" style="margin-top:10px">
@@ -1089,7 +1089,7 @@
     <button class="icon-btn sm" id="local-pair-close" type="button" aria-label="关闭">✕</button>
   </div>
   <div class="modal-body">
-    <div class="row-note">批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。</div>
+    <div class="row-note" id="local-pair-why">批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。</div>
     <div class="row-note">想在这个浏览器里用，就配对一次：配对码在 Lamplit 应用的 设置 → 手机和外网；从终端启动的，在终端的启动信息里。</div>
     <div class="row-note">要用这个地址（<b id="local-pair-host"></b>）上这个 Lamplit 的配对码：同一台电脑上装着另一个 Lamplit 时，它的码在这里用不了。</div>
     <input class="field" id="local-pair-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="8 位配对码" />
@@ -1155,8 +1155,14 @@
     <button class="icon-btn sm" id="vnc-modal-close" type="button" aria-label="关闭">✕</button>
   </div>
   <div class="modal-body">
-    <label class="form-label" for="vnc-name">名字</label>
-    <input class="field" id="vnc-name" placeholder="例如：Ubuntu 虚拟机" autocomplete="off" maxlength="40" />
+    <label class="form-label" for="vnc-name">它是哪台？</label>
+    <div class="name-chips" id="vnc-name-chips" role="group" aria-label="它是哪台？">
+      <button type="button" class="starter-chip name-chip" data-name="云服务器">云服务器</button>
+      <button type="button" class="starter-chip name-chip" data-name="书房电脑">书房电脑</button>
+      <button type="button" class="starter-chip name-chip" data-name="旧笔记本">旧笔记本</button>
+      <button type="button" class="starter-chip name-chip" data-name="*">自己写</button>
+    </div>
+    <input class="field" id="vnc-name" placeholder="以后到处都用这个名字，例如：客厅电脑" autocomplete="off" maxlength="40" />
 
     <label class="form-label" for="vnc-addr" style="margin-top:8px">IP 地址</label>
     <input class="field" id="vnc-addr" placeholder="192.168.1.20" autocomplete="off" spellcheck="false" inputmode="url" />

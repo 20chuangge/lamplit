@@ -31,17 +31,25 @@ async function send() {
   const shown = files.length
     ? `${text || '（见附件）'}${ATTACH_MARK}${files.map((f) => `- ${f.path}（${/\.(png|jpe?g|gif|webp)$/i.test(f.path) ? '图片' : '文件'}，…）`).join('\n')}`
     : text;
-  messagesEl.appendChild(userRow({ text: shown, ts: new Date().toISOString() }));
+  state.lastSent = { text, at: Date.now() }; // its turn.start is not drawn twice (1.5.42 test)
+  const myRow = messagesEl.appendChild(userRow({ text: shown, ts: new Date().toISOString() }));
   keepTypingLast();
   scrollToBottom(true);
 
   try {
     if (isGroupMode()) {
       await api(`/api/groups/${encodeURIComponent(state.groupId)}/message`, { method: 'POST', body: { text, attachments } });
+    } else if (isRemoteId(state.botId)) {
+      // A bot on another machine (1.5.42): this hub passes it on, or keeps it until that machine is back.
+      const res = await api(remoteApi(state.botId, '/message'), { method: 'POST', body: { text, attachments } });
+      // Kept here: it is drawn with the others that wait, under the chat (not twice).
+      if (res?.queued) { myRow.remove(); await loadOutbox(); }
     } else {
       await api(`/api/bots/${state.botId}/message`, { method: 'POST', body: { text, attachments, ...(call.on ? { voiceCall: true } : {}) } });
     }
   } catch (err) {
+    // Sent again once the browser is paired: kept for a machine that is off, it is drawn with the others that wait.
+    if (err.code === 'LOCAL_KEY_REQUIRED' && state.afterPair) state.afterPair.then = (res) => { if (res?.queued) { myRow.remove(); loadOutbox(); } };
     if (err.status !== 401) toast(err.status === 404 ? '服务端还没有群组消息接口（404）' : err.message, true);
   } finally {
     state.sending = false;
@@ -78,9 +86,15 @@ function setWorking(on) {
 async function refreshWorking() {
   if (isGroupMode() || !state.botId) return setWorking(false);
   try {
-    const turns = await api('/api/turns');
+    const turns = await api(isRemoteId(state.botId) ? remoteApi(state.botId, '/turns') : '/api/turns');
     setWorking((turns || []).some((t) => t.botId === state.botId));
   } catch { /* leave it */ }
+}
+
+/** Did this page send that text a moment ago (its own bubble is already drawn)? */
+function sentHere(text) {
+  const mine = state.lastSent;
+  return Boolean(state.sending || (mine && Date.now() - mine.at < 120000 && String(text).startsWith(mine.text || '（见附件）')));
 }
 
 /** The stop button says 「停下」: the turn stops, its task does not go on by itself, its waiting cards close. */
@@ -230,6 +244,11 @@ function handleEvent(ev) {
     applyUiCommand(ev.patch || {});
     return;
   }
+  // A message waiting for a machine that was off (1.5.42): sent, or not.
+  if (ev.type === 'peer.outbox') {
+    onOutboxEvent(ev);
+    return;
+  }
   if (ev.type === 'settings.changed') {
     const section = ev.section || 'model';
     if (section === 'model' && state.settings && ev.settings) state.settings.model = ev.settings;
@@ -361,6 +380,11 @@ function handleEvent(ev) {
       state.liveTurn = { turnId: ev.turnId, botId: ev.botId || null, bubble: null, text: '', sender };
       if (!isGroupMode() && ev.botId === state.botId && !ev.aside) setWorking(true);
       // A colleague handed this bot work: show what it asked, with its face, as it arrives.
+      // Typed on another device or on that machine's own page: shown here too, not only after a reload.
+      if (ev.source === 'chat' && ev.text && !ev.aside && !isGroupMode() && ev.botId === state.botId && !sentHere(ev.text)) {
+        messagesEl.appendChild(userRow({ text: ev.text, ts: ev.ts || new Date().toISOString() }));
+        keepTypingLast();
+      }
       if (ev.fromBotId && ev.text && !isGroupMode() && ev.botId === state.botId) {
         messagesEl.appendChild(botMessageRow({ fromBot: ev.fromBotId, text: ev.text, ts: ev.ts, handoffState: 'doing' }));
       }
@@ -647,6 +671,8 @@ function appendApprovalCard(ev, sender) {
  * collapsed block at the bottom, for people who actually want them.
  */
 function buildApprovalCard(data) {
+  // A card in the chat of a bot on another machine names that machine, drawn live or from the history (1.5.42).
+  if (!data.from && remoteChatMachine()) data = { ...data, from: { machine: remoteChatMachine(), botName: botById(state.botId)?.name || '' } };
   const card = el('div', 'approval');
   card.dataset.approval = data.approvalId || '';
   // A scheduled run that stopped at this step (1.3.2): not an answered card,
@@ -871,6 +897,7 @@ function dropAnswered(approvalId, card) {
   if (machine) {
     state.inbox.items = (state.inbox.items || []).filter((i) => !(i.machine === machine && i.id === approvalId));
     updateApprovalsPill();
+    renderBots(); // the row 「别的机器上有 N 个操作等你确认」 follows (1.5.42 test)
     refreshInbox({ notify: false });
   } else {
     state.approvals = (state.approvals || []).filter((a) => a.id !== approvalId);
@@ -995,6 +1022,8 @@ async function refreshPendingApprovals() {
   }
   updateApprovalsPill();
   if (inboxIsOpen()) renderInbox();
+  // A bot on another machine: its cards come from the inbox and are answered through it (1.5.42).
+  if (isRemoteId(state.botId)) { appendRemoteCards(); return; }
   for (const approval of state.approvals) {
     if (approval.botId && approval.botId !== state.botId) continue;
     const parked = approval.status === 'awaiting_human';
@@ -1310,7 +1339,8 @@ function docCard(file, url) {
   dl.setAttribute('download', file.name);
   card.appendChild(dl);
   let src = url;
-  let local = true;
+  // A file of a bot on another machine opens from there, never with this computer's programs (1.5.42).
+  let local = !remoteChatMachine();
   const action = () => (kind.view ? '点开查看' : (local && canOpenLocally() ? '点开打开' : '点开下载'));
   const describe = (where) => { sub.textContent = [kind.label, where, action()].filter(Boolean).join(' · '); };
   describe('');
@@ -1321,8 +1351,8 @@ function docCard(file, url) {
   });
   // After 「撤销」 the card says the file is gone, not 「点开查看」 (1.5.41).
   card.recheck = () => {
-    if (!local) return;
-    api(`/api/workspace/stat?path=${encodeURIComponent(file.path)}`).then((r) => {
+    if (!local && !remoteChatMachine()) return;
+    api(chatStatUrl(file.path)).then((r) => {
       if (r.exists) { describe(fmtBytes(r.size)); return; }
       sub.textContent = '已撤销，这个文件不在了';
       main.disabled = true;
@@ -1330,8 +1360,9 @@ function docCard(file, url) {
       card.classList.add('gone');
     }).catch(() => {});
   };
-  api(`/api/workspace/stat?path=${encodeURIComponent(file.path)}`).then((r) => {
-    if (r.exists) { describe(fmtBytes(r.size)); return; }
+  api(chatStatUrl(file.path)).then((r) => {
+    if (r.exists) { describe(remoteChatMachine() ? `${fmtBytes(r.size)} · 在「${remoteChatMachine()}」上` : fmtBytes(r.size)); return; }
+    if (remoteChatMachine()) { sub.textContent = `「${remoteChatMachine()}」上没有这个文件了`; main.disabled = true; dl.remove(); card.classList.add('gone'); return; }
     findElsewhere(file.path).then((machine) => {
       if (!machine) { card.remove(); return; }
       src = remoteFileUrl(machine, file.path);
@@ -1384,7 +1415,11 @@ function openFileViewer(src, name, downloadUrl, view = 'frame', localPath = '') 
         return;
       }
       doc.appendChild(el('pre', 'file-viewer-text', body));
-    }).catch(() => { doc.textContent = '没能读到这个文件。'; });
+    }).catch((err) => {
+      const far = /\/api\/peers\/([^/]+)\/file\?/.exec(src);
+      if (far && err.message === '403') { doc.innerHTML = ''; doc.appendChild(lockedNote(decodeURIComponent(far[1]), () => openFileViewer(src, name, downloadUrl, view, localPath))); return; }
+      doc.textContent = '没能读到这个文件。';
+    });
   }
   box.classList.add('show');
 }

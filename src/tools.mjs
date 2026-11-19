@@ -1522,7 +1522,7 @@ export function createRegistry(deps) {
       r = await askPeerBot(peers, peer, {
         botId: target.id,
         text: String(args.text || ''),
-        handoff: { depth: (ctx.depth || 0) + 1, chain: [...chain, target.id], budgetLeft: budget.left, from: { bot: ctx.bot.name } },
+        handoff: { depth: (ctx.depth || 0) + 1, chain: [...chain, target.id], budgetLeft: budget.left, from: { bot: ctx.bot.name, machine: deps.getRoster?.()?.selfName?.() || '' } },
         workspaceDir: ctx.workspaceDir,
         signal: ctx.signal,
       });
@@ -2403,22 +2403,29 @@ export function createRegistry(deps) {
 
   add({
     name: 'machine_list',
-    description: 'List the machines the human can switch between (from their desktop app): name, address, and which one this chat is on. Each machine has its own bots.',
+    description: 'List the human\'s machines by name, and which one this chat is on. Each machine has its own bots; the human sees all of them in one sidebar, grouped by machine.',
     risk: RISK.LOW,
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     async run(_args, ctx) {
       const ui = ctx.app?.uiView?.() || {};
       const machines = ui.machines || [];
       if (!machines.length) {
-        return { machines: [], note: 'No machine list: the human is not in the desktop app, or it has not reported yet. Ask them to switch machines from the top-left of the window.' };
+        // No window has reported (a browser, a phone): the machines this one works with.
+        const peers = deps.getPeers?.()?.list?.() || [];
+        if (peers.length) return { machines: peers.map((p) => ({ name: p.name, current: false })), current: { name: deps.getRoster?.()?.selfName?.() || 'this machine' } };
+        return { machines: [], note: 'No other machines: this one works alone. The human adds machines in 设置 → 机器.' };
       }
-      return { machines, current: ui.machine || null };
+      return { machines: machines.map(({ name, current }) => ({ name, current: Boolean(current) })), current: ui.machine?.name ? { name: ui.machine.name } : null };
     },
   });
 
+  // 1.5.42 一个花名册: the window stays where it is. The task goes to that
+  // machine's main assistant; the human finds it in the sidebar under that
+  // machine's name and can open the chat from here. A machine that is off gets
+  // the task when it is back.
   add({
     name: 'machine_switch',
-    description: 'Move work to another machine: switch the human\'s window to it and hand the task to that machine\'s primary bot, which then does it there. Use this instead of SSH when the human asks for something on another of their machines. machine is a name or address from machine_list; task is the full instruction for the bot over there (it does not see this conversation).',
+    description: 'Hand a task to another of the human\'s machines: its main assistant does it there. The window stays where it is - the human sees that assistant in the sidebar under the machine\'s name and can open its chat from here; tell them in one sentence where it went. Use this instead of SSH when the human asks for something on another of their machines. machine is a name from machine_list; task is the full instruction for the assistant over there (it does not see this conversation). If that machine is off, the task waits and is sent when it is back.',
     risk: RISK.MEDIUM,
     parameters: {
       type: 'object',
@@ -2430,17 +2437,31 @@ export function createRegistry(deps) {
       additionalProperties: false,
     },
     async run(args, ctx) {
-      if (!ctx.app?.applyUi) throw toolError('APP_UNAVAILABLE', 'the window is not connected');
-      const machines = ctx.app.uiView?.().machines || [];
-      const wanted = String(args?.machine || '').trim().toLowerCase();
-      const match = machines.find((m) => m.name.toLowerCase() === wanted || m.url.toLowerCase() === wanted)
-        || machines.find((m) => m.name.toLowerCase().includes(wanted) || m.url.toLowerCase().includes(wanted));
-      if (!match) {
-        throw toolError('MACHINE_NOT_FOUND', `no machine "${args?.machine}"; known: ${machines.map((m) => m.name).join(', ') || 'none reported'}`);
+      const peers = deps.getPeers?.();
+      const roster = deps.getRoster?.();
+      const wanted = String(args?.machine || '').trim();
+      const here = String(roster?.selfName?.() || '').trim();
+      const current = (ctx.app?.uiView?.().machines || []).find((m) => m.current);
+      if (wanted && ((here && wanted.toLowerCase() === here.toLowerCase()) || (current && current.name.toLowerCase() === wanted.toLowerCase()) || wanted === '本机')) {
+        return { ok: true, machine: here || wanted, note: 'already on this machine; do the task here' };
       }
-      if (match.current) return { ok: true, machine: match.name, note: 'already on this machine; do the task here' };
-      ctx.app.applyUi({ switchMachine: { target: match.url, message: String(args?.task || '') } }, { by: ctx.bot?.id });
-      return { ok: true, machine: match.name, handedOff: Boolean(args?.task) };
+      const peer = peers?.find?.(wanted) || null;
+      if (!peer || !roster) {
+        const known = (peers?.list?.() || []).map((p) => p.name);
+        throw toolError('MACHINE_NOT_FOUND', `no machine "${args?.machine}"; known: ${known.join(', ') || 'none'}`);
+      }
+      const task = String(args?.task || '').trim();
+      if (!task) return { ok: true, machine: peer.name, handedOff: false, note: 'Nothing handed over (no task). The window stays where it is; the human finds that machine\'s assistants in the sidebar under its name.' };
+      let out;
+      try {
+        out = await roster.deliver({ machine: peer.name, botId: roster.primaryOf(peer.name), text: task, from: { botId: ctx.bot?.id || '', name: ctx.bot?.name || '' } });
+      } catch (err) {
+        throw toolError(err.code || 'PEER_ERROR', err.message);
+      }
+      if (out.queued) {
+        return { ok: true, machine: peer.name, handedOff: false, queued: true, note: `That machine is off. The task waits here and is sent when it is back. Tell the human in their words: ${out.message}` };
+      }
+      return { ok: true, machine: peer.name, handedOff: true, note: `Handed to the main assistant on "${peer.name}". The window stays here: the human sees it in the sidebar under "${peer.name}". Say so in one sentence; do not do the task yourself.` };
     },
   });
 

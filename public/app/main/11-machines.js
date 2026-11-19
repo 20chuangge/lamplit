@@ -51,7 +51,8 @@ function throughPhoneRelay(origin = location.origin) {
 }
 
 function machineDisplayName() {
-  if (onLocalMachine()) return '本机';
+  // This computer by its own name (「客厅电脑」), not 「本机」 (1.5.42; the step-two test).
+  if (onLocalMachine()) return selfMachineName || state.health?.name || '这台电脑';
   // The machine the desktop app switched to, whatever address this page came on
   // (through the relay it is a loopback door, 127.0.0.N: 1.5.37).
   const row = machineBridge?.machines?.find((m) => m.url === location.origin || m.tailnetUrl === location.origin)
@@ -78,11 +79,11 @@ function syncMachineBranding() {
   if ($('machine-name')) $('machine-name').textContent = name;
   if ($('pc-title')) $('pc-title').textContent = `${name}的屏幕`;
   if ($('machine-sub')) {
-    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local ? '这台电脑' : [os, pageRouteWords()].filter(Boolean).join(' · '))}`;
+    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local ? (rosterGrouped() ? '全部机器' : '这台电脑') : [os, pageRouteWords()].filter(Boolean).join(' · '))}`;
   }
   if ($('about-origin')) $('about-origin').textContent = location.origin;
   if ($('timezone-pill')) $('timezone-pill').textContent = timezoneLabel(effectiveTimezone());
-  if ($('composer-hint')) {
+  if ($('composer-hint') && !remoteChatMachine()) { // a remote chat's own hint stays (1.5.42)
     $('composer-hint').textContent = local
       ? '需要动你电脑的操作，会先问过你'
       : `在「${name}」上，助手会自己把事情做完`;
@@ -92,7 +93,7 @@ function syncMachineBranding() {
 /** Every machine this client can switch to, for the bots to see. */
 function knownMachines() {
   if (!machineBridge) return [];
-  return [{ name: '本机', url: 'local', current: Boolean(machineBridge.local) }]
+  return [{ name: machineBridge.localName || '这台电脑', url: 'local', current: Boolean(machineBridge.local) }]
     .concat((machineBridge.machines || []).map((m) => ({ name: m.name, url: m.url, current: m.url === machineBridge.current })));
 }
 
@@ -124,16 +125,16 @@ async function deliverPendingTask() {
 
 async function refreshMachines() {
   try { machineBridge = (await window.desk?.listMachines?.()) || null; } catch { machineBridge = null; }
+  // Its own name first, at once (the desktop app too, 1.5.42: the top left names it); the full list waits for the others to be probed.
+  if (!selfMachineName) {
+    api('/api/machines?self=1').then((data) => {
+      const mine = (data?.machines || []).find((m) => m.self);
+      if (mine?.name && !selfMachineName) { selfMachineName = mine.name; syncMachineBranding(); renderMachineMenu(); }
+    }).catch(() => {});
+  }
   // Browser / phone: no desktop bridge, but the hub knows its own hostname, so
   // the sidebar can say "ubuntu" instead of "100.64.0.5".
   if (!machineBridge) {
-    // Its own name first, at once; the full list waits for the others to be probed.
-    if (!selfMachineName) {
-      api('/api/machines?self=1').then((data) => {
-        const mine = (data?.machines || []).find((m) => m.self);
-        if (mine?.name && !selfMachineName) { selfMachineName = mine.name; syncMachineBranding(); }
-      }).catch(() => {});
-    }
     try {
       const data = await api('/api/machines');
       state.machinesCache = { at: Date.now(), machines: data?.machines || [] };
@@ -153,7 +154,7 @@ async function refreshMachines() {
 async function switchMachine(url) {
   closeMenus();
   if (!window.desk) return;
-  const name = url ? ((machineBridge?.machines || []).find((m) => m.url === url)?.name || url.replace(/^https?:\/\//, '')) : '本机';
+  const name = url ? ((machineBridge?.machines || []).find((m) => m.url === url)?.name || '那台机器') : (machineBridge?.localName || '这台电脑');
   // Say something at once: reaching a machine can take a few seconds.
   toast(`正在切换到「${name}」…`);
   const res = url ? await window.desk.switchHub(url) : await window.desk.useLocal();
@@ -202,10 +203,12 @@ function renderMachineMenu() {
       attrs: `data-back-origin="${escapeHtml(back.origin)}"`,
       key: 'origin',
     }));
+    // 「全部机器」 (1.5.42): every machine's bots in this sidebar; this machine alone is its own row.
+    if (list.some((m) => !m.self)) rows.push(row('全部机器', '每台机器上的助手都在左边', { current: state.view === 'all', attrs: 'data-view="all"' }));
     for (const m of list) {
       rows.push(
         m.self
-          ? row(m.name, selfSub(), { current: true })
+          ? row(m.name, list.some((x) => !x.self) ? `${selfSub()} · 只看这台` : selfSub(), { current: state.view !== 'all' || !list.some((x) => !x.self), attrs: 'data-view="local"' })
           : row(m.name, '检测中…', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
       );
     }
@@ -230,14 +233,19 @@ function renderMachineMenu() {
     }
     return;
   }
-  const rows = [{ url: '', name: '本机', sub: '这台电脑', current: machineBridge.local }]
-    .concat((machineBridge.machines || []).map((m) => ({
-      // The one on screen says how it is reached now (中转 / Tailscale / its address), not the address it was added with.
-      url: m.url, name: m.name, sub: m.url === machineBridge.current ? pageRouteWords() : m.url.replace(/^https?:\/\//, ''), current: m.url === machineBridge.current,
-    })));
+  const others = machineBridge.machines || [];
+  const rows = [];
+  // 「全部机器」 (1.5.42): the default - this computer's window, every machine's bots in its sidebar.
+  if (others.length) rows.push({ view: 'all', name: '全部机器', sub: '每台机器上的助手都在左边', current: Boolean(machineBridge.local) && state.view === 'all' });
+  rows.push({ url: '', view: 'local', name: machineBridge.localName || (machineBridge.local ? machineDisplayName() : '这台电脑'), sub: others.length ? '这台电脑 · 只看这台' : '这台电脑', current: Boolean(machineBridge.local) && (state.view !== 'all' || !others.length) });
+  for (const m of others) {
+    // How it is reached, in words (中转 / Tailscale / 局域网) for the one on screen; never an address.
+    const route = m.url === machineBridge.current ? pageRouteWords() : '';
+    rows.push({ url: m.url, name: m.name, sub: ['中转', 'Tailscale', '局域网'].includes(route) ? `${route} · 只看这台` : '只看这台', current: m.url === machineBridge.current });
+  }
   menu.innerHTML = rows.map((m) => `
-    <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" data-machine="${escapeHtml(m.url)}">
-      <b>${escapeHtml(m.name)}</b>${machineAttLabel(m.url)}<small>${escapeHtml(m.sub)}</small>
+    <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" ${m.url !== undefined ? `data-machine="${escapeHtml(m.url)}"` : ''} ${m.view ? `data-view="${m.view}"` : ''}>
+      <b>${escapeHtml(m.name)}</b>${m.url !== undefined ? machineAttLabel(m.url) : ''}<small>${escapeHtml(m.sub)}</small>
     </button>`).join('')
     + '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加机器…</button>';
 }
@@ -1022,6 +1030,7 @@ function fillZoneSelect(select, current) {
 
 function openMachineModal() {
   $('vnc-name').value = '';
+  for (const chip of document.querySelectorAll('#vnc-name-chips [data-name]')) chip.classList.remove('on');
   $('vnc-addr').value = '';
   $('vnc-ssh-user').value = 'ubuntu';
   $('vnc-ssh-port').value = '22';
@@ -1033,7 +1042,7 @@ function openMachineModal() {
   $('vnc-modal').classList.add('open');
   $('vnc-modal').setAttribute('aria-hidden', 'false');
   $('vnc-scrim').classList.add('show');
-  setTimeout(() => $('vnc-addr').focus(), 50);
+  setTimeout(() => $('vnc-name').focus(), 50);
   updatePublicHint();
 }
 
@@ -1045,7 +1054,9 @@ function closeMachineModal() {
 
 function saveMachineFromModal() {
   const note = $('vnc-modal-note');
-  const fail = (text) => { note.textContent = text; note.hidden = false; };
+  const fail = (text) => { note.textContent = text; note.hidden = false; note.scrollIntoView({ block: 'nearest' }); };
+  // What it is called everywhere after (1.5.42): a name the human gave, never its address.
+  if (!$('vnc-name').value.trim()) { $('vnc-name').focus(); return fail('先选一下它是哪台（或者自己写个名字），以后到处都用这个名字。'); }
   const hostInput = $('vnc-addr').value.trim();
   if (!hostInput) return fail('先填那台机器的 IP，例如 192.168.1.20');
   const address = parseTargetAddress(hostInput);
@@ -1057,7 +1068,7 @@ function saveMachineFromModal() {
   if (tsKey && !/^tskey-auth-/.test(tsKey)) return fail('Tailscale 密钥应该是 tskey-auth- 开头的 Auth key。');
   note.hidden = true;
   startRemoteProvision({
-    name: $('vnc-name').value.trim() || address.host,
+    name: $('vnc-name').value.trim(),
     host: address.host,
     sshPort: Number($('vnc-ssh-port').value) || 22,
     username: $('vnc-ssh-user').value.trim() || 'ubuntu',
@@ -1318,6 +1329,9 @@ function desktopTakeover() {
 /** Start controlling the desktop. With a live preview mounted this only
  *  lifts the shield, so there is no reconnect and no black frame. */
 async function openDesktopViewer() {
+  // Another machine's screen (1.5.42): the mouse and keyboard would work that computer. Ask first.
+  const far = remoteOf(pcTargetBotId());
+  if (far && !(await askConfirm({ title: `接管「${far.machine}」的屏幕？`, text: `接管后，你的鼠标和键盘会操作「${far.machine}」那台电脑。助手正在做的事可能会被你打断。`, confirmLabel: '接管' }))) return;
   api('/api/audit/takeover', { method: 'POST', body: { botId: pcTargetBotId(), mode: state.policy?.takeover === 'view' ? 'view' : 'control' } }).catch(() => {});
   if (!state.computer?.desktop?.url) {
     try { await loadComputer(); } catch { /* the viewer can still ask for a password */ }

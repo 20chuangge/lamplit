@@ -161,7 +161,7 @@ function setAvatarLocal(bot, patch) {
   if (!bot) return;
   bot.avatar = { ...avatarOf(bot), ...patch };
   renderBots();
-  const current = state.bots.find((b) => b.id === state.botId);
+  const current = botById(state.botId);
   if (current && current.id === bot.id) renderChatAvatar(current);
   if (state.avatarBotId === bot.id) renderCustomizerPreview();
 }

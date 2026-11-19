@@ -93,6 +93,7 @@ import { createPhoneLink, makePhoneExec } from './phonelink.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
+import { createRoster, cleanBotId } from './roster.mjs';
 import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
 import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
@@ -351,6 +352,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getMedia: (kind) => (refs.getMedia ? refs.getMedia(kind) : null),
     getVideoJobs: () => refs.videoJobs || null,
     getPeers: () => refs.peers || null,
+    getRoster: () => refs.roster || null,
     getPages: () => refs.pages || null,
     getBriefing: () => refs.collectBriefing || null,
   });
@@ -661,6 +663,24 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   refs.peers = createPeers({ file: path.join(P.dataDir, 'peers.json') });
   await refs.peers.load();
   state.peers = refs.peers;
+  // One roster (1.5.42): the other machines' bots in this window's sidebar,
+  // talked to from here; a message for a machine that is off waits here.
+  refs.roster = createRoster({
+    peers: refs.peers,
+    bus,
+    cacheFile: path.join(P.dataDir, 'peer-rosters.json'),
+    outboxFile: path.join(P.dataDir, 'peer-outbox.json'),
+    readUpload: async (rel) => {
+      const p = String(rel || '');
+      if (!/^uploads\//.test(p)) throw httpError(400, 'BAD_ATTACHMENT', 'attachments must be uploaded first');
+      const abs = workspaceFile(state, p);
+      return { bytes: await fsp.readFile(abs), name: path.basename(abs) };
+    },
+    audit: (record) => audit(record).catch(() => {}),
+    selfName: () => selfMachineName(),
+  });
+  state.roster = refs.roster;
+  setInterval(() => { refs.roster.flush().catch(() => {}); }, 30000).unref?.();
   state.phone = refs.phone;
   state.phoneLink = refs.phoneLink;
   state.pages = refs.pages;
@@ -826,6 +846,9 @@ function attachHubUpgrade(server, state, viaPublic) {
     socket.on('error', () => socket.destroy());
     let pathname = '';
     try { pathname = new URL(req.url || '/', 'http://hub').pathname; } catch { return refuse(400, 'Bad Request'); }
+    // A bot's screen on another machine (1.5.42 一个花名册): through this hub.
+    const far = /^\/api\/peers\/([^/]+)\/bots\/([^/]+)\/desktop\/ws$/.exec(pathname);
+    if (far) { void bridgePeerDesktop(req, socket, head, state, far[1], far[2], refuse); return; }
     const match = /^\/api\/bots\/([^/]+)\/desktop\/ws$/.exec(pathname);
     if (!match) return refuse(404, 'Not Found');
     if (!evaluateAuth(req, state.security, state.devices).authorized) return refuse(401, 'Unauthorized');
@@ -861,6 +884,57 @@ function attachHubUpgrade(server, state, viaPublic) {
     socket.on('close', () => upstream.destroy());
     });
   });
+}
+
+/**
+ * The screen of a bot on another machine, watched from this window (1.5.42):
+ * this hub opens that machine's own desktop socket with that machine's token
+ * and passes the bytes both ways. Only the human (like the chat itself), and
+ * never for a call another hub passed on. Through the relay there is no socket
+ * to open: the window says so.
+ */
+async function bridgePeerDesktop(req, socket, head, state, rawMachine, rawBot, refuse) {
+  if (req.headers[VIA_HEADER]) return refuse(403, 'Forbidden');
+  const auth = evaluateAuth(req, state.security, state.devices);
+  if (!auth.authorized) return refuse(401, 'Unauthorized');
+  const hasOrigin = Boolean(String(req.headers.origin || '').trim());
+  if (hasOrigin && !isSameOriginRequest(req)) return refuse(401, 'Unauthorized');
+  if (!carriesLocalKey(req, auth, P.dataDir, state.devices, state.security)) return refuse(403, 'Forbidden');
+  const peer = exactPeer(state, rawMachine);
+  const botId = cleanBotId(rawBot);
+  if (!peer || !botId) return refuse(404, 'Not Found');
+  let origin = '';
+  try {
+    const res = await state.peers.call(peer, 'GET', '/api/health', { timeoutMs: 5000, noRelay: true });
+    await res.body?.cancel?.().catch(() => {});
+    origin = new URL(res.url).origin;
+  } catch {
+    return refuse(502, 'Bad Gateway');
+  }
+  if (socket.destroyed) return undefined;
+  const u = new URL(origin);
+  const port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+  const upstream = u.protocol === 'https:' ? tls.connect({ host: u.hostname, port, servername: u.hostname }) : net.connect(port, u.hostname);
+  upstream.once(u.protocol === 'https:' ? 'secureConnect' : 'connect', () => {
+    const lines = [
+      `GET /api/bots/${encodeURIComponent(botId)}/desktop/ws HTTP/1.1`,
+      `Host: ${u.host}`,
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      `Sec-WebSocket-Key: ${String(req.headers['sec-websocket-key'] || '')}`,
+      `Sec-WebSocket-Version: ${String(req.headers['sec-websocket-version'] || '13')}`,
+      ...(req.headers['sec-websocket-protocol'] ? [`Sec-WebSocket-Protocol: ${String(req.headers['sec-websocket-protocol'])}`] : []),
+      `Authorization: Bearer ${peer.token}`,
+      `${VIA_HEADER}: 1`,
+    ];
+    upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
+    if (head && head.length) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  upstream.on('error', () => socket.destroy());
+  socket.on('close', () => upstream.destroy());
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,7 +1579,9 @@ route('GET', /^\/api\/peers\/locate$/, async (_req, _res, { state, query }) => {
   throw httpError(404, 'NOT_ON_ANY_MACHINE', 'no machine has this file');
 });
 
-route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/file$/, async (_req, res, { params, state, query }) => {
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/file$/, async (req, res, { params, state, query }) => {
+  // Only the human (isAuthorityRequest, 1.5.42); a call another hub passed on is not passed on again.
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
   const p = peerPath(query.get('path'));
   const peer = state.peers.find(params.machine);
   if (!peer) throw httpError(404, 'PEER_NOT_FOUND', 'no such machine');
@@ -2968,7 +3044,13 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
     chain: (Array.isArray(h.chain) ? h.chain : []).slice(0, 10).map((c) => String(c).slice(0, 120)),
     handoffBudget: { left: Math.min(12, Math.max(0, Number(h.budgetLeft) || 0)) },
   } : null;
-  const fromNote = h ? `（另一台机器上的「${String(h.from?.bot || '队友').slice(0, 40)}」派给你的活；你的最终回答会传回给它。需要的文件可能在那台机器上，让它用 file_send 发过来，或在回答里写明你产出的文件路径。）\n\n` : '';
+  // Who handed it over, and from which machine: the chat shows one hand-over line
+  // (「客厅电脑的助理 → 助理：…」, 1.5.42 test); how to work with it goes to the bot
+  // only, never into what the human reads (no tool names in the chat).
+  const fromBot = h ? String(h.from?.bot || '队友').slice(0, 40) : '';
+  const fromMachine = h ? String(h.from?.machine || '').slice(0, 40) : '';
+  const fromLabel = h ? (fromMachine ? `${fromMachine}的${fromBot}` : `${fromBot}（另一台机器）`) : '';
+  const fromNote = h ? `（${fromMachine ? `「${fromMachine}」` : '另一台机器'}上的「${fromBot}」派给你的活；你的最终回答会传回给它。需要的文件可能在那台机器上，让它用 file_send 发过来，或在回答里写明你产出的文件路径。）` : '';
   // The bot is busy with something the human asked: answer now (no second
   // turn racing the first), and hand the message to the running turn.
   // Also when the work is a teammate's hand-off or a routine (1.2.165).
@@ -2985,7 +3067,8 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   }
   state.runtime
     .runTurn({
-      botId: bot.id, text: fromNote + text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}),
+      botId: bot.id, text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}),
+      ...(h ? { hiddenNote: fromNote, fromBotId: fromLabel } : {}),
       // Said in a voice call (1.5.22): the bot knows it is spoken to and answers for the ear.
       ...(body?.voiceCall === true && !h ? { hiddenNote: VOICE_CALL_NOTE } : {}),
     })
@@ -3847,6 +3930,153 @@ route('POST', /^\/api\/inbox\/(?<machine>[^/]+)\/(?<id>[^/]+)$/, async (req, _re
   }
   state.bus.emit({ type: 'inbox.changed', machine: peer.name, approvalId: id, status: out?.approval?.status || '' });
   return { machine: peer.name, ...out };
+});
+
+// --- one roster (1.5.42 第三步「一个花名册」) ------------------------------------
+//   GET  /api/peers/roster?fresh=1 -> {machines:[{machine, online, bots:[{id, name, role,
+//        primary, preview}], attention:{"bot:id@machine": item}, queued?}]}
+//        every other machine and its bots; one that is off keeps the bots it had.
+// A bot over there, talked to from here (only the human: isAuthorityRequest).
+// Its chat stays on its machine; this hub reads it from there and passes on:
+//   GET  /api/peers/:m/bots/:id/messages?limit=&compact=1
+//   POST /api/peers/:m/bots/:id/message {text, attachments?} -> {turnId}
+//        | {queued, queueId, message:"它那台电脑现在连不上，开机后我接着做"} when it is off
+//   GET  /api/peers/:m/bots/:id/stream            its events, live (SSE), as "id@machine"
+//   GET  /api/peers/:m/bots/:id/turns             its running turns
+//   POST /api/peers/:m/bots/:id/turns/:turnId/cancel
+//   POST /api/peers/:m/bots/:id/undo {ids}        「撤销」 of a turn there
+//   POST /api/peers/:m/bots/:id/seen              its new result was seen
+//   GET  /api/peers/:m/bots/:id/stat?path=        is a file a reply names there
+//   GET  /api/peers/:m/bots/:id/desktop           its screen; the viewer connects through here
+//   GET  /api/peers/outbox  ·  DELETE /api/peers/outbox/:id  ·  POST /api/peers/outbox/flush
+// Its cards are answered through the inbox above, nowhere else. What another
+// hub passed on is never passed on again.
+function remoteTarget(req, state, params) {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const peer = exactPeer(state, params.machine);
+  if (!peer) throw httpError(404, 'PEER_NOT_FOUND', '没有这台机器（可能已经从「机器」里删掉了）');
+  const botId = cleanBotId(params.id);
+  if (!botId) throw httpError(400, 'BAD_BOT_ID', '没有这个助手');
+  return { peer, botId };
+}
+function peerFailure(err, peer) {
+  const code = err?.code || 'PEER_ERROR';
+  if (code === 'PEER_UNREACHABLE' || code === 'PEER_PROXY_ERROR') return httpError(502, 'PEER_UNREACHABLE', `「${peer.name}」现在连不上`);
+  if (code === 'PEER_UNAUTHORIZED') return httpError(502, code, `「${peer.name}」不认这台机器的凭据。在 Lamplit 应用的「机器」里重新配对那台机器后再试。`);
+  if (code === 'BOT_NOT_FOUND') return httpError(404, code, `「${peer.name}」上没有这个助手了`);
+  if (code === 'TURN_NOT_FOUND') return httpError(404, code, '这一轮已经结束了');
+  return httpError(502, code, err?.message || `「${peer.name}」出错了`);
+}
+const passOn = (state, peer, method, p, opts = {}) => state.peers.json(peer, method, p, { timeoutMs: 15000, ...opts, headers: { [VIA_HEADER]: '1', ...(opts.headers || {}) } });
+
+route('GET', /^\/api\/peers\/roster$/, async (_req, _res, { state, query }) => ({ machines: await state.roster.list({ fresh: query.get('fresh') === '1' }) }));
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/messages$/, async (req, _res, { params, state, query }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  const limit = Math.min(Number(query.get('limit')) || 200, 1000);
+  try {
+    return await passOn(state, peer, 'GET', `/api/bots/${encodeURIComponent(botId)}/messages?limit=${limit}${query.get('compact') === '1' ? '&compact=1' : ''}`, { timeoutMs: 20000 });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/message$/, async (req, _res, { params, body, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  // Only what the human wrote: no hand-off or voice-call flags ride along.
+  const text = String(body?.text ?? '').trim();
+  const attachments = await checkAttachments(state, body?.attachments);
+  if (!text && !attachments.length) throw httpError(400, 'EMPTY_MESSAGE', 'text is required');
+  if (text.length > 20000) throw httpError(400, 'MESSAGE_TOO_LONG', 'text is limited to 20000 characters');
+  try {
+    const out = await state.roster.deliver({ machine: peer.name, botId, text, attachments: attachments.map((a) => ({ path: a.path })) });
+    if (!out.queued) await audit({ kind: 'peer.message', machine: peer.name, botId, turnId: out.turnId || null });
+    return out.queued ? out : { turnId: out.turnId, botId: `${botId}@${peer.name}`, machine: peer.name, ...(out.aside ? { aside: true } : {}) };
+  } catch (err) {
+    if (err.code === 'OUTBOX_FULL') throw httpError(429, err.code, err.message);
+    if (err.status) throw err;
+    throw peerFailure(err, peer);
+  }
+});
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/stream$/, async (req, res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  await state.roster.pipeStream(peer, botId, req, res);
+  return undefined;
+});
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/turns$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  try {
+    const turns = await passOn(state, peer, 'GET', '/api/turns', { timeoutMs: 8000 });
+    return (Array.isArray(turns) ? turns : []).filter((t) => t?.botId === botId).map((t) => ({ ...t, botId: `${botId}@${peer.name}`, machine: peer.name }));
+  } catch (err) { throw peerFailure(err, peer); }
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/turns\/(?<turnId>[\w-]{1,80})\/cancel$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  try {
+    // Only a turn of this bot: the link is to this chat, not to the whole machine.
+    const turns = await passOn(state, peer, 'GET', '/api/turns', { timeoutMs: 8000 });
+    if (!(Array.isArray(turns) ? turns : []).some((t) => t?.turnId === params.turnId && t?.botId === botId)) {
+      throw Object.assign(new Error('no such turn'), { code: 'TURN_NOT_FOUND' });
+    }
+    return await passOn(state, peer, 'POST', `/api/turns/${encodeURIComponent(params.turnId)}/cancel`, { body: {} });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/undo$/, async (req, _res, { params, body, state }) => {
+  const { peer } = remoteTarget(req, state, params);
+  const ids = (Array.isArray(body?.ids) ? body.ids : []).map(String).filter((x) => /^[\w.-]{1,120}$/.test(x)).slice(0, 200);
+  if (!ids.length) throw httpError(400, 'IDS_REQUIRED', 'body needs { ids: [...] }');
+  try {
+    return await passOn(state, peer, 'POST', '/api/undo', { body: { ids } });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/seen$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  try {
+    return await passOn(state, peer, 'POST', '/api/attention/seen', { body: { key: `bot:${botId}` }, timeoutMs: 6000 });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/stat$/, async (req, _res, { params, state, query }) => {
+  const { peer } = remoteTarget(req, state, params);
+  const p = peerPath(query.get('path'));
+  try {
+    return await passOn(state, peer, 'GET', `/api/workspace/stat?path=${encodeURIComponent(p)}`, { timeoutMs: 8000 });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+
+/** The noVNC address for a bot's screen on another machine: its socket comes through this hub. */
+export function remoteViewerUrl(url, machine, botId) {
+  if (!url) return null;
+  const q = new URLSearchParams(String(url).split('?')[1] || '');
+  q.set('path', `/api/peers/${encodeURIComponent(machine)}/bots/${encodeURIComponent(botId)}/desktop/ws`);
+  return `/novnc/vnc.html?${q.toString()}`;
+}
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/desktop$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  try {
+    const out = await passOn(state, peer, 'GET', `/api/bots/${encodeURIComponent(botId)}/desktop`, { timeoutMs: 20000 });
+    const desktop = out?.desktop && typeof out.desktop === 'object' ? { ...out.desktop, url: remoteViewerUrl(out.desktop.url, peer.name, botId) } : { running: false, url: null };
+    return { botId: `${botId}@${peer.name}`, machine: peer.name, support: out?.support || null, desktop };
+  } catch (err) { throw peerFailure(err, peer); }
+});
+
+route('GET', /^\/api\/peers\/outbox$/, async (req, _res, { state }) => {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  return { items: await state.roster.outbox.list() };
+});
+route('DELETE', /^\/api\/peers\/outbox\/(?<id>[\w-]{1,60})$/, async (req, _res, { params, state }) => {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const gone = await state.roster.outbox.remove(params.id);
+  if (!gone) throw httpError(404, 'NOT_QUEUED', '这条消息已经发出去了，或者已经取消了');
+  await audit({ kind: 'peer.unqueued', machine: gone.machine, botId: gone.botId, queueId: gone.id });
+  return { ok: true, removed: gone.id };
+});
+route('POST', /^\/api\/peers\/outbox\/flush$/, async (req, _res, { state }) => {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  return state.roster.outbox.flush();
 });
 
 // --- approvals -------------------------------------------------------------

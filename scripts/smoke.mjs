@@ -7577,6 +7577,25 @@ async function scenarioV159() {
     put.status === 200 && stranger.status === 403 && stranger.json?.error?.code === 'NOT_A_MACHINE'
     && listed.status === 200 && listed.json?.ok === true && listed.json?.updated === false
     && main.includes("out.error?.code === 'NOT_A_MACHINE'"), JSON.stringify({ put: put.status, stranger: stranger.json, listed: listed.json }));
+  // 1.5.41: away from home the desktop app reaches a machine through a relay
+  // door (127.0.0.N); it pushed the update to that door, which the hub refused
+  // as NOT_A_MACHINE (1.5.38-1.5.40). It now names the machine's listed
+  // address and the hub falls back to the relay itself. The door stays refused.
+  const G8 = await import('../desktop/guard.mjs').catch(() => null);
+  const door = 'http://127.0.0.7:41234';
+  const tail = 'http://198.51.100.9:4390';
+  const pick = G8?.pushUpdateAddress;
+  const fromDoor = pick ? pick({ url: base, tailnetUrl: tail }, door) : '';
+  const fromTailnet = pick ? pick({ url: base, tailnetUrl: tail }, `${tail}/`) : '';
+  const fromLan = pick ? pick({ url: base }, base) : '';
+  const viaDoor = await api('/api/remote/push-update', { method: 'POST', body: { url: door } });
+  const viaPick = fromDoor ? await api('/api/remote/push-update', { method: 'POST', body: { url: fromDoor } }) : null;
+  check('ENG-08 updates through the relay: the desktop app pushes to the machine\'s listed address, not the relay door it reached it by; the door itself is still refused',
+    fromDoor === base && fromTailnet === `${tail}/` && fromLan === base
+    && viaDoor.status === 403 && viaDoor.json?.error?.code === 'NOT_A_MACHINE'
+    && viaPick?.status === 200 && viaPick.json?.ok === true
+    && /const target = pushUpdateAddress\(readMachines\(\)\.find\(\(m\) => m\.url === url\) \|\| machine, base\);/.test(main) && /JSON\.stringify\(\{ url: target, cookie: await cookieHeaderFor\(target\) \}\)/.test(main),
+    JSON.stringify({ fromDoor, fromTailnet, fromLan, viaDoor: viaDoor.json, viaPick: viaPick?.json }));
   await api('/api/peers', { method: 'PUT', body: { peers: [] } });
 }
 

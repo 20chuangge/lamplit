@@ -70,3 +70,18 @@ export function parseNetcheck(text) {
   const nearest = /Nearest DERP:\s*(.+)/i.exec(String(text || ''))?.[1]?.trim() || '';
   return { regions, nearest };
 }
+
+/**
+ * The address to name when asking this computer's hub to push an update to a
+ * machine (1.5.41). The hub sends packages only to an address in its list
+ * (ENG-08); away from home the app reaches a machine through a relay door
+ * (127.0.0.N), which is not in the list and was refused (1.5.38-1.5.40). So:
+ * the address it reached, when that is the machine's own or Tailscale address;
+ * otherwise the machine's own address, and the hub goes through the relay itself.
+ */
+export function pushUpdateAddress(machine, reached) {
+  const origin = (u) => { try { return new URL(String(u || '')).origin.toLowerCase(); } catch { return ''; } };
+  const at = origin(reached);
+  const listed = [machine?.url, machine?.tailnetUrl].some((u) => u && origin(u) === at);
+  return at && listed ? reached : String(machine?.url || '');
+}

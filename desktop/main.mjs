@@ -23,7 +23,7 @@ import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pickDataDir } from './datadir.mjs';
 import { textMenuTemplate } from './textmenu.mjs';
-import { senderKind, mayUse, isProgramFile, firewallVerdict, parseNetcheck } from './guard.mjs';
+import { senderKind, mayUse, isProgramFile, firewallVerdict, parseNetcheck, pushUpdateAddress } from './guard.mjs';
 import { readSecretJson } from './sealed.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1608,11 +1608,16 @@ async function autoUpdateMachine(machine) {
     }
     bootLog(`update ${url}: ${health.version} -> ${mine}${viaRelay ? ' (through the relay)' : ''}`);
     notifyPage(L(`正在把「${name}」更新到 ${mine}…`, `Updating "${name}" to ${mine}…`));
+    // Not the relay door (127.0.0.N) it may have reached the machine by: the hub
+    // refuses any address outside its list and goes through the relay itself
+    // (1.5.41; refused as NOT_A_MACHINE on 1.5.38-1.5.40). The login goes with
+    // the address named, as the hub sends it only on a direct request there.
+    const target = pushUpdateAddress(readMachines().find((m) => m.url === url) || machine, base);
     const push = async () => {
       const r = await net.fetch(`${localUrl().replace(/\/$/, '')}/api/remote/push-update`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url: base, cookie: await cookieHeaderFor(base) }),
+        body: JSON.stringify({ url: target, cookie: await cookieHeaderFor(target) }),
       });
       return r.json().catch(() => ({}));
     };

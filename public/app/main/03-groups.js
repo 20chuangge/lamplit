@@ -107,9 +107,15 @@ function renderGroups() {
     const nameRow = el('div', 'bot-name');
     nameRow.appendChild(el('span', 'bot-name-text', group.name || '未命名群组'));
     text.appendChild(nameRow);
-    const preview = (group.preview && group.preview.text && plainPreview(group.preview.text))
-      || (members.length ? `${members.length} 位成员 · ${members.map((b) => b.name).join('、')}` : '还没有消息');
-    text.appendChild(el('div', 'bot-preview', preview));
+    // The same line a bot has (1.5.40); with nothing going on, who is in the group.
+    const last = lastLine(group);
+    const line = rosterLine(`group:${group.id}`, {
+      idle: members.length ? `${members.length} 位成员 · ${members.map((b) => b.name).join('、')}` : (last || '还没有消息'),
+      last,
+      group: true,
+    });
+    row.dataset.search = `${group.name || ''} ${members.map((b) => b.name).join(' ')} ${last} ${line.text}`.toLowerCase();
+    text.appendChild(rosterLineNode(line));
     row.appendChild(text);
     const groupAtt = attentionBadge(`group:${group.id}`);
     if (groupAtt) row.appendChild(groupAtt);
@@ -366,6 +372,19 @@ function renderGroupMessages() {
     }
     items.push({ ...item });
   }
+  // A hand-over is done once the one who took it has spoken and is not at it any more.
+  const working = Boolean(state.attention?.items?.[`group:${state.groupId}`]?.working);
+  items.forEach((item, i) => {
+    if (item.kind !== 'handoff') return;
+    // A report back to whoever handed the work over closes that hand-over; it has no state of its own.
+    const asked = items.slice(0, i).reverse().find((m) => m.kind === 'handoff' && m.from === item.to && m.to === item.from && !m.reported);
+    if (asked) { asked.reported = true; asked.handoffState = 'done'; return; }
+    item.handoffState = handoffProgress(items.slice(i + 1), {
+      working,
+      replied: (m) => (m.kind || 'assistant') === 'assistant' && m.from === item.to,
+      again: (m) => m.kind === 'handoff' && m.to === item.to,
+    });
+  });
 
   if (!items.length) {
     const wrap = el('div', 'empty');
@@ -458,21 +477,56 @@ function fillMovedPlanCard(card, plan) {
     .then(() => { if (card.isConnected) fillMovedPlanCard(card, plan); });
 }
 
+/**
+ * A group's board in one line (1.5.40): "4 件事：2 件做完，1 件在做，1 件等你".
+ * Each count is its own piece, so the English page can say it its own way.
+ */
+function planSummary(plan) {
+  const count = (...states) => plan.tasks.filter((t) => states.includes(t.status)).length;
+  const line = el('span', 'plan-sum');
+  line.appendChild(el('span', 'plan-sum-total', `${plan.tasks.length} 件事：`));
+  const parts = [
+    [count('done'), 'done', (n) => `${n} 件做完`], [count('doing'), 'doing', (n) => `${n} 件在做`],
+    [count('waiting_human'), 'ask', (n) => `${n} 件等你`], [count('todo'), 'todo', (n) => `${n} 件还没开始`],
+    [count('failed'), 'fail', (n) => `${n} 件没做成`], [count('skipped', 'stopped'), 'skip', (n) => `${n} 件跳过`],
+  ];
+  for (const [n, kind, say] of parts) if (n) line.appendChild(el('span', `plan-sum-part st-${kind}`, say(n)));
+  return line;
+}
+
+/** Boards the human opened stay open while the page lives (the card is redrawn on every change). */
+const planOpened = new Set();
+
 function fillPlanCard(card, plan, view = null) {
   if (!view && plan.status === 'moved' && plan.movedTo?.planId && plan.movedTo?.machine) { fillMovedPlanCard(card, plan); return; }
   card.innerHTML = '';
   const solo = plan.kind === 'task';
   const done = plan.tasks.filter((t) => t.status === 'done').length;
-  const head = el('div', 'plan-head');
-  head.appendChild(el('span', 'plan-title', solo ? `任务：${plan.goal || ''}` : '任务板'));
-  const live = view ? view.live : plan.status === 'running';
-  head.appendChild(el('span', `plan-progress${live ? ' live' : ''}`, view?.label || `${done}/${plan.tasks.length} · ${planOverall(plan)}`));
-  card.appendChild(head);
   const bar = el('div', 'plan-bar');
   const fill = el('i');
   fill.style.width = `${plan.tasks.length ? Math.round((done / plan.tasks.length) * 100) : 0}%`;
   bar.appendChild(fill);
-  card.appendChild(bar);
+  // A group's board is one line until it is opened: who has which task is a click away (1.5.40).
+  const fold = solo ? null : el('details', 'plan-fold');
+  const host = fold || card;
+  if (fold) {
+    fold.open = planOpened.has(plan.id);
+    fold.addEventListener('toggle', () => { if (fold.open) planOpened.add(plan.id); else planOpened.delete(plan.id); });
+    const head = el('summary', 'plan-head');
+    head.title = '点开看每一件归谁';
+    head.appendChild(el('span', 'plan-title', '任务板'));
+    head.appendChild(planSummary(plan));
+    fold.appendChild(head);
+    fold.appendChild(bar);
+    card.appendChild(fold);
+  } else {
+    const head = el('div', 'plan-head');
+    head.appendChild(el('span', 'plan-title', `任务：${plan.goal || ''}`));
+    const live = view ? view.live : plan.status === 'running';
+    head.appendChild(el('span', `plan-progress${live ? ' live' : ''}`, view?.label || `${done}/${plan.tasks.length} · ${planOverall(plan)}`));
+    card.appendChild(head);
+    card.appendChild(bar);
+  }
   const members = groupMembersForCard();
   plan.tasks.forEach((t, i) => {
     const row = el('details', `plan-task st-${(PLAN_STATUS[t.status] || PLAN_STATUS.todo)[1]}`);
@@ -490,9 +544,38 @@ function fillPlanCard(card, plan, view = null) {
     if (t.question) body.appendChild(el('div', 'plan-q', `问你：${t.question}${t.answer ? `\n你答：${t.answer}` : ''}`));
     if (t.result) body.appendChild(el('div', 'plan-result', t.result));
     if (body.childNodes.length) row.appendChild(body);
-    card.appendChild(row);
+    host.appendChild(row);
   });
   if (view?.foot?.childNodes.length) card.appendChild(view.foot);
+}
+
+/** How a hand-over stands, from what came after it: 'done', 'doing' or '' (not known). */
+function handoffProgress(later, { working, replied, again }) {
+  return later.some(replied) && (later.some(again) || !working) ? 'done' : working ? 'doing' : '';
+}
+
+/**
+ * Work one bot passed to another, as one line (1.5.40): "助理 → 小笔：写周报 · 做完了".
+ * What was said is a click away: the human reads results, not hand-overs.
+ * state: 'done' | 'doing' | '' (not known)
+ */
+function handoffRow({ sender, target, text, state: progress = '', ts = '' }) {
+  const fold = el('details', 'handoff-line');
+  const head = el('summary');
+  head.title = '点开看原话';
+  if (sender?.name) head.appendChild(avatarNode(sender, 18));
+  head.appendChild(el('span', 'handoff-who', `${sender?.name || '助手'} → ${target?.name || ''}`));
+  const gist = truncate(plainPreview(String(text || '')), 40);
+  if (gist) head.appendChild(el('span', 'handoff-gist no-i18n', `：${gist}`));
+  if (progress) head.appendChild(el('span', `handoff-state ${progress}`, progress === 'done' ? '做完了' : '在做'));
+  fold.appendChild(head);
+  const bubble = el('div', 'bubble');
+  fillBubble(bubble, text || '', false, sender?.id, false);
+  if (ts) bubble.title = fmtClock(ts);
+  fold.appendChild(bubble);
+  const row = el('div', 'row handoff');
+  row.appendChild(fold);
+  return row;
 }
 
 /** Group members by id (local bots and the far ones), for avatars and names on the card. */
@@ -532,14 +615,8 @@ function renderGroupItem(item) {
   if (kind === 'handoff') {
     // One bot giving another a piece of the work (1.2.164): "数据匠 → 图表师".
     const target = item.to ? (botById(item.to) || groupMemberById(item.to) || { id: item.to, name: item.to }) : null;
-    const bubble = el('div', 'bubble');
-    // Work between bots folds to two lines (1.5.28): the human reads the answers.
-    fillBubble(bubble, item.text || '', false, sender?.id, 'line');
-    const row = groupSenderRow(sender, bubble);
-    row.classList.add('handoff');
-    const label = row.querySelector('.g-name');
-    if (label && target) label.textContent = `${sender?.name || ''} → ${target.name || ''}`;
-    return row;
+    // One line; the words are behind a click (1.5.40; two folded lines since 1.5.28).
+    return handoffRow({ sender, target, text: item.text || '', state: item.handoffState || '', ts: item.ts });
   }
   if (kind === 'approval') {
     return groupSenderRow(sender, buildApprovalCard({
@@ -589,6 +666,14 @@ function openGroupModal(groupId = null) {
   $('group-delete').hidden = !group;
   $('group-name').value = state.groupDraft.name;
   $('group-note').hidden = true;
+  // A new group can also be asked for in words (1.5.40): the main assistant makes it.
+  const primary = state.bots.find((b) => b.primary);
+  const others = state.bots.filter((b) => !b.primary).map((b) => b.name);
+  const tip = $('group-tip');
+  if (tip) {
+    tip.hidden = Boolean(group) || !primary;
+    tip.textContent = primary ? `不想自己选？直接对「${primary.name}」说：「拉个群，让${others[0] || '某某'}和${others[1] || '某某'}一起做…」，它会替你建好。` : '';
+  }
   renderGroupModal();
   $('group-modal').classList.add('open');
   $('group-modal').setAttribute('aria-hidden', 'false');

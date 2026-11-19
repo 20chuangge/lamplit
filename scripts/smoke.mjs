@@ -213,6 +213,8 @@ async function main() {
     await stage('1.5.11: the files a reply names can be seen and saved', scenarioFiles1511);
     await stage('1.5.12: connected apps, long writes, the browser debug port', scenarioApps1512);
     await stage('1.5.13: the website and the docs in Chinese and English', scenarioDocs1513);
+    await stage('1.5.40: seen at a glance, asked less', scenarioCalm1540);
+    await stage('1.5.40: a group\'s task board outlives a restart', scenarioBoardRestart);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -7102,7 +7104,7 @@ async function scenarioV165() {
     const att = await readText('../src/attention.mjs');
     const agentSrc = await readText('../src/agent.mjs');
     check('T4 decision: a chat waiting for your decision shows a strip on top with the question; clicking it goes to the message; the strip goes once you answer',
-      page.includes('id="decision-strip"') && page.includes('function renderDecisionStrip()') && /loadAttention[\s\S]{0,700}renderDecisionStrip\(\);/.test(page)
+      page.includes('id="decision-strip"') && page.includes('function renderDecisionStrip()') && /loadAttention[\s\S]{0,1300}renderDecisionStrip\(\);/.test(page)
       && att.includes('text: String(ev.waitingText || ev.summary') && agentSrc.includes('live.waitingText = said;') && agentSrc.includes('...(live.waitingText ? { waitingText: live.waitingText } : {})'));
   }
   // --- T5: one bot, one turn at a time for the human --------------------------------
@@ -7482,8 +7484,8 @@ async function scenarioV161() {
     check('U2 chat: @机器人名 in a message shows as a chip with that bot\'s face; in a group, "正在…" shows the face of the bot at work',
       page.includes('function decorateMentions(node)') && page.includes('decorateMentions(bubble);') && page.includes("const chip = el('span', 'mention');")
       && page.includes("if (isGroupMode() && botId) {") && page.includes("row.querySelector('.typing-who')"));
-    check('U3 sidebar: previews show plain text (no **, `, #), and bots with the newest message come first; the main bot stays on top',
-      page.includes('function plainPreview(text)') && page.includes('return plainPreview(text);') && page.includes('plainPreview(group.preview.text)')
+    check('U3 sidebar: a last message is shown as plain text (no **, `, #), and bots with the newest message come first; the main bot stays on top',
+      page.includes('function plainPreview(text)') && page.includes("return text ? plainPreview(text) : '';") && page.includes('const last = lastLine(group);')
       && page.includes("const when = (b) => Date.parse(b.preview?.ts || '') || 0;") && page.includes('|| when(b) - when(a)'));
     check('U4 settings: on a computer the settings list has the same icons as the phone',
       /@media \(min-width: 861px\) \{\s*\.setnav \{ display: flex; align-items: center; gap: 9px; \}\s*\.setnav-icon \{ display: block;/.test(page));
@@ -7623,7 +7625,7 @@ async function scenarioV158() {
     check('X3 chat: after a reload, a bot that is still working shows "正在处理…" again (also when the sidebar learns it is working)',
       render.includes("const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);")
       && render.includes("if (working) showTyping(typingBotId(), '正在处理…');")
-      && page.includes('function syncTypingWithAttention()') && /state\.attention = await api\('\/api\/attention'\);[\s\S]{0,400}syncTypingWithAttention\(\);/.test(page));
+      && page.includes('function syncTypingWithAttention()') && /state\.attention = await api\('\/api\/attention'\);[\s\S]{0,900}syncTypingWithAttention\(\);/.test(page));
   }
 }
 
@@ -7871,7 +7873,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       && pageA.includes("const ink = isLightColor(bg) ? '#1c1a17' : '#fff';") && pageA.includes('function isLightColor(hex)'));
     // L4: the approval card in the design's shape - nothing lost (approve once, deny, a note, the raw details).
     check('L4 approval card: one row 允许这一次 / (以后都允许) / 拒绝 / 看详情 plus the optional note; 看详情 opens the technical details; it still decides through the same call',
-      pageA.includes("const allow = el('button', 'btn primary approval-allow', '允许这一次');") && pageA.includes("const reject = el('button', 'btn approval-reject', '拒绝');")
+      pageA.includes("const allow = el('button', 'btn primary approval-allow', many ? `允许这 ${many.length} 条` : '允许这一次');") && pageA.includes("const reject = el('button', 'btn approval-reject', '拒绝');")
       && pageA.includes("const more = el('button', 'btn approval-more', '看详情');") && pageA.includes("note.placeholder = '想补一句话？（可选）';")
       && pageA.includes("tech.open = !tech.open;") && pageA.includes("allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject));")
       && pageA.includes("card.classList.remove('pending');"));
@@ -9343,9 +9345,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const chatSrc = await readText('../public/app/main/05-chat.js');
       const coreSrc = await readText('../public/app/main/01-core.js');
       const groupSrc = await readText('../public/app/main/03-groups.js');
-      check('U28 replies: long replies fold behind 展开, bot-to-bot messages show two lines',
-        coreSrc.includes('function foldBubble(') && chatSrc.includes('foldBubble(bubble, text, fold);') && groupSrc.includes("fillBubble(bubble, item.text || '', false, sender?.id, 'line');")
-        && chatSrc.includes("fillBubble(bubble, item.text || '', false, sender.id, 'line');"));
+      check('U28 replies: long replies fold behind 展开; a bot-to-bot message is one line with its words behind a click (1.5.40; two folded lines before)',
+        coreSrc.includes('function foldBubble(') && chatSrc.includes('foldBubble(bubble, text, fold);') && groupSrc.includes("return handoffRow({ sender, target, text: item.text || '', state: item.handoffState || '', ts: item.ts });")
+        && chatSrc.includes("const row = handoffRow({ sender, target: botById(state.botId), text: item.text || '', state: item.handoffState || '', ts: item.ts });"));
       check('U28 switching: a chat shows what this browser had at once, then the machine\'s answer',
         coreSrc.includes('function chatCachePut(') && chatSrc.includes('const cached = chatCacheGet(cacheKey);') && groupSrc.includes('const cached = chatCacheGet(cacheKey);'));
       const lat = await api('/api/peers/latency');
@@ -9983,4 +9985,466 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       srvG.includes('/^\\/api\\/funnel$/') && srvG.includes("section: 'network'"));
   }
 
+}
+
+// ---------------------------------------------------------------------------
+// 1.5.40: 看得见、少打扰 - the line under each name, hand-overs and boards in one
+// line, a new message closes the card it waited on, look-only commands on one card.
+// ---------------------------------------------------------------------------
+async function scenarioCalm1540() {
+  const AP = await import('../src/approvals.mjs');
+  const toolsMod = await import('../src/tools.mjs');
+  const { AgentRuntime, REPLY_STYLE } = await import('../src/agent.mjs');
+  const { createAttention, planProgress, requestLine } = await import('../src/attention.mjs');
+  const ws = path.join(home, 'workspace');
+
+  // --- 1. the line under a name: from the events alone -----------------------
+  {
+    const subs = [];
+    const bus = { subscribe: (fn) => subs.push(fn), emit: (e) => subs.forEach((fn) => fn(e)) };
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-att40-'));
+    const att = createAttention({ file: path.join(dir, 'attention.json'), bus });
+    await att.load();
+    const item = (key) => att.snapshot().items[key];
+    bus.emit({ type: 'turn.start', botId: 'w', turnId: 't1', text: '帮我写一份去成都的行程\n\n[附件] 都在共享工作区里：\n- a.png（图片，1 KB）' });
+    const asked = item('bot:w');
+    bus.emit({ type: 'turn.start', botId: 'w', turnId: 't2', aside: true, text: '进度怎么样' });
+    bus.emit({ type: 'turn.end', botId: 'w', turnId: 't2', aside: true, ts: new Date().toISOString() });
+    const afterAside = item('bot:w');
+    bus.emit({ type: 'bot.plan', botId: 'w', plan: { status: 'running', goal: '成都行程', tasks: [{ title: '查机票', status: 'done' }, { title: '订酒店', status: 'skipped' }, { title: '写第 3 天的行程', status: 'doing' }, { title: '汇总', status: 'todo' }] } });
+    const planned = item('bot:w');
+    bus.emit({ type: 'approval.request', botId: 'w', botName: '小笔', turnId: 't1', approvalId: 'ap1', tool: 'shell' });
+    const waiting = item('bot:w');
+    bus.emit({ type: 'approval.resolved', botId: 'w', turnId: 't1', approvalId: 'ap1' });
+    const answered = item('bot:w');
+    bus.emit({ type: 'bot.plan', botId: 'w', plan: { status: 'done', tasks: [{ title: '查机票', status: 'done' }] } });
+    bus.emit({ type: 'turn.end', botId: 'w', turnId: 't1', ts: new Date().toISOString() });
+    const ended = item('bot:w');
+    check('C40-1 the line under a name comes from the events: the request it works on (not an answer in passing), its checklist step and how far it is, the step a card asks about; all gone when the turn ends',
+      asked?.working && asked.doing?.text === '帮我写一份去成都的行程' && afterAside?.doing?.text === '帮我写一份去成都的行程'
+      && planned?.doing?.step === '写第 3 天的行程' && planned.doing.done === 2 && planned.doing.total === 4
+      && waiting?.needsYou && waiting.ask?.tool === 'shell' && waiting.ask.botName === '小笔' && !answered?.ask && !answered?.needsYou
+      && ended && !ended.working && !ended.doing && ended.unread,
+      JSON.stringify({ asked, planned, waiting, answered, ended }));
+    bus.emit({ type: 'turn.start', groupId: 'g1', botId: 'c', turnId: 'g-t1', text: '做一份周报' });
+    bus.emit({ type: 'group.plan', groupId: 'g1', plan: { status: 'running', tasks: [{ title: '收集数据', status: 'done' }, { title: '写正文', status: 'doing' }, { title: '配图', status: 'waiting_human' }] } });
+    bus.emit({ type: 'tool.call', groupId: 'g1', botId: 'c', turnId: 'g-t1', name: 'fs_write' });
+    const board = item('group:g1');
+    check('C40-1 a group has the same line (its board\'s step and count); the runtime\'s own notes are not shown as the request',
+      board?.doing?.step === '写正文' && board.doing.done === 1 && board.doing.total === 3 && board.doing.waiting === 1 && board.doing.tool === 'fs_write' && board.asking?.count === 1 && board.asking.question === '配图' && !board.needsYou
+      && requestLine('（任务继续，系统自动发起，用户没有发新消息）目标：x') === '' && requestLine('小笔 在群里点名请你回答。用户原话：进度怎么样') === '进度怎么样'
+      && planProgress({ status: 'stopped', tasks: [{ title: 'a', status: 'doing' }] }) === null,
+      JSON.stringify(board));
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+    const page = await readText('../public/index.html');
+    check('C40-1 the page: bots and groups draw that line (working: the step and n/m; waiting: 等你点头 and what; unread: 做完了; idle: the role / the members); the main assistant sums up who waits',
+      page.includes("let line = rosterLine(`bot:${bot.id}`, { idle: bot.role || last || '还没有消息', last });") && page.includes('const line = rosterLine(`group:${group.id}`, {')
+      && page.includes('text: `正在做：${brief(doing.step, 40)}`, tail: `${doing.done}/${doing.total}` }') && page.includes("if (line.tail) node.appendChild(el('span', 'bp-tail', line.tail));") && page.includes('text: `等你点头${who}：想${TOOL_TEXT[ask.tool].label}`') && page.includes("text: last ? `做完了：${last}` : '做完了，有新结果'")
+      && page.includes("const waiting = bot.primary && !line.kind ? othersWaitingLine(`bot:${bot.id}`) : '';") && (page.match(/function statusLine\(/g) || []).length === 1);
+    check('C40-2/3 the page: a hand-over is one line with its words behind a click and 做完了 / 在做; a group\'s board is one line of counts until opened (a bot\'s own checklist is not folded)',
+      page.includes("return handoffRow({ sender, target, text: item.text || '', state: item.handoffState || '', ts: item.ts });") && page.includes("const fold = el('details', 'handoff-line');")
+      && page.includes("progress === 'done' ? '做完了' : '在做'") && page.includes("const fold = solo ? null : el('details', 'plan-fold');") && page.includes('(n) => `${n} 件做完`')
+      && page.includes("line.appendChild(el('span', 'plan-sum-total', `${plan.tasks.length} 件事：`));"));
+    check('C40-7 one way in: the main assistant\'s empty chat and the end of the first-run guide say 不知道找谁就跟它说; 新建群组 says it can be asked for in words',
+      page.includes("return `不知道找谁，就跟「${primary?.name || '助理'}」说，它会交给合适的助手。`;") && page.includes("wrap.appendChild(el('div', 'empty-tip', askPrimaryTip()));") && page.includes('function handoffProgress(later, { working, replied, again })')
+      && page.includes("messagesEl.appendChild(el('div', 'starter-tip', askPrimaryTip()));") && page.includes('id="group-tip"') && page.includes('一起做…」，它会替你建好。'));
+  }
+
+  // --- a scripted runtime: a real registry and a real approval queue ----------
+  const harness = ({ id, script, policy = {}, botPolicy = {}, onCard, tools = ['shell'] }) => {
+    const q = new AP.ApprovalQueue({ timeoutMs: 60000 });
+    const ev = [];
+    const cards = [];
+    const ran = [];
+    const seen = [];
+    const reg = toolsMod.createRegistry({ workspaceDir: ws, config: {} });
+    reg.get('shell').run = async (a) => { ran.push(a.command); return { exitCode: 0, stdout: 'ok' }; };
+    let n = 0;
+    const model = { provider: 'fake', model: 'fake', complete: async (msgs) => { seen.push(msgs.map((m) => ({ role: m.role, content: String(m.content || '') }))); const step = script[Math.min(n, script.length - 1)]; n += 1; return step; } };
+    const bot = { id, name: '测', role: '', tools, skills: [], policy: botPolicy };
+    const rt = new AgentRuntime({ config: { workspaceDir: ws, policy }, registry: reg, model,
+      bots: { getBot: async () => bot, listBots: async () => [bot] }, memory: { renderMemoryDigest: async () => '' }, skills: { renderSkillsDigest: async () => '' },
+      approvals: q, bus: { emit: (e) => { ev.push(e); if (e.type === 'approval.request') { cards.push(e); setTimeout(() => onCard(e, { q, rt, cards }), 5); } } } });
+    rt.record = async () => {};
+    return { rt, q, ev, cards, ran, seen, calls: () => n };
+  };
+  const sh = (id, command) => ({ id, name: 'shell', arguments: { command } });
+  const say = (content) => ({ content, toolCalls: [] });
+
+  // --- 5. commands that only look: one card, then no more this turn -----------
+  {
+    const h = harness({ id: 'c40look', onCard: (e, { q }) => q.decide(e.approvalId, 'approve'), script: [
+      { content: '', toolCalls: [sh('a1', 'whoami'), sh('a2', 'hostname'), sh('a3', 'uptime')] },
+      { content: '', toolCalls: [sh('b1', 'df -h')] },
+      { content: '', toolCalls: [sh('c1', 'node -e "1"')] },
+      say('看完了。'),
+    ] });
+    const r = await h.rt.runTurn({ botId: 'c40look', text: '看看这台电脑' });
+    const [first, second] = h.cards;
+    check('C40-5 three look-only commands in a row are one card that shows each in full (no 以后都允许 on it); allowed once, they all run and the turn\'s later look-only command is not asked about; a command that may change things still gets its own card',
+      r.status === 'success' && h.cards.length === 2 && first.batch?.commands?.join('|') === 'whoami|hostname|uptime' && first.args.commands?.length === 3 && first.lookTurn === true && !first.remember
+      && h.ran.join('|') === 'whoami|hostname|uptime|df -h|node -e "1"' && !second.batch && !second.lookTurn && second.remember?.key === 'shell:node'
+      && h.q.list({ status: 'history' }).some((a) => a.batch?.commands?.length === 3),
+      JSON.stringify({ status: r.status, cards: h.cards.map((c) => ({ batch: c.batch, lookTurn: c.lookTurn, remember: c.remember, args: c.args })), ran: h.ran }));
+
+    const d = harness({ id: 'c40deny', onCard: (e, { q, cards }) => q.decide(e.approvalId, cards.length === 1 ? 'deny' : 'approve'), script: [
+      { content: '', toolCalls: [sh('a1', 'whoami'), sh('a2', 'hostname')] },
+      { content: '', toolCalls: [sh('b1', 'hostname')] },
+      say('好。'),
+    ] });
+    await d.rt.runTurn({ botId: 'c40deny', text: '看看这台电脑' });
+    const refused = (d.seen[1] || []).filter((m) => m.role === 'tool' && /APPROVAL_DENIED/.test(m.content)).length;
+    check('C40-5 refusing that card refuses every command on it without a second card; the next such step asks again',
+      d.cards.length === 2 && refused === 2 && d.ran.join('|') === 'hostname' && !d.cards[1].batch, JSON.stringify({ cards: d.cards.length, refused, ran: d.ran }));
+
+    const c = harness({ id: 'c40careful', policy: { level: 'careful' }, onCard: (e, { q }) => q.decide(e.approvalId, 'approve'), script: [
+      { content: '', toolCalls: [sh('a1', 'whoami'), sh('a2', 'hostname')] },
+      { content: '', toolCalls: [sh('b1', 'uptime')] },
+      say('好。'),
+    ] });
+    await c.rt.runTurn({ botId: 'c40careful', text: '看看这台电脑' });
+    check('C40-5 at 谨慎 the commands of one reply still share a card, but allowing it does not cover later ones: the next look-only command asks',
+      c.cards.length === 2 && c.cards[0].batch?.commands?.length === 2 && !c.cards[0].lookTurn && !c.cards[1].lookTurn && c.ran.length === 3, JSON.stringify(c.cards.map((x) => ({ batch: x.batch, lookTurn: x.lookTurn }))));
+
+    const o = harness({ id: 'c40outside', onCard: (e, { q }) => q.decide(e.approvalId, 'approve'), script: [
+      { content: '', toolCalls: [sh('a1', 'whoami'), sh('a2', 'cat ../../c40-outside.txt'), sh('a3', 'hostname')] },
+      say('好。'),
+    ] });
+    await o.rt.runTurn({ botId: 'c40outside', text: '看看这台电脑' });
+    check('C40-5 a look-only command that reads a place not opened is not on the shared card and is not covered by it: it asks by itself',
+      o.cards.length === 2 && !o.cards[0].batch && o.cards[0].lookTurn === true && o.cards[1].risk === 'HIGH' && !o.cards[1].batch && !o.cards[1].lookTurn && o.ran.length === 3,
+      JSON.stringify(o.cards.map((x) => ({ batch: x.batch, lookTurn: x.lookTurn, risk: x.risk, reason: x.reason }))));
+    const page = await readText('../public/index.html');
+    const fs40 = await readText('../src/feishu.mjs');
+    const q2 = new AP.ApprovalQueue({ timeoutMs: 60000 });
+    q2.restore([{ id: 'ap_x', toolName: 'shell', status: 'pending', args: JSON.stringify({ command: 'whoami', commands: ['whoami', 'hostname'] }), batch: { commands: ['whoami', 'hostname'] }, lookTurn: true, createdAt: new Date().toISOString() }]);
+    const back = { ...q2.get('ap_x') };
+    q2.settle('ap_x', 'denied', 'test over');
+    check('C40-5 the card: every command in full, 允许这 N 条, and what allowing covers said before the click; Feishu lists every command too; a restored card is the card for its first command',
+      page.includes("for (const command of many) list.appendChild(el('code', null, String(command)));") && page.includes("many ? `允许这 ${many.length} 条` : '允许这一次'")
+      && page.includes('这一轮后面只是查看的命令不再问你；会改动东西的照样先问。') && page.includes('...(approval.batch ? { batch: approval.batch } : {}),')
+      && fs40.includes('想运行 ${many.length} 条查看类命令：') && !back.batch && !back.lookTurn && !JSON.parse(back.args).commands, JSON.stringify(back));
+  }
+
+  // --- 4. a new message instead of an answer closes the card ------------------
+  {
+    let redirect = null;
+    const h = harness({ id: 'c40new', onCard: async (e, { rt }) => { redirect = await rt.aside({ botId: 'c40new', text: '算了，改成写一首诗', busy: rt.busyTurn('c40new') }); }, script: [
+      { content: '', toolCalls: [sh('a1', 'node -e "1"'), sh('a2', 'node -e "2"')] },
+      say('写好了：春眠不觉晓。'),
+    ] });
+    const r = await h.rt.runTurn({ botId: 'c40new', text: '跑两个脚本' });
+    const card = h.q.list({ status: 'history' })[0];
+    const second = h.seen[1] || [];
+    const lastUser = [...second].reverse().find((m) => m.role === 'user');
+    check('C40-4 stopped on an approval card, a new message from the human closes it as 已取消：你发了新消息; nothing on it runs, the reply\'s other calls are skipped without a card, the turn reads the new message and follows it; no answer in passing',
+      redirect?.redirected === true && r.status === 'success' && h.cards.length === 1 && h.ran.length === 0 && card?.status === 'denied' && card.note === AP.NEW_MESSAGE_NOTE && AP.NEW_MESSAGE_NOTE === '已取消：你发了新消息'
+      && second.some((m) => m.role === 'tool' && /APPROVAL_SUPERSEDED/.test(m.content)) && second.some((m) => m.role === 'tool' && /SKIPPED_NEW_MESSAGE/.test(m.content))
+      && /算了，改成写一首诗/.test(lastUser?.content || '') && /那张卡片已经收起/.test(lastUser?.content || '') && !h.ev.some((e) => e.aside)
+      && h.ev.some((e) => e.type === 'approval.resolved' && e.note === AP.NEW_MESSAGE_NOTE) && /春眠不觉晓/.test(r.summary || ''),
+      JSON.stringify({ redirect, status: r.status, cards: h.cards.length, ran: h.ran, card: card && { status: card.status, note: card.note }, lastUser }));
+
+    // Working, with no card open: a message is answered in passing and waits for the step to end, as before.
+    const w = harness({ id: 'c40busy', onCard: () => {}, script: [say('收到，我正在做，这一步完了就看。')] });
+    w.rt.active.set('turn_busy', { controller: new AbortController(), botId: 'c40busy', task: '整理收件箱', startedAt: Date.now(), steps: 1, step: null, last: '', inbox: [], depth: 0 });
+    const a = await w.rt.aside({ botId: 'c40busy', text: '进度怎么样', busy: w.rt.busyTurn('c40busy') });
+    const live = w.rt.active.get('turn_busy');
+    check('C40-4 while it works (no card open) a message is still answered in passing and handed to the running turn; "停下" still stops it and closes its cards',
+      !a.redirected && /收到/.test(a.text || '') && live.inbox.length === 1 && !live.redirected && w.ev.some((e) => e.type === 'message' && e.aside)
+      && (await readText('../src/agent.mjs')).includes("this.approvals.cancelForTurn(busy.turnId, '已取消：你让它停下了');"),
+      JSON.stringify({ a, inbox: live.inbox }));
+
+    // The checklist: no step done since the new message -> it waits for the human instead of coming back with the same card.
+    const t = harness({ id: 'c40task', onCard: () => {}, script: [say('好。')] });
+    const plan = (done) => ({ id: `task_c40_${done}`, kind: 'task', botId: 'c40task', goal: '整理', status: 'running', tasks: [{ id: 't1', title: 'a', status: 'done' }, { id: 't2', title: 'b', status: done > 1 ? 'done' : 'doing' }, { id: 't3', title: 'c', status: 'todo' }] });
+    t.rt.taskDelayMs = 3600000;
+    t.rt.continueTask = async () => {};
+    t.rt.tasks = new Map([['c40task', plan(1)]]);
+    await t.rt.afterTaskTurn('c40task', 'success', null, { fromHuman: true, toolsRun: 1, redirectedAt: 1 });
+    const parked = t.rt.tasks.get('c40task').status;
+    t.rt.tasks = new Map([['c40task', plan(2)]]);
+    await t.rt.afterTaskTurn('c40task', 'success', null, { fromHuman: true, toolsRun: 1, redirectedAt: 1 });
+    const moved = t.rt.tasks.get('c40task').status;
+    check('C40-4 an open checklist that did not move after the new message waits for the human; one that moved on goes on by itself', parked === 'waiting' && moved === 'running', JSON.stringify({ parked, moved }));
+    for (const id of ['task_c40_1', 'task_c40_2']) await fsp.rm(path.join(process.env.ASSIST_DATA_DIR, 'groups', 'plans', `${id}.json`), { force: true }).catch(() => {});
+
+    const q3 = new AP.ApprovalQueue({ timeoutMs: 60000 });
+    q3.restore([{ id: 'ap_old', botId: 'b1', toolName: 'shell', status: 'pending', args: '{}', createdAt: new Date().toISOString() }]);
+    const liveCard = q3.request({ turnId: 't', botId: 'b1', toolName: 'shell', args: {}, risk: 'MEDIUM', reason: 'x' });
+    const closed = q3.cancelOrphans('b1');
+    const stillWaiting = q3.pendingForTurn('t').length;
+    q3.cancelForTurn('t', 'test over');
+    await liveCard;
+    check('C40-4 a card left by a restart (no turn waits on it) closes when the human sends that bot something new; a card a turn waits on is not touched by that',
+      closed.length === 1 && closed[0].id === 'ap_old' && closed[0].note === AP.NEW_MESSAGE_NOTE && stillWaiting === 1
+      && (await readText('../src/server.mjs')).includes('for (const card of (!h && state.approvals.cancelOrphans?.(bot.id)) || []) {'), JSON.stringify({ closed, stillWaiting }));
+  }
+
+  // --- 1 + 4 over HTTP, in demo mode: the tidy demo stops on its card, then a new message --
+  {
+    const levelBefore = (await api('/api/policy')).json?.level;
+    if (levelBefore !== 'standard') await api('/api/policy', { method: 'PUT', body: { level: 'standard' } });
+    const idle = () => until(async () => !((await api('/api/turns')).json || []).some((x) => x.botId === 'chief'), 30000);
+    await idle();
+    const pendingOf = async () => ((await api('/api/approvals?status=pending')).json || []).filter((a) => a.botId === 'chief' && a.status === 'pending');
+    for (const a of await pendingOf()) await api(`/api/approvals/${a.id}`, { method: 'POST', body: { decision: 'deny' } });
+    const sent = await api('/api/bots/chief/message', { method: 'POST', body: { text: '看看我的下载文件夹，按类型整理到子文件夹里。' } });
+    const card = await until(async () => (await pendingOf()).find((a) => a.toolName === 'shell'), 30000);
+    const att = (await api('/api/attention')).json?.items?.['bot:chief'];
+    check('C40-1 over HTTP: while the tidy demo waits on its card, /api/attention says what it waits on (a command) and how far the checklist is (2/3)',
+      sent.status === 200 && Boolean(card) && att?.needsYou && att.working && att.ask?.tool === 'shell' && att.doing?.total === 3 && att.doing.done === 2 && /移动/.test(att.doing.step || ''),
+      JSON.stringify({ sent: sent.status, card: Boolean(card), att }));
+    const second = await api('/api/bots/chief/message', { method: 'POST', body: { text: '先不整理了，帮我写一封请假邮件。' } });
+    const gone = await until(async () => (await pendingOf()).length === 0, 10000);
+    await idle();
+    const msgs = (await api('/api/bots/chief/messages?limit=40')).json || [];
+    const closedCard = msgs.find((m) => m.role === 'approval' && m.approvalId === card?.id);
+    const planId = [...msgs].reverse().find((m) => m.role === 'plan')?.planId;
+    const plan = planId ? (await api(`/api/bots/chief/plans/${planId}`)).json?.plan : null;
+    const after = msgs.slice(msgs.findIndex((m) => m.role === 'user' && /请假邮件/.test(m.text || '')));
+    check('C40-4 over HTTP: the new message closes the card (已取消：你发了新消息), the files are not moved, the same turn does what the new message asks, and the checklist waits instead of asking again',
+      second.json?.aside === true && gone && closedCard?.decision === 'denied' && closedCard.note === '已取消：你发了新消息'
+      && fsSync.existsSync(path.join(ws, '演示', '下载', '截图-1118.png')) && fsSync.existsSync(path.join(ws, '演示', '请假邮件.md'))
+      && after.some((m) => m.role === 'assistant' && /请假邮件/.test(m.text || '')) && plan?.status === 'waiting' && (await pendingOf()).length === 0,
+      JSON.stringify({ aside: second.json, gone, closedCard, plan: plan?.status, after: after.map((m) => `${m.role}:${String(m.text || m.tool || '').slice(0, 30)}`) }));
+    await api('/api/bots/chief/message', { method: 'POST', body: { text: '停下' } });
+    await idle();
+    if (levelBefore && levelBefore !== 'standard') await api('/api/policy', { method: 'PUT', body: { level: levelBefore } });
+  }
+
+  // --- the 1.5.40 beginner test: three things that went wrong, each a case ----------
+  {
+    // R1: a step a new message closed does not come back by itself, also after an unrelated turn that used a tool.
+    const h = harness({ id: 'c40held', tools: ['shell', 'fs_list'], onCard: async (e, { rt }) => { await rt.aside({ botId: 'c40held', text: '先别建，换个名字', busy: rt.busyTurn('c40held') }); }, script: [
+      { content: '', toolCalls: [{ id: 'p1', name: 'task_plan', arguments: { goal: '备份笔记', steps: ['建备份文件夹', '复制笔记', '汇报'] } }] },
+      { content: '', toolCalls: [sh('s1', 'node -e "mkdir"')] },
+      say('好，先不建。你想叫什么名字？'),
+      { content: '', toolCalls: [{ id: 'l1', name: 'fs_list', arguments: { path: '.' } }] },
+      say('工作区里有几个文件。'),
+      { content: '', toolCalls: [{ id: 't1', name: 'task_step', arguments: { step: 1, status: 'doing' } }] },
+      say('好，用这个名字接着建。'),
+    ] });
+    h.rt.taskDelayMs = 0;
+    await h.rt.runTurn({ botId: 'c40held', text: '帮我备份笔记' });
+    await sleep(60);
+    const afterHold = { ...h.rt.tasks.get('c40held') };
+    await h.rt.runTurn({ botId: 'c40held', text: '看一下工作区里有什么' });
+    await sleep(120);
+    const afterOther = { ...h.rt.tasks.get('c40held') };
+    const callsAfterOther = h.calls();
+    h.rt.continueTask = async () => {};
+    await h.rt.runTurn({ botId: 'c40held', text: '叫 备份2，接着建' });
+    await sleep(60);
+    const pickedUp = { ...h.rt.tasks.get('c40held') };
+    check('C40-R1 a step a new message closed stays closed: an unrelated turn that uses a tool does not set the list going again (no 「接着做」 turn, no card coming back); the bot marking a step when the human picks it up does',
+      afterHold.status === 'waiting' && afterHold.held === 'new_message' && afterOther.status === 'waiting' && afterOther.held === 'new_message'
+      && callsAfterOther === 5 && h.cards.length === 1 && h.ran.length === 0 && pickedUp.status === 'running' && !pickedUp.held
+      && /It is on hold: when you asked to do a step, the human sent a new message/.test(h.seen[3]?.[0]?.content || ''),
+      JSON.stringify({ afterHold: afterHold.status + '/' + afterHold.held, afterOther: afterOther.status + '/' + afterOther.held, callsAfterOther, cards: h.cards.length, ran: h.ran, pickedUp: pickedUp.status + '/' + pickedUp.held }));
+    await fsp.rm(path.join(process.env.ASSIST_DATA_DIR, 'groups', 'plans', `${afterHold.id}.json`), { force: true }).catch(() => {});
+
+    // R2: the line shows a list's step only while the list is being worked through.
+    const subs = [];
+    const bus = { subscribe: (fn) => subs.push(fn), emit: (e) => subs.forEach((fn) => fn(e)) };
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-att40-'));
+    const att = createAttention({ file: path.join(dir, 'attention.json'), bus });
+    await att.load();
+    const list = (status) => ({ status, goal: '备份笔记', tasks: [{ title: '建一个备份文件夹', status: 'doing' }, { title: '复制笔记', status: 'todo' }, { title: '汇报', status: 'todo' }] });
+    bus.emit({ type: 'bot.plan', botId: 'r2', plan: { ...list('waiting'), held: 'new_message' } });
+    bus.emit({ type: 'turn.start', botId: 'r2', turnId: 'r2t', text: '让研究看一下 welcome.md 是讲什么的' });
+    const parked = att.snapshot().items['bot:r2'];
+    bus.emit({ type: 'bot.plan', botId: 'r2', plan: list('running') });
+    const live = att.snapshot().items['bot:r2'];
+    bus.emit({ type: 'turn.end', botId: 'r2', turnId: 'r2t', ts: new Date().toISOString() });
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+    check('C40-R2 while the bot does something else, the line says that, not the parked list\'s step (「正在做：建一个备份文件夹 · 1/3」 under a hand-over); a list being worked through still shows its step and count',
+      parked?.working && parked.doing?.text === '让研究看一下 welcome.md 是讲什么的' && !parked.doing?.total && !parked.doing?.step && !parked.asking
+      && live?.doing?.step === '建一个备份文件夹' && live.doing.total === 3 && !('live' in live.doing),
+      JSON.stringify({ parked, live }));
+
+    // R4 (retest 8.2): a single look-only card keeps its words once answered - it is drawn again from the chat record.
+    const r4records = [];
+    const r4 = harness({ id: 'c40look1', onCard: (e, { q }) => q.decide(e.approvalId, 'approve'), script: [
+      { content: '', toolCalls: [sh('h1', 'hostname')] },
+      say('看过了。'),
+    ] });
+    r4.rt.record = async (_botId, rec) => { r4records.push(rec); };
+    await r4.rt.runTurn({ botId: 'c40look1', text: '这台电脑叫什么' });
+    const r4rec = r4records.find((x) => x.kind === 'approval');
+    const r4item = (await import('../src/server.mjs')).toMessageItem({ ...(r4rec || {}), ts: new Date().toISOString() }, 0);
+    const live40b = await readText('../public/app/main/06-live.js');
+    check('C40-R4 a single look-only card says 「只是查看」 also after it is answered: the chat record keeps look, the message the page redraws it from carries it, and the page reads it (not only lookTurn)',
+      r4.cards.length === 1 && !r4.cards[0].batch && r4.cards[0].look === true && r4rec?.decision === 'approved' && r4rec.look === true
+      && r4item.role === 'approval' && r4item.look === true && r4.q.list({ status: 'history' })[0]?.look === true
+      && live40b.includes('const looking = Boolean(many || data.look || data.lookTurn);') && live40b.includes('...(approval.look ? { look: true } : {}),'),
+      JSON.stringify({ cards: r4.cards.map((c) => ({ look: c.look, lookTurn: c.lookTurn })), rec: r4rec && { look: r4rec.look, decision: r4rec.decision }, item: r4item && { role: r4item.role, look: r4item.look } }));
+
+    // R3: 「这一轮改了 N 个文件 · 撤销」 once per turn, after its own last message, also when a new message split the turn.
+    const chat = await readText('../public/app/main/05-chat.js');
+    const live40 = await readText('../public/app/main/06-live.js');
+    check('C40-R3 the undo line goes once per turn, after that turn\'s last message (a message sent in the middle no longer makes it show twice); a look-only card no longer says 「中风险」 under 「不会改动任何东西」',
+      chat.includes('items.forEach((it, i) => { if (it.turnId) turnEnds.set(it.turnId, i); });') && chat.includes('turnEnds.get(item.turnId) === items.indexOf(item)')
+      && !chat.includes('(!next || next.turnId !== item.turnId) && changesByTurn.has(item.turnId)')
+      && live40.includes("const why = looking ? '在这台电脑上运行命令前，都先问你一次' : reasonLabel(data.reason);"));
+  }
+
+  // --- 6. how it talks ---------------------------------------------------------
+  {
+    const ag = await readText('../src/agent.mjs');
+    const prompt = REPLY_STYLE.join('\n');
+    check('C40-6 the prompt: to the human no tool names, slugs or internal words; the main assistant closes handed-out work itself in a line or two',
+      /never name your tools or anything in their spelling/.test(prompt) && /skill_list, bot_message, group_post/.test(prompt) && /"slug"/.test(prompt)
+      && ag.includes("...(bot.primary && direct ? ['After you hand work to a teammate, you close it with the human yourself, in one or two plain sentences:"));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A group's task board outlives a restart: a board that waits for the human is
+// found on disk again and takes the answer; one cut off mid-work goes on (or,
+// when its group cannot run, stops and says so); the sidebar hears about both.
+// ---------------------------------------------------------------------------
+async function scenarioBoardRestart() {
+  const { AgentRuntime } = await import('../src/agent.mjs');
+  const { savePlan, loadPlan } = await import('../src/plans.mjs');
+  const { createAttention } = await import('../src/attention.mjs');
+  const ws = path.join(home, 'workspace');
+  const plansDir = path.join(process.env.ASSIST_DATA_DIR, 'groups', 'plans');
+  const made = [];
+  const members = [{ id: 'br_lead', name: '组长' }, { id: 'br_pen', name: '小笔' }, { id: 'br_art', name: '画师' }];
+  const groupOf = (id) => ({ id, name: '周报组', coordinatorId: 'br_lead', members });
+  // A board as the last process left it on disk; agoMs: last touched that long ago.
+  const board = async (id, groupId, status, tasks, { agoMs = 0 } = {}) => {
+    const plan = { id, groupId, request: '做一份周报', coordinatorId: 'br_lead', status, createdAt: new Date().toISOString(),
+      tasks: tasks.map((t, i) => ({ id: `t${i + 1}`, owner: 'br_pen', brief: '', deliverable: '', needs: [], result: '', ...t })) };
+    await savePlan(plan);
+    if (agoMs) await fsp.writeFile(path.join(plansDir, `${id}.json`), JSON.stringify({ ...plan, updatedAt: new Date(Date.now() - agoMs).toISOString() }), 'utf8');
+    made.push(id);
+  };
+  const DONE = [{ title: '收集数据', status: 'done', result: '数据在 a.csv' }, { title: '写正文', status: 'done', result: '正文在 b.md' }];
+  const ASK = { title: '配图', owner: 'br_art', status: 'waiting_human', question: '封面用什么颜色？', answer: '' };
+  // A fresh runtime, as after a restart: nothing in memory. `known` groups exist, `runnable` ones can run.
+  const restart = ({ known = [], runnable = known } = {}) => {
+    const ev = [];
+    const said = [];
+    const turns = [];
+    const subs = [];
+    const bus = { subscribe: (fn) => subs.push(fn), emit: (e) => { ev.push(e); subs.forEach((fn) => fn(e)); } };
+    const rt = new AgentRuntime({ config: { workspaceDir: ws }, registry: { schemasFor: () => [] }, model: { complete: async () => ({ content: 'ok' }) },
+      bots: { getBot: async (id) => ({ id, name: id, tools: [], policy: {} }), listBots: async () => [] },
+      groups: {
+        getGroup: async (id) => (known.includes(id) ? { id, name: '周报组', coordinatorId: 'br_lead', members: members.map((m) => m.id) } : null),
+        appendGroupMessage: async (groupId, r) => { said.push({ groupId, ...r }); return { id: `m${said.length}`, ts: new Date().toISOString(), ...r }; },
+        publicGroupMessage: (m) => m,
+      },
+      memory: {}, skills: {}, approvals: { cancelForTurn() {} }, bus });
+    rt.groupForRun = async (id) => (!known.includes(id) ? null : runnable.includes(id) ? { group: groupOf(id) } : { error: '群里有成员已经被删除' });
+    rt.runTurn = async (a) => { turns.push(a); return { status: 'success', summary: `做好了（${a.groupRole}）` }; };
+    return { rt, ev, said, turns, bus, taskTurns: () => turns.filter((t) => t.groupRole === 'task') };
+  };
+  const planEvents = (ev, id) => ev.filter((e) => e.type === 'group.plan' && e.plan?.id === id);
+
+  // --- 1. waiting for the human, restart, then the answer ---------------------
+  {
+    await board('plan_br_wait', 'g_br_1', 'waiting', [...DONE, ASK]);
+    const { rt, ev, turns, taskTurns } = restart({ known: ['g_br_1'] });
+    const found = await rt.groupPlan('g_br_1');
+    const took = await rt.answerBoard(groupOf('g_br_1'), '用蓝色');
+    const finished = await until(async () => (await loadPlan('plan_br_wait'))?.status === 'done', 5000);
+    const saved = await loadPlan('plan_br_wait');
+    const again = taskTurns();
+    check('BR-1 a board that waited for the human is found on disk by a fresh runtime: answerBoard takes the message, writes the answer on that task, its owner goes on with it, the coordinator sums up and the board ends done',
+      found?.id === 'plan_br_wait' && took === true && saved?.tasks[2].answer === '用蓝色' && saved.tasks[2].status === 'done' && finished
+      && again.length === 1 && again[0].botId === 'br_art' && /用户的回答：用蓝色/.test(again[0].text) && turns.some((t) => t.groupRole === 'coordinator') && planEvents(ev, 'plan_br_wait').length > 0,
+      JSON.stringify({ found: found?.id || null, took, status: saved?.status, task: saved?.tasks[2], turns: turns.map((t) => `${t.botId}:${t.groupRole}`) }));
+  }
+
+  // --- 2. which board: the newest open one of the last day ---------------------
+  {
+    await board('plan_br_old', 'g_br_2', 'waiting', [...DONE, ASK], { agoMs: 2 * 3600 * 1000 });
+    await board('plan_br_new', 'g_br_2', 'waiting', [...DONE, ASK]);
+    await board('plan_br_stale', 'g_br_3', 'waiting', [...DONE, ASK], { agoMs: 25 * 3600 * 1000 });
+    await board('plan_br_over', 'g_br_4', 'done', DONE);
+    const { rt } = restart({ known: ['g_br_2', 'g_br_3', 'g_br_4'] });
+    const picked = [(await rt.groupPlan('g_br_2'))?.id || null, await rt.groupPlan('g_br_3'), await rt.groupPlan('g_br_4'), await rt.groupPlan('g_br_none')];
+    const staleTook = await rt.answerBoard(groupOf('g_br_3'), '用红色');
+    check('BR-2 of several boards the newest open one counts; a board untouched for more than a day or one that is over is not picked up, and a message there is not swallowed as an answer',
+      picked[0] === 'plan_br_new' && picked[1] === null && picked[2] === null && picked[3] === null && staleTook === false && (await loadPlan('plan_br_stale'))?.tasks[2].answer === '', JSON.stringify({ picked, staleTook }));
+  }
+
+  // --- 3. at start: the sidebar hears about a board that waits ----------------
+  {
+    await board('plan_br_ask', 'g_br_5', 'waiting', [...DONE, ASK]);
+    const before = (await loadPlan('plan_br_ask')).updatedAt;
+    const { rt, ev, turns, said, bus } = restart({ known: ['g_br_5'] });
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-br-'));
+    const att = createAttention({ file: path.join(dir, 'attention.json'), bus });
+    await att.load();
+    const going = await rt.resumeBoards({ delayMs: 0 });
+    const item = att.snapshot().items['group:g_br_5'];
+    check('BR-3 at start a board that waits for the human is told to the windows once (group.plan), so the sidebar says 等你回复 with the question; nothing runs, nothing is said in the group, and the board\'s age is not reset',
+      going === 0 && planEvents(ev, 'plan_br_ask').length === 1 && item?.asking?.question === '封面用什么颜色？' && item.asking.count === 1 && !item.working
+      && turns.length === 0 && said.length === 0 && (await loadPlan('plan_br_ask')).updatedAt === before,
+      JSON.stringify({ going, events: planEvents(ev, 'plan_br_ask').length, item, turns: turns.length, said }));
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // --- 4. cut off while it ran: it goes on -------------------------------------
+  {
+    await board('plan_br_run', 'g_br_6', 'running', [DONE[0], { title: '写正文', status: 'doing', startedAt: new Date().toISOString() }, { title: '配图', owner: 'br_art', status: 'todo', needs: ['t2'] }]);
+    const { rt, said, turns, taskTurns } = restart({ known: ['g_br_6'] });
+    const going = await rt.resumeBoards({ delayMs: 30 });
+    const atStart = (await rt.groupPlan('g_br_6'))?.tasks.map((t) => t.status).join(',');
+    const finished = await until(async () => (await loadPlan('plan_br_run'))?.status === 'done', 5000);
+    const saved = await loadPlan('plan_br_run');
+    const redo = taskTurns();
+    check('BR-4 a board cut off while it ran goes on by itself after the restart: no task is left 进行中 with nobody on it, the group is told in a line, the owner of the cut-off task is told it was interrupted, the tasks after it run, and the board ends done',
+      going === 1 && atStart === 'done,todo,todo' && finished && saved.tasks.every((t) => t.status === 'done')
+      && redo.length === 2 && redo[0].botId === 'br_pen' && /重启/.test(redo[0].text) && /写正文/.test(redo[0].text) && redo[1].botId === 'br_art' && !/重启/.test(redo[1].text)
+      && said.length === 1 && said[0].groupId === 'g_br_6' && /重启/.test(said[0].text) && /接着做/.test(said[0].text) && turns.some((t) => t.groupRole === 'coordinator'),
+      JSON.stringify({ going, atStart, status: saved?.status, tasks: saved?.tasks.map((t) => t.status), turns: turns.map((t) => `${t.botId}:${t.groupRole}`), said }));
+  }
+
+  // --- 5. cut off, and the group cannot run (or is gone): it stops, honestly ---
+  {
+    await board('plan_br_stuck', 'g_br_7', 'running', [DONE[0], { title: '写正文', status: 'doing' }, { title: '配图', owner: 'br_art', status: 'todo', needs: ['t2'] }]);
+    await board('plan_br_gone', 'g_br_8', 'waiting', [...DONE, ASK]);
+    const { rt, ev, said, turns, bus } = restart({ known: ['g_br_7'], runnable: [] });
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-br-'));
+    const att = createAttention({ file: path.join(dir, 'attention.json'), bus });
+    await att.load();
+    const going = await rt.resumeBoards({ delayMs: 0 });
+    await sleep(60);
+    const stuck = await loadPlan('plan_br_stuck');
+    const gone = await loadPlan('plan_br_gone');
+    const items = att.snapshot().items;
+    check('BR-5 a cut-off board whose group cannot run stops instead of saying 进行中 for ever, and says so in the group; a board of a group that is gone is closed without a word and without a line in the sidebar',
+      going === 0 && stuck.status === 'stopped' && stuck.tasks.map((t) => t.status).join(',') === 'done,stopped,stopped' && said.length === 1 && said[0].groupId === 'g_br_7' && /重启/.test(said[0].text) && /再说一次/.test(said[0].text)
+      && gone.status === 'stopped' && planEvents(ev, 'plan_br_gone').length === 0 && !items['group:g_br_7'] && !items['group:g_br_8'] && turns.length === 0
+      && (await rt.answerBoard(groupOf('g_br_7'), '继续')) === false,
+      JSON.stringify({ going, stuck: { status: stuck.status, tasks: stuck.tasks.map((t) => t.status) }, gone: gone.status, said, items }));
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // --- 6. the answer comes before the board has started again: one run, not two --
+  {
+    await board('plan_br_both', 'g_br_9', 'running', [DONE[0], { title: '写正文', status: 'doing' }, ASK]);
+    const { rt, taskTurns } = restart({ known: ['g_br_9'] });
+    const going = await rt.resumeBoards({ delayMs: 80 });
+    const took = await rt.answerBoard(groupOf('g_br_9'), '用蓝色');
+    const finished = await until(async () => (await loadPlan('plan_br_both'))?.status === 'done', 5000);
+    await sleep(150);
+    const ran = taskTurns().map((t) => t.botId).sort().join(',');
+    check('BR-6 an answer that arrives before the cut-off board has started again starts it then; the start that was waiting does not run its tasks a second time',
+      going === 1 && took === true && finished && ran === 'br_art,br_pen', JSON.stringify({ going, took, finished, ran }));
+  }
+
+  // --- the server starts it; a cut-off member's own chat says the board goes on --
+  {
+    const server = await readText('../src/server.mjs');
+    const ag = await readText('../src/agent.mjs');
+    check('BR-7 the server picks boards up at start, next to the 1:1 tasks; the note a cut-off turn leaves in a member\'s chat says the board goes on by itself',
+      server.includes('runtime.resumeBoards().then(') && ag.includes('群里的任务板会在半分钟内自动接着做'));
+  }
+
+  for (const id of made) await fsp.rm(path.join(plansDir, `${id}.json`), { force: true }).catch(() => {});
 }

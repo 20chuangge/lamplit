@@ -551,7 +551,15 @@ export function createFeishu(o) {
     if (ev.type === 'approval.request' && turn && ev.approvalId) {
       waitingApproval.set(turn.chatId, ev.approvalId);
       const detail = ev.args ? `\n\`${String(typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args)).slice(0, 300)}\`` : '';
-      sendText(turn, `「${ev.botName || '助理'}」想要：${ev.tool}${detail}\n回复「批准」或「拒绝」。`).catch(() => {});
+      // One card for several look-only commands (1.5.40): every command, in full.
+      const many = ev.batch?.commands?.length > 1 ? ev.batch.commands : null;
+      sendText(turn, many
+        ? `「${ev.botName || '助理'}」想运行 ${many.length} 条查看类命令：\n${many.map((c) => `\`${String(c).slice(0, 300)}\``).join('\n')}\n回复「批准」这 ${many.length} 条都会运行，回复「拒绝」都不运行。`
+        : `「${ev.botName || '助理'}」想要：${ev.tool}${detail}\n回复「批准」或「拒绝」。`).catch(() => {});
+    }
+    // Closed some other way (answered in the app, or a new message closed it): nothing waits here.
+    if (ev.type === 'approval.resolved' && ev.approvalId) {
+      for (const [chatId, id] of waitingApproval) if (id === ev.approvalId) waitingApproval.delete(chatId);
     }
     if (ev.type === 'turn.end') {
       if (turn) {

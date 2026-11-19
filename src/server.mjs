@@ -454,6 +454,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   };
   // Tasks a bot was working through before the app stopped go on by themselves.
   runtime.resumeTasks().then((n) => { if (n) console.log(`[tasks] picking up ${n} open task(s) in a moment`); }).catch((err) => console.error('[tasks] resume:', err.message));
+  // So do the groups' task boards; one that waits for an answer is shown again (the sidebar's 等你回复).
+  runtime.resumeBoards().then((n) => { if (n) console.log(`[boards] picking up ${n} group task board(s) in a moment`); }).catch((err) => console.error('[boards] resume:', err.message));
   // Which coding assistants on the human's subscription are ready here: bots
   // offer big programming work to them. Checked shortly after start, then hourly.
   if (process.env.DESK_CLI_WATCH !== '0') {
@@ -2972,6 +2974,11 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
       .catch((err) => state.bus.emit({ type: 'error', botId: bot.id, turnId, message: err.message }));
     return { turnId, botId: bot.id, aside: true };
   }
+  // The human moved on (1.5.40): a card of this bot that no turn waits on any more
+  // (left by a restart) closes, like the card of a turn their new message reaches.
+  for (const card of (!h && state.approvals.cancelOrphans?.(bot.id)) || []) {
+    state.bus.emit({ type: 'approval.resolved', botId: bot.id, botName: bot.name, turnId: card.turnId, approvalId: card.id, tool: card.toolName, decision: card.status, note: card.note });
+  }
   state.runtime
     .runTurn({
       botId: bot.id, text: fromNote + text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}),
@@ -4596,7 +4603,7 @@ function publicRoutine(routine) {
 }
 
 /** Session record -> one chat bubble / chip. */
-function toMessageItem(record, index) {
+export function toMessageItem(record, index) {
   const base = { id: `${record.turnId || 'turn'}-${index}`, ts: record.ts, turnId: record.turnId || null };
   switch (record.kind) {
     case 'user':
@@ -4627,6 +4634,9 @@ function toMessageItem(record, index) {
         decision: record.decision || null,
         note: record.note || '',
         args: record.args || '{}',
+        // One card for several look-only commands (1.5.40): each one in full.
+        ...(record.batch?.commands?.length > 1 ? { batch: record.batch } : {}),
+        ...(record.look ? { look: true } : {}),
       };
     case 'turn':
       return { ...base, role: 'status', status: record.status, summary: record.summary, steps: record.steps };

@@ -9,15 +9,51 @@
 //   unread    a turn ended after the human last looked at that chat
 // "Looked at" is POST /api/attention/seen from whichever window shows the chat,
 // so a phone and the desktop agree. Seen times and waits survive a restart.
+//
+// The line under each name (1.5.40) says what that is, from the same events:
+//   doing  the step of its checklist or task board and how far it is, else the
+//          request it is working on, else the tool it is running
+//   ask    the step an open approval card asks about
+//   asking the question a step of its checklist or board waits on the human for
 
 import fsp from 'node:fs/promises';
 
 const keyOf = (ev) => (ev.groupId ? `group:${ev.groupId}` : ev.botId ? `bot:${ev.botId}` : null);
 
+/** What a turn was asked, as one short line; nothing for the runtime's own notes ("（任务继续…"). */
+export function requestLine(text) {
+  let t = String(text || '').split('\n\n[附件]')[0].replace(/\s+/g, ' ').trim();
+  const quoted = /用户原话[：:]\s*「?(.+?)」?[）)]?$/.exec(t);
+  if (quoted) t = quoted[1].trim();
+  if (!t || /^[（(]/.test(t)) return '';
+  return t.length > 80 ? `${t.slice(0, 79)}…` : t;
+}
+
+/** A checklist or a group's board, as the status line needs it; null once it is over. */
+export function planProgress(plan) {
+  const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+  if (!tasks.length || !['running', 'waiting'].includes(plan.status)) return null;
+  const count = (...states) => tasks.filter((t) => states.includes(t.status)).length;
+  const now = tasks.find((t) => t.status === 'doing') || tasks.find((t) => t.status === 'waiting_human') || tasks.find((t) => t.status === 'todo');
+  const blocked = tasks.find((t) => t.status === 'waiting_human');
+  return {
+    step: String(now?.title || plan.goal || '').slice(0, 80),
+    done: count('done', 'skipped'),
+    total: tasks.length,
+    // Being worked through now. A list parked for the human (a question, or a card a new
+    // message closed) is not what the bot is doing: its steps are not shown as progress.
+    live: plan.status === 'running',
+    ...(blocked ? { waiting: count('waiting_human'), question: String(blocked.question || blocked.title || '').replace(/\s+/g, ' ').slice(0, 160) } : {}),
+  };
+}
+
 export function createAttention({ file, bus }) {
   const working = new Map();      // key -> Set(turnId)
   const approvals = new Map();    // approvalId -> key
   const prevResult = new Map();   // key -> result time before the last turn ended
+  const asks = new Map();         // approvalId -> {tool, botId, botName, count?}
+  const doing = new Map();        // key -> {text, tool} of the work in progress
+  const plans = new Map();        // key -> planProgress() of its open checklist / board
   let saved = { seen: {}, result: {}, waiting: {} };
   let saveTimer = null;
   let changeTimer = null;
@@ -43,7 +79,9 @@ export function createAttention({ file, bus }) {
     delete saved.result[key];
     delete saved.waiting[key];
     working.delete(key);
-    for (const [id, k] of approvals) if (k === key) approvals.delete(id);
+    doing.delete(key);
+    plans.delete(key);
+    for (const [id, k] of approvals) if (k === key) { approvals.delete(id); asks.delete(id); }
     persist();
     changed();
   }
@@ -56,6 +94,8 @@ export function createAttention({ file, bus }) {
         if (!key) return;
         if (!working.has(key)) working.set(key, new Set());
         working.get(key).add(ev.turnId || 'turn');
+        // The first turn's request names the work; an answer in passing does not replace it.
+        if (!ev.aside && !doing.get(key)?.text) doing.set(key, { ...doing.get(key), text: requestLine(ev.text) });
         // The human answered (or something else started a turn here): the
         // wait for a login or a takeover is over.
         if (saved.waiting[key]) { delete saved.waiting[key]; persist(); }
@@ -66,6 +106,7 @@ export function createAttention({ file, bus }) {
         if (!key) return;
         const set = working.get(key);
         if (set) { set.delete(ev.turnId || 'turn'); if (!set.size) working.delete(key); }
+        if (!working.has(key)) doing.delete(key);
         // A turn a teammate handed to another bot is still that bot's result.
         prevResult.set(key, saved.result[key] || 0);
         saved.result[key] = Date.parse(ev.ts) || Date.now();
@@ -77,11 +118,32 @@ export function createAttention({ file, bus }) {
       case 'approval.request':
         if (!key || !ev.approvalId) return;
         approvals.set(ev.approvalId, key);
+        asks.set(ev.approvalId, { tool: String(ev.tool || ''), botId: ev.botId || '', botName: ev.botName || '', ...(ev.batch?.commands?.length > 1 ? { count: ev.batch.commands.length } : {}) });
         changed();
         break;
       case 'approval.resolved':
+        asks.delete(ev.approvalId);
         if (ev.approvalId && approvals.delete(ev.approvalId)) changed();
         break;
+      case 'tool.call': {
+        // Only when the line has nothing better to say (no checklist, no request).
+        if (!key || !working.has(key)) return;
+        const d = doing.get(key) || {};
+        if (d.tool === ev.name) return;
+        doing.set(key, { ...d, tool: String(ev.name || '') });
+        if (!d.text && !plans.has(key)) changed();
+        break;
+      }
+      case 'bot.plan':
+      case 'group.plan': {
+        const planKey = ev.type === 'group.plan' ? (ev.groupId ? `group:${ev.groupId}` : null) : (ev.botId ? `bot:${ev.botId}` : null);
+        if (!planKey) return;
+        const next = planProgress(ev.plan);
+        const before = JSON.stringify(plans.get(planKey) || null);
+        if (next) plans.set(planKey, next); else plans.delete(planKey);
+        if (before !== JSON.stringify(next)) changed();
+        break;
+      }
       case 'roster.changed':
         // A deleted bot or group must not keep a badge on the sidebar.
         if (ev.action === 'delete' && key) { forget(key); break; }
@@ -101,9 +163,10 @@ export function createAttention({ file, bus }) {
       bus.subscribe(onEvent);
     },
 
-    /** -> {items: {key: {working, needsYou, unread, waiting?}}, needsYou, unread, working} */
+    /** -> {items: {key: {working, needsYou, unread, waiting?, doing?, ask?, asking?}}, needsYou, unread, working} */
     snapshot() {
-      const keys = new Set([...working.keys(), ...approvals.values(), ...Object.keys(saved.waiting), ...Object.keys(saved.result)]);
+      const asking = [...plans].filter(([, p]) => p.waiting).map(([k]) => k);
+      const keys = new Set([...working.keys(), ...approvals.values(), ...Object.keys(saved.waiting), ...Object.keys(saved.result), ...asking]);
       const items = {};
       const totals = { needsYou: 0, unread: 0, working: 0 };
       for (const key of keys) {
@@ -115,7 +178,20 @@ export function createAttention({ file, bus }) {
         };
         if (open) item.approvals = open;
         if (saved.waiting[key]) item.waiting = saved.waiting[key];
-        if (!item.working && !item.needsYou && !item.unread) continue;
+        // A step that waits for the human's answer: said on the line (not counted as needsYou).
+        const plan = plans.get(key);
+        if (plan?.waiting) item.asking = { question: plan.question || '', count: plan.waiting };
+        if (!item.working && !item.needsYou && !item.unread && !item.asking) continue;
+        if (open) {
+          const [firstId] = [...approvals].find(([, k]) => k === key) || [];
+          if (asks.has(firstId)) item.ask = asks.get(firstId);
+        }
+        if (item.working) {
+          // The checklist's step only while the list is being worked through (a parked one is not what it does now).
+          const { question, waiting, live, ...progress } = plan || {};
+          const d = { ...(live ? { ...progress, ...(waiting ? { waiting } : {}) } : {}), ...(doing.get(key)?.text ? { text: doing.get(key).text } : {}), ...(doing.get(key)?.tool ? { tool: doing.get(key).tool } : {}) };
+          if (Object.keys(d).length) item.doing = d;
+        }
         items[key] = item;
         if (item.needsYou) totals.needsYou += 1;
         if (item.unread) totals.unread += 1;

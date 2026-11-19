@@ -362,6 +362,12 @@ const MAX_FINISHED_RECORDS = 500;
  * "1 个操作等你确认" stays up for good (1.3.2).
  */
 export const PARKED_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The note on a card that closed because the human wrote something new in that
+ * chat instead of answering it (1.5.40). The page shows 已取消 and the rest.
+ */
+export const NEW_MESSAGE_NOTE = '已取消：你发了新消息';
 const parkedTooOld = (r, now = Date.now()) => r.status === 'awaiting_human' && now - Date.parse(r.createdAt || 0) > PARKED_TTL_MS;
 
 export class ApprovalQueue {
@@ -414,6 +420,13 @@ export class ApprovalQueue {
         restored: true,
         restoredAt: nowIso(),
       };
+      // Approving a restored card replays one call: a card for several commands
+      // comes back as the card for its first one (1.5.40).
+      if (record.batch) {
+        try { const a = JSON.parse(record.args); delete a.commands; record.args = JSON.stringify(a); } catch { /* keep the args as they are */ }
+        delete record.batch;
+      }
+      delete record.lookTurn;
       this.records.set(record.id, record);
       restored += 1;
       // A routine's card has no turn to time out; it expires after a day (list()).
@@ -437,7 +450,7 @@ export class ApprovalQueue {
    * routine report that in chat. That is the honest behaviour - a scheduled run
    * should never hang for ten minutes pretending to work.
    */
-  request({ turnId, botId, toolName, args, risk, reason, unattended = false, remember = null }) {
+  request({ turnId, botId, toolName, args, risk, reason, unattended = false, remember = null, batch = null, lookTurn = false, look = false }) {
     const id = uid('ap');
     const record = {
       id,
@@ -454,6 +467,12 @@ export class ApprovalQueue {
       unattended,
       // What "以后都允许" would remember ({key, label}); absent when it always asks.
       ...(remember?.key ? { remember: { key: String(remember.key), label: String(remember.label || remember.key) } } : {}),
+      // One card for several commands that only look (1.5.40): each one in full.
+      ...(Array.isArray(batch?.commands) && batch.commands.length > 1 ? { batch: { commands: batch.commands.map((c) => String(c).slice(0, 1000)).slice(0, 20) } } : {}),
+      // Allowing this also lets the turn's later look-only commands run unasked.
+      ...(lookTurn ? { lookTurn: true } : {}),
+      // Commands that only look: the card says so before and after it is answered.
+      ...(look ? { look: true } : {}),
     };
     this.records.set(id, record);
     void this.onAudit({ kind: 'approval.requested', ...record });
@@ -639,6 +658,25 @@ export class ApprovalQueue {
       }
     }
     if (closed.length) this.persist();
+    return closed;
+  }
+
+  /** The cards a running turn is stopped on right now. */
+  pendingForTurn(turnId) {
+    return [...this.records.values()].filter((r) => r.turnId === turnId && r.status === 'pending' && this.waiters.has(r.id));
+  }
+
+  /**
+   * Cards of this bot that nothing waits on any more (their turn ended with a
+   * restart): closed when the human moves on. -> the records closed.
+   */
+  cancelOrphans(botId, reason = NEW_MESSAGE_NOTE) {
+    const closed = [];
+    for (const record of [...this.records.values()]) {
+      if (record.botId !== botId || record.status !== 'pending' || this.waiters.has(record.id)) continue;
+      this.settle(record.id, 'denied', reason, 'system');
+      closed.push({ ...this.records.get(record.id) });
+    }
     return closed;
   }
 

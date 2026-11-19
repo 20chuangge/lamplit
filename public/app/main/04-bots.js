@@ -931,6 +931,12 @@ const STARTER_EXAMPLES = [
   ['D', '每天提醒我', '到点自己跑，不用你记着', '每天早上 8 点给我一份简报：今天的天气、这台电脑的磁盘空间够不够，有异常就提醒我。'],
 ];
 
+/** 「有事先找助理」 (1.5.40), with the main assistant's own name. */
+function askPrimaryTip() {
+  const primary = (state.bots || []).find((b) => b.primary);
+  return `不知道找谁，就跟「${primary?.name || '助理'}」说，它会交给合适的助手。`;
+}
+
 /** Under a chat's first exchange with the primary assistant: 试试这些. */
 function appendStarters(visible) {
   const bot = botById(state.botId);
@@ -951,6 +957,8 @@ function appendStarters(visible) {
     row.appendChild(chip);
   }
   messagesEl.appendChild(row);
+  // The first-run guide ends here (it sent the first sentence itself): say the one rule worth knowing.
+  messagesEl.appendChild(el('div', 'starter-tip', askPrimaryTip()));
   appendIsolationAsk().catch(() => {});
 }
 
@@ -1164,7 +1172,12 @@ function renderBots() {
     const active = !isGroupMode() && bot.id === state.botId;
     const row = el('div', `bot${active ? ' active' : ''}${bot.primary ? ' is-primary' : ''}`);
     row.dataset.bot = bot.id;
-    row.dataset.search = `${bot.name} ${bot.role || ''} ${previewText(bot)}`.toLowerCase();
+    // What it is doing, waits on or finished; its role while nothing is going on (1.5.40).
+    const last = lastLine(bot);
+    let line = rosterLine(`bot:${bot.id}`, { idle: bot.role || last || '还没有消息', last });
+    const waiting = bot.primary && !line.kind ? othersWaitingLine(`bot:${bot.id}`) : '';
+    if (waiting) line = { kind: 'needs', text: waiting };
+    row.dataset.search = `${bot.name} ${bot.role || ''} ${last} ${line.text}`.toLowerCase();
     row.setAttribute('role', 'button');
     row.tabIndex = 0;
     row.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -1185,7 +1198,7 @@ function renderBots() {
     nameRow.appendChild(el('span', 'bot-name-text', bot.name));
     if (bot.primary) nameRow.appendChild(el('span', 'badge', '主'));
     text.appendChild(nameRow);
-    text.appendChild(el('div', 'bot-preview', previewText(bot)));
+    text.appendChild(rosterLineNode(line));
 
     // kebab → rename / role / delete
     const more = el('button', 'bot-more', '⋯');

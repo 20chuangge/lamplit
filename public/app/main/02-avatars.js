@@ -238,10 +238,14 @@ function filterHome() {
 }
 
 function previewText(bot) {
-  const p = bot && bot.preview;
+  return lastLine(bot) || (bot && bot.role) || '还没有消息';
+}
+
+/** The last message of a bot or group as one plain line; '' when there is none. */
+function lastLine(thing) {
+  const p = thing && thing.preview;
   const text = p && typeof p.text === 'string' ? p.text.replace(/\s+/g, ' ').trim() : '';
-  if (text) return plainPreview(text);
-  return (bot && bot.role) || '还没有消息';
+  return text ? plainPreview(text) : '';
 }
 
 /** A sidebar preview is one line of plain text: the reply's **bold**, `code`, # titles and list marks dropped. */

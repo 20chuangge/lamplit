@@ -40,6 +40,9 @@ function renderMessages() {
   // longer work, then the answer - a long one cut into a few messages. Shown
   // as they were sent (one bubble each), the same as while it was live.
   const items = visible.map((item) => ({ ...item }));
+  // Work a colleague handed over: done once this bot answered and is not at it any more (1.5.40).
+  const busy = Boolean(state.attention?.items?.[currentChatKey()]?.working);
+  items.forEach((item, i) => { if (item.role === 'user' && item.fromBot) item.handoffState = handoffProgress(items.slice(i + 1), { working: busy, replied: (m) => m.role === 'assistant' && !m.system, again: (m) => m.role === 'user' }); });
   // A card the human acts on (takeover, login) comes after what the bot said in
   // that turn ("点下面的「接管屏幕」"), not before it.
   for (let i = items.length - 1; i >= 0; i -= 1) {
@@ -52,6 +55,9 @@ function renderMessages() {
 
   messagesEl.innerHTML = '';
   const changesByTurn = turnChanges(state.messages);
+  // A turn's own last message: a new message sent in the middle splits a turn in two (1.5.40), the line still shows once.
+  const turnEnds = new Map();
+  items.forEach((it, i) => { if (it.turnId) turnEnds.set(it.turnId, i); });
 
   if (!visible.length) {
     messagesEl.appendChild(emptyState());
@@ -72,8 +78,7 @@ function renderMessages() {
         messagesEl.appendChild(el('div', 'status-line', `这条消息没能渲染（${item && item.role}）`));
       }
       // The end of a turn that changed files: what changed, and 撤销 (1.5.8).
-      const next = items[items.indexOf(item) + 1];
-      if (item.turnId && (!next || next.turnId !== item.turnId) && changesByTurn.has(item.turnId)) {
+      if (item.turnId && turnEnds.get(item.turnId) === items.indexOf(item) && changesByTurn.has(item.turnId)) {
         messagesEl.appendChild(changesLine(item.turnId, changesByTurn.get(item.turnId)));
       }
     }
@@ -289,6 +294,8 @@ function welcomeCard() {
   }
   wrap.appendChild(choices);
   wrap.appendChild(el('div', 'empty-foot', '也可以直接输入，Enter 发送。'));
+  // One way in (1.5.40): the human need not work out which assistant a job belongs to.
+  wrap.appendChild(el('div', 'empty-tip', askPrimaryTip()));
   return wrap;
 }
 
@@ -643,14 +650,9 @@ function attachmentNode(file) {
 /** A message one bot sent another: "文案 → 质检", with the sender's face. */
 function botMessageRow(item) {
   const sender = botById(item.fromBot) || { id: item.fromBot, name: item.fromBot };
-  const target = botById(state.botId);
-  const bubble = el('div', 'bubble');
-  fillBubble(bubble, item.text || '', false, sender.id, 'line');
-  bubble.title = fmtClock(item.ts);
-  const row = groupSenderRow(sender, bubble);
+  // One line, the words behind a click (1.5.40).
+  const row = handoffRow({ sender, target: botById(state.botId), text: item.text || '', state: item.handoffState || '', ts: item.ts });
   row.classList.add('from-bot');
-  const name = row.querySelector('.g-name');
-  if (name) name.textContent = `${sender.name || '助手'} → ${(target && target.name) || ''}`;
   return row;
 }
 

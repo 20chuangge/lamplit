@@ -824,6 +824,9 @@ function attentionBadge(key) {
       : item.waiting?.kind === 'login' ? '需要你填写登录信息'
       : item.waiting?.kind === 'takeover' ? '需要你接管屏幕'
         : '需要你处理：有操作等你批准';
+  } else if (item.asking) {
+    kind = 'needs';
+    label = '需要你回复';
   } else if (item.working) {
     kind = 'working';
     label = '正在工作';
@@ -843,12 +846,74 @@ function attentionBadge(key) {
   return node;
 }
 
+/**
+ * The line under a bot or group in the list (1.5.40): what it is doing and how
+ * far it is, what it waits on you for, or what it finished - not only its last
+ * words. With nothing going on it is `idle` (a bot's role, a group's members).
+ * -> {text, kind: 'needs' | 'working' | 'unread' | '', tail?: 'n/m' of its checklist}
+ */
+function rosterLine(key, { idle = '', last = '', group = false } = {}) {
+  const item = state.attention?.items?.[key];
+  const brief = (s, n = 60) => truncate(plainPreview(String(s || '')), n);
+  if (item?.needsYou) {
+    const wait = item.waiting;
+    if (wait?.kind === 'decision') return { kind: 'needs', text: wait.text ? `等你拍板：${brief(wait.text)}` : '等你拍板' };
+    if (wait?.kind === 'login') return { kind: 'needs', text: '等你填写登录信息' };
+    if (wait?.kind === 'takeover') return { kind: 'needs', text: '等你接管屏幕' };
+    // Short, so a narrow list still shows what is asked: "等你点头：想执行命令".
+    const ask = item.ask || {};
+    const who = group && ask.botName ? `（${ask.botName}）` : '';
+    if (ask.count > 1) return { kind: 'needs', text: `等你点头${who}：想运行 ${ask.count} 条查看类命令` };
+    if (TOOL_TEXT[ask.tool]) return { kind: 'needs', text: `等你点头${who}：想${TOOL_TEXT[ask.tool].label}` };
+    const app = ask.tool ? mcpToolText(ask.tool)?.title : '';
+    return { kind: 'needs', text: app ? `等你点头${who}：${app}` : '等你点头：有操作等你批准' };
+  }
+  // A step of its checklist or board waits for an answer: the human is what it waits on.
+  if (item?.asking) return { kind: 'needs', text: item.asking.question ? `等你回复：${brief(item.asking.question)}` : '等你回复' };
+  if (item?.working) {
+    const doing = item.doing || {};
+    if (doing.total) return { kind: 'working', text: `正在做：${brief(doing.step, 40)}`, tail: `${doing.done}/${doing.total}` };
+    if (doing.text) return { kind: 'working', text: `正在做：${brief(doing.text)}` };
+    if (doing.tool) return { kind: 'working', text: `正在${toolNameLabel(doing.tool)}…` };
+    return { kind: 'working', text: '正在工作…' };
+  }
+  // The chat on screen has no "new result": the human is looking at it.
+  if (item?.unread && key !== currentChatKey()) return { kind: 'unread', text: last ? `做完了：${last}` : '做完了，有新结果' };
+  return { kind: '', text: idle };
+}
+
+/** That line as a node: in a narrow list the words give way, the count ("3/8") stays. */
+function rosterLineNode(line) {
+  const node = el('div', `bot-preview${line.kind ? ` st-${line.kind}` : ''}`);
+  node.appendChild(el('span', 'bp-text', line.text));
+  if (line.tail) node.appendChild(el('span', 'bp-tail', line.tail));
+  node.title = line.tail ? `${line.text} · ${line.tail}` : line.text;
+  return node;
+}
+
+/** For the main assistant's line while it is free: how many other chats wait on the human. */
+function othersWaitingLine(ownKey) {
+  const others = Object.entries(state.attention?.items || {}).filter(([key]) => key !== ownKey).map(([, item]) => item || {});
+  const needs = others.filter((item) => item.needsYou || item.asking).length;
+  if (!needs) return '';
+  return others.some((item) => item.working && !item.needsYou && !item.asking) ? `${needs} 件事等你，其余都在正常跑` : `${needs} 件事等你`;
+}
+
 function loadAttention() {
   clearTimeout(attentionTimer);
   attentionTimer = setTimeout(async () => {
+    const before = currentChatKey();
+    const wasWorking = Boolean(state.attention?.items?.[before]?.working);
+    const hadResult = new Set(Object.entries(state.attention?.items || {}).filter(([, item]) => item?.unread).map(([k]) => k));
     try { state.attention = await api('/api/attention'); } catch { return; /* older hub */ }
+    // 「做完了：…」 quotes its last words, and those come with the roster: fetch it when a result is new.
+    if (Object.entries(state.attention.items || {}).some(([k, item]) => item?.unread && !hadResult.has(k))) {
+      Promise.resolve(refreshRoster()).then(() => { renderBots(); renderGroups(); }).catch(() => {});
+    }
     const key = currentChatKey();
     if (key && state.attention.items?.[key]?.unread && document.visibilityState === 'visible') markSeen();
+    // A hand-over drawn as 在做 just as its turn ended (this news came after the transcript): it is done.
+    if (key === before && wasWorking && !state.attention.items?.[key]?.working && !state.liveTurn && messagesEl?.querySelector('.handoff-state.doing')) renderMessages();
     renderBots();
     renderGroups();
     syncDoneButton();

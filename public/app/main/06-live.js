@@ -347,7 +347,7 @@ function handleEvent(ev) {
       if (!isGroupMode() && ev.botId === state.botId && !ev.aside) setWorking(true);
       // A colleague handed this bot work: show what it asked, with its face, as it arrives.
       if (ev.fromBotId && ev.text && !isGroupMode() && ev.botId === state.botId) {
-        messagesEl.appendChild(botMessageRow({ fromBot: ev.fromBotId, text: ev.text, ts: ev.ts }));
+        messagesEl.appendChild(botMessageRow({ fromBot: ev.fromBotId, text: ev.text, ts: ev.ts, handoffState: 'doing' }));
       }
       // A scheduled run starting: its line, as the transcript will show it (1.5.11).
       if (ev.source === 'routine' && ev.text && !isGroupMode() && ev.botId === state.botId) {
@@ -596,6 +596,17 @@ function buildApprovalCard(data) {
   const parkedOpen = parked && (data.live || (state.approvals || []).some((a) => a.id === data.approvalId));
   const resolved = Boolean(data.decision) && !parked;
   const info = describeTool(data.tool, data.args);
+  // Several commands that only look, asked about once (1.5.40): each one shown in full.
+  const many = Array.isArray(data.batch?.commands) && data.batch.commands.length > 1 ? data.batch.commands : null;
+  if (many) {
+    info.title = `想运行 ${many.length} 条查看类命令`;
+    info.detail = '';
+    info.facts = [];
+    info.impact = '这些命令只是查看，不会改动任何东西。';
+  }
+  // Look-only commands: said so, and why it asks anyway - not "medium risk" under "changes nothing" (1.5.40 test).
+  const looking = Boolean(many || data.look || data.lookTurn);
+  if (looking && !many) info.impact = '这条命令只是查看，不会改动任何东西。';
 
   const top = el('div', 'approval-top');
   top.appendChild(el('span', 'approval-kicker', parked ? '定时任务停在了这一步' : resolved ? '已处理' : '需要你确认'));
@@ -622,6 +633,11 @@ function buildApprovalCard(data) {
     detail.appendChild(el('code', null, truncate(info.detail, 220)));
     card.appendChild(detail);
   }
+  if (many) {
+    const list = el('div', 'approval-batch');
+    for (const command of many) list.appendChild(el('code', null, String(command)));
+    card.appendChild(list);
+  }
 
   for (const [label, value] of info.facts) {
     if (info.detail && value === info.detail) continue;
@@ -633,7 +649,7 @@ function buildApprovalCard(data) {
 
   if (info.impact) card.appendChild(el('div', 'approval-impact', info.impact));
 
-  const why = reasonLabel(data.reason);
+  const why = looking ? '在这台电脑上运行命令前，都先问你一次' : reasonLabel(data.reason);
   card.appendChild(el('div', 'approval-why', why ? `为什么停下来问你：${why}` : '这个操作会改动文件或对外发东西，所以先停下来问你。'));
 
   if (parked) {
@@ -682,9 +698,9 @@ function buildApprovalCard(data) {
   const actions = el('div', 'approval-actions');
   const choose = el('div', 'approval-buttons');
 
-  const allow = el('button', 'btn primary approval-allow', '允许这一次');
+  const allow = el('button', 'btn primary approval-allow', many ? `允许这 ${many.length} 条` : '允许这一次');
   allow.type = 'button';
-  allow.title = '只批准这一步，下次同样的操作还会问你';
+  allow.title = many ? '这几条都会运行，不再一条条问' : '只批准这一步，下次同样的操作还会问你';
   const always = data.remember?.key ? el('button', 'btn approval-always', '以后都允许') : null;
   if (always) {
     always.type = 'button';
@@ -693,9 +709,13 @@ function buildApprovalCard(data) {
   // What 「以后都允许」 covers, said before the click (1.5.33: it read as "allow everything").
   const still = String(data.remember?.key || '').startsWith('shell:') ? '（危险操作和工作区外的改动照样会问）' : '';
   const scope = data.remember?.key ? el('div', 'approval-scope muted tiny', `「以后都允许」：以后${data.remember.label}都不再问${still}。${data.remember.warn ? ` ${data.remember.warn}` : ''}`) : null;
+  // Allowing a look-only command covers the turn's later ones: said before the click (1.5.40).
+  const lookNote = data.lookTurn
+    ? el('div', 'approval-scope muted tiny', many ? '允许后这几条都会运行；这一轮后面只是查看的命令也不再问你，会改动东西的照样先问。' : '允许后，这一轮后面只是查看的命令不再问你；会改动东西的照样先问。')
+    : many ? el('div', 'approval-scope muted tiny', '允许后这几条都会运行，不再一条条问。') : null;
   const reject = el('button', 'btn approval-reject', '拒绝');
   reject.type = 'button';
-  reject.title = '不执行，把「不行」告诉它';
+  reject.title = many ? '都不执行，把「不行」告诉它' : '不执行，把「不行」告诉它';
   const more = el('button', 'btn approval-more', '看详情');
   more.type = 'button';
 
@@ -712,6 +732,7 @@ function buildApprovalCard(data) {
   choose.appendChild(reject);
   choose.appendChild(more);
   actions.appendChild(choose);
+  if (lookNote) actions.appendChild(lookNote);
   if (scope) actions.appendChild(scope);
   actions.appendChild(note);
   card.appendChild(actions);
@@ -838,6 +859,10 @@ async function refreshPendingApprovals() {
       args: safeParse(approval.args),
       // After a reload the card is rebuilt from here: keep 「以后都允许」 (1.5.33).
       ...(approval.remember?.key ? { remember: approval.remember } : {}),
+      // And what a card for look-only commands covers (1.5.40).
+      ...(approval.batch ? { batch: approval.batch } : {}),
+      ...(approval.lookTurn ? { lookTurn: true } : {}),
+      ...(approval.look ? { look: true } : {}),
       ...(parked ? { decision: 'needs_approval', live: true } : {}),
     };
     const existing = messagesEl.querySelector(`[data-approval="${CSS.escape(approval.id)}"]`);

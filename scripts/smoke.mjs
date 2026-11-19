@@ -223,6 +223,7 @@ async function main() {
     await stage('1.5.43: the rest of step three - groups, avatars, the sidebar by machine, three ways to reach a machine', scenarioRoster1543);
     await stage('1.5.43: Tailscale the way the relay card works', scenarioTailscale1543);
     await stage('1.5.43: undo asks first, sits under the reply, never lists 「-p」; replies do not fold', scenarioUndoFold1543);
+    await stage('1.5.44: 建在哪台, a machine picked by name, the app opens on its home machine, whose settings', scenarioRoster1544);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -11413,4 +11414,140 @@ async function scenarioUndoFold1543() {
     && page.includes("bubble.querySelector('.bubble-actions')") && page.includes("toast(already ? '这一轮的改动已经撤销过了'"));
   check('UF-4 a bot\'s reply to you never folds; only a hand-over line between bots does',
     /function foldBubble\(bubble, text, mode = 'long'\) \{\s+\/\/[^\n]*\n\s+if \(!mode \|\| mode === 'long' \|\| !bubble\) return;/.test(core));
+}
+
+async function scenarioRoster1544() {
+  const seen = [];
+  let fake = null;
+  const cloud = '云服务器';
+  const third = '书房电脑';
+  const cloudToken = 'cloudTOKEN-1544-abcdefgh';
+  const hubBots = (await api('/api/bots')).json || [];
+  const mine = hubBots[0] || { id: 'chief', name: '助理' };
+  try {
+    // 云服务器 (and 书房电脑, the same stand-in): what it got, and how it names the others.
+    fake = http.createServer(async (req, res) => {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      let body = null;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* none */ }
+      const url = new URL(req.url, 'http://x');
+      seen.push({ method: req.method, path: url.pathname, headers: { ...req.headers }, body });
+      const send = (status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+      if (url.pathname === '/api/health') return send(200, { ok: true });
+      if (url.pathname === '/api/bots' && req.method === 'GET') return send(200, [{ id: 'chief', name: '助理', role: '主助理', primary: true }, { id: 'pen', name: '小笔', role: '写东西' }]);
+      if (url.pathname === '/api/groups' && req.method === 'GET') return send(200, []);
+      if (url.pathname === '/api/attention') return send(200, { items: {} });
+      if (url.pathname === '/api/bots' && req.method === 'POST') {
+        if (body?.name === '重名') return send(409, { error: { code: 'BOT_EXISTS', message: 'exists' } });
+        return send(200, { bot: { id: 'newbie', name: body?.name, role: body?.role || '' } });
+      }
+      // How 云服务器 names the machines it reaches: not as this hub does. Every
+      // main assistant is 「助理」 (chief): one bot alone does not tell machines apart.
+      if (url.pathname === '/api/peers/roster') {
+        return send(200, { machines: [
+          { machine: '家里那台', online: true, bots: hubBots.map((b) => ({ id: b.id, name: b.name })) },
+          { machine: '书房', online: true, bots: [{ id: 'chief', name: '助理' }, { id: 'pen', name: '小笔' }] },
+        ] });
+      }
+      if (url.pathname === '/api/peers' && req.method === 'GET') return send(200, { peers: [{ name: '书房', url: `http://127.0.0.1:${fake.address().port}` }] });
+      if (url.pathname === '/api/groups' && req.method === 'POST') return send(200, { group: { id: 'g-new', name: body?.name, members: body?.members, coordinatorId: body?.coordinatorId } });
+      return send(404, { error: { code: 'NOT_FOUND', message: 'no' } });
+    });
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+    const C = `http://127.0.0.1:${fake.address().port}`;
+    await api('/api/peers', { method: 'PUT', body: { self: { name: '客厅电脑' }, peers: [{ name: cloud, url: C, token: cloudToken }, { name: third, url: C, token: cloudToken }] } });
+    await api('/api/peers/roster?fresh=1');
+    const authMod = await import('../src/auth.mjs');
+    const noKey = { 'x-no-local-key': '1' };
+    const botsAt = `/api/peers/${encodeURIComponent(cloud)}/bots`;
+    const groupsAt = `/api/peers/${encodeURIComponent(cloud)}/groups`;
+
+    // --- 「建在哪台？」: by the human only, never passed on twice ----------------------------
+    const before = seen.length;
+    const unpaired = await api(botsAt, { method: 'POST', body: { name: '小新' }, headers: noKey });
+    const unpairedG = await api(groupsAt, { method: 'POST', body: { name: '新群', members: [mine.id, `pen@${cloud}`] }, headers: noKey });
+    const aToken = JSON.parse(fsSync.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8')).token;
+    const hop = await rawFetch(`${base}${botsAt}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${aToken}`, 'x-lamplit-via': 'x' }, body: JSON.stringify({ name: '小新' }) });
+    check('R44-1 making a bot or group on another machine is the human\'s (unpaired: 403 LOCAL_KEY_REQUIRED; a call another hub passed on: 403); nothing reaches that machine',
+      unpaired.status === 403 && unpaired.json?.error?.code === 'LOCAL_KEY_REQUIRED' && unpairedG.status === 403
+      && hop.status === 403 && authMod.isAuthorityRequest('POST', '/api/peers/x/bots') && authMod.isAuthorityRequest('POST', '/api/peers/x/groups')
+      && !authMod.isAuthorityRequest('GET', '/api/peers/roster')
+      && !seen.slice(before).some((s) => s.method === 'POST'), JSON.stringify({ u: unpaired.status, g: unpairedG.status, h: hop.status }));
+
+    // --- a bot: only its name, job and persona go over -------------------------------------
+    const made = await api(botsAt, { method: 'POST', body: { name: '小新', role: '查资料', persona: '始终使用简体中文回答。', id: 'evil', tools: ['shell'], policy: { autoApproveMedium: true } } });
+    const sentBot = seen.filter((s) => s.method === 'POST' && s.path === '/api/bots').pop();
+    check('R44-2 a new bot on 云服务器: made there with only name, job and persona (no id, tools or policy), with its token, marked as passed on; it comes back as "newbie@云服务器"',
+      made.status === 200 && made.json?.bot?.id === `newbie@${cloud}` && made.json?.machine === cloud
+      && JSON.stringify(Object.keys(sentBot?.body || {}).sort()) === JSON.stringify(['name', 'persona', 'role'])
+      && sentBot?.headers?.authorization === `Bearer ${cloudToken}` && Boolean(sentBot?.headers?.['x-lamplit-via']),
+      JSON.stringify({ s: made.status, j: made.json, b: sentBot?.body }));
+    const dup = await api(botsAt, { method: 'POST', body: { name: '重名' } });
+    const empty = await api(botsAt, { method: 'POST', body: { name: '  ' } });
+    check('R44-3 a name taken there says so (409, 「换个名字」); no name is refused here',
+      dup.status === 409 && /换个名字/.test(dup.json?.error?.message || '') && empty.status === 400, JSON.stringify({ d: dup.json, e: empty.status }));
+
+    // --- a group: it lives there; its members are named the way that machine names them ------
+    const g = await api(groupsAt, { method: 'POST', body: { name: '新群', members: [mine.id, `pen@${cloud}`, `chief@${third}`], coordinatorId: `pen@${cloud}` } });
+    const sentGroup = seen.filter((s) => s.method === 'POST' && s.path === '/api/groups').pop();
+    check('R44-4 a new group on 云服务器: this machine\'s bot goes as "id@家里那台", 云服务器\'s own as plain "pen", 书房电脑\'s as "chief@书房" (each the way 云服务器 names it); the coordinator likewise; it comes back as "g-new@云服务器"',
+      g.status === 200 && g.json?.group?.id === `g-new@${cloud}`
+      && JSON.stringify(sentGroup?.body?.members) === JSON.stringify([`${mine.id}@家里那台`, 'pen', 'chief@书房'])
+      && sentGroup?.body?.coordinatorId === 'pen' && sentGroup?.body?.name === '新群',
+      JSON.stringify({ s: g.status, j: g.json, b: sentGroup?.body }));
+    const posts = seen.filter((s) => s.method === 'POST' && s.path === '/api/groups').length;
+    const lost = await api(groupsAt, { method: 'POST', body: { name: '新群', members: ['nobody-here', `pen@${cloud}`] } });
+    check('R44-5 a member that machine cannot reach: nothing is made, and it says what to do (MEMBER_NOT_REACHABLE: add that machine there, or pick only its own)',
+      lost.status === 400 && lost.json?.error?.code === 'MEMBER_NOT_REACHABLE' && /加上那台机器/.test(lost.json?.error?.message || '')
+      && seen.filter((s) => s.method === 'POST' && s.path === '/api/groups').length === posts, JSON.stringify(lost.json));
+    const S = await import('../src/server.mjs');
+    const two = { target: 'T', self: 'H', ownBots: [{ id: 'a', name: '甲' }], hubRoster: [{ machine: 'M', bots: [{ id: 'a', name: '乙' }] }], targetRoster: [{ machine: 'H2', bots: [{ id: 'a', name: '甲' }] }, { machine: 'M2', bots: [{ id: 'a', name: '乙' }] }] };
+    const twins = { ...two, targetRoster: [{ machine: 'H2', bots: [{ id: 'a', name: '甲' }] }, { machine: 'H3', bots: [{ id: 'a', name: '甲' }] }] };
+    check('R44-6 a machine is found there by its address, else its name, else its bots; two machines with the same main assistant are never guessed between',
+      typeof S.memberThere === 'function' && S.memberThere('a', two) === 'a@H2' && S.memberThere('a@M', two) === 'a@M2' && S.memberThere('x@T', two) === 'x'
+      && S.memberThere('a', twins) === null
+      && S.memberThere('a', { ...twins, selfUrls: ['http://192.0.2.5:4390/'], targetPeers: [{ name: 'H3', url: 'http://192.0.2.5:4390' }] }) === 'a@H3'
+      && S.memberThere('a', { ...twins, targetRoster: [...twins.targetRoster, { machine: 'H', bots: [{ id: 'a', name: '甲' }] }] }) === 'a@H');
+  } finally {
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
+    if (fake) await new Promise((r) => fake.close(r));
+  }
+
+  // --- the page: 「建在哪台？」, a machine picked by name, whose settings ----------------------
+  const html = fsSync.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const groupsJs = fsSync.readFileSync(new URL('../public/app/main/03-groups.js', import.meta.url), 'utf8');
+  const machinesJs = fsSync.readFileSync(new URL('../public/app/main/11-machines.js', import.meta.url), 'utf8');
+  const wiring = fsSync.readFileSync(new URL('../public/app/main/12-wiring.js', import.meta.url), 'utf8');
+  const settingsJs = fsSync.readFileSync(new URL('../public/app/main/08-settings.js', import.meta.url), 'utf8');
+  const launcher = fsSync.readFileSync(new URL('../mobile/shell/launcher.js', import.meta.url), 'utf8');
+  check('R44-7 in 「全部机器」 the new-bot form and the new-group box ask 「建在哪台？」 (this machine first, the others that answer now); in 「只看这台」 they do not',
+    html.includes('id="new-bot-where"') && html.includes('id="group-where-row"') && html.includes('>建在哪台？<')
+    && /function whereMachines\(\) \{\s+if \(!rosterGrouped\(\)\) return \[\];\s+return \(state\.peerRoster \|\| \[\]\)\.filter\(\(m\) => m\.online\)/.test(groupsJs)
+    && wiring.includes("where ? `/api/peers/${encodeURIComponent(where)}/bots` : '/api/bots'") && groupsJs.includes('`/api/peers/${encodeURIComponent(where)}/groups`')
+    && groupsJs.includes('也可以在左上角切到「${where}」再建') && wiring.includes('也可以在左上角切到「${where}」再建'));
+  check('R44-8 a machine picked by name opens in 「只看这台」 (?view=one, kept in that tab); 「全部机器」 there goes back to the home machine\'s 全部机器',
+    machinesJs.includes("next.searchParams.set('view', 'one')") && groupsJs.includes("if (asked === 'one') sessionStorage.setItem('lamplit.single', '1');")
+    && groupsJs.includes("if (view === 'all' && !machineBridge && singleVisit() && goHomeAll()) return;") && groupsJs.includes("window.NightshiftShell?.openMachine?.('@home')")
+    && groupsJs.includes("next.searchParams.set('view', 'all');"));
+  check('R44-9 the app opens straight into its home machine in 「全部机器」 on a cold start; the list when it does not answer, on Back, or with nothing paired; a page\'s pick by name opens 「只看这台」',
+    launcher.includes("home: 'desk.homeHub'") && /if \(!started && state\.hub && \(await openHome\(\)\)\) return;/.test(launcher)
+    && launcher.includes("enterMachine(entry, null, { view: 'all', quiet: true })") && launcher.includes("enterMachine(entry, null, { view: 'one' })")
+    && launcher.includes("if (name === '@home')") && launcher.includes('if (!up && quiet) return false;') && launcher.includes("void enterMachine(entry, tag, { view: 'all' });"));
+  check('R44-10 settings say whose they are: 「<this machine>的设置」 (the desktop and the app alike)',
+    settingsJs.includes('return name ? `${name}的设置` : \'设置\';') && settingsJs.includes("$('settings-title').textContent = settingsTitle();"));
+  const botsJs = fsSync.readFileSync(new URL('../public/app/main/04-bots.js', import.meta.url), 'utf8');
+  check('R44-11 (beginner test) made on another machine after pairing first: the form closes and the new one opens, so it is not made twice; the pairing box says what this step is',
+    wiring.includes('state.afterPair.then = (res) => botMadeThere(where, res)') && groupsJs.includes('state.afterPair.then = (res) => groupMadeThere(where, res)')
+    && /async function botMadeThere\(where, res\) \{\s+\$\('bot-form'\)\.classList\.remove\('open'\);/.test(groupsJs)
+    && botsJs.includes('在别的机器上新建助手或群组，只能在 Lamplit 应用里'));
+  check('R44-12 (beginner test) a machine opened by name is 「现在打开的这台」, not 「这台电脑」/「你正在用的这台」; other machines\' bots wear their own faces in the new-group box; the settings title follows a change of width',
+    machinesJs.includes("if (singleVisit()) return throughPhoneRelay() ? '现在打开的这台 · 经过中转' : '现在打开的这台';") && machinesJs.includes('local && !singleVisit() ?')
+    && groupsJs.includes('const face = (b) => { const r = remoteBotById(b.id); return r?.avatar ? { ...b, avatar: r.avatar } : b; };')
+    && settingsJs.includes("mqMobile.addEventListener?.('change'"));
+  const css = fsSync.readFileSync(new URL('../public/app/style.css', import.meta.url), 'utf8');
+  check('R44-13 (beginner test) the pairing box is above the box it opened from (新建群组); a group\'s stack shows members from other machines with their own faces',
+    /#local-pair-scrim \{ z-index: 98; \}\s+#local-pair-modal \{ z-index: 99; \}/.test(css) && css.indexOf('#local-pair-modal { z-index: 99; }') > css.indexOf('#group-scrim, #vnc-scrim')
+    && groupsJs.includes('const av = avatarNode(faceOf(bot), size);') && groupsJs.includes('function faceOf(b) {')
+    && fsSync.readFileSync(new URL('../public/app/main/02-avatars.js', import.meta.url), 'utf8').includes('const a = avatarOf(faceOf(bot));'));
 }

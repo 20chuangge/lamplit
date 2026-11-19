@@ -431,6 +431,7 @@ function wireChrome() {
     closeMenus();
     if (item.dataset.act === 'group') { openGroupModal(); return; }
     const form = $('bot-form');
+    fillBotWhere();
     form.classList.add('open');
     $('new-bot-name').focus();
   });
@@ -442,8 +443,10 @@ function wireChrome() {
   $('new-bot-save').addEventListener('click', async () => {
     const name = $('new-bot-name').value.trim();
     if (!name) { toast('先给这个助手起个名字', true); return; }
+    // 「建在哪台？」 (1.5.44): '' is this machine.
+    const where = $('new-bot-where-row').hidden ? '' : $('new-bot-where').value;
     try {
-      await api('/api/bots', {
+      const res = await api(where ? `/api/peers/${encodeURIComponent(where)}/bots` : '/api/bots', {
         method: 'POST',
         body: {
           name,
@@ -455,13 +458,16 @@ function wireChrome() {
             : '始终使用简体中文回答。技术名词、命令、路径、代码和报错原文保持原样。',
         },
       });
+      if (where) { await botMadeThere(where, res); return; }
       state.bots = await api('/api/bots');
       renderBots();
       renderRoutines();
       $('new-bot-cancel').click();
       toast('助手已创建');
     } catch (err) {
-      toast(err.message, true);
+      // The pairing box says it, and makes it once paired: then the form closes and it opens (1.5.44 test).
+      if (err.code === 'LOCAL_KEY_REQUIRED') { if (where && state.afterPair) state.afterPair.then = (res) => botMadeThere(where, res); return; }
+      toast(where && err.code !== 'BOT_EXISTS' ? `在「${where}」上没建成：${err.message}。也可以在左上角切到「${where}」再建。` : err.message, true);
     }
   });
   // Enter in the name or the role box creates it, like the button (1.5.41 test).

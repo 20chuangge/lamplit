@@ -425,6 +425,8 @@ export function isAuthorityRequest(method, pathname, body = {}) {
   if (/^\/api\/peers\/[^/]+\/bots\/[^/]+\//.test(p)) return true;
   // Another machine's group (1.5.43): the same rules as its bots.
   if (/^\/api\/peers\/[^/]+\/groups\/[^/]+\//.test(p)) return true;
+  // A new bot or group made on another machine from here (1.5.44 「建在哪台？」).
+  if (m === 'POST' && /^\/api\/peers\/[^/]+\/(bots|groups)$/.test(p)) return true;
   // Tailscale on this machine and the others (1.5.43): installing, logging in, removing, sharing.
   if (m === 'POST' && /^\/api\/tailscale\/(install|login|uninstall|share)$/.test(p)) return true;
   if (/^\/api\/peers\/outbox(\/|$)/.test(p)) return true;

@@ -24,7 +24,9 @@
 (() => {
   'use strict';
 
-  const KEYS = { hub: 'desk.hubUrl', hubs: 'desk.hubs', bot: 'desk.botId', tokenFor: (hub) => `desk.token:${hub}` };
+  // home (1.5.44): the machine the app opens into, in 「全部机器」 - the last one
+  // picked from this list, not one a page opened by name (those are 「只看这台」).
+  const KEYS = { hub: 'desk.hubUrl', hubs: 'desk.hubs', home: 'desk.homeHub', bot: 'desk.botId', tokenFor: (hub) => `desk.token:${hub}` };
   const PROBE_TIMEOUT_MS = 4500;
   const LONG_PRESS_MS = 550;
 
@@ -573,7 +575,8 @@
           longPressed = false;
           return;
         }
-        void enterMachine(entry, tag);
+        void store.set(KEYS.home, entry.url).catch(() => {});
+        void enterMachine(entry, tag, { view: 'all' });
       });
 
       dom.machineList.appendChild(row);
@@ -687,6 +690,18 @@
   }
 
   /** Append the "you came from here" hint the target's switcher renders. */
+  /** How the machine's page opens (1.5.44): 'all' = 全部机器 (home), 'one' = 只看这台 (picked by name). */
+  function withView(target, view) {
+    if (!view) return target;
+    try {
+      const url = new URL(target);
+      url.searchParams.set('view', view);
+      return url.toString();
+    } catch {
+      return target;
+    }
+  }
+
   function withOrigin(target, origin) {
     if (!origin) return target;
     try {
@@ -710,7 +725,7 @@
     return probe(entry.via);
   }
 
-  async function enterMachine(entry, tag) {
+  async function enterMachine(entry, tag, { view = '', quiet = false } = {}) {
     // Same network: LAN. Elsewhere: Tailscale. The phone decides, every time.
     let hub = (await bestAddress([entry.url, ...(entry.alt || [])])) || entry.url;
     let up = hub !== entry.url || (await probe(hub));
@@ -720,6 +735,8 @@
       await new Promise((r) => setTimeout(r, 700));
       up = await probe(hub);
     }
+    // Opening by itself at start (1.5.44): a machine that does not answer means the list, no box.
+    if (!up && quiet) return false;
     if (!up && (await behindVia(entry))) {
       if (tag) {
         tag.className = 'pill warn';
@@ -773,8 +790,8 @@
           const target = (relayToken && `${hub}/?pair=${encodeURIComponent(relayToken)}`) || (await pickReachableLink(links, safeOrigin(hub))) || made?.url;
           if (target) {
             await store.set(KEYS.hub, hub);
-            window.location.assign(withOrigin(target, origin));
-            return;
+            window.location.assign(withView(withOrigin(target, origin), view));
+            return true;
           }
         }
       } catch {
@@ -827,8 +844,8 @@
               }
             }
             await store.set(KEYS.hub, hub);
-            window.location.assign(withOrigin(target, origin));
-            return;
+            window.location.assign(withView(withOrigin(target, origin), view));
+            return true;
           }
         }
       } catch {
@@ -836,7 +853,31 @@
       }
     }
     await store.set(KEYS.hub, hub);
-    window.location.assign(withOrigin(`${hub}/`, origin));
+    window.location.assign(withView(withOrigin(`${hub}/`, origin), view));
+    return true;
+  }
+
+  /**
+   * The machine the app opens into (1.5.44): 「全部机器」 is the default, so the
+   * bots show at once instead of the list first. The home machine (the last one
+   * picked from the list), else the last opened, else the first saved. Only on
+   * a cold start: the Back key and 「返回 App 的机器列表」 come here for the list.
+   */
+  async function homeEntry() {
+    const saved = await readHubs();
+    if (!saved.length) return null;
+    const home = (await store.get(KEYS.home).catch(() => '')) || state.hub || '';
+    return saved.find((h) => h.url === home) || saved.find((h) => h.url === state.hub) || saved[0];
+  }
+  async function openHome() {
+    const entry = await homeEntry();
+    if (!entry) return false;
+    show('booting');
+    dom.bootingText.textContent = `正在打开「${entry.name || hostLabel(entry.url)}」…`;
+    dom.bootingUrl.textContent = '';
+    // The same fast route choice as a tap (1.5.39); not there: the list says why.
+    const opened = await enterMachine(entry, null, { view: 'all', quiet: true }).catch(() => false);
+    return Boolean(opened);
   }
 
   /**
@@ -1469,6 +1510,12 @@
     if (open) {
       history.replaceState(null, '', window.location.pathname + window.location.search);
       const name = (() => { try { return decodeURIComponent(open[1]); } catch { return ''; } })();
+      // 「全部机器」 on a machine opened by name (1.5.44): home, in 全部机器.
+      if (name === '@home') {
+        if (await openHome()) return;
+        showConnected();
+        return;
+      }
       // Already in the list: open it now. Learning the list again first asked
       // every machine at every address, the dead ones too (1.5.39: seconds).
       let entry = name ? (await readHubs()).find((h) => h.name === name) : null;
@@ -1477,17 +1524,24 @@
         entry = (await readHubs()).find((h) => h.name === name) || null;
       }
       if (entry) {
+        // The machine whose page asked is home, unless one was picked from the list (1.5.44).
+        if (state.hub && !(await store.get(KEYS.home).catch(() => ''))) await store.set(KEYS.home, state.hub).catch(() => {});
         // Not the list (1.5.39: it flashed on every switch): say where we are going.
         show('booting');
         dom.bootingText.textContent = `正在打开「${entry.name || hostLabel(entry.url)}」…`;
         dom.bootingUrl.textContent = '';
         // Still here a while later (it did not open): back to the list, which says why.
-        void enterMachine(entry).catch(() => {}).finally(() => setTimeout(() => {
+        void enterMachine(entry, null, { view: 'one' }).catch(() => {}).finally(() => setTimeout(() => {
           if (state.view === 'booting') showConnected();
         }, 3000));
         return;
       }
     }
+    // A cold start opens the home machine in 「全部机器」 (1.5.44); the list only
+    // when it does not answer, or later in this run (Back, 返回 App 的机器列表).
+    let started = false;
+    try { started = sessionStorage.getItem('desk.started') === '1'; sessionStorage.setItem('desk.started', '1'); } catch { started = true; }
+    if (!started && state.hub && (await openHome())) return;
     if (state.hub) {
       showConnected();
       return;

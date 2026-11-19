@@ -78,8 +78,9 @@ function syncMachineBranding() {
   const os = host ? (host.platform === 'win32' ? 'Windows' : host.platform === 'linux' ? 'Linux' : host.platform) : '';
   const grouped = local && rosterGrouped(); if ($('machine-name')) $('machine-name').textContent = grouped ? '全部机器' : name;
   if ($('pc-title')) $('pc-title').textContent = `${name}的屏幕`;
+  if (state.settingsOpen && (!isMobile() || $('settings-drawer')?.classList.contains('set-home'))) $('settings-title').textContent = settingsTitle(); // its name came later
   if ($('machine-sub')) {
-    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local ? (grouped ? `${(state.peerRoster || []).length + 1} 台 · 这台是 ${name}` : '这台电脑') : [os, pageRouteWords()].filter(Boolean).join(' · '))}`;
+    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local && !singleVisit() ? (grouped ? `${(state.peerRoster || []).length + 1} 台 · 这台是 ${name}` : '这台电脑') : [os, singleVisit() ? '只看这台' : pageRouteWords()].filter(Boolean).join(' · '))}`;
   }
   if ($('about-origin')) $('about-origin').textContent = location.origin;
   if ($('timezone-pill')) $('timezone-pill').textContent = timezoneLabel(effectiveTimezone());
@@ -204,7 +205,8 @@ function renderMachineMenu() {
       key: 'origin',
     }));
     // 「全部机器」 (1.5.42): every machine's bots in this sidebar; this machine alone is its own row.
-    if (list.some((m) => !m.self)) rows.push(row('全部机器', '每台机器上的助手都在左边', { current: state.view === 'all', attrs: 'data-view="all"' }));
+    // Opened by name from another machine (1.5.44): 「全部机器」 is the way back there.
+    if (list.some((m) => !m.self) || (singleVisit() && canGoHome())) rows.push(row('全部机器', singleVisit() ? '回到全部机器' : '每台机器上的助手都在左边', { current: state.view === 'all', attrs: 'data-view="all"' }));
     for (const m of list) {
       rows.push(
         m.self
@@ -475,6 +477,7 @@ async function handoffToMachine(name, button) {
     // other machine's list with the name instead of the address.
     const next = new URL(target);
     next.searchParams.set('from', location.origin);
+    next.searchParams.set('view', 'one'); // a machine picked by name: 「只看这台」 there (1.5.44)
     const label = machineDisplayName();
     if (label) next.searchParams.set('fromName', label);
     location.assign(next.toString());
@@ -1072,6 +1075,8 @@ function saveMachineFromModal() {
  * a page on 127.0.0.1:14440-14499 came through the relay (the app's forwarder, RelayLinks).
  */
 function selfSub() {
+  // Opened by name from another machine (1.5.44 test): the one on screen, not the one in your hand.
+  if (singleVisit()) return throughPhoneRelay() ? '现在打开的这台 · 经过中转' : '现在打开的这台';
   return throughPhoneRelay() ? '你正在用的这台 · 经过中转' : '你正在用的这台';
 }
 

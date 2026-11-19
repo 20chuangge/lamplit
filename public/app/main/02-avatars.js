@@ -185,7 +185,8 @@ function appendAvatarContent(node, a) {
 
 /** One avatar node for the sidebar / anything static. */
 function avatarNode(bot, size = 52, className = '') {
-  const a = avatarOf(bot);
+  // A member from another machine wears its own face everywhere (1.5.44 test: the chat's title stack stayed purple).
+  const a = avatarOf(faceOf(bot));
   const node = el('span', `av av-s-${a.shape}${className ? ` ${className}` : ''}`);
   node.style.setProperty('--av-size', `${size}px`);
   node.style.setProperty('--av-color', a.color);

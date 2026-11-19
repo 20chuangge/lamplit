@@ -566,13 +566,29 @@ function setSettingsNav(sectionId) {
   const drawer = $('settings-drawer');
   drawer?.classList.remove('set-home');
   const picked = document.querySelector(`.setnav[data-set-target="${sectionId}"]`);
-  $('settings-title').textContent = isMobile() && picked ? picked.textContent.trim() : '设置';
+  $('settings-title').textContent = isMobile() && picked ? picked.textContent.trim() : settingsTitle();
 }
+
+/**
+ * Whose settings these are (1.5.44): in 「全部机器」 设置 changes only this
+ * machine's, and nothing said which. 「Windows 电脑的设置」, in the app too.
+ */
+function settingsTitle() {
+  const name = machineDisplayName();
+  return name ? `${name}的设置` : '设置';
+}
+
+// From desktop width to phone width with a page open: its name, not 「…的设置」 (1.5.44 test).
+mqMobile.addEventListener?.('change', () => {
+  if (!state.settingsOpen || $('settings-drawer')?.classList.contains('set-home')) return;
+  const picked = document.querySelector('.setnav.active');
+  $('settings-title').textContent = isMobile() && picked ? picked.textContent.trim() : settingsTitle();
+});
 
 /** Phone: the settings list itself (the mockup's grouped list). */
 function showSettingsHome() {
   $('settings-drawer').classList.add('set-home');
-  $('settings-title').textContent = '设置';
+  $('settings-title').textContent = settingsTitle();
 }
 
 /** Line icons for the settings list, one per page (Lucide shapes, ISC licence). */

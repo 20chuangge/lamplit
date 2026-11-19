@@ -51,11 +51,23 @@ function groupCoordinator(group) {
   return members.find((b) => b.id === id) || members[0];
 }
 
+/**
+ * A member with its own face (1.5.44 test: members from other machines were
+ * default purple in a group's stack): this machine's bot, or the roster's.
+ */
+function faceOf(b) {
+  if (!b || b.avatar) return b;
+  const far = remoteOf(b.id);
+  const own = far && far.machine === (selfMachineName || '') ? state.bots.find((x) => x.id === far.botId) : null;
+  const known = own || botById(b.id);
+  return known?.avatar ? { ...b, avatar: known.avatar } : b;
+}
+
 function stackOf(bots, size = 30, onPick = null, max = 3) {
   const stack = el('div', 'stack');
   for (const bot of bots.slice(0, max)) {
     const cell = el('div', 'stack-cell');
-    const av = avatarNode(bot, size);
+    const av = avatarNode(faceOf(bot), size);
     if (onPick) {
       av.style.cursor = 'pointer';
       av.title = `${bot.name} 的私聊`;
@@ -684,6 +696,7 @@ function openGroupModal(groupId = null) {
     }
     : { name: '', members: [], coordinatorId: null };
   state.groupDraft.machineFilter = 'all';
+  state.groupDraft.where = '';
   state.groupDraft.pinned = [...state.groupDraft.members];
   $('group-title').textContent = group ? '群组详情' : '新建群组';
   $('group-create').textContent = group ? '保存' : '创建群组';
@@ -739,6 +752,7 @@ function renderGroupModal() {
   const draft = state.groupDraft;
   const grid = $('group-member-grid');
   grid.innerHTML = '';
+  renderGroupWhere();
   // Members on other machines: already in this group, or offered by the machines reachable now.
   const farKnown = new Map((state.remoteBots || []).map((b) => [b.id, b]));
   for (const m of (groupById(draft.id)?.members || [])) if (m?.machine && !farKnown.has(m.id)) farKnown.set(m.id, m);
@@ -748,7 +762,9 @@ function renderGroupModal() {
   // card does not jump while you click); the others by the machine picked.
   const shown = (bot) => draft.members.includes(bot.id) || filter === 'all' || (filter === 'here' ? !bot.machine : bot.machine === filter);
   const pinned = new Set(draft.pinned || []);
-  const all = [...state.bots.map((b) => ({ ...b, machine: '' })), ...farKnown.values()];
+  // Each with its own face, as in the sidebar (1.5.44 test: all purple squares).
+  const face = (b) => { const r = remoteBotById(b.id); return r?.avatar ? { ...b, avatar: r.avatar } : b; };
+  const all = [...state.bots.map((b) => ({ ...b, machine: '' })), ...[...farKnown.values()].map(face)];
   const list = [...all.filter((b) => pinned.has(b.id)), ...all.filter((b) => !pinned.has(b.id))].filter(shown);
   for (const bot of list) {
     const on = draft.members.includes(bot.id);
@@ -769,9 +785,11 @@ function renderGroupModal() {
 
   const coord = $('group-coord-row');
   coord.innerHTML = '';
-  const chosen = draft.members.map((id) => botById(id)).filter(Boolean);
-  if (!chosen.length) {
-    coord.appendChild(el('span', 'muted tiny', '先选成员，再选协调者。'));
+  // The coordinator is on the machine the group lives on (1.5.44).
+  const chosen = draft.members.filter(onGroupMachine).map((id) => botById(id)).filter(Boolean);
+  // Members, but none on the group's machine: say that, not 「先选成员」 (1.5.44).
+  if (!chosen.length && !(draft.members.length >= 2)) {
+    coord.appendChild(el('span', 'muted tiny', draft.members.length && draft.where ? `至少要有一位「${draft.where}」上的助手来协调。` : '先选成员，再选协调者。'));
   }
   for (const bot of chosen) {
     const chip = el('button', `coord-chip${draft.coordinatorId === bot.id ? ' on' : ''}`);
@@ -785,9 +803,9 @@ function renderGroupModal() {
     coord.appendChild(chip);
   }
 
-  const hasLocal = draft.members.some((id) => !String(id).includes('@'));
+  const hasLocal = draft.members.some(onGroupMachine);
   const valid = draft.name.trim().length > 0 && draft.members.length >= 2 && hasLocal;
-  if (draft.members.length >= 2 && !hasLocal) coord.appendChild(el('span', 'muted tiny', '至少要有一位这台机器上的机器人来协调。'));
+  if (draft.members.length >= 2 && !hasLocal) coord.appendChild(el('span', 'muted tiny', draft.where ? `至少要有一位「${draft.where}」上的助手来协调。` : '至少要有一位这台机器上的机器人来协调。'));
   $('group-create').disabled = !valid;
   $('group-name').value = draft.name;
 }
@@ -797,11 +815,11 @@ function toggleGroupMember(botId) {
   const index = draft.members.indexOf(botId);
   if (index >= 0) {
     draft.members.splice(index, 1);
-    if (draft.coordinatorId === botId) draft.coordinatorId = draft.members.find((id) => !String(id).includes('@')) || null;
+    if (draft.coordinatorId === botId) draft.coordinatorId = draft.members.find(onGroupMachine) || null;
   } else {
     if (draft.members.length >= 6) { toast('一个群最多 6 位成员', true); return; }
     draft.members.push(botId);
-    if (!draft.coordinatorId && !String(botId).includes('@')) draft.coordinatorId = botId;
+    if (!draft.coordinatorId && onGroupMachine(botId)) draft.coordinatorId = botId;
   }
   renderGroupModal();
 }
@@ -833,6 +851,7 @@ async function createGroup() {
     }
     return;
   }
+  if (draft.where) { await createGroupThere(draft, name, button); return; }
   try {
     const res = await api('/api/groups', {
       method: 'POST',
@@ -875,9 +894,43 @@ const OFFLINE_WORDS = '它那台电脑现在连不上，开机后我接着做';
 const INTERNAL_TOOL_WORDS = { task_plan: '列任务清单', task_step: '更新任务进度', task_end: '收尾', task_handoff: '把这一项交给别人', task_ask_human: '问你一个问题', task_ask_member: '问同事', group_plan: '排群里的分工' };
 const LINK_DOWN_WORDS = '连不上了，连上后接着看结果';
 state.view = (() => {
+  // A machine picked by name in the top-left menu opens 「只看这台」 (?view=one, 1.5.44:
+  // 腾讯云 opened in 全部机器 from its own side), and stays so in this tab;
+  // ?view=all (the way home) is 全部机器 again.
+  let asked = '';
+  try {
+    const url = new URL(location.href);
+    asked = url.searchParams.get('view') || '';
+    if (asked) { url.searchParams.delete('view'); history.replaceState(history.state, '', url.toString()); }
+    if (asked === 'one') sessionStorage.setItem('lamplit.single', '1');
+    if (asked === 'all') sessionStorage.removeItem('lamplit.single');
+  } catch { /* an address without it */ }
   // A pick made before the window moved to this computer ("只看这台"); one time only.
-  try { const v = sessionStorage.getItem('lamplit.view'); sessionStorage.removeItem('lamplit.view'); return v === 'local' ? 'local' : 'all'; } catch { return 'all'; }
+  try {
+    const v = sessionStorage.getItem('lamplit.view'); sessionStorage.removeItem('lamplit.view');
+    return v === 'local' || sessionStorage.getItem('lamplit.single') === '1' ? 'local' : 'all';
+  } catch { return asked === 'one' ? 'local' : 'all'; }
 })();
+/** This page is a machine opened by name from another one (1.5.44): 「全部机器」 is back there. */
+function singleVisit() {
+  try { return sessionStorage.getItem('lamplit.single') === '1'; } catch { return false; }
+}
+/** Is there a way back to the machine this one was opened from? (the phone app's, or the page's `from`) */
+function canGoHome() {
+  return typeof window.NightshiftShell?.openMachine === 'function' || Boolean(cameFromMachine());
+}
+/** 「全部机器」 on a machine opened by name: back to the home machine, in 全部机器 (1.5.44). */
+function goHomeAll() {
+  try { sessionStorage.removeItem('lamplit.single'); } catch { /* fine */ }
+  // The phone app knows its home machine and the best way there now.
+  try { if (window.NightshiftShell?.openMachine?.('@home')) return true; } catch { /* old app */ }
+  const back = cameFromMachine();
+  if (!back) return false;
+  const next = new URL(back.origin);
+  next.searchParams.set('view', 'all');
+  location.assign(next.toString());
+  return true;
+}
 state.peerRoster = [];
 state.peerAttention = {};
 state.outbox = [];
@@ -951,6 +1004,86 @@ function remoteGroupById(id) {
   };
 }
 
+/*
+ * 「建在哪台？」 (1.5.44): in 「全部机器」 a new bot or group can be made on any
+ * other machine that answers now; this machine is the default. A group lives
+ * on the machine chosen, its members can be on any. In 「只看这台」 nothing changes.
+ */
+function whereMachines() {
+  if (!rosterGrouped()) return [];
+  return (state.peerRoster || []).filter((m) => m.online).map((m) => m.machine);
+}
+const hereWords = () => `这台（${machineDisplayName()}）`;
+/** The new-bot form's choice: shown only when there is another machine to choose. */
+function fillBotWhere() {
+  const sel = $('new-bot-where');
+  if (!sel) return;
+  const machines = whereMachines();
+  $('new-bot-where-row').hidden = !machines.length;
+  sel.innerHTML = '';
+  for (const [value, label] of [['', hereWords()], ...machines.map((m) => [m, m])]) {
+    const opt = document.createElement('option');
+    opt.value = value; opt.textContent = label;
+    sel.appendChild(opt);
+  }
+}
+/** Is this member on the machine the new group lives on? */
+function onGroupMachine(id) {
+  const where = state.groupDraft?.where || '';
+  return where ? String(id).endsWith(`@${where}`) : !String(id).includes('@');
+}
+function renderGroupWhere() {
+  const draft = state.groupDraft;
+  const row = $('group-where-row');
+  if (!row) return;
+  const machines = draft.id ? [] : whereMachines();
+  if (draft.where && !machines.includes(draft.where)) draft.where = '';
+  row.hidden = $('group-where-label').hidden = !machines.length;
+  row.innerHTML = '';
+  for (const [key, label] of [['', hereWords()], ...machines.map((m) => [m, m])]) {
+    const chip = el('button', `coord-chip${(draft.where || '') === key ? ' on' : ''}`, label);
+    chip.type = 'button';
+    chip.addEventListener('click', () => {
+      draft.where = key;
+      if (draft.coordinatorId && !onGroupMachine(draft.coordinatorId)) draft.coordinatorId = draft.members.find(onGroupMachine) || null;
+      renderGroupModal();
+    });
+    row.appendChild(chip);
+  }
+  if (draft.where) row.appendChild(el('span', 'muted tiny', `群建在「${draft.where}」上。别的机器上的助手也能进群，前提是「${draft.where}」的机器列表里有那台机器。`));
+}
+/** Made on another machine (also once the browser is paired): the form goes, the new one opens. */
+async function botMadeThere(where, res) {
+  $('bot-form').classList.remove('open');
+  $('new-bot-name').value = ''; $('new-bot-role').value = '';
+  await loadRoster({ fresh: true });
+  if (res?.bot?.id && botById(res.bot.id)) selectBot(res.bot.id);
+  toast(`助手已建在「${where}」上`);
+}
+async function groupMadeThere(where, res) {
+  closeGroupModal();
+  await loadRoster({ fresh: true });
+  if (res?.group?.id && groupById(res.group.id)) openGroup(res.group.id);
+  toast(`群组已建在「${where}」上`);
+}
+/** A new group made on another machine, through this hub; then it opens here. */
+async function createGroupThere(draft, name, button) {
+  const where = draft.where;
+  try {
+    const res = await api(`/api/peers/${encodeURIComponent(where)}/groups`, {
+      method: 'POST',
+      body: { name, members: draft.members, coordinatorId: draft.coordinatorId || draft.members.find(onGroupMachine) },
+    });
+    await groupMadeThere(where, res);
+  } catch (err) {
+    if (err.code === 'LOCAL_KEY_REQUIRED' && state.afterPair) state.afterPair.then = (res) => groupMadeThere(where, res);
+    if (err.status === 401 || err.code === 'LOCAL_KEY_REQUIRED') return;
+    showGroupNote(err.code === 'MEMBER_NOT_REACHABLE' ? err.message : `在「${where}」上没建成：${err.message}。也可以在左上角切到「${where}」再建。`);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /** 「全部机器」 with other machines to show. */
 function rosterGrouped() {
   // The desktop app showing one other machine's own window: only that machine.
@@ -958,9 +1091,9 @@ function rosterGrouped() {
   return state.view === 'all' && !single && (state.peerRoster || []).length > 0;
 }
 
-async function loadRoster() {
+async function loadRoster({ fresh = false } = {}) {
   let data;
-  try { data = await api('/api/peers/roster'); } catch { return; }
+  try { data = await api(`/api/peers/roster${fresh ? '?fresh=1' : ''}`); } catch { return; }
   const before = JSON.stringify(state.peerRoster);
   state.peerRoster = Array.isArray(data?.machines) ? data.machines : [];
   state.peerAttention = Object.assign({}, ...state.peerRoster.map((m) => m.attention || {}));
@@ -1438,6 +1571,7 @@ function pickMachineRow(item) {
   const view = item.dataset.view || '';
   const url = item.dataset.machine;
   const here = url === undefined || url === '';
+  if (view === 'all' && !machineBridge && singleVisit() && goHomeAll()) return;
   if (view && here && (!machineBridge || machineBridge.local)) { setRosterView(view); return; }
   // The window moves to this computer: the pick waits for it there.
   if (view) { try { sessionStorage.setItem('lamplit.view', view); } catch { /* 全部机器 then */ } }
@@ -1445,6 +1579,7 @@ function pickMachineRow(item) {
 }
 function setRosterView(view) {
   state.view = view === 'local' ? 'local' : 'all';
+  if (state.view === 'all') { try { sessionStorage.removeItem('lamplit.single'); } catch { /* fine */ } }
   // 「只看这台」 with a chat of another machine on screen: back to this machine's main assistant.
   if (state.view === 'local' && isRemoteId(state.botId)) {
     const primary = state.bots.find((b) => b.primary) || state.bots[0];

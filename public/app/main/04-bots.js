@@ -377,7 +377,9 @@ async function apiRequest(path, options = {}) {
       // Done for them once the browser is paired (1.5.33: 「再点一次刚才的按钮」 was one step too many).
       state.afterPair = { path, options };
       if ($('local-pair-why')) {
-        $('local-pair-why').textContent = /^\/api\/peers\//.test(path)
+        $('local-pair-why').textContent = /^\/api\/peers\/[^/]+\/(bots|groups)$/.test(path)
+          ? '在别的机器上新建助手或群组，只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法借这台电脑去指挥别的机器。'
+          : /^\/api\/peers\//.test(path)
           ? '和别的机器上的助手说话、看它的文件，只能在 Lamplit 应用里，或者在配对过的设备上：这样机器人自己跑的程序没法借这台电脑去指挥别的机器。'
           : /^\/api\/tailscale\//.test(path)
             ? '装软件、改这台电脑怎么连网，只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你装、替你卸。'

@@ -1593,6 +1593,9 @@
   /* The inbox (1.5.41): like the other boxes; the pairing box, which can open from a
      card in it, comes later in the page and so stays on top. */
   #inbox-scrim { z-index: 96; }
+  /* The pairing box opens from inside other boxes (新建群组, 1.5.44 test: it was hidden behind): always on top. */
+  #local-pair-scrim { z-index: 98; }
+  #local-pair-modal { z-index: 99; }
   #inbox-modal { width: min(640px, calc(100vw - 32px)); }
   #inbox-body { gap: var(--s3); }
   #inbox-body .approval { max-width: none; margin: 0; box-shadow: none; }
@@ -1679,6 +1682,11 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .coord-row { display: flex; flex-wrap: wrap; gap: var(--s2); }
+  /* 「建在哪台？」 (1.5.44) */
+  .where-row { display: flex; align-items: center; gap: var(--s2); font-size: 12px; color: var(--text-2, inherit); }
+  .where-row[hidden] { display: none; }
+  .where-row > span { white-space: nowrap; }
+  .where-row > select { flex: 1; min-width: 0; }
   #group-machine-filter { margin-bottom: var(--s2); }
   .plan-moved-foot { display: flex; justify-content: flex-end; margin-top: var(--s2); }
   .coord-chip {

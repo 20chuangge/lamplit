@@ -4126,6 +4126,136 @@ route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/seen$/, 
   } catch (err) { throw peerFailure(err, peer); }
 });
 
+// --- a new bot or group on another machine (1.5.44 「建在哪台？」) -------------------
+//   POST /api/peers/:m/bots   {name, role, persona} -> {bot:{id:"id@m", ...}, machine}
+//   POST /api/peers/:m/groups {name, members, coordinatorId} -> {group:{id:"gid@m", ...}, machine}
+// By the human only (isAuthorityRequest); a call another hub passed on is not
+// passed on again. Only the name, the job and the persona go over: never an
+// id, tools or a policy, so it starts as plain as one made over there.
+// A group lives on the chosen machine; its members are named here as this hub
+// names them ("x" for this machine's, "y@m2" for another's) and are told to
+// that machine as it names them, found by id and name in its own roster.
+function remoteMachine(req, state, machine) {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const peer = exactPeer(state, machine);
+  if (!peer) throw httpError(404, 'PEER_NOT_FOUND', '没有这台机器（可能已经从「机器」里删掉了）');
+  return peer;
+}
+const shortText = (v, max) => String(v ?? '').trim().slice(0, max);
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots$/, async (req, _res, { params, body, state }) => {
+  const peer = remoteMachine(req, state, params.machine);
+  const name = shortText(body?.name, 60);
+  if (!name) throw httpError(400, 'NAME_REQUIRED', '先给助手起个名字');
+  const out = { name, role: shortText(body?.role, 200), persona: shortText(body?.persona, 4000) };
+  let made;
+  try {
+    made = await passOn(state, peer, 'POST', '/api/bots', { body: out });
+  } catch (err) {
+    if (err.code === 'BOT_EXISTS') throw httpError(409, err.code, `「${peer.name}」上已经有叫这个名字的助手了，换个名字`);
+    throw peerFailure(err, peer);
+  }
+  const bot = made?.bot || {};
+  await audit({ kind: 'peer.bot.create', machine: peer.name, botId: bot.id || null });
+  return { machine: peer.name, bot: { ...bot, id: `${bot.id}@${peer.name}`, machine: peer.name } };
+});
+
+/**
+ * The name the other machine (target) gives a machine this hub calls `where`,
+ * or '' when it cannot be told: the same address in its list of machines, else
+ * the same name, else the same bots (ids and names) as this hub sees there.
+ * Not by one bot alone: every machine's main assistant tends to share its id and name.
+ */
+export function machineThere(where, { target, self, selfUrls = [], hubPeers = [], targetPeers = [], ownBots = [], hubRoster = [], targetRoster = [] }) {
+  const origin = (u) => { try { return new URL(u).origin; } catch { return ''; } };
+  const peer = hubPeers.find((p) => p.name === where);
+  const urls = (where === self ? selfUrls : peer ? [peer.url, peer.tailnetUrl] : []).map(origin).filter(Boolean);
+  const byUrl = targetPeers.filter((p) => p?.name && p.name !== target && [p.url, p.tailnetUrl].map(origin).some((o) => o && urls.includes(o)));
+  if (byUrl.length === 1) return byUrl[0].name;
+  const others = targetRoster.filter((m) => m?.machine && m.machine !== target);
+  if (others.some((m) => m.machine === where)) return where;
+  const key = (bots) => (bots || []).map((b) => `${b.id}\u0000${b.name}`).sort().join('\u0001');
+  const mine = key(where === self ? ownBots : hubRoster.find((m) => m.machine === where)?.bots);
+  const same = mine ? others.filter((m) => key(m.bots) === mine) : [];
+  return same.length === 1 ? same[0].machine : '';
+}
+
+/** One member as the other machine names it, or null when it does not know that bot. */
+export function memberThere(ref, ctx) {
+  const { target, self, ownBots = [], hubRoster = [], targetRoster = [] } = ctx;
+  const raw = String(ref || '').trim();
+  const at = raw.lastIndexOf('@');
+  const id = at > 0 ? raw.slice(0, at) : raw;
+  const where = at > 0 ? raw.slice(at + 1) : self;
+  if (where === target) return id;
+  const there = machineThere(where, ctx);
+  if (there) {
+    const row = targetRoster.find((m) => m.machine === there);
+    return !row || (row.bots || []).some((b) => b.id === id) ? `${id}@${there}` : null;
+  }
+  // Its name, as this hub knows it: to tell two bots of the same id apart.
+  const name = where === self
+    ? ownBots.find((b) => b.id === id)?.name
+    : hubRoster.find((m) => m.machine === where)?.bots?.find((b) => b.id === id)?.name;
+  const hits = (targetRoster || []).filter((m) => m.machine !== target && (m.bots || []).some((b) => b.id === id && (!name || b.name === name)));
+  if (hits.length > 1) {
+    const same = hits.filter((m) => m.machine === where);
+    if (same.length === 1) return `${id}@${same[0].machine}`;
+    return null;
+  }
+  return hits.length === 1 ? `${id}@${hits[0].machine}` : null;
+}
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/groups$/, async (req, _res, { params, body, state }) => {
+  const peer = remoteMachine(req, state, params.machine);
+  const refs = groups.normalizeMemberIds(body?.members);
+  groups.assertMemberCount(refs);
+  const self = selfMachineName();
+  const ownBots = await listBots();
+  const hubRoster = await state.roster.list().catch(() => []);
+  // Who that machine can reach, and by which names: its own roster.
+  let targetRoster = [];
+  let targetPeers = [];
+  const needsFar = refs.some((r) => { const at = r.lastIndexOf('@'); return at <= 0 || r.slice(at + 1) !== peer.name; });
+  if (needsFar) {
+    try {
+      [targetRoster, targetPeers] = await Promise.all([
+        passOn(state, peer, 'GET', '/api/peers/roster', { timeoutMs: 15000 }).then((r) => r?.machines || []),
+        passOn(state, peer, 'GET', '/api/peers', { timeoutMs: 8000 }).then((r) => r?.peers || []).catch(() => []),
+      ]);
+    } catch (err) { throw peerFailure(err, peer); }
+  }
+  const selfUrls = [state.pairingUrl, tailnetUrl(state)].filter(Boolean);
+  const ctx = { target: peer.name, self, selfUrls, hubPeers: state.peers.list(), targetPeers, ownBots, hubRoster, targetRoster };
+  const members = [];
+  const missing = [];
+  for (const ref of refs) {
+    const there = memberThere(ref, ctx);
+    if (there) members.push(there); else missing.push(ref);
+  }
+  if (missing.length) {
+    const names = missing.map((r) => {
+      const at = r.lastIndexOf('@');
+      const id = at > 0 ? r.slice(0, at) : r;
+      const where = at > 0 ? r.slice(at + 1) : self;
+      const name = where === self ? ownBots.find((b) => b.id === id)?.name : hubRoster.find((m) => m.machine === where)?.bots?.find((b) => b.id === id)?.name;
+      return `「${name || id}」（${where}）`;
+    });
+    throw httpError(400, 'MEMBER_NOT_REACHABLE', `「${peer.name}」还连不上 ${names.join('、')}：在「${peer.name}」的「机器」里加上那台机器后再建，或者只选「${peer.name}」自己的助手。`);
+  }
+  const coordinator = String(body?.coordinatorId ?? '').trim();
+  const coordinatorThere = coordinator ? memberThere(coordinator, ctx) : '';
+  const out = { name: shortText(body?.name, 60), members, ...(coordinatorThere ? { coordinatorId: coordinatorThere } : {}) };
+  let made;
+  try {
+    made = await passOn(state, peer, 'POST', '/api/groups', { body: out, timeoutMs: 30000 });
+  } catch (err) {
+    if (/^GROUP_/.test(err.code || '')) throw httpError(400, err.code, err.message);
+    throw peerFailure(err, peer);
+  }
+  const group = made?.group || {};
+  await audit({ kind: 'peer.group.create', machine: peer.name, groupId: group.id || null });
+  return { machine: peer.name, group: { ...group, id: `${group.id}@${peer.name}`, machine: peer.name } };
+});
+
 // A bot's avatar picture on another machine (1.5.43): fetched there with that
 // machine's token, passed on only as a picture (png, jpeg, webp, gif - never
 // svg or html), so the sidebar shows each bot's own face. A face is not a

@@ -68,6 +68,7 @@
         <div class="bot-form-head">新建助手</div>
         <input class="field" id="new-bot-name" placeholder="名字（例如：小笔）" autocomplete="off" maxlength="40" />
         <input class="field" id="new-bot-role" placeholder="职责（例如：整理会议纪要）" autocomplete="off" maxlength="200" />
+        <label class="where-row" id="new-bot-where-row" hidden><span>建在哪台？</span><select class="field" id="new-bot-where"></select></label>
         <div class="row-2" style="display:flex; gap:8px;">
           <button class="btn primary tiny" id="new-bot-save" style="flex:1">创建</button>
           <button class="btn tiny" id="new-bot-cancel" style="flex:1">取消</button>
@@ -1131,6 +1132,9 @@
     <div class="group-tip" id="group-tip" hidden></div>
     <label class="form-label" for="group-name">群名</label>
     <input class="field" id="group-name" placeholder="例如：晨会小组" autocomplete="off" maxlength="40" />
+
+    <div class="form-label" id="group-where-label" style="margin-top:8px" hidden>建在哪台？</div>
+    <div class="coord-row" id="group-where-row" hidden></div>
 
     <div class="form-label" style="margin-top:8px">成员 <span class="mono" id="group-member-count">0/6</span> · 至少 2 位</div>
     <div class="coord-row" id="group-machine-filter" hidden></div>

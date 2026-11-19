@@ -10107,7 +10107,8 @@ async function scenarioCalm1540() {
       c.cards.length === 2 && c.cards[0].batch?.commands?.length === 2 && !c.cards[0].lookTurn && !c.cards[1].lookTurn && c.ran.length === 3, JSON.stringify(c.cards.map((x) => ({ batch: x.batch, lookTurn: x.lookTurn }))));
 
     const o = harness({ id: 'c40outside', onCard: (e, { q }) => q.decide(e.approvalId, 'approve'), script: [
-      { content: '', toolCalls: [sh('a1', 'whoami'), sh('a2', 'cat ../../c40-outside.txt'), sh('a3', 'hostname')] },
+      // A file outside the workspace on every system (../.. from a temp workspace is /tmp on Linux, which is allowed).
+      { content: '', toolCalls: [sh('a1', 'whoami'), sh('a2', `cat ${REPO.replace(/\\/g, '/')}/package.json`), sh('a3', 'hostname')] },
       say('好。'),
     ] });
     await o.rt.runTurn({ botId: 'c40outside', text: '看看这台电脑' });

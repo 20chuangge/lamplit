@@ -416,8 +416,10 @@ async function pairThisBrowser() {
     state.afterPair = null;
     if (again) {
       try {
-        await api(again.path, again.options);
+        const res = await api(again.path, again.options);
         toast('这个浏览器配好了，刚才那一步也做完了。');
+        // The card that was clicked shows what happened (1.5.40 test: it kept its buttons).
+        try { again.then?.(res); } catch { /* the toast said it */ }
         refreshPendingApprovals();
       } catch (err) {
         toast(`这个浏览器配好了；刚才那一步没成功：${err.message}`, true);
@@ -792,6 +794,11 @@ async function boot() {
   setInterval(whenVisible(loadAttention), 60000);
   pollOtherMachines();
   setInterval(whenVisible(pollOtherMachines), 20000);
+  // The other machines' waiting cards (1.5.41): every 20 s on screen, every minute
+  // behind other windows, so a new one can still be announced.
+  refreshInbox({ notify: false });
+  let inboxTick = 0;
+  setInterval(() => { inboxTick += 1; if (!document.hidden || inboxTick % 3 === 0) refreshInbox(); }, 20000);
   // A phone with the screen off used to keep polling (and re-drawing ~1.5 MB
   // screenshots every 5s). Background tabs now stay quiet until they come back.
   document.addEventListener('visibilitychange', () => {
@@ -799,6 +806,7 @@ async function boot() {
     markSeen();
     pollHealth();
     loadAttention();
+    refreshInbox();
     if (state.tab === 'computer') refreshScreen();
     maybeCheckForUpdate();
   });
@@ -934,6 +942,8 @@ const STARTER_EXAMPLES = [
 /** 「有事先找助理」 (1.5.40), with the main assistant's own name. */
 function askPrimaryTip() {
   const primary = (state.bots || []).find((b) => b.primary);
+  // Alone, there is nobody to hand work to (1.5.40 test: the line sounded empty).
+  if ((state.bots || []).length <= 1) return `有什么事直接跟「${primary?.name || '助理'}」说就行。想要别的帮手，也跟它说一声，它会替你建好。`;
   return `不知道找谁，就跟「${primary?.name || '助理'}」说，它会交给合适的助手。`;
 }
 
@@ -1164,6 +1174,15 @@ function renderBots() {
   const list = $('bot-list');
   list.innerHTML = '';
   $('bot-count').textContent = String(state.bots.length);
+  // Cards waiting on your other machines (1.5.41): a row on top, the inbox one tap
+  // away - the phone's home list has no header with 「N 个操作等你确认」.
+  const away = state.inbox?.items?.length || 0;
+  if (away) {
+    const row = el('button', 'inbox-row', away === 1 ? '别的机器上有 1 个操作等你确认' : `别的机器上有 ${away} 个操作等你确认`);
+    row.type = 'button';
+    row.addEventListener('click', () => openInbox());
+    list.appendChild(row);
+  }
 
   // The primary bot is always on top; the rest by their newest message (like a chat app).
   const when = (b) => Date.parse(b.preview?.ts || '') || 0;

@@ -335,9 +335,10 @@ function senderOf(item) {
   if (!item) return null;
   if (item.from && item.from !== 'user') {
     const far = groupMemberById(item.from);
-    return botById(item.from) || far || { id: item.from, name: item.name || item.from };
+    // A member deleted since: its name from the history, never its id (1.5.41: 「bot-ioeiz8」).
+    return botById(item.from) || far || { id: item.from, name: item.name || (item.from.includes('@') ? item.from : '已删除的助手') };
   }
-  if (item.botId) return botById(item.botId) || { id: item.botId, name: item.name || item.botId };
+  if (item.botId) return botById(item.botId) || { id: item.botId, name: item.name || '已删除的助手' };
   return null;
 }
 
@@ -564,7 +565,12 @@ function handoffRow({ sender, target, text, state: progress = '', ts = '' }) {
   const head = el('summary');
   head.title = '点开看原话';
   if (sender?.name) head.appendChild(avatarNode(sender, 18));
-  head.appendChild(el('span', 'handoff-who', `${sender?.name || '助手'} → ${target?.name || ''}`));
+  // Each name on its own, so the English page says "Assistant", as everywhere else (1.5.41).
+  const who = el('span', 'handoff-who');
+  who.appendChild(el('span', null, sender?.name || '助手'));
+  who.appendChild(document.createTextNode(' → '));
+  who.appendChild(el('span', null, target?.name || ''));
+  head.appendChild(who);
   const gist = truncate(plainPreview(String(text || '')), 40);
   if (gist) head.appendChild(el('span', 'handoff-gist no-i18n', `：${gist}`));
   if (progress) head.appendChild(el('span', `handoff-state ${progress}`, progress === 'done' ? '做完了' : '在做'));
@@ -672,7 +678,11 @@ function openGroupModal(groupId = null) {
   const tip = $('group-tip');
   if (tip) {
     tip.hidden = Boolean(group) || !primary;
-    tip.textContent = primary ? `不想自己选？直接对「${primary.name}」说：「拉个群，让${others[0] || '某某'}和${others[1] || '某某'}一起做…」，它会替你建好。` : '';
+    // With fewer helpers the example names who there is, not 「某某」 (1.5.40 test).
+    tip.textContent = !primary ? ''
+      : others.length >= 2 ? `不想自己选？直接对「${primary.name}」说：「拉个群，让${others[0]}和${others[1]}一起做…」，它会替你建好。`
+        : others.length === 1 ? `不想自己选？直接对「${primary.name}」说：「拉个群，你和${others[0]}一起做…」，它会替你建好。`
+          : `现在只有「${primary.name}」一位助手，群里至少要两位。想要别的帮手，直接对它说「帮我新建一个写文案的助手」，它会替你建好。`;
   }
   renderGroupModal();
   $('group-modal').classList.add('open');

@@ -731,6 +731,14 @@ function mockPlan(text, botName) {
       ];
 
     case 'shell':
+      // A request about the disk looks at the disk (1.5.41: a routine 「看磁盘」 ran `node --version`).
+      if (/磁盘|硬盘|空间|\bdisk\b/i.test(text)) {
+        const disk = `node -e "const s=require('fs').statfsSync(process.cwd());const g=(n)=>(n/1073741824).toFixed(1);console.log('free '+g(s.bavail*s.bsize)+' GB of '+g(s.blocks*s.bsize)+' GB')"`;
+        return [
+          { tool: 'shell', args: { command: disk, timeoutMs: 15000 } },
+          { tool: 'task_finish', args: { summary: say(`看了这块磁盘还剩多少空间，结果在上面。（演示模式：命令是写好的，接入模型后它会按你的话来查）`, 'Checked how much space is left on this disk; the result is above. (Demo mode: the command is scripted.)') } },
+        ];
+      }
       return [
         { tool: 'shell', args: { command: 'node --version', timeoutMs: 15000 } },
         {
@@ -896,8 +904,14 @@ function mockComplete(messages) {
   // A scheduled task in demo mode (1.5.33): its instruction must not set off the
   // four scripted demos (「立即运行」 made a second routine, a briefing wrote a leave email).
   const system = messages.find((m) => m.role === 'system');
+  // The runtime's own check of a reply (「（系统核对）…」) is not a new request: the demo
+  // took its 「执行…命令」 for one and ran `node --version` (1.5.41 test, 「立即运行」).
+  if (/^（系统核对）/.test(userText)) {
+    return { content: '（演示模式）更正一下：这一轮没有真的运行任何命令，演示脚本只是说明它会怎么做。', toolCalls: [], finishReason: 'stop' };
+  }
   if (typeof system?.content === 'string' && system.content.includes(ROUTINE_TURN_LINE) && toolResultsSinceUser === 0 && /^demo_/.test(detectIntent(userText))) {
-    return { content: '（演示模式）定时任务到点跑了一次。演示模式下它不会真的去做；接入模型后，它会按指令真的去做，结果发在这里。', toolCalls: [], finishReason: 'stop' };
+    // Not 「跑了一次」: nothing ran, and the runtime's check rightly asked about it.
+    return { content: '（演示模式）定时任务的指令收到了。演示模式下它不会真的去查；接入模型后，它会按指令真的去做，结果发在这里。', toolCalls: [], finishReason: 'stop' };
   }
   const step0 = plan[Math.min(toolResultsSinceUser, plan.length - 1)];
   // A step that was refused or not allowed: the closing line says so (1.5.33: it said 「运行了」 anyway).

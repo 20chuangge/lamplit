@@ -44,10 +44,13 @@ export function planProgress(plan) {
     // message closed) is not what the bot is doing: its steps are not shown as progress.
     live: plan.status === 'running',
     ...(blocked ? { waiting: count('waiting_human'), question: String(blocked.question || blocked.title || '').replace(/\s+/g, ' ').slice(0, 160) } : {}),
+    // A bot's own checklist parked on the human (a card a new message closed, a
+    // question in its reply) with no step marked as the question (1.5.41).
+    ...(!blocked && plan.status === 'waiting' ? { held: true } : {}),
   };
 }
 
-export function createAttention({ file, bus }) {
+export function createAttention({ file, bus, pending = null }) {
   const working = new Map();      // key -> Set(turnId)
   const approvals = new Map();    // approvalId -> key
   const prevResult = new Map();   // key -> result time before the last turn ended
@@ -72,6 +75,25 @@ export function createAttention({ file, bus }) {
     changeTimer = setTimeout(() => bus.emit({ type: 'attention.changed' }), 150);
     if (typeof changeTimer?.unref === 'function') changeTimer.unref();
   };
+
+  /**
+   * The cards still open, from the approval queue itself when there is one
+   * (1.5.41): a card that outlived a restart had no event here, so the header
+   * said 「1 个操作等你确认」 and no bot in the list was marked; and a card
+   * answered without an event (after a restart, a routine's) stays marked no longer.
+   */
+  function syncApprovals() {
+    if (typeof pending !== 'function') return;
+    let live;
+    try { live = pending() || []; } catch { return; }
+    const ids = new Set(live.map((r) => r.id));
+    for (const id of [...approvals.keys()]) if (!ids.has(id)) { approvals.delete(id); asks.delete(id); }
+    for (const r of live) {
+      if (!r?.id || !r.botId || approvals.has(r.id)) continue;
+      approvals.set(r.id, r.groupId ? `group:${r.groupId}` : `bot:${r.botId}`);
+      asks.set(r.id, { tool: String(r.toolName || ''), botId: r.botId, botName: '' });
+    }
+  }
 
   /** A bot or group was deleted: drop what it left behind. */
   function forget(key) {
@@ -121,6 +143,7 @@ export function createAttention({ file, bus }) {
         asks.set(ev.approvalId, { tool: String(ev.tool || ''), botId: ev.botId || '', botName: ev.botName || '', ...(ev.batch?.commands?.length > 1 ? { count: ev.batch.commands.length } : {}) });
         changed();
         break;
+      case 'approval.decided':
       case 'approval.resolved':
         asks.delete(ev.approvalId);
         if (ev.approvalId && approvals.delete(ev.approvalId)) changed();
@@ -165,7 +188,8 @@ export function createAttention({ file, bus }) {
 
     /** -> {items: {key: {working, needsYou, unread, waiting?, doing?, ask?, asking?}}, needsYou, unread, working} */
     snapshot() {
-      const asking = [...plans].filter(([, p]) => p.waiting).map(([k]) => k);
+      syncApprovals();
+      const asking = [...plans].filter(([, p]) => p.waiting || p.held).map(([k]) => k);
       const keys = new Set([...working.keys(), ...approvals.values(), ...Object.keys(saved.waiting), ...Object.keys(saved.result), ...asking]);
       const items = {};
       const totals = { needsYou: 0, unread: 0, working: 0 };
@@ -181,6 +205,8 @@ export function createAttention({ file, bus }) {
         // A step that waits for the human's answer: said on the line (not counted as needsYou).
         const plan = plans.get(key);
         if (plan?.waiting) item.asking = { question: plan.question || '', count: plan.waiting };
+        // A parked checklist of its own waits on your reply - unless the bot is busy with something else now.
+        else if (plan?.held && !working.has(key)) item.asking = { question: '', count: 1 };
         if (!item.working && !item.needsYou && !item.unread && !item.asking) continue;
         if (open) {
           const [firstId] = [...approvals].find(([, k]) => k === key) || [];

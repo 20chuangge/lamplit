@@ -1068,6 +1068,18 @@
 </div>
 
 <!-- =====================================================================
+     one inbox: cards waiting on any of your machines, answered here (1.5.41)
+     ===================================================================== -->
+<div class="scrim" id="inbox-scrim" aria-hidden="true"></div>
+<div class="modal" id="inbox-modal" role="dialog" aria-modal="true" aria-labelledby="inbox-title" aria-hidden="true">
+  <div class="modal-head">
+    <span class="modal-title" id="inbox-title">等你确认</span>
+    <button class="icon-btn sm" id="inbox-close" type="button" aria-label="关闭">✕</button>
+  </div>
+  <div class="modal-body" id="inbox-body"></div>
+</div>
+
+<!-- =====================================================================
      a browser on this computer pairs itself before it may decide (1.5.32)
      ===================================================================== -->
 <div class="scrim" id="local-pair-scrim" aria-hidden="true"></div>

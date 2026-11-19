@@ -89,6 +89,8 @@ async function errorCode(fn) {
  * whole run, so a smoke run always reports the full picture.
  */
 async function stage(name, fn) {
+  // SMOKE_ONLY=<regex>: only the stages whose name matches (a quick rerun while working).
+  if (process.env.SMOKE_ONLY && !new RegExp(process.env.SMOKE_ONLY).test(name)) return;
   try {
     await fn();
   } catch (err) {
@@ -215,6 +217,8 @@ async function main() {
     await stage('1.5.13: the website and the docs in Chinese and English', scenarioDocs1513);
     await stage('1.5.40: seen at a glance, asked less', scenarioCalm1540);
     await stage('1.5.40: a group\'s task board outlives a restart', scenarioBoardRestart);
+    await stage('1.5.41: one inbox - another machine\'s cards are answered here', scenarioInbox1541);
+    await stage('1.5.41: the small things the step-one test found', scenarioSmall1541);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -3133,7 +3137,7 @@ async function scenarioCrashRecovery() {
   );
   check(
     'the message log says the rest of the turn did not resume',
-    opsAfter.json.some((m) => m.role === 'assistant' && String(m.text || '').includes('did not resume')),
+    opsAfter.json.some((m) => m.role === 'assistant' && String(m.text || '').includes('那一轮没有接着往下做')),
     opsAfter.text.slice(-300),
   );
 
@@ -5829,7 +5833,7 @@ async function scenarioXhs159() {
   const chat = await readText('../public/app/main/05-chat.js');
   const routinesUi = await readText('../public/app/main/07-skills-routines.js');
   check('X2 wiring: every reply bubble and the routine list go through it; the bots are told to use names and times in words',
-    chat.includes('const text = system ? raw : humanizeIds(raw);') && routinesUi.includes('scheduleText(rt.schedule)')
+    chat.includes('let text = system ? raw : localBoardAsk(humanizeIds(raw));') && routinesUi.includes('scheduleText(rt.schedule)')
     && agentSrc.includes('Never show internal ids (g-…, bot-…, rt_…), cron lines or browser profile names to the human'));
 
   const Br = await import('../src/browser.mjs');
@@ -7621,7 +7625,7 @@ async function scenarioV158() {
     const render = (page.match(/function renderMessages\(\) \{[\s\S]*?\n\}\n/) || [''])[0];
     check('X2 chat: the last ended turn\'s result (e.g. an old "已取消") shows only when it is the newest thing in the chat and nothing is running',
       render.includes('const newer = items.some((it) => it.ts && last?.ts && it.ts > last.ts);')
-      && render.includes("if (last && last.status !== 'success' && !newer && !working) messagesEl.appendChild(statusLine(last));"));
+      && render.includes("if (last && last.status !== 'success' && last.status !== 'needs_attention' && !newer && !working) messagesEl.appendChild(statusLine(last));"));
     check('X3 chat: after a reload, a bot that is still working shows "正在处理…" again (also when the sidebar learns it is working)',
       render.includes("const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);")
       && render.includes("if (working) showTyping(typingBotId(), '正在处理…');")
@@ -9930,8 +9934,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
   {
     const srv = await readText('../src/server.mjs');
     check('approval: a decision from a paired device is audited as "device"',
-      srv.includes("req.auth?.deviceId ? 'device' : 'human'") &&
-      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by)"));
+      srv.includes("viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human'") &&
+      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine })"));
   }
   // Public port (G1): a tunnel socket that never counts as the local human.
   {
@@ -10039,7 +10043,7 @@ async function scenarioCalm1540() {
     const page = await readText('../public/index.html');
     check('C40-1 the page: bots and groups draw that line (working: the step and n/m; waiting: 等你点头 and what; unread: 做完了; idle: the role / the members); the main assistant sums up who waits',
       page.includes("let line = rosterLine(`bot:${bot.id}`, { idle: bot.role || last || '还没有消息', last });") && page.includes('const line = rosterLine(`group:${group.id}`, {')
-      && page.includes('text: `正在做：${brief(doing.step, 40)}`, tail: `${doing.done}/${doing.total}` }') && page.includes("if (line.tail) node.appendChild(el('span', 'bp-tail', line.tail));") && page.includes('text: `等你点头${who}：想${TOOL_TEXT[ask.tool].label}`') && page.includes("text: last ? `做完了：${last}` : '做完了，有新结果'")
+      && page.includes("text: brief(doing.step, 40), tail: `${doing.done}/${doing.total}`, hint: '正在做' }") && page.includes("if (line.tail) node.appendChild(el('span', 'bp-tail', line.tail));") && page.includes("text: who ? `${who}：想${TOOL_TEXT[ask.tool].label}` : `想${TOOL_TEXT[ask.tool].label}`, hint: '等你点头' }") && page.includes("text: last ? `做完了：${last}` : '做完了，有新结果'")
       && page.includes("const waiting = bot.primary && !line.kind ? othersWaitingLine(`bot:${bot.id}`) : '';") && (page.match(/function statusLine\(/g) || []).length === 1);
     check('C40-2/3 the page: a hand-over is one line with its words behind a click and 做完了 / 在做; a group\'s board is one line of counts until opened (a bot\'s own checklist is not folded)',
       page.includes("return handoffRow({ sender, target, text: item.text || '', state: item.handoffState || '', ts: item.ts });") && page.includes("const fold = el('details', 'handoff-line');")
@@ -10286,7 +10290,7 @@ async function scenarioCalm1540() {
     check('C40-R3 the undo line goes once per turn, after that turn\'s last message (a message sent in the middle no longer makes it show twice); a look-only card no longer says 「中风险」 under 「不会改动任何东西」',
       chat.includes('items.forEach((it, i) => { if (it.turnId) turnEnds.set(it.turnId, i); });') && chat.includes('turnEnds.get(item.turnId) === items.indexOf(item)')
       && !chat.includes('(!next || next.turnId !== item.turnId) && changesByTurn.has(item.turnId)')
-      && live40.includes("const why = looking ? '在这台电脑上运行命令前，都先问你一次' : reasonLabel(data.reason);"));
+      && live40.includes("'在这台电脑上运行命令前，都先问你一次') : reasonLabel(data.reason);"));
   }
 
   // --- 6. how it talks ---------------------------------------------------------
@@ -10448,4 +10452,309 @@ async function scenarioBoardRestart() {
   }
 
   for (const id of made) await fsp.rm(path.join(plansDir, `${id}.json`), { force: true }).catch(() => {});
+}
+
+/**
+ * 1.5.41 第二步「一个待办箱」: another machine's cards are seen and answered on
+ * the machine in front of you. A second hub stands for 「书房电脑」. Only the
+ * human may answer: not an unpaired browser here, not a program a bot runs
+ * there, and not a hop through a third hub. A machine that cannot be reached
+ * is said so; nothing pretends the card was answered.
+ */
+async function scenarioInbox1541() {
+  const otherHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-smoke-inbox-'));
+  await seedHome(otherHome);
+  let other = null;
+  const peerName = '书房电脑';
+  try {
+    other = await startServerChild(otherHome, {
+      ASSIST_DATA_DIR: path.join(otherHome, 'data'),
+      ASSIST_WORKSPACE_DIR: path.join(otherHome, 'workspace'),
+    });
+    const B = other.url;
+    const bKey = fsSync.readFileSync(path.join(otherHome, 'data', 'local-key'), 'utf8').trim();
+    const bToken = JSON.parse(fsSync.readFileSync(path.join(otherHome, 'data', 'security.json'), 'utf8')).token;
+    const aToken = JSON.parse(fsSync.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8')).token;
+    // On 书房电脑 itself: with its key (its own app) or without (a program a bot runs there).
+    const bApi = async (p, { method = 'GET', body, key = true, headers = {} } = {}) => {
+      const res = await rawFetch(`${B}${p}`, {
+        method,
+        headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(key ? { 'x-lamplit-local': bKey } : {}), ...headers },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* not json */ }
+      return { status: res.status, json, text };
+    };
+    const bPending = async () => ((await bApi('/api/approvals?status=pending')).json || []);
+    const waitCard = async (label) => {
+      let card = null;
+      await waitUntil(async () => { card = (await bPending())[0] || null; return Boolean(card); }, 15000, label);
+      return card;
+    };
+    const waitIdle = () => waitUntil(async () => !(await bPending()).length && !((await bApi('/api/attention')).json?.items?.['bot:ops']?.working), 15000, 'ops idle on 书房电脑');
+
+    // This machine knows 书房电脑 (and 书房电脑 knows this one), as the desktop app hands them out.
+    await api('/api/peers', { method: 'PUT', body: { peers: [{ name: peerName, url: B, token: bToken }] } });
+    await bApi('/api/peers', { method: 'PUT', body: { peers: [{ name: '这台', url: base, token: aToken }] } });
+    const selfName = (await api('/api/machines')).json?.machines?.find((m) => m.self)?.name || '';
+
+    // --- 1. a card there is listed here, whole ----------------------------------
+    const asked = await bApi('/api/bots/ops/message', { method: 'POST', body: { text: 'Write a note outside the workspace: delta' } });
+    check('INB-0 a card waits on 书房电脑', asked.status === 200, asked.text);
+    const card = await waitCard('a card on 书房电脑');
+    const inbox = await api('/api/inbox');
+    const item = (inbox.json?.items || []).find((x) => x.id === card.id);
+    check('INB-1 GET /api/inbox lists the other machine\'s card with all a card needs: which machine, which bot by name, the tool and its full arguments, why it asks',
+      inbox.status === 200 && item?.machine === peerName && item?.botId === 'ops' && Boolean(item?.botName) && item.botName !== 'ops'
+      && item?.toolName === card.toolName && item?.args === card.args && /delta/.test(item?.args || '') && item?.reason === card.reason && item?.risk === card.risk,
+      inbox.text.slice(0, 400));
+    check('INB-1b this machine\'s own cards are not repeated in the inbox (they are in their chats)', !(inbox.json?.items || []).some((x) => !x.machine));
+
+    // --- 2. only the human, from here ---------------------------------------------
+    const encoded = `/api/inbox/${encodeURIComponent(peerName)}/${encodeURIComponent(card.id)}`;
+    const unpaired = await api(encoded, { method: 'POST', body: { decision: 'approve' }, headers: { 'x-no-local-key': '1' } });
+    check('INB-2 a browser (or a program) here that is not paired cannot answer another machine\'s card through this one',
+      unpaired.status === 403 && unpaired.json?.error?.code === 'LOCAL_KEY_REQUIRED' && (await bPending()).some((a) => a.id === card.id && a.status === 'pending'),
+      unpaired.text.slice(0, 200));
+    const theirProgram = await bApi(`/api/approvals/${encodeURIComponent(card.id)}`, { method: 'POST', key: false, body: { decision: 'approve', via: { machine: selfName } } });
+    const theirDetour = await bApi(`/api/inbox/${encodeURIComponent('这台')}/${encodeURIComponent(card.id)}`, { method: 'POST', key: false, body: { decision: 'approve' } });
+    check('INB-3 a program a bot runs on 书房电脑 cannot say yes for you: not on its own hub (even claiming to come from another machine), not by a detour through this one',
+      theirProgram.status === 403 && theirDetour.status === 403 && (await bPending()).some((a) => a.id === card.id && a.status === 'pending'),
+      `${theirProgram.status} ${theirDetour.status}`);
+    const hop = await rawFetch(`${base}${encoded}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${aToken}`, 'x-lamplit-via': 'x' }, body: JSON.stringify({ decision: 'approve' }) });
+    check('INB-3b a hub-to-hub call is never passed on to a third machine (no answering in two hops)',
+      hop.status === 403 && (await bPending()).some((a) => a.id === card.id && a.status === 'pending'), String(hop.status));
+
+    // --- 3. answered here, done there, written down on both ------------------------
+    const yes = await api(encoded, { method: 'POST', body: { decision: 'approve', note: '在这台批的' } });
+    check('INB-4 the human here allows it: 书房电脑 records it approved and the step runs there',
+      yes.status === 200 && yes.json?.approval?.status === 'approved' && !(await bPending()).some((a) => a.id === card.id),
+      yes.text.slice(0, 300));
+    await waitIdle().catch(() => {});
+    const written = await fsp.readFile(path.join(otherHome, 'outside-note.md'), 'utf8').catch(() => '');
+    check('INB-4b the approved step ran on 书房电脑', written.includes('delta'), written.slice(0, 80));
+    const theirAudit = (await bApi('/api/audit?limit=200')).json || [];
+    const ourAudit = (await api('/api/audit?limit=200')).json || [];
+    const there = theirAudit.find((a) => a.kind === 'approval.resolved' && a.id === card.id);
+    const here = ourAudit.find((a) => a.kind === 'approval.forwarded' && a.approvalId === card.id);
+    check('INB-5 the log there says which machine it was answered on; the log here says whose card on which machine',
+      there?.status === 'approved' && there?.by === 'peer' && there?.decidedOn === selfName && Boolean(selfName)
+      && here?.machine === peerName && here?.decision === 'approve' && here?.ok === true && here?.botId === 'ops',
+      JSON.stringify({ there, here }).slice(0, 400));
+
+    // --- 4. no, from here ------------------------------------------------------------
+    await bApi('/api/bots/ops/message', { method: 'POST', body: { text: 'Write a note outside the workspace: epsilon' } });
+    const card2 = await waitCard('a second card on 书房电脑');
+    const no = await api(`/api/inbox/${encodeURIComponent(peerName)}/${encodeURIComponent(card2.id)}`, { method: 'POST', body: { decision: 'deny' } });
+    await waitIdle().catch(() => {});
+    const after = await fsp.readFile(path.join(otherHome, 'outside-note.md'), 'utf8').catch(() => '');
+    check('INB-6 refused here: refused there, and the step did not run', no.status === 200 && no.json?.approval?.status === 'denied' && !after.includes('epsilon'), no.text.slice(0, 200));
+    const twice = await api(`/api/inbox/${encodeURIComponent(peerName)}/${encodeURIComponent(card2.id)}`, { method: 'POST', body: { decision: 'approve' } });
+    check('INB-6b a card already answered says so in plain words, not as if it were approved now',
+      twice.status === 409 && /已经/.test(twice.json?.error?.message || ''), twice.text.slice(0, 200));
+
+    // --- 5. a machine that cannot be reached ------------------------------------------
+    await api('/api/peers', { method: 'PUT', body: { peers: [{ name: peerName, url: B, token: bToken }, { name: '旧笔记本', url: 'http://127.0.0.1:9', token: 'abcdefgh12345678abcd' }] } });
+    const withOff = await api('/api/inbox');
+    check('INB-7 a machine that does not answer is named in the inbox as not reachable, the others still listed',
+      withOff.status === 200 && (withOff.json?.missing || []).includes('旧笔记本') && !(withOff.json?.missing || []).includes(peerName), withOff.text.slice(0, 300));
+    const offYes = await api(`/api/inbox/${encodeURIComponent('旧笔记本')}/ap_whatever`, { method: 'POST', body: { decision: 'approve' } });
+    check('INB-8 answering a card on a machine that cannot be reached fails and says nothing was approved',
+      offYes.status === 502 && offYes.json?.error?.code === 'PEER_UNREACHABLE' && /没有批/.test(offYes.json?.error?.message || ''), offYes.text.slice(0, 300));
+    const ghost = await api(`/api/inbox/${encodeURIComponent('没有这台')}/ap_x`, { method: 'POST', body: { decision: 'approve' } });
+    check('INB-8b an unknown machine is refused', ghost.status === 404, ghost.text.slice(0, 200));
+
+    // --- 6. the page -------------------------------------------------------------------
+    const live = await readText('../public/app/main/06-live.js');
+    const sets = await readText('../public/app/main/08-settings.js');
+    check('INB-9 the page loads the inbox, counts it in 「N 个操作等你确认」 and draws the same card with 「来自：机器 · 助手」',
+      live.includes("'/api/inbox'") && live.includes('来自：') && /buildApprovalCard\(/.test(live) && live.includes('/api/inbox/'));
+    check('INB-10 another machine\'s notification no longer says 「点这里切换到那台机器」; it opens the card', !sets.includes('点这里切换到那台机器') && sets.includes("'inbox'"));
+    const auth = await import('../src/auth.mjs');
+    check('INB-11 answering through the inbox is one of the things only the human may do', auth.isAuthorityRequest('POST', '/api/inbox/x/ap_1') && !auth.isAuthorityRequest('GET', '/api/inbox'));
+  } finally {
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
+    if (other?.child) await stopProcess(other.child);
+    await fsp.rm(otherHome, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * 1.5.41: the small things the step-one beginner test found (report §4, §8.4).
+ */
+async function scenarioSmall1541() {
+  const { createAttention, planProgress } = await import('../src/attention.mjs');
+  const AP = await import('../src/approvals.mjs');
+  const AB = await import('../src/abilities.mjs');
+  const { demoPlan } = await import('../src/model.mjs');
+
+  // --- a parked 1:1 checklist says 等你回复; a card that outlived a restart marks its bot --
+  {
+    const subs = [];
+    const bus = { subscribe: (fn) => subs.push(fn), emit: (e) => subs.forEach((fn) => fn(e)) };
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-att41-'));
+    let pending = [{ id: 'ap_old', botId: 'w', toolName: 'shell', status: 'pending' }];
+    const att = createAttention({ file: path.join(dir, 'a.json'), bus, pending: () => pending });
+    await att.load();
+    const held = { id: 'p1', kind: 'task', botId: 'w2', status: 'waiting', held: 'new_message', tasks: [{ title: '建文件夹', status: 'doing' }, { title: '写说明', status: 'todo' }] };
+    check('S41-1 a parked 1:1 checklist with no step marked as the question is held', planProgress(held)?.held === true && !planProgress({ ...held, status: 'running' })?.held);
+    bus.emit({ type: 'bot.plan', botId: 'w2', plan: held });
+    const idle = att.snapshot().items['bot:w2'];
+    bus.emit({ type: 'turn.start', botId: 'w2', turnId: 't9', text: '让研究看一下 welcome.md' });
+    const busy = att.snapshot().items['bot:w2'];
+    bus.emit({ type: 'turn.end', botId: 'w2', turnId: 't9', ts: new Date().toISOString() });
+    check('S41-2 the sidebar says 等你回复 for it (it said nothing) - but not while the bot works on something else',
+      Boolean(idle?.asking) && !busy?.asking && busy?.working, JSON.stringify({ idle, busy }));
+    const restored = att.snapshot().items['bot:w'];
+    pending = [];
+    const answered = att.snapshot().items['bot:w'];
+    check('S41-3 a card that outlived a restart marks its bot (the header counted it, the list did not); answered, the mark goes',
+      restored?.needsYou === true && restored?.approvals === 1 && restored?.ask?.tool === 'shell' && !answered?.needsYou, JSON.stringify({ restored, answered }));
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // --- a card answered twice says so in words -------------------------------------
+  {
+    const q = new AP.ApprovalQueue({ timeoutMs: 60000 });
+    const parked = q.request({ turnId: 't', botId: 'b', toolName: 'shell', args: {}, risk: 'MEDIUM', reason: 'x', unattended: true });
+    const first = q.decide(parked.record.id, 'dismiss');
+    const again = q.decide(parked.record.id, 'dismiss');
+    const live = q.request({ turnId: 't2', botId: 'b', toolName: 'shell', args: {}, risk: 'MEDIUM', reason: 'x' });
+    q.decide(live.record.id, 'approve');
+    const twice = q.decide(live.record.id, 'deny');
+    check('S41-4 「不用了」 twice, or an answer to a card already answered: plain words, never `unknown decision "dismiss"`',
+      first.status === 'dismissed' && /已经收起了/.test(again.error || '') && !/unknown/.test(again.error) && /已经允许过了/.test(twice.error || ''), JSON.stringify({ again: again.error, twice: twice.error }));
+    const peerAnswered = q.request({ turnId: 't3', botId: 'b', toolName: 'shell', args: {}, risk: 'MEDIUM', reason: 'x' });
+    const viaPeer = q.decide(peerAnswered.record.id, 'approve', '', 'peer', { decidedOn: '书房电脑' });
+    check('S41-5 an answer passed on by another machine says where it was answered, in the record', viaPeer.by === 'peer' && viaPeer.decidedOn === '书房电脑');
+  }
+
+  // --- a new bot whose role says 跑命令 gets commands; a demo routine about the disk looks at the disk --
+  {
+    check('S41-6 a role that says 跑命令 / 装软件 / shell gives the new bot 执行命令 (the shell / terminal words never matched: a backspace was in the pattern)',
+      AB.toolsForText('帮我跑命令、查日志').includes('shell') && AB.toolsForText('装软件').includes('shell') && AB.toolsForText('a shell helper').includes('shell') && AB.toolsForText('terminal work').includes('shell') && !AB.toolsForText('写周报').includes('shell'));
+    check('S41-7 the card of a stopped routine names the step in words, not 「命令行（shell）」', AB.toolWords('shell') === '命令行' && !AB.toolWords('shell').includes('shell'));
+    const disk = demoPlan('运行命令看看磁盘空间够不够');
+    check('S41-8 demo mode: a routine about the disk looks at the disk, not `node --version`', /statfsSync/.test(disk[0]?.args?.command || '') && !/node --version/.test(disk[0]?.args?.command || ''), JSON.stringify(disk[0]));
+  }
+
+  // --- 「立即运行」: you are there, so a step that needs your OK waits for you ------
+  {
+    const made = await api('/api/routines', { method: 'POST', body: { botId: 'ops', name: '试跑', instruction: 'Write a note outside the workspace: zeta', schedule: 'every 60 minutes', enabled: false } });
+    const id = made.json?.routine?.id;
+    const stream = await openStream('ops');
+    try {
+      const started = await api(`/api/routines/${id}/test`, { method: 'POST', body: { watched: true } });
+      const ask = await stream.waitFor((e) => e.type === 'approval.request', 10000, 'approval.request from the watched run');
+      const card = ((await api('/api/approvals?status=pending')).json || []).find((a) => a.id === ask.approvalId);
+      check('S41-9 「立即运行」 from the app answers at once and the run waits for you like a chat (a live card, not 「当时没人在」)',
+        started.status === 200 && started.json?.started === true && card?.status === 'pending' && !card?.unattended, JSON.stringify({ started: started.json, card }).slice(0, 300));
+      await api(`/api/approvals/${ask.approvalId}`, { method: 'POST', body: { decision: 'deny' } });
+      await waitUntil(async () => !((await api('/api/attention')).json?.items?.['bot:ops']?.working), 10000, 'ops idle').catch(() => {});
+    } finally {
+      stream.close();
+      if (id) await api(`/api/routines/${id}`, { method: 'DELETE' });
+    }
+  }
+
+  // --- a deleted member keeps its name in the group's history --------------------
+  {
+    const groupsMod = await import('../src/groups.mjs');
+    const bot = await api('/api/bots', { method: 'POST', body: { name: '临时写手', role: '写东西' } });
+    const botId = bot.json?.bot?.id || bot.json?.id;
+    const group = await api('/api/groups', { method: 'POST', body: { name: '临时群', members: ['chief', botId], coordinatorId: 'chief' } });
+    const groupId = group.json?.group?.id || group.json?.id;
+    try {
+      await groupsMod.appendGroupMessage(groupId, { kind: 'assistant', from: botId, text: '写好了' });
+      await api(`/api/bots/${encodeURIComponent(botId)}`, { method: 'DELETE' });
+      const history = (await api(`/api/groups/${encodeURIComponent(groupId)}/messages`)).json || [];
+      const said = history.find((m) => m.from === botId);
+      check('S41-10 a member deleted since is shown by its name in the group\'s history, not its id', said?.name === '临时写手', JSON.stringify({ botId, groupId, said }));
+    } finally {
+      if (groupId) await api(`/api/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
+      await api(`/api/bots/${encodeURIComponent(botId)}`, { method: 'DELETE' }).catch(() => {});
+    }
+  }
+
+  // --- the page --------------------------------------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    const en = await readText('../public/i18n-en.js');
+    check('S41-11 the sidebar line puts what it waits on first (the 「!」 says it waits), its kind of wait in the tooltip',
+      page.includes("text: who ? `${who}：想${TOOL_TEXT[ask.tool].label}` : `想${TOOL_TEXT[ask.tool].label}`, hint: '等你点头' }") && page.includes("const whole = line.hint ? `${line.hint}：${line.text}` : line.text;"));
+    check('S41-12 a turn cut off by a restart shows its notice once (no English 「needs_attention - …」 line under it)', page.includes("last.status !== 'needs_attention'"));
+    check('S41-13 English: 撤销 is Undo; the cancel reasons, the board states, the board\'s question and a hand-over\'s names are translated',
+      en.includes('"撤销": "Undo"') && en.includes('"你发了新消息。"') && en.includes('"你让它停下了。"') && en.includes('"{0}/{1} · {2}"') && en.includes('"需要你回复一下："')
+      && page.includes("who.appendChild(el('span', null, sender?.name || '助手'));") && page.includes('let text = system ? raw : localBoardAsk(humanizeIds(raw));') && page.includes('String(text).startsWith(BOARD_ASK_LEAD)'));
+    check('S41-14 alone, the main assistant\'s tip does not promise to hand work to others; the group tip names who there is',
+      page.includes('if ((state.bots || []).length <= 1) return `有什么事直接跟「') && page.includes('现在只有「${primary.name}」一位助手，群里至少要两位。') && !page.includes("others[0] || '某某'"));
+    check('S41-15 the log says 「你允许了 X 的这一步」, not 「你拒绝了 turn_…」; 演示模式, not 「mock 不需要密钥」; an undone file\'s card says it is gone; a paired click finishes the card',
+      !page.includes('`你${ev.status === \'approved\' ? \'批准\' : \'拒绝\'}了 ${truncate(ev.turnId, 14)}`') && page.includes('`你允许了${who}的这一步`') && !page.includes('mock 不需要密钥') && page.includes('演示模式不需要密钥。')
+      && page.includes("sub.textContent = '已撤销，这个文件不在了';") && page.includes("card.recheck?.();") && page.includes('again.then?.(res);') && page.includes("state.afterPair.then = done;"));
+    // A bare address is a link, and a link opens on the device in front of you.
+    const src = /const BARE_URL = (\/.+\/g);/.exec(page)?.[1] || '';
+    let re = null;
+    try { re = new Function(`return ${src};`)(); } catch { /* checked below */ }
+    const mark = (t) => (re ? t.replace(re, (m, lead, url) => `${lead}[${url}]`) : '');
+    check('S41-16 a bare address in a reply becomes a link (not its full stop, not one already in a link), plain replies too; a click opens it in this device\'s browser (the app\'s own call, else a new tab)',
+      mark('看这里 https://x.com/a?b=1。') === '看这里 [https://x.com/a?b=1]。' && mark('地址：https://example.org/p, 然后') === '地址：[https://example.org/p], 然后'
+      && mark('<a href="https://a.b">https://a.b</a>') === '<a href="https://a.b">https://a.b</a>'
+      && page.includes('appendLinkified(bubble, text);') && page.includes('openLinkHere(link.href);') && /async function openLinkHere\(url\) \{\s+if \(typeof window\.desk\?\.openExternal === 'function'\)/.test(page),
+      src.slice(0, 80));
+  }
+
+  // --- a connected app's tool that only reads, by its name (decided 2026-11-19) -----
+  {
+    const M = await import('../src/mcp.mjs');
+    const guess = (name, annotations) => (typeof M.toolLooksReadOnly === 'function' ? M.toolLooksReadOnly({ name, ...(annotations ? { annotations } : {}) }) : 'missing');
+    const yes = ['search_tweets', 'getUserProfile', 'list-messages', 'notion-search', 'notion-fetch', 'query', 'read_file', 'find_events', 'lookup_contact', 'describe_table', 'get_thread_replies'];
+    const no = ['post_tweet', 'get_and_delete_message', 'notion-create-pages', 'run_query', 'update_search_index', 'send_email', 'add_to_list', 'like_tweet', 'search_and_reply', 'do_something'];
+    const wrongYes = yes.filter((n) => guess(n) !== true);
+    const wrongNo = no.filter((n) => guess(n) !== false);
+    check('S41-17 a connected app\'s tool that does not say whether it only reads is taken as read-only by its name (get / list / search / read / fetch / query / find …) - never when any word of the name changes or sends something',
+      !wrongYes.length && !wrongNo.length, JSON.stringify({ wrongYes, wrongNo }));
+    check('S41-18 what the app says wins over the name: 「not read-only」 or 「destructive」 still asks; 「read-only」 is read-only whatever the name',
+      guess('search', { readOnlyHint: false }) === false && guess('fetch_posts', { destructiveHint: true }) === false && guess('send_email', { readOnlyHint: true }) === true);
+    const mcpSrc = await readText('../src/mcp.mjs');
+    check('S41-19 the guess is what decides: the tool runs unasked (LOW) and the settings list shows it as read-only',
+      (mcpSrc.match(/toolLooksReadOnly\(t\)/g) || []).length >= 2 && !mcpSrc.includes('const readOnly = Boolean(t.annotations?.readOnlyHint);'));
+  }
+
+  // --- what the step-two beginner test found (2026-11-19) ---------------------------
+  {
+    const page = await readText('../public/index.html');
+    const mdSrc = /function looksMarkdown\(text\) \{\s+const s = String\(text \|\| ''\);\s+return (\/.+\/m)\.test\(s\);/.exec(page)?.[1] || '';
+    let md = null;
+    try { md = new Function(`return ${mdSrc};`)(); } catch { /* checked below */ }
+    check('S41-20 a reply that is only a [link](https://…) is drawn as a link, not as brackets with an address inside',
+      Boolean(md) && md.test('看这里：[示例](https://example.com/a)') && !md.test('看这里：https://example.com/a') && !md.test('普通的一句话'), mdSrc.slice(0, 80));
+  }
+  {
+    // Demo mode, 「立即运行」 on the demo's own routine: no unrelated command (it ran `node --version`).
+    const made = await api('/api/routines', { method: 'POST', body: { botId: 'chief', name: '早间简报（演示）', instruction: '看一下这台电脑的磁盘空间够不够，有异常就提醒我。', schedule: '0 8 * * *', enabled: false } });
+    const id = made.json?.routine?.id;
+    const stream = await openStream('chief');
+    try {
+      await api(`/api/routines/${id}/test`, { method: 'POST', body: { watched: true } });
+      const end = await stream.waitFor((e) => e.type === 'turn.end' && e.botId === 'chief', 15000, 'the routine turn ends');
+      const ran = stream.events.filter((e) => e.turnId === end.turnId && (e.type === 'tool.call' || e.type === 'approval.request'));
+      const said = stream.events.filter((e) => e.turnId === end.turnId && e.type === 'message').map((e) => e.text).join(' ');
+      check('S41-21 demo mode: 「立即运行」 on a routine runs no command that has nothing to do with it, and the runtime\'s own check is not taken for a new request',
+        !ran.length && /指令收到了/.test(said) && !/跑了一次/.test(said), JSON.stringify({ ran: ran.map((e) => e.name || e.tool), said: said.slice(0, 200) }));
+    } finally {
+      stream.close();
+      if (id) await api(`/api/routines/${id}`, { method: 'DELETE' });
+    }
+  }
+  {
+    const page = await readText('../public/index.html');
+    const srv = await readText('../src/server.mjs');
+    const en = await readText('../public/i18n-en.js');
+    check('S41-22 a card restored after a restart: answered elsewhere, it closes on its own machine\'s page too, and what it leaves in the chat is in Chinese words; 1 member; the routine line translates; an undone turn says so; Enter creates a bot',
+      page.includes("if (ev.type === 'approval.decided' && ev.approvalId) {") && srv.includes('这张卡是应用重启前留下的。你没有允许') && !srv.includes('from a card restored after a restart')
+      && en.includes('"1 位成员 · {0}": "1 member · {0}"') && page.includes("parts.filter(Boolean).forEach((p, i) => {")
+      && page.includes("toast(already ? '这一轮的改动已经撤销过了'") && page.includes("for (const id of ['new-bot-name', 'new-bot-role']) {"));
+  }
 }

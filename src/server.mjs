@@ -45,6 +45,7 @@ import {
   createBot,
   updateBot,
   deleteBot,
+  deletedBotNames,
   setPrimaryBot,
   lastMessagePreview,
   findAvatarFile,
@@ -95,6 +96,7 @@ import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.
 import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
 import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
+import { toolWords } from './abilities.mjs';
 import { checkSandbox, sandboxStatus } from './sandbox.mjs';
 import { checkRunner, setupRunner, syncGrants, autoSetupOnHub } from './winrunner.mjs';
 import { undoChanges, pruneTrash } from './trash.mjs';
@@ -107,6 +109,8 @@ import {
   isAuthExemptPath,
   isAuthorityRequest,
   carriesLocalKey,
+  isHubCall,
+  VIA_HEADER,
   localKey,
   isPublicShellPath,
   isLoopbackHost,
@@ -236,7 +240,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   const pairLinks = createPairLinkStore();
 
   const bus = new EventBus();
-  const attention = createAttention({ file: path.join(P.dataDir, 'attention.json'), bus });
+  const attention = createAttention({ file: path.join(P.dataDir, 'attention.json'), bus, pending: () => approvals.pendingRecords() });
   await attention.load();
   const approvals = new ApprovalQueue({
     timeoutMs: Number(config.policy.approvalTimeoutMs) || 10 * 60 * 1000,
@@ -977,7 +981,7 @@ async function dispatchApi(req, res, state, pathname, url) {
     // a bot's command on this computer reaches loopback too.
     if (isAuthorityRequest(method, pathname, body)) {
       const auth = req.auth || evaluateAuth(req, state.security, state.devices);
-      if (!carriesLocalKey(req, auth, P.dataDir, state.devices) && !firstModelSetup(req, auth, method, pathname, body, state)) {
+      if (!carriesLocalKey(req, auth, P.dataDir, state.devices, state.security) && !firstModelSetup(req, auth, method, pathname, body, state)) {
         return errorResponse(res, 403, 'LOCAL_KEY_REQUIRED', '这一步要你本人确认：请在 Lamplit 应用里操作，或者先把这个浏览器配对一次（配对码在 Lamplit 应用的 设置 → 手机和外网）。');
       }
     }
@@ -1155,7 +1159,7 @@ function firstModelSetup(req, auth, method, pathname, body, state) {
 /** May this request do what only the human may (decide approvals, see the pairing code)? */
 function mayDecide(req, state) {
   const auth = req.auth || evaluateAuth(req, state.security, state.devices);
-  return carriesLocalKey(req, auth, P.dataDir, state.devices);
+  return carriesLocalKey(req, auth, P.dataDir, state.devices, state.security);
 }
 
 // Static catalogue of every model provider Desk can talk to. No secrets, so it
@@ -2044,7 +2048,7 @@ route('GET', /^\/api\/auth$/, async (req, _res, { state }) => {
   const auth = evaluateAuth(req, state.security, state.devices);
   // authority: whether this client may decide approvals (1.5.32): a browser on
   // this computer without the app's key is told so before the human clicks.
-  return { required: auth.required, authorized: auth.authorized, mode: auth.mode, authority: auth.authorized && carriesLocalKey(req, auth, P.dataDir, state.devices) };
+  return { required: auth.required, authorized: auth.authorized, mode: auth.mode, authority: auth.authorized && carriesLocalKey(req, auth, P.dataDir, state.devices, state.security) };
 });
 
 route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
@@ -3358,7 +3362,14 @@ route('GET', /^\/api\/groups\/(?<id>[^/]+)\/messages$/, async (_req, _res, { par
   if (!group) throw httpError(404, 'GROUP_NOT_FOUND', `no group with id "${params.id}"`);
   const limit = Math.min(Number(query.get('limit')) || 200, 1000);
   const messages = await groups.readGroupMessages(group.id, { limit });
-  return messages.map(groups.publicGroupMessage);
+  // A member deleted since keeps its name in the history (1.5.41), not its id.
+  const live = new Set((await listBots()).map((b) => b.id));
+  const gone = await deletedBotNames();
+  return messages.map((m) => {
+    const out = groups.publicGroupMessage(m);
+    if (!out.name && out.from && out.from !== 'user' && !live.has(out.from) && gone[out.from]) out.name = gone[out.from];
+    return out;
+  });
 });
 
 //   GET /api/groups/:id/plans/:planId -> {plan}   a task board (the group card shows it)
@@ -3758,6 +3769,86 @@ route('PUT', /^\/api\/usage$/, async (_req, _res, { body, state }) => {
   return { settings };
 });
 
+// --- one inbox (1.5.41 第二步「一个待办箱」) -------------------------------------
+//   GET  /api/inbox -> {items:[{machine, botName, ...card}], missing:[machine]}
+//        the cards waiting on the human's other machines, whole: what a card
+//        here shows (tool, full arguments, the commands of a batch, why it asks).
+//        This machine's own cards are not repeated: they are in their chats.
+//   POST /api/inbox/:machine/:id {decision, note?, always?} -> {approval, ...}
+//        the human answers here; this hub passes the answer on with that
+//        machine's token and says where it was answered. Only the human may
+//        (isAuthorityRequest), a call another hub passed on is never passed on
+//        again, and a machine that cannot be reached is said so: nothing is
+//        reported answered that was not.
+const INBOX_FIELDS = ['id', 'turnId', 'botId', 'toolName', 'args', 'risk', 'reason', 'status', 'createdAt', 'unattended', 'restored', 'remember', 'batch', 'lookTurn', 'look'];
+const inboxNames = new Map(); // machine -> {at, names:{botId:name}}
+async function peerBotNames(state, peer) {
+  const hit = inboxNames.get(peer.name);
+  if (hit && Date.now() - hit.at < 2 * 60 * 1000) return hit.names;
+  const names = {};
+  try {
+    const data = await state.peers.json(peer, 'GET', '/api/bots', { timeoutMs: 5000 });
+    for (const b of asList(data, 'bots')) if (b?.id && b?.name) names[b.id] = String(b.name).slice(0, 80);
+    inboxNames.set(peer.name, { at: Date.now(), names });
+  } catch { /* the ids then; the card still shows what it asks */ }
+  return names;
+}
+/** The machine a decision is for: its exact name, never a guess (peers.find also takes part of a name). */
+function exactPeer(state, raw) {
+  let name = String(raw || '');
+  try { name = decodeURIComponent(name); } catch { /* as it came */ }
+  return state.peers.list().some((p) => p.name === name) ? state.peers.find(name) : null;
+}
+route('GET', /^\/api\/inbox$/, async (_req, _res, { state }) => {
+  const items = [];
+  const missing = [];
+  await Promise.all(state.peers.list().map(async ({ name }) => {
+    const peer = state.peers.find(name);
+    let cards;
+    try { cards = await state.peers.json(peer, 'GET', '/api/approvals?status=pending&limit=50', { timeoutMs: 5000 }); } catch { missing.push(name); return; }
+    if (!Array.isArray(cards) || !cards.length) return;
+    const names = await peerBotNames(state, peer);
+    for (const card of cards) {
+      if (!card?.id) continue;
+      const out = { machine: name, botName: names[card.botId] || '' };
+      for (const k of INBOX_FIELDS) if (card[k] !== undefined) out[k] = card[k];
+      items.push(out);
+    }
+  }));
+  items.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  missing.sort();
+  return { items, missing };
+});
+route('POST', /^\/api\/inbox\/(?<machine>[^/]+)\/(?<id>[^/]+)$/, async (req, _res, { params, body, state }) => {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的批准不会再转给第三台机器');
+  const peer = exactPeer(state, params.machine);
+  if (!peer) throw httpError(404, 'PEER_NOT_FOUND', '没有这台机器（可能已经从「机器」里删掉了）');
+  const decision = String(body?.decision || '').toLowerCase();
+  if (!['approve', 'deny', 'rerun', 'dismiss'].includes(decision)) throw httpError(400, 'DECISION_REQUIRED', 'body needs { decision: "approve" | "deny" | "rerun" | "dismiss" }');
+  let id = String(params.id);
+  try { id = decodeURIComponent(id); } catch { /* as it came */ }
+  const here = selfMachineName();
+  const forward = { decision, note: String(body?.note || '').slice(0, 500), ...(body?.always === true ? { always: true } : {}), via: { machine: here } };
+  let out = null;
+  let failure = null;
+  try {
+    out = await state.peers.json(peer, 'POST', `/api/approvals/${encodeURIComponent(id)}`, { body: forward, headers: { [VIA_HEADER]: '1' }, timeoutMs: 15000 });
+  } catch (err) {
+    failure = err;
+  }
+  await audit({ kind: 'approval.forwarded', machine: peer.name, approvalId: id, botId: out?.approval?.botId || body?.botId || null, toolName: out?.approval?.toolName || null, decision, ok: !failure, ...(failure ? { error: failure.message } : {}) });
+  if (failure) {
+    const code = failure.code || 'PEER_ERROR';
+    if (code === 'APPROVAL_CONFLICT') throw httpError(409, code, failure.message);
+    if (code === 'APPROVAL_NOT_FOUND') throw httpError(404, code, `「${peer.name}」上已经没有这张卡了（可能已经处理过，或者那台机器重启过）`);
+    if (code === 'LOCAL_KEY_REQUIRED') throw httpError(502, code, `「${peer.name}」没有接受从这台转过去的批准（那台的 Lamplit 可能需要更新），这一步没有批。`);
+    if (code === 'PEER_UNAUTHORIZED') throw httpError(502, code, `「${peer.name}」不认这台机器的凭据，这一步没有批。在 Lamplit 应用的「机器」里重新配对那台机器后再试。`);
+    throw httpError(502, 'PEER_UNREACHABLE', `连不上「${peer.name}」，这一步没有批，它那边还在等你。那台机器连上后再点一次。`);
+  }
+  state.bus.emit({ type: 'inbox.changed', machine: peer.name, approvalId: id, status: out?.approval?.status || '' });
+  return { machine: peer.name, ...out };
+});
+
 // --- approvals -------------------------------------------------------------
 
 route('GET', /^\/api\/approvals$/, async (_req, _res, { query, state }) => {
@@ -3773,14 +3864,17 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
   if (!decision) throw httpError(400, 'DECISION_REQUIRED', 'body needs { decision: "approve" | "deny" }');
   // A device token means the answer came from the phone (a notification action
   // or the app's own card); a loopback browser is the person at this computer.
-  const by = req.auth?.deviceId ? 'device' : 'human';
-  const record = state.approvals.decide(params.id, decision, body?.note || '', by);
-  if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', `no approval with id "${params.id}"`);
+  // Another of the human's machines passing on the human's answer (1.5.41 一个待办箱):
+  // it says where it was answered. Only a call with this hub's own token may say that.
+  const viaMachine = body?.via?.machine && isHubCall(req, state.security) ? String(body.via.machine).trim().slice(0, 60) : '';
+  const by = viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human';
+  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine });
+  if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', '这张卡已经不在了（可能已经处理过，或者那台机器重启过）');
   if (record.error) throw httpError(409, 'APPROVAL_CONFLICT', record.error);
   // A routine's card (1.3.2): "现在跑一次（我看着）" runs that routine now, attended,
   // so the same step asks again and waits for the human; "不用了" just puts it away.
   if (record.status === 'dismissed') {
-    state.bus.emit({ type: 'approval.decided', approvalId: record.id, botId: record.botId, turnId: record.turnId, status: record.status, note: record.note, late: true });
+    state.bus.emit({ type: 'approval.decided', approvalId: record.id, botId: record.botId, turnId: record.turnId, status: record.status, note: record.note, late: true, ...(record.decidedOn ? { decidedOn: record.decidedOn } : {}) });
     if (decision === 'rerun') {
       const routine = state.routines?.findByTurn?.(record.turnId) || null;
       if (!routine) return { approval: record, rerun: null, message: '找不到这个定时任务了（可能已删除）' };
@@ -3811,6 +3905,7 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
     note: record.note,
     late: Boolean(record.late),
     restored: Boolean(record.restored),
+    ...(record.decidedOn ? { decidedOn: record.decidedOn } : {}),
   });
 
   // A card restored after a restart has no live turn behind it. The human's
@@ -3825,15 +3920,15 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
     const ts = nowIso();
     let note;
     let replay = null;
+    // Said in the chat's language and in words, not 「Denied "shell" … Nothing ran.」 (1.5.41 test).
+    const what = `「${toolWords(record.toolName) || '这一步'}」`;
 
     if (record.status === 'approved') {
       replay = await replayRestoredApproval(state, record);
       if (replay.ran) {
-        note =
-          `Approved "${record.toolName}" from a card restored after a restart. ` +
-          (replay.ok
-            ? 'The approved tool ran now. The rest of that turn did not resume - ask again for anything else.'
-            : `The approved tool ran now but failed: ${replay.error || 'unknown error'}. The rest of that turn did not resume.`);
+        note = replay.ok
+          ? `这张卡是应用重启前留下的。你允许了，${what}已经做了；那一轮没有接着往下做，还要做别的就再跟我说一次。`
+          : `这张卡是应用重启前留下的。你允许了，${what}做了但没成功：${replay.error || '原因不明'}。那一轮没有接着往下做。`;
         try {
           await appendJsonl(sessionFile(record.botId || 'unknown'), {
             ts,
@@ -3873,14 +3968,12 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
           restored: true,
         });
       } else if (replay.skipped === 'unattended') {
-        note =
-          `Approved "${record.toolName}" from a routine card restored after a restart, but the run that asked ` +
-          'was unattended and already stopped. Nothing was re-run - run the routine again if you still want it.';
+        note = `这张定时任务的卡是应用重启前留下的。你允许了，但那次运行当时没人在，早就停了，所以什么也没做。还需要的话，让这个定时任务再跑一次。`;
       } else {
-        note = `Approved "${record.toolName}" from a card restored after a restart, but it could not be replayed (${replay.error}). Nothing ran.`;
+        note = `这张卡是应用重启前留下的。你允许了，但这一步没法再做（${replay.error}），什么也没做。`;
       }
     } else {
-      note = `Denied "${record.toolName}" from a card restored after a restart. Nothing ran.`;
+      note = `这张卡是应用重启前留下的。你没有允许，${what}没有做。`;
     }
 
     if (record.botId) {
@@ -4015,7 +4108,16 @@ route('DELETE', /^\/api\/routines\/(?<id>[^/]+)$/, async (_req, _res, { params, 
   return result;
 });
 
-route('POST', /^\/api\/routines\/(?<id>[^/]+)\/test$/, async (_req, _res, { params, state }) => {
+route('POST', /^\/api\/routines\/(?<id>[^/]+)\/test$/, async (_req, _res, { params, body, state }) => {
+  // 「立即运行」 in the app (1.5.41): you pressed it, so you are there - a step that
+  // needs your OK waits for you as in a chat, not 「当时没人在，它就先停了」.
+  // Not awaited: an answer can take minutes. Without `watched`: the unattended test run.
+  if (body?.watched === true) {
+    const routine = state.routines.get(params.id);
+    if (!routine) throw httpError(404, 'ROUTINE_NOT_FOUND', '找不到这个定时任务了（可能已删除）');
+    state.routines.runNow(routine.id, { trigger: 'watched' }).catch((err) => console.error('[routines] watched run failed:', err.message));
+    return { started: true, routine: publicRoutine(routine), botId: routine.botId };
+  }
   const result = await state.routines.runNow(params.id, { trigger: 'test' });
   return { routine: publicRoutine(result.routine), run: result.run };
 });

@@ -202,6 +202,32 @@ export const MCP_CATALOG = [
 // --------------------------------------------------------------------------
 // names
 
+// Words of a tool's name that only look, and words that change or send something.
+const READ_WORDS = new Set(['get', 'list', 'search', 'read', 'fetch', 'query', 'find', 'lookup', 'describe', 'show', 'view', 'retrieve', 'count', 'browse']);
+const WRITE_WORDS = new Set([
+  'create', 'update', 'delete', 'remove', 'send', 'post', 'write', 'set', 'add', 'edit', 'move', 'upload', 'publish',
+  'reply', 'like', 'unlike', 'follow', 'unfollow', 'mark', 'archive', 'cancel', 'approve', 'pay', 'buy', 'run', 'exec',
+  'execute', 'invoke', 'submit', 'put', 'patch', 'modify', 'insert', 'save', 'share', 'invite', 'trash', 'block', 'mute',
+  'retweet', 'repost', 'quote', 'pin', 'unpin', 'bookmark', 'vote', 'merge', 'close', 'open', 'start', 'stop', 'restart',
+  'deploy', 'install', 'uninstall', 'rename', 'copy', 'clear', 'reset', 'enable', 'disable', 'grant', 'revoke', 'transfer',
+  'import', 'export', 'sync', 'schedule', 'trigger', 'comment', 'react', 'assign', 'login', 'logout', 'sign', 'purchase', 'order',
+]);
+
+/**
+ * Does this tool of a connected app only read (1.5.41, the human's decision on
+ * 2026-11-19)? What the app says wins: readOnlyHint true is read-only, readOnlyHint
+ * false or destructiveHint true is not. An app that says nothing (X's tools did not)
+ * is read-only only when its name has a word that looks (get, list, search …) and
+ * no word that changes or sends anything: 「get_and_delete」 and 「search_and_reply」 ask.
+ */
+export function toolLooksReadOnly(tool) {
+  const a = tool?.annotations || {};
+  if (a.readOnlyHint === true) return true;
+  if (a.readOnlyHint === false || a.destructiveHint === true) return false;
+  const words = String(tool?.name || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return words.some((w) => READ_WORDS.has(w)) && !words.some((w) => WRITE_WORDS.has(w));
+}
+
 /** mcp__<server>__<tool>, only [A-Za-z0-9_-], at most 64 characters. */
 export function mcpToolName(serverId, toolName) {
   const clean = (s) => String(s || '').replace(/[^A-Za-z0-9_-]/g, '_');
@@ -608,7 +634,7 @@ export function createMcpManager({
       ...(cfg.mailboxes ? { mailboxes: cfg.mailboxes } : {}),
       state: l?.state || (cfg.enabled === false ? 'off' : cfg.oauth && !cfg.secretRef ? 'needs_auth' : 'idle'),
       error: l?.error || (cfg.oauth && !cfg.secretRef ? '还没授权：点「连接」去那个应用的页面登录' : ''),
-      tools: (l?.tools || []).map((t) => ({ name: t.name, description: String(t.description || '').slice(0, 200), readOnly: Boolean(t.annotations?.readOnlyHint) })),
+      tools: (l?.tools || []).map((t) => ({ name: t.name, description: String(t.description || '').slice(0, 200), readOnly: toolLooksReadOnly(t) })),
       server: l?.client?.serverInfo || null,
     };
   };
@@ -665,7 +691,7 @@ export function createMcpManager({
     unregister(cfg.id);
     for (const t of tools) {
       const name = mcpToolName(cfg.id, t.name);
-      const readOnly = Boolean(t.annotations?.readOnlyHint);
+      const readOnly = toolLooksReadOnly(t);
       registry.tools.set(name, {
         name,
         description: `［${cfg.name}］${String(t.description || t.title || t.name).slice(0, 900)}`,

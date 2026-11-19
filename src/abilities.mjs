@@ -20,7 +20,7 @@ export const BASE_TOOLS = [
 
 /** What a role (or a task) plainly calls for. */
 const ROLE_RULES = [
-  [/代码|开发|程序|编程|工程师|运维|部署|测试|脚本|服务器|数据库|数据分析|统计|爬虫|自动化|命令行|终端|运行命令|执行命令|跑一下命令|shell|terminal|\b(code|coder|coding|dev|developer|engineer|ops|devops|test|qa|script|data)\b/i, ['shell']],
+  [/代码|开发|程序|编程|工程师|运维|部署|测试|脚本|服务器|数据库|数据分析|统计|爬虫|自动化|命令行|终端|运行命令|执行命令|跑一下命令|跑命令|装软件|\bshell\b|\bterminal\b|\bcommands?\b|\b(code|coder|coding|dev|developer|engineer|ops|devops|test|qa|script|data)\b/i, ['shell']],
   [/调研|研究|搜索|搜集|收集|资料|浏览|网页|网站|新闻|竞品|采集|查询|检索|\b(research|browse|search|web|news)\b/i, ['browser_open']],
   [/下载|上传|表单|填写|登录|后台|\b(download|upload|form|login)\b/i, ['browser_open']],
   // 1.3.0: work on the human's phone (a 小红书 account lives in the app).
@@ -57,6 +57,8 @@ const LABELS = {
   desktop_ui: '操作桌面', browser_fill_secret: '填写保存的登录信息', phone: '操作手机',
 };
 export const toolLabel = (name) => (LABELS[name] ? `${LABELS[name]}（${name}）` : name);
+/** The same words without the tool's own name, for what the human reads (1.5.41: 「命令行（shell）」 on a card). */
+export const toolWords = (name) => LABELS[name] || '';
 
 /** The grant list for a new bot: base + what its role calls for + what was asked for, known tools only. */
 /**

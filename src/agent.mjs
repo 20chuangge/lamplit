@@ -350,7 +350,7 @@ const TASK_OPEN = ['running', 'waiting', 'stalled'];
 const BOARD_OPEN = ['running', 'waiting'];
 /** Turns a direct chat goes on by itself at the step limit (no open checklist), per message from the human. */
 const LIMIT_CONTINUATIONS = 6;
-import { isRequestable, toolLabel, toolsForText, abilitySummary } from './abilities.mjs';
+import { isRequestable, toolLabel, toolWords, toolsForText, abilitySummary } from './abilities.mjs';
 
 /**
  * A task report that hands a request to a teammate by @mention instead of
@@ -1723,7 +1723,8 @@ export class AgentRuntime {
         // An unattended run must not hang and must not silently swallow the need
         // for a human: say it out loud in the chat.
         // Plain words, and what to do: the card offers 现在跑一次（我看着） and 不用了 (1.3.2).
-        const note = `定时任务停在了这一步：要用「${toolLabel(pausedTool || 'tool')}」，这一步需要你点头，当时没人在，它就先停了，没有在等你。想让它接着做，点卡片上的「现在跑一次（我看着）」；不需要就点「不用了」。卡片一天后会自己收起。`;
+        const what = toolWords(pausedTool);
+        const note = `定时任务停在了这一步：${what ? `要用「${what}」，` : ''}这一步需要你点头，当时没人在，它就先停了，没有在等你。想让它接着做，点卡片上的「现在跑一次（我看着）」；不需要就点「不用了」。卡片一天后会自己收起。`;
         await this.record(bot.id, { kind: 'assistant', text: note, turnId, source, system: true });
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
       }

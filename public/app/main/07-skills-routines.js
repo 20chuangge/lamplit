@@ -155,8 +155,9 @@ function renderRoutines() {
       test.disabled = true;
       test.textContent = '运行中…';
       try {
-        const res = await api(`/api/routines/${encodeURIComponent(rt.id)}/test`, { method: 'POST', body: {} });
-        toast(`试运行：${runStatusLabel(res.run.status)}`);
+        // You are here: a step that needs your OK asks you in its chat (1.5.41).
+        await api(`/api/routines/${encodeURIComponent(rt.id)}/test`, { method: 'POST', body: { watched: true } });
+        toast(`开始跑了：要你点头的步骤会在「${botById(rt.botId)?.name || '它'}」的对话里问你`);
       } catch (err) {
         toast(err.message, true);
       } finally {
@@ -585,7 +586,10 @@ function routineRunRow(item) {
   if (rt && !rt.enabled) parts.push('已暂停');
   if (quiet) parts.push('没有变化');
   line.appendChild(el('span', 'routine-run-icon', '⏱'));
-  line.appendChild(el('span', null, parts.filter(Boolean).join(' · ')));
+  // Each part on its own, so the English page translates each (1.5.41 test: the line stayed Chinese).
+  const said = el('span');
+  parts.filter(Boolean).forEach((p, i) => { if (i) said.appendChild(document.createTextNode(' · ')); said.appendChild(el('span', null, p)); });
+  line.appendChild(said);
   const toggle = el('button', 'routine-run-toggle', '看指令');
   toggle.type = 'button';
   line.appendChild(toggle);
@@ -632,8 +636,8 @@ function routineRunRow(item) {
       again.disabled = true;
       again.textContent = '运行中…';
       try {
-        const res = await api(`/api/routines/${encodeURIComponent(rt.id)}/test`, { method: 'POST', body: {} });
-        toast(`跑完了：${runStatusLabel(res.run.status)}`);
+        await api(`/api/routines/${encodeURIComponent(rt.id)}/test`, { method: 'POST', body: { watched: true } });
+        toast('开始跑了：要你点头的步骤会在这里问你');
       } catch (err) { toast(err.message, true); } finally { again.disabled = false; again.textContent = '现在再跑一次'; }
     });
     body.appendChild(actions);

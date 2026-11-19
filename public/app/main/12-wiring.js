@@ -83,7 +83,10 @@ function wireChrome() {
   $('confirm-scrim')?.addEventListener('click', () => settleConfirm(false));
   $('approvals-pill').addEventListener('click', () => {
     const pill = $('approvals-pill');
-    if (pill.dataset.bot || pill.dataset.approvalId) {
+    // Another machine is waiting too (1.5.41): the inbox shows every card, its own and the others'.
+    if (pill.dataset.remote) {
+      openInbox();
+    } else if (pill.dataset.bot || pill.dataset.approvalId) {
       focusApprovalCard(pill.dataset.approvalId, pill.dataset.bot);
     } else {
       state.panelOpen = true;
@@ -445,6 +448,12 @@ function wireChrome() {
       toast(err.message, true);
     }
   });
+  // Enter in the name or the role box creates it, like the button (1.5.41 test).
+  for (const id of ['new-bot-name', 'new-bot-role']) {
+    $(id)?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); $('new-bot-save').click(); }
+    });
+  }
 
   // group dialog
   $('group-close').addEventListener('click', closeGroupModal);
@@ -482,6 +491,14 @@ function wireChrome() {
   });
   $('botedit-name-input').addEventListener('keydown', (event) => {
     if (event.key === 'Enter') { event.preventDefault(); saveBotEdit(); }
+  });
+
+  // A link in a reply opens in this device's own browser (1.5.41): the phone's, the desktop's.
+  document.addEventListener('click', (event) => {
+    const link = event.target.closest?.('a.ext-link');
+    if (!link || !/^https?:/i.test(link.href) || event.defaultPrevented) return;
+    event.preventDefault();
+    openLinkHere(link.href);
   });
 
   // clicking anywhere else closes popover menus
@@ -541,7 +558,7 @@ function wireChrome() {
     const preset = (state.providers || []).find((p) => p.name === provider);
     renderProviderHints(provider);
     if (provider === 'mock') {
-      $('key-state').textContent = 'mock 不需要密钥。';
+      $('key-state').textContent = '演示模式不需要密钥。';
     } else if (preset && preset.needsKey === false) {
       $('key-state').textContent = `${preset.label} 在本机运行，不需要密钥。`;
       if (preset.baseUrl) $('set-baseurl').value = preset.baseUrl;
@@ -597,6 +614,9 @@ function wireChrome() {
   $('local-pair-close')?.addEventListener('click', () => localPairOpen(false));
   $('local-pair-scrim')?.addEventListener('click', () => localPairOpen(false));
   $('local-pair-go')?.addEventListener('click', () => pairThisBrowser());
+  // The inbox: every card waiting on you, this machine's and the others' (1.5.41).
+  $('inbox-close')?.addEventListener('click', () => inboxOpen(false));
+  $('inbox-scrim')?.addEventListener('click', () => inboxOpen(false));
   $('local-pair-code')?.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); pairThisBrowser(); } });
   $('pair-scrim')?.addEventListener('click', () => pairModalOpen(false));
   $('qr-refresh')?.addEventListener('click', () => requestPairLink(state.pairLinksPrefer || ''));
@@ -634,6 +654,8 @@ function wireChrome() {
   // global keys
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
+    if ($('local-pair-modal')?.classList.contains('open')) { localPairOpen(false); return; }
+    if (inboxIsOpen()) { inboxOpen(false); return; }
     if ($('group-modal').classList.contains('open')) { closeGroupModal(); return; }
     if (state.botEditingId) { closeBotEdit(); return; }
     if (state.avatarBotId) { closeAvatarCustomizer(); return; }

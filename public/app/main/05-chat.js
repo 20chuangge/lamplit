@@ -88,7 +88,8 @@ function renderMessages() {
     const last = statuses[statuses.length - 1];
     const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);
     const newer = items.some((it) => it.ts && last?.ts && it.ts > last.ts);
-    if (last && last.status !== 'success' && !newer && !working) messagesEl.appendChild(statusLine(last));
+    // A restart's cut-off turn said so in words already (1.5.41: not again as "needs_attention - …").
+    if (last && last.status !== 'success' && last.status !== 'needs_attention' && !newer && !working) messagesEl.appendChild(statusLine(last));
     // A reload wiped the "working…" line; the bot is still at it.
     if (working) showTyping(typingBotId(), '正在处理…');
   }
@@ -132,10 +133,11 @@ function changesLine(turnId, changes) {
     try {
       const res = await api('/api/undo', { method: 'POST', body: { ids: changes.map((c) => c.id) } });
       const failed = (res.results || []).filter((r) => !r.ok);
-      if (failed.length === (res.results || []).length) throw new Error(failed[0]?.error || '没能撤销');
-      state.undone.add(turnId);
-      btn.textContent = '已撤销';
-      toast(failed.length ? `撤销了一部分：${failed.map((f) => `${f.path || f.id}（${f.error}）`).join('；')}` : '已恢复成这一轮之前的样子');
+      const already = failed.length > 0 && failed.every((f) => /已经撤销过/.test(f.error || '')); // after a reload the button is back (1.5.41 test)
+      if (failed.length === (res.results || []).length && !already) throw new Error(failed[0]?.error || '没能撤销');
+      state.undone.add(turnId); btn.textContent = '已撤销';
+      for (const card of messagesEl.querySelectorAll('.att-doc')) card.recheck?.(); // a file undone says so (1.5.41)
+      toast(already ? '这一轮的改动已经撤销过了' : failed.length ? `撤销了一部分：${failed.map((f) => `${f.path || f.id}（${f.error}）`).join('；')}` : '已恢复成这一轮之前的样子');
     } catch (err) {
       btn.disabled = false;
       toast(`没能撤销：${err.message}`, true);
@@ -339,7 +341,8 @@ function mdInline(s) {
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a class="ext-link" href="$2" target="_blank" rel="noreferrer">$1</a>')
+    .replace(BARE_URL, (m, lead, url) => `${lead}<a class="ext-link" href="${url}" target="_blank" rel="noreferrer">${url}</a>`); // bare addresses too (1.5.41)
 }
 
 /** Very small markdown subset: fences, headings, lists, tables, quotes, rules. */
@@ -435,7 +438,7 @@ function mdToHtml(src) {
 /** True when the text actually contains markdown worth rendering. */
 function looksMarkdown(text) {
   const s = String(text || '');
-  return /```|`[^`]+`|\*\*[^*]+\*\*|^\s*[-*+]\s|^\s*\d+[.)]\s|^\s*#{1,4}\s|^\s*\|.*\|\s*$|^\s*>/m.test(s);
+  return /```|`[^`]+`|\*\*[^*]+\*\*|^\s*[-*+]\s|^\s*\d+[.)]\s|^\s*#{1,4}\s|^\s*\|.*\|\s*$|^\s*>|\[[^\]\n]+\]\(https?:\/\//m.test(s); // a [link](https://…) alone too (1.5.41)
 }
 
 function renderItem(item) {
@@ -1551,13 +1554,12 @@ function openPageViewer(name, title, machine = null) {
 /** Text (markdown when it looks like it) plus the images it points at. */
 /** botId: whose words these are (its voice reads them aloud); the open chat's bot when not given. */
 function fillBubble(bubble, raw, system = false, botId = '', fold = 'long') {
-  const text = system ? raw : humanizeIds(raw);
+  let text = system ? raw : localBoardAsk(humanizeIds(raw));
   if (!system && looksMarkdown(text)) {
     bubble.classList.add('md');
     bubble.innerHTML = mdToHtml(text);
-  } else {
-    bubble.textContent = text;
-  }
+  } else if (system || !/https?:\/\//i.test(text)) bubble.textContent = text;
+  else { bubble.textContent = ''; appendLinkified(bubble, text); } // its addresses as links (1.5.41)
   if (system) return;
   foldBubble(bubble, text, fold);
   decorateMentions(bubble);

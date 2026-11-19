@@ -855,25 +855,31 @@ function attentionBadge(key) {
 function rosterLine(key, { idle = '', last = '', group = false } = {}) {
   const item = state.attention?.items?.[key];
   const brief = (s, n = 60) => truncate(plainPreview(String(s || '')), n);
+  // What matters comes first, the kind of wait in a word or not at all (1.5.41):
+  // the orange 「!」 already says it waits on you, and a narrow list cut
+  // 「等你点头：想运行 3 …」 before what it wanted. The tooltip has it whole.
   if (item?.needsYou) {
     const wait = item.waiting;
-    if (wait?.kind === 'decision') return { kind: 'needs', text: wait.text ? `等你拍板：${brief(wait.text)}` : '等你拍板' };
+    if (wait?.kind === 'decision') return { kind: 'needs', text: wait.text ? `问你：${brief(wait.text)}` : '等你拍板', hint: '等你拍板' };
     if (wait?.kind === 'login') return { kind: 'needs', text: '等你填写登录信息' };
     if (wait?.kind === 'takeover') return { kind: 'needs', text: '等你接管屏幕' };
-    // Short, so a narrow list still shows what is asked: "等你点头：想执行命令".
     const ask = item.ask || {};
-    const who = group && ask.botName ? `（${ask.botName}）` : '';
-    if (ask.count > 1) return { kind: 'needs', text: `等你点头${who}：想运行 ${ask.count} 条查看类命令` };
-    if (TOOL_TEXT[ask.tool]) return { kind: 'needs', text: `等你点头${who}：想${TOOL_TEXT[ask.tool].label}` };
+    const who = group && ask.botName ? ask.botName : '';
+    if (ask.count > 1) return { kind: 'needs', text: who ? `${who}：想运行 ${ask.count} 条查看命令` : `想运行 ${ask.count} 条查看命令`, hint: '等你点头' };
+    if (TOOL_TEXT[ask.tool]) return { kind: 'needs', text: who ? `${who}：想${TOOL_TEXT[ask.tool].label}` : `想${TOOL_TEXT[ask.tool].label}`, hint: '等你点头' };
     const app = ask.tool ? mcpToolText(ask.tool)?.title : '';
-    return { kind: 'needs', text: app ? `等你点头${who}：${app}` : '等你点头：有操作等你批准' };
+    return { kind: 'needs', text: app ? (who ? `${who}：${app}` : app) : '有操作等你批准', hint: '等你点头' };
   }
   // A step of its checklist or board waits for an answer: the human is what it waits on.
-  if (item?.asking) return { kind: 'needs', text: item.asking.question ? `等你回复：${brief(item.asking.question)}` : '等你回复' };
+  // A checklist parked with no question of its own says 等你回复 (1.5.41: it said nothing).
+  if (item?.asking) {
+    const q = item.asking.question;
+    return { kind: 'needs', text: q ? `问你：${brief(q)}` : '等你回复', hint: '等你回复' };
+  }
   if (item?.working) {
     const doing = item.doing || {};
-    if (doing.total) return { kind: 'working', text: `正在做：${brief(doing.step, 40)}`, tail: `${doing.done}/${doing.total}` };
-    if (doing.text) return { kind: 'working', text: `正在做：${brief(doing.text)}` };
+    if (doing.total) return { kind: 'working', text: brief(doing.step, 40), tail: `${doing.done}/${doing.total}`, hint: '正在做' };
+    if (doing.text) return { kind: 'working', text: `在做：${brief(doing.text)}` };
     if (doing.tool) return { kind: 'working', text: `正在${toolNameLabel(doing.tool)}…` };
     return { kind: 'working', text: '正在工作…' };
   }
@@ -887,7 +893,8 @@ function rosterLineNode(line) {
   const node = el('div', `bot-preview${line.kind ? ` st-${line.kind}` : ''}`);
   node.appendChild(el('span', 'bp-text', line.text));
   if (line.tail) node.appendChild(el('span', 'bp-tail', line.tail));
-  node.title = line.tail ? `${line.text} · ${line.tail}` : line.text;
+  const whole = line.hint ? `${line.hint}：${line.text}` : line.text;
+  node.title = line.tail ? `${whole} · ${line.tail}` : whole;
   return node;
 }
 
@@ -1087,9 +1094,14 @@ async function pollOtherMachines() {
   if (!window.desk?.machinesAttention) return;
   const before = new Map((state.otherMachines || []).map((m) => [m.url, m.needsYou || 0]));
   try { state.otherMachines = (await window.desk.machinesAttention()) || []; } catch { return; }
-  for (const m of state.otherMachines) {
-    if (before.has(m.url) && (m.needsYou || 0) > before.get(m.url)) {
-      notifyHuman({ title: `「${m.name}」上有事等你`, body: '点这里切换到那台机器', tag: `machine|${m.url}` });
+  const more = state.otherMachines.filter((m) => before.has(m.url) && (m.needsYou || 0) > before.get(m.url));
+  if (more.length) {
+    // A card is announced by the inbox, and its notification opens that card here (1.5.41).
+    // What is left is a question in a chat there: that one still opens the machine.
+    await refreshInbox();
+    for (const m of more) {
+      if ((state.inbox.items || []).some((i) => i.machine === m.name)) continue;
+      notifyHuman({ title: `「${m.name}」上有事等你`, body: '它在等你回一句话，点开看看', tag: `machine|${m.url}` });
     }
   }
   const needs = state.otherMachines.reduce((n, m) => n + (m.needsYou || 0), 0);
@@ -1181,6 +1193,13 @@ async function notifyHuman({ title, body = '', tag = '' }) {
 window.deskNotificationClick = async (tag) => {
   const [what, key, kind] = String(tag || '').split('|');
   if (what === 'machine') { if (key && key !== location.origin) switchMachine(key === 'local' ? '' : key); return; }
+  // Another machine's card: opened here, in the inbox, where it can be answered (1.5.41).
+  if (what === 'inbox') {
+    let machine = key || '';
+    try { machine = decodeURIComponent(machine); } catch { /* as it came */ }
+    openInbox(machine, kind || '');
+    return;
+  }
   if (what !== 'chat' || !key) return;
   const [type, id] = key.split(/:(.*)/);
   if (type === 'group' && state.groupId !== id) await openGroup(id);

@@ -762,10 +762,27 @@ export async function archiveBotLeftovers(id) {
   return dest;
 }
 
+/**
+ * The names of deleted bots (1.5.41): a group's history still says who wrote
+ * what, not 「bot-ioeiz8」. data/deleted-bots/names.json {id: name}.
+ */
+const deletedNamesFile = () => path.join(P.dataDir, 'deleted-bots', 'names.json');
+export async function deletedBotNames() {
+  try { return (await readJson(deletedNamesFile(), {})) || {}; } catch { return {}; }
+}
+async function rememberDeletedName(id, name) {
+  if (!id || !name) return;
+  const names = await deletedBotNames();
+  names[id] = String(name).slice(0, 80);
+  await fsp.mkdir(path.dirname(deletedNamesFile()), { recursive: true });
+  await writeJsonAtomic(deletedNamesFile(), names);
+}
+
 export async function deleteBot(id, config) {
   const file = botFile(id);
   const current = await readJson(file, null);
   if (!current) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${id}"`);
+  await rememberDeletedName(id, current.name).catch(() => {});
 
   await fsp.rm(file, { force: true });
   await removeAvatarImage(id).catch(() => {});

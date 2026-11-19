@@ -368,13 +368,37 @@ export function localKey(dir) {
  * the code - it is shown only to the app and to paired devices, and is not
  * written to any log - so it cannot pair itself this way.
  */
-export function carriesLocalKey(req, auth, dir, devices = null) {
+export function carriesLocalKey(req, auth, dir, devices = null, security = null) {
   if (!auth || auth.mode !== 'local') return Boolean(auth?.authorized);
   const sent = String(req?.headers?.[LOCAL_KEY_HEADER] || '');
   if (sent && safeEqual(sent, localKey(dir))) return true;
   const cookie = readCookie(req?.headers?.cookie, sessionCookieName(req));
-  return Boolean(cookie && devices?.findBySession?.(cookie));
+  if (cookie && devices?.findBySession?.(cookie)) return true;
+  // The hub's own token, or a paired device's, sent from this computer (1.5.41):
+  // another Lamplit on the same computer is a peer like one across the room.
+  // Whoever holds it may do all of this from anywhere already.
+  const bearer = bearerOf(req);
+  return isHubCall(req, security) || Boolean(bearer && devices?.findBySession?.(bearer));
 }
+
+/** The Bearer token a request carries, or ''. */
+export function bearerOf(req) {
+  const authorization = String(req?.headers?.authorization || '');
+  return /^bearer\s+/i.test(authorization) ? authorization.replace(/^bearer\s+/i, '').trim() : '';
+}
+
+/**
+ * Did another hub (or a script) send this with this hub's own token (1.5.41)?
+ * That is how one of the human's machines passes on the human's answer to a
+ * card; the human's app and paired devices never send it.
+ */
+export function isHubCall(req, security) {
+  const bearer = bearerOf(req);
+  return Boolean(bearer && security?.token && safeEqual(bearer, security.token));
+}
+
+/** A hub that passes a call on marks it; a marked call is never passed on again (1.5.41). */
+export const VIA_HEADER = 'x-lamplit-via';
 
 /**
  * The login cookie's name for this request (1.5.39). Through the relay the
@@ -396,6 +420,8 @@ export function isAuthorityRequest(method, pathname, body = {}) {
   const p = String(pathname || '');
   if (m === 'GET') return p === '/api/pairing';
   if (/^\/api\/approvals\/[^/]+$/.test(p) && m === 'POST') return true;
+  // Another machine's card, answered here and passed on (1.5.41 一个待办箱).
+  if (/^\/api\/inbox\/[^/]+\/[^/]+$/.test(p) && m === 'POST') return true;
   if (p === '/api/policy' || p === '/api/settings' || p === '/api/cliagents' || p === '/api/pairing/link') return true;
   if (p === '/api/usage' && m === 'PUT') return true;
   if (p === '/api/relay-link' && m === 'PUT') return true;

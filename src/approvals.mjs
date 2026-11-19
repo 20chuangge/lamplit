@@ -368,6 +368,8 @@ export const PARKED_TTL_MS = 24 * 60 * 60 * 1000;
  * chat instead of answering it (1.5.40). The page shows 已取消 and the rest.
  */
 export const NEW_MESSAGE_NOTE = '已取消：你发了新消息';
+/** How a card that is no longer waiting reads when it is answered again (1.5.41). */
+const ALREADY = { approved: '已经允许过了', denied: '已经拒绝过了', timeout: '已经过时了', dismissed: '已经收起了', expired: '已经过期收起了' };
 const parkedTooOld = (r, now = Date.now()) => r.status === 'awaiting_human' && now - Date.parse(r.createdAt || 0) > PARKED_TTL_MS;
 
 export class ApprovalQueue {
@@ -509,9 +511,16 @@ export class ApprovalQueue {
    * late, but we do NOT resume the finished run. Re-running the routine is the
    * explicit way to continue; see README "what this replica does NOT do".
    */
-  decide(id, decision, note = '', by = 'human') {
+  decide(id, decision, note = '', by = 'human', { decidedOn = '' } = {}) {
     const record = this.records.get(id);
     if (!record) return null;
+    // Answered already (another device, another machine, or a second click):
+    // said so in words, never "unknown decision" (1.5.41).
+    if (record.status !== 'pending' && record.status !== 'awaiting_human') {
+      return { ...record, error: `这张卡${ALREADY[record.status] || '已经处理过了'}，不用再点。` };
+    }
+    // Answered on another of the human's machines (1.5.41 一个待办箱): which one, in the record and the log.
+    if (decidedOn) record.decidedOn = String(decidedOn).slice(0, 60);
     // A routine's card: "不用了", or "现在跑一次" (the server starts the run).
     if (record.status === 'awaiting_human' && ['dismiss', 'rerun'].includes(String(decision || '').toLowerCase())) {
       record.status = 'dismissed';
@@ -525,7 +534,7 @@ export class ApprovalQueue {
       return { ...record };
     }
     const normalized = normalizeDecision(decision);
-    if (!normalized) return { ...record, error: `unknown decision "${decision}"` };
+    if (!normalized) return { ...record, error: `这张卡不能这样处理（${String(decision).slice(0, 20)}）` };
 
     if (record.status === 'awaiting_human') {
       record.status = normalized === 'approved' ? 'approved' : 'denied';
@@ -538,8 +547,6 @@ export class ApprovalQueue {
       this.persist();
       return { ...record, late: true };
     }
-
-    if (record.status !== 'pending') return { ...record, error: `approval already ${record.status}` };
 
     this.settle(id, normalized, note, by);
     return this.records.get(id);

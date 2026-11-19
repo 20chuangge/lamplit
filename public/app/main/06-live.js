@@ -274,6 +274,11 @@ function handleEvent(ev) {
     loadAttention();
     return;
   }
+  // Another machine's card answered from here (maybe on another device): the inbox follows (1.5.41).
+  if (ev.type === 'inbox.changed') {
+    refreshInbox({ notify: false });
+    return;
+  }
   if (ev.type === 'group.plan') {
     onPlanEvent(ev.plan);
     return;
@@ -295,6 +300,16 @@ function handleEvent(ev) {
   }
   if (ev.type === 'tool.result' && isActionCard(ev.name) && ev.ok !== false) onActionRequest(ev);
   if (ev.type === 'approval.request') onApprovalRequest(ev);
+  // Answered somewhere else (another device, another machine's inbox): a card with no turn
+  // behind it - one restored after a restart - closes here too, not only after a reload (1.5.41 test).
+  if (ev.type === 'approval.decided' && ev.approvalId) {
+    const card = messagesEl.querySelector(`[data-approval="${CSS.escape(ev.approvalId)}"]`);
+    if (card && !card.classList.contains('resolved')) {
+      if (ev.status === 'dismissed') closeAnsweredElsewhere(card, '已收起。');
+      else settleApprovalCard(card, ev.status, ev.note || '');
+    }
+    refreshPendingApprovals();
+  }
 
   const key = `${ev.type}|${ev.turnId || ''}|${ev.callId || ev.approvalId || ''}|${ev.ts || ''}`;
   if (!state.seenEvents.has(key)) {
@@ -567,6 +582,51 @@ function onTurnEnd(ev) {
 }
 
 /* ---------------------------------------------------------------------
+   links and words in replies (1.5.41)
+   --------------------------------------------------------------------- */
+/**
+ * A bare http(s) address in a reply. It ends before a space, a quote, a
+ * bracket or Chinese punctuation, and a full stop or comma after it is not part of it.
+ */
+const BARE_URL = /(^|[\s(（：:，,、；;])(https?:\/\/[^\s<>"'()（）[\]{}，。；！？、「」]*[^\s<>"'()（）[\]{}，。；！？、「」.,;:!?])/g;
+
+/** Plain text with its addresses as links, for a reply that is not markdown (1.5.41). */
+function appendLinkified(node, text) {
+  const s = String(text || '');
+  let at = 0;
+  for (const m of s.matchAll(BARE_URL)) {
+    const start = m.index + m[1].length;
+    if (start > at) node.appendChild(document.createTextNode(s.slice(at, start)));
+    const a = el('a', 'ext-link', m[2]);
+    a.href = m[2];
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    node.appendChild(a);
+    at = start + m[2].length;
+  }
+  if (at < s.length) node.appendChild(document.createTextNode(s.slice(at)));
+}
+
+/**
+ * A link in a reply opens in the browser of the device in front of you (1.5.41):
+ * the desktop app's and the phone app's own call, else a new tab here - never on
+ * the machine the bot works on.
+ */
+async function openLinkHere(url) {
+  if (typeof window.desk?.openExternal === 'function') {
+    try { if (await window.desk.openExternal(url)) return; } catch { /* a new tab instead */ }
+  }
+  try { window.open(url, '_blank', 'noopener'); } catch { /* blocked: the link stays there to copy */ }
+}
+
+/** A group's board asking you (1.5.41): the words around the question are the page's, in your language. */
+const BOARD_ASK_LEAD = '需要你回复一下：';
+function localBoardAsk(text) {
+  if (!String(text).startsWith(BOARD_ASK_LEAD)) return text;
+  return (window.deskI18n?.t ? window.deskI18n.t(BOARD_ASK_LEAD) : BOARD_ASK_LEAD) + text.slice(BOARD_ASK_LEAD.length);
+}
+
+/* ---------------------------------------------------------------------
    approvals
    --------------------------------------------------------------------- */
 function appendApprovalCard(ev, sender) {
@@ -607,6 +667,11 @@ function buildApprovalCard(data) {
   // Look-only commands: said so, and why it asks anyway - not "medium risk" under "changes nothing" (1.5.40 test).
   const looking = Boolean(many || data.look || data.lookTurn);
   if (looking && !many) info.impact = '这条命令只是查看，不会改动任何东西。';
+  // Another machine's card says which computer it runs on, not 「这台电脑」 (1.5.41).
+  if (data.from?.machine) {
+    if (info.title === '想在这台电脑上运行一条命令') info.title = `想在「${data.from.machine}」上运行一条命令`;
+    if (info.impact === '文件会保存到这台电脑上。') info.impact = `文件会保存到「${data.from.machine}」上。`;
+  }
 
   const top = el('div', 'approval-top');
   top.appendChild(el('span', 'approval-kicker', parked ? '定时任务停在了这一步' : resolved ? '已处理' : '需要你确认'));
@@ -617,6 +682,14 @@ function buildApprovalCard(data) {
     top.appendChild(wait);
   }
   card.appendChild(top);
+
+  // A card from another of your machines (1.5.41 一个待办箱): the same card, one
+  // line more. Answering it here passes the answer on to that machine.
+  if (data.from?.machine) {
+    card.dataset.machine = data.from.machine;
+    card.classList.add('from-elsewhere');
+    card.appendChild(el('div', 'approval-from', `来自：${data.from.machine} · ${data.from.botName || '助手'}`));
+  }
 
   const title = el('div', 'approval-title', info.title);
   card.appendChild(title);
@@ -649,7 +722,7 @@ function buildApprovalCard(data) {
 
   if (info.impact) card.appendChild(el('div', 'approval-impact', info.impact));
 
-  const why = looking ? '在这台电脑上运行命令前，都先问你一次' : reasonLabel(data.reason);
+  const why = looking ? (data.from?.machine ? `在「${data.from.machine}」上运行命令前，都先问你一次` : '在这台电脑上运行命令前，都先问你一次') : reasonLabel(data.reason);
   card.appendChild(el('div', 'approval-why', why ? `为什么停下来问你：${why}` : '这个操作会改动文件或对外发东西，所以先停下来问你。'));
 
   if (parked) {
@@ -781,27 +854,84 @@ function settleApprovalCard(card, decision, note) {
   }
 }
 
+/**
+ * Where an answer to this card goes: this machine's own route, or the inbox
+ * route that passes it on to the machine the card came from (1.5.41).
+ */
+function approvalPath(approvalId, card) {
+  const machine = card?.dataset?.machine;
+  return machine
+    ? `/api/inbox/${encodeURIComponent(machine)}/${encodeURIComponent(approvalId)}`
+    : `/api/approvals/${encodeURIComponent(approvalId)}`;
+}
+
+/** The card is answered: off the lists behind 「N 个操作等你确认」. */
+function dropAnswered(approvalId, card) {
+  const machine = card?.dataset?.machine;
+  if (machine) {
+    state.inbox.items = (state.inbox.items || []).filter((i) => !(i.machine === machine && i.id === approvalId));
+    updateApprovalsPill();
+    refreshInbox({ notify: false });
+  } else {
+    state.approvals = (state.approvals || []).filter((a) => a.id !== approvalId);
+    refreshPendingApprovals();
+  }
+}
+
+/**
+ * The card was answered somewhere else already (another device, the other
+ * machine, a second click): say so on the card and close it, instead of a
+ * red error and buttons that do nothing (1.5.40 test, 「不用了」 twice).
+ */
+function closeAnsweredElsewhere(card, message) {
+  card.classList.remove('pending', 'parked-open');
+  card.classList.add('resolved');
+  const top = card.querySelector('.approval-top');
+  if (top && top.firstChild) top.firstChild.textContent = '已处理';
+  card.querySelector('.approval-wait')?.remove();
+  const actions = card.querySelector('.approval-actions');
+  if (actions) {
+    actions.innerHTML = '';
+    actions.appendChild(el('div', 'muted tiny', message || '这张卡已经处理过了。'));
+  }
+}
+
+/** A card from another machine that could not be answered: said on the card, it stays open. */
+function showCardProblem(card, message) {
+  let line = card.querySelector('.approval-problem');
+  if (!line) {
+    line = el('div', 'approval-problem');
+    card.querySelector('.approval-actions')?.prepend(line);
+  }
+  line.textContent = message;
+}
+
 /** A routine's card: run it again now (attended), or put it away. */
 async function decideParked(approvalId, decision, card, buttons) {
   buttons.forEach((b) => { b.disabled = true; });
-  try {
-    const res = await api(`/api/approvals/${encodeURIComponent(approvalId)}`, { method: 'POST', body: { decision } });
+  const done = (res) => {
     const actions = card.querySelector('.approval-actions');
     card.classList.remove('parked-open');
     card.classList.add('resolved');
     if (actions) {
       actions.innerHTML = '';
       actions.appendChild(el('div', 'muted tiny', decision === 'rerun'
-        ? (res?.rerun ? '已经重新开始跑了：需要你点头的那一步会在这里弹出来。' : (res?.message || '找不到这个定时任务了。'))
+        ? (res?.rerun ? (card.dataset.machine ? `已经在「${card.dataset.machine}」上重新开始跑了：需要你点头的那一步会出现在「等你确认」里。` : '已经重新开始跑了：需要你点头的那一步会在这里弹出来。') : (res?.message || '找不到这个定时任务了。'))
         : '已收起。'));
     }
-    if (decision === 'rerun' && res?.rerun) toast('定时任务重新开始跑了，你在这里看着');
-    state.approvals = (state.approvals || []).filter((a) => a.id !== approvalId);
-    refreshPendingApprovals();
+    if (decision === 'rerun' && res?.rerun) toast(card.dataset.machine ? '定时任务在那台机器上重新开始跑了' : '定时任务重新开始跑了，你在这里看着');
+    dropAnswered(approvalId, card);
+  };
+  try {
+    done(await api(approvalPath(approvalId, card), { method: 'POST', body: { decision } }));
   } catch (err) {
+    // Not paired yet: once it is, the click goes through and this card says so (1.5.40 test).
+    if (err.code === 'LOCAL_KEY_REQUIRED' && state.afterPair) state.afterPair.then = done;
+    if (err.status === 409 || err.status === 404) { closeAnsweredElsewhere(card, err.message); dropAnswered(approvalId, card); return; }
     buttons.forEach((b) => { b.disabled = false; });
-    toast(err.message, true);
-    refreshPendingApprovals();
+    if (card.dataset.machine) showCardProblem(card, err.message);
+    if (!err.quiet) toast(err.message, true);
+    if (!card.dataset.machine) refreshPendingApprovals();
   }
 }
 
@@ -810,22 +940,49 @@ async function decide(approvalId, decision, note, card, approve, deny, remember 
   if (deny) deny.disabled = true;
   const alwaysBtn = card?.querySelector('.approval-always');
   if (alwaysBtn) alwaysBtn.disabled = true;
-  try {
-    const res = await api(`/api/approvals/${encodeURIComponent(approvalId)}`, {
-      method: 'POST',
-      body: { decision, note: note || '', ...(remember ? { always: true } : {}) },
-    });
+  const done = (res) => {
     settleApprovalCard(card, decision, note);
     if (res?.remembered) toast(`好的，以后${res.remembered.label}都不再问你${String(res.remembered.key || '').startsWith('shell:') ? '（危险操作和工作区外的改动照样会问）' : ''}`);
-    state.approvals = state.approvals.filter((a) => a.id !== approvalId);
-    refreshPendingApprovals();
+    dropAnswered(approvalId, card);
+  };
+  try {
+    done(await api(approvalPath(approvalId, card), {
+      method: 'POST',
+      body: { decision, note: note || '', ...(remember ? { always: true } : {}) },
+    }));
   } catch (err) {
+    if (err.code === 'LOCAL_KEY_REQUIRED' && state.afterPair) state.afterPair.then = done;
+    if (err.status === 409 || err.status === 404) { closeAnsweredElsewhere(card, err.message); dropAnswered(approvalId, card); return; }
     if (approve) approve.disabled = false;
     if (deny) deny.disabled = false;
     if (alwaysBtn) alwaysBtn.disabled = false;
-    toast(err.message, true);
-    refreshPendingApprovals();
+    // Another machine that cannot be reached: the card says nothing was approved and stays open.
+    if (card?.dataset?.machine) showCardProblem(card, err.message);
+    if (!err.quiet) toast(err.message, true);
+    if (!card?.dataset?.machine) refreshPendingApprovals();
   }
+}
+
+/**
+ * 「N 个操作等你确认」: this machine's cards and the other machines' (1.5.41).
+ * A click opens the inbox when another machine is waiting, else this machine's card.
+ */
+function updateApprovalsPill() {
+  const pill = $('approvals-pill');
+  if (!pill) return;
+  const local = state.approvals || [];
+  const remote = state.inbox?.items || [];
+  const count = local.length + remote.length;
+  pill.hidden = count === 0;
+  pill.textContent = count === 1 ? '1 个操作等你确认' : `${count} 个操作等你确认`;
+  // A delegated bot can be blocked on an approval while you are looking at a
+  // different transcript. Without this badge the coordinator just looks dead.
+  const foreign = local.filter((a) => a.botId && a.botId !== state.botId);
+  const first = foreign[0] || local[0];
+  pill.dataset.bot = first?.botId || '';
+  pill.dataset.approvalId = first?.id || '';
+  pill.dataset.remote = remote.length ? '1' : '';
+  pill.title = remote.length ? `其中 ${remote.length} 个在别的机器上，点开就能在这里批` : '有待你确认的操作';
 }
 
 async function refreshPendingApprovals() {
@@ -836,18 +993,8 @@ async function refreshPendingApprovals() {
   } catch {
     return;
   }
-  // A delegated bot can be blocked on an approval while you are looking at a
-  // different transcript. Without this badge the coordinator just looks dead.
-  const foreign = state.approvals.filter((a) => a.botId && a.botId !== state.botId);
-  const pill = $('approvals-pill');
-  if (pill) {
-    const count = state.approvals.length;
-    pill.hidden = count === 0;
-    pill.textContent = count === 1 ? '1 个操作等你确认' : `${count} 个操作等你确认`;
-    const first = foreign[0] || state.approvals[0];
-    pill.dataset.bot = first?.botId || '';
-    pill.dataset.approvalId = first?.id || '';
-  }
+  updateApprovalsPill();
+  if (inboxIsOpen()) renderInbox();
   for (const approval of state.approvals) {
     if (approval.botId && approval.botId !== state.botId) continue;
     const parked = approval.status === 'awaiting_human';
@@ -945,6 +1092,111 @@ async function waitForApprovalCard(approvalId, timeoutMs) {
   }
 }
 
+/* ---------------------------------------------------------------------
+   one inbox (1.5.41 第二步): the cards waiting on your other machines, here
+   --------------------------------------------------------------------- */
+state.inbox = { items: [], missing: [], loaded: false };
+const inboxCards = new Map(); // "machine|id" -> the card drawn for it (keeps a note being typed)
+const inboxKey = (i) => `${i.machine}|${i.id}`;
+
+/** What a card needs, from an inbox item: the same as a card here, plus where it came from. */
+function inboxCardData(item) {
+  return {
+    approvalId: item.id,
+    tool: item.toolName,
+    risk: item.risk,
+    reason: item.reason,
+    args: safeParse(item.args),
+    from: { machine: item.machine, botName: item.botName || '' },
+    ...(item.remember?.key ? { remember: item.remember } : {}),
+    ...(item.batch ? { batch: item.batch } : {}),
+    ...(item.lookTurn ? { lookTurn: true } : {}),
+    ...(item.look ? { look: true } : {}),
+    ...(item.status === 'awaiting_human' ? { decision: 'needs_approval', live: true } : {}),
+  };
+}
+
+/** Load the other machines' waiting cards; a new one is announced, and its notification opens it. */
+async function refreshInbox({ notify = true } = {}) {
+  let data;
+  try { data = await api('/api/inbox'); } catch { return; }
+  const before = new Set((state.inbox.items || []).map(inboxKey));
+  const first = !state.inbox.loaded;
+  state.inbox = { items: Array.isArray(data?.items) ? data.items : [], missing: Array.isArray(data?.missing) ? data.missing : [], loaded: true };
+  if (notify && !first) {
+    for (const item of state.inbox.items) {
+      if (before.has(inboxKey(item))) continue;
+      const what = describeTool(item.toolName, safeParse(item.args)).title;
+      notifyHuman({ title: `「${item.machine}」上有事等你`, body: `${item.botName || '助手'}：${what}。点开就在这里批`, tag: `inbox|${encodeURIComponent(item.machine)}|${item.id}` });
+    }
+  }
+  updateApprovalsPill();
+  // The row on top of the list follows the count.
+  if (before.size !== state.inbox.items.length || state.inbox.items.some((i) => !before.has(inboxKey(i)))) renderBots();
+  if (inboxIsOpen()) renderInbox();
+}
+
+function inboxIsOpen() {
+  return Boolean($('inbox-modal')?.classList.contains('open'));
+}
+
+function inboxOpen(open) {
+  const modal = $('inbox-modal');
+  const scrim = $('inbox-scrim');
+  if (!modal || !scrim) return;
+  modal.classList.toggle('open', open);
+  modal.setAttribute('aria-hidden', open ? 'false' : 'true');
+  scrim.classList.toggle('show', open);
+  if (open) renderInbox();
+  else for (const [key, card] of inboxCards) if (card.classList.contains('resolved')) inboxCards.delete(key);
+}
+
+/** Open the inbox; with a machine and a card, bring that card into view (a notification tap). */
+async function openInbox(machine = '', approvalId = '') {
+  inboxOpen(true);
+  await refreshInbox({ notify: false });
+  if (!machine || !approvalId) return;
+  const card = inboxCards.get(`${machine}|${approvalId}`);
+  if (!card || !card.isConnected) { toast('这张卡不在了，可能已经处理过。'); return; }
+  card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  card.classList.add('flash');
+  setTimeout(() => card.classList.remove('flash'), 3600);
+}
+
+function renderInbox() {
+  const body = $('inbox-body');
+  if (!body) return;
+  body.innerHTML = '';
+  // This machine's cards stay in their chats: one button per bot takes you there.
+  const local = state.approvals || [];
+  if (local.length) {
+    const row = el('div', 'inbox-local');
+    row.appendChild(el('span', 'muted tiny', local.length === 1 ? '这台电脑上有 1 个，在对话里：' : `这台电脑上有 ${local.length} 个，在各自的对话里：`));
+    const seen = new Set();
+    for (const a of local) {
+      if (seen.has(a.botId)) continue;
+      seen.add(a.botId);
+      const go = el('button', 'btn sm', botById(a.botId)?.name || '去看看');
+      go.type = 'button';
+      go.addEventListener('click', () => { inboxOpen(false); focusApprovalCard(a.id, a.botId); });
+      row.appendChild(go);
+    }
+    body.appendChild(row);
+  }
+  const wanted = new Set(state.inbox.items.map(inboxKey));
+  // Answered just now in this box: stays, settled, until the box is closed.
+  for (const [key, card] of inboxCards) if (!wanted.has(key) && !card.classList.contains('resolved')) inboxCards.delete(key);
+  for (const item of state.inbox.items) {
+    const key = inboxKey(item);
+    if (!inboxCards.has(key)) inboxCards.set(key, buildApprovalCard(inboxCardData(item)));
+  }
+  for (const card of inboxCards.values()) body.appendChild(card);
+  if (state.inbox.missing.length) {
+    body.appendChild(el('div', 'inbox-missing muted tiny', `连不上：${state.inbox.missing.join('、')}。那边如果有等你的事，连上后会出现在这里。`));
+  }
+  if (!local.length && !inboxCards.size) body.appendChild(el('div', 'muted', '没有等你确认的事了。'));
+}
+
 function markApprovalResolved(ev) {
   const card = messagesEl.querySelector(`[data-approval="${CSS.escape(ev.approvalId || '')}"]`);
   if (!card) return;
@@ -987,7 +1239,14 @@ function activityLabel(ev) {
     case 'tool.result': return { kind: ev.ok ? 'tool' : 'error', text: `${toolNameLabel(ev.name)} ${ev.ok ? '完成' : '没成功'}${ev.denied ? '（被拒绝）' : ''}` };
     case 'approval.request': return { kind: 'approval', text: `${toolNameLabel(ev.tool)} · 等你确认` };
     case 'approval.resolved': return { kind: 'approval', text: `${toolNameLabel(ev.tool)} · ${decisionLabel(ev.decision)}` };
-    case 'approval.decided': return { kind: 'approval', text: `你${ev.status === 'approved' ? '批准' : '拒绝'}了 ${truncate(ev.turnId, 14)}` };
+    // Who and what in words, not 「你拒绝了 turn_…」; and where it was answered when that was another machine (1.5.41).
+    case 'approval.decided': {
+      const who = botById(ev.botId)?.name || '助手';
+      const what = ev.status === 'approved' ? `你允许了${who}的这一步`
+        : ev.status === 'dismissed' ? (ev.note === '现在跑一次' ? `你让${who}的定时任务再跑一次` : `你收起了${who}定时任务的卡片`)
+          : `你拒绝了${who}的这一步`;
+      return { kind: 'approval', text: ev.decidedOn ? `${what}（在「${ev.decidedOn}」上点的）` : what };
+    }
     case 'message': return { kind: 'message', text: `${ev.botName || ev.botId}：${truncate(ev.text, 90)}` };
     case 'error': return { kind: 'error', text: truncate(ev.message, 110) };
     default: return null;
@@ -1060,6 +1319,17 @@ function docCard(file, url) {
     if (local && canOpenLocally()) { openLocalFile(file.path, event.ctrlKey || event.metaKey); return; }
     dl.click();
   });
+  // After 「撤销」 the card says the file is gone, not 「点开查看」 (1.5.41).
+  card.recheck = () => {
+    if (!local) return;
+    api(`/api/workspace/stat?path=${encodeURIComponent(file.path)}`).then((r) => {
+      if (r.exists) { describe(fmtBytes(r.size)); return; }
+      sub.textContent = '已撤销，这个文件不在了';
+      main.disabled = true;
+      dl.remove();
+      card.classList.add('gone');
+    }).catch(() => {});
+  };
   api(`/api/workspace/stat?path=${encodeURIComponent(file.path)}`).then((r) => {
     if (r.exists) { describe(fmtBytes(r.size)); return; }
     findElsewhere(file.path).then((machine) => {

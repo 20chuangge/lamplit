@@ -222,11 +222,12 @@ footer { border-top: 1px solid var(--line); padding: 40px 0 56px; color: var(--d
 .toc a { display: block; padding: 6px 0 6px 14px; color: var(--muted); border-left: 1px solid var(--line); }
 .toc a:hover { color: var(--text); }
 .toc a.on { color: var(--accent); border-left-color: var(--accent); }
-.doc { max-width: 760px; }
+.doc { max-width: 760px; min-width: 0; } /* a wide table scrolls in its box instead of widening the page */
 .doc h1 { font-size: clamp(32px, 4.6vw, 46px); margin: 0 0 14px; }
 .doc .intro { color: var(--muted); font-size: 17px; margin: 0 0 48px; }
 .doc h2 { text-align: left; font-size: 26px; margin: 64px 0 16px; padding-top: 24px; border-top: 1px solid var(--line); scroll-margin-top: 90px; }
-.doc h3 { font-size: 18px; margin: 32px 0 8px; }
+.doc h3 { font-size: 18px; margin: 32px 0 8px; scroll-margin-top: 90px; }
+.doc li[id] { scroll-margin-top: 90px; }
 .doc p, .doc li { color: var(--muted); font-size: 15.5px; }
 .doc strong { color: var(--text); font-weight: 600; }
 .doc ul, .doc ol { padding-left: 22px; }
@@ -239,3 +240,25 @@ footer { border-top: 1px solid var(--line); padding: 40px 0 56px; color: var(--d
 .doc td { color: var(--muted); }
 .doc .table { overflow-x: auto; }
 @media (max-width: 860px) { .docs { grid-template-columns: 1fr; gap: 24px; padding-top: 40px; } .toc { position: static; max-height: none; display: none; } }
+/* Contents groups (11-20) and, on a phone, the same contents folded under the title. */
+.toc p.grp { margin: 18px 0 6px; letter-spacing: .08em; font-size: 12px; color: var(--dim); }
+.doc .mtoc { display: none; border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 16px; margin: -24px 0 40px; }
+.doc .mtoc summary { cursor: pointer; color: var(--text); font-weight: 600; font-size: 15px; }
+.doc .mtoc nav { columns: 2; column-gap: 20px; margin-top: 10px; font-size: 14px; }
+.doc .mtoc nav a { display: block; padding: 5px 0; color: var(--muted); break-inside: avoid; }
+.doc .mtoc nav p { margin: 10px 0 2px; font-size: 12px; color: var(--dim); break-after: avoid; }
+.doc .mtoc nav p:first-child { margin-top: 0; }
+@media (max-width: 860px) { .doc .mtoc { display: block; } }
+@media (max-width: 330px) { .doc .mtoc nav { columns: 1; } }
+/* 「更多」 folds: details a beginner can skip (not .more: the homepage uses it). */
+.doc details.fold { border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; margin: 14px 0 20px; }
+.doc details.fold summary { cursor: pointer; color: var(--accent); font-size: 14.5px; }
+.doc details.fold[open] summary { margin-bottom: 6px; }
+.doc details.fold p, .doc details.fold li { font-size: 14.5px; }
+.doc .compare td:first-child { color: var(--text); font-weight: 600; white-space: nowrap; }
+@media (max-width: 560px) {
+  .doc .compare th, .doc .compare td { padding: 8px 6px; font-size: 13.5px; }
+  .doc .compare td:first-child { white-space: normal; width: 4.2em; }
+  .doc .compare th:last-child { width: 3.6em; }
+}
+.doc .compare .soon-cell { vertical-align: middle; text-align: center; color: var(--dim); }

@@ -9490,13 +9490,14 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
           bots30.includes('messagesEl.scrollTop = 0;') && bots30.includes('新账号要先充值') && bots30.includes('/^(密钥不对|账户没钱|请求太多|服务商|这次要发|连不上服务商|模型服务商)/.test(said)')
           && css29.includes('.onboard .pw-wrap { max-width: 360px;'));
         const PC = await import('./publish-cn.mjs');
-        const auth = PC.cosAuthorization({ secretId: 'AKIDexample', secretKey: 'secret', method: 'PUT', key: 'download/a.exe', host: 'b-1.cos.ap-shanghai.myqcloud.com', now: 1700000000 });
+        const pcSrc = await readText('./publish-cn.mjs');
         const eb = await readText('../desktop/electron-builder.yml');
         const siteZh = await readText('../site/index.html');
-        check('P31 downloads in China: Windows installers to Tencent Cloud COS (signed requests, keys from a file outside the repository), the Chinese site\'s button goes there; installers slimmer (zh/en only, maximum compression)',
-          /^q-sign-algorithm=sha1&q-ak=AKIDexample&q-sign-time=1699999940;1700000600&q-key-time=1699999940;1700000600&q-header-list=host&q-url-param-list=&q-signature=[0-9a-f]{40}$/.test(auth)
+        check('P31 downloads in China: the APK on Gitee (keys from a file outside the repository); the Windows installers stay on GitHub (Gitee caps files at 100 MB; Tencent COS dropped in 1.5.46), and the Chinese site says so; installers slimmer (zh/en only, maximum compression)',
+          typeof PC.cosAuthorization === 'undefined' && !/myqcloud|cos\.json/.test(pcSrc) && pcSrc.includes("readConfig('gitee.json'")
           && eb.includes('compression: maximum') && /electronLanguages:\s*\n\s*- zh-CN\s*\n\s*- en-US/.test(eb)
-          && siteZh.includes('data-cn="1" href="https://lamplit-1528578126.cos.ap-shanghai.myqcloud.com/download/latest/Lamplit-Setup.exe"')
+          && siteZh.includes('<a class="btn primary" id="dl-setup" href="https://github.com/20chuangge/lamplit/releases/latest">') && !siteZh.includes('myqcloud')
+          && siteZh.includes('Windows 版从 GitHub 下载')
           && siteZh.includes('id="dl-apk" data-cn="1" href="https://gitee.com/') && (await readText('../site/site.js')).includes('if (apk && b && !b.dataset.cn)'));
         const derpSh = await readText('../hub/derp-linux.sh');
         check('N29 relay script: official derper built through the China mirrors, IP certificate, only this tailnet\'s devices, reports to the hub',

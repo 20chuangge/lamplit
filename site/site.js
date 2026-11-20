@@ -38,7 +38,7 @@
       const mb = (n) => `${Math.round(n / 1024 / 1024)} MB`;
       const a = document.getElementById('dl-setup');
       if (setup && a) {
-        // The Chinese page downloads from Tencent Cloud (fast in China, 1.5.31): only the version and size come from here.
+        // Both pages download the Windows installer from GitHub (1.5.46: Tencent COS dropped; Gitee caps files at 100 MB).
         if (!a.dataset.cn) a.href = setup.browser_download_url;
         document.getElementById('dl-version').textContent = ` ${rel.tag_name}`;
         document.getElementById('dl-size').textContent = `Windows 10 / 11 · ${lang === 'en' ? '64-bit' : '64 位'} · ${mb(setup.size)}`;

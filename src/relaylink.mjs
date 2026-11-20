@@ -39,7 +39,7 @@ function cleanRelayInfo(msg) {
   const last = msg.last && typeof msg.last === 'object'
     ? { ok: Boolean(msg.last.ok), version: text(msg.last.version, 20), at: text(msg.last.at, 40), reason: text(msg.last.reason, 300) }
     : null;
-  return { version: text(msg.version, 20), auto: Boolean(msg.auto), fetching: Boolean(msg.fetching), last };
+  return { version: text(msg.version, 20), auto: Boolean(msg.auto), fetching: Boolean(msg.fetching), last, seenIp: net.isIP(String(msg.seenIp || '')) ? String(msg.seenIp) : '' };
 }
 
 /**
@@ -363,6 +363,7 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
   // through to this computer bring their streams here, into acceptStream.
   const direct = createDirectServer({
     acceptStream,
+    relaySeenIp: () => status.relay?.seenIp || '',
     relay: () => (directWanted() ? { host: cfg.host, port: Number(cfg.port) || DEFAULT_PORT } : null),
     enabled: directWanted,
     log,
@@ -497,7 +498,7 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
         // 「先试直连」 (1.5.46): on unless turned off; never for the relay's own server.
         direct: (() => { const { remotes: _r, ...v } = direct.view(); return { ...v, enabled: cfg.direct !== false, applies: !sameHost(), stunCause: v.stun === 'no' ? status.stunCause || '' : '' }; })(),
         // 1.5.47: what the relay runs (null: not heard; with relayOld, a relay before 1.5.47) and what this computer offers it.
-        relay: status.relay || null,
+        relay: status.relay ? (({ seenIp: _ip, ...r }) => r)(status.relay) : null, // its address stays here: only the comparison is shown
         relayOld: Boolean(tunnel && !status.relay && status.connectedAt && Date.now() - Date.parse(status.connectedAt) > 5000),
         relayUpdate: (() => { const o = relayUpdate(); return o ? { version: o.manifest.version } : null; })(),
       };

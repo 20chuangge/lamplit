@@ -1,0 +1,7 @@
+{
+  "about": "Each relay release: RELAY_VERSION in hub/relay/relay.mjs and the sha256 of that file with LF line endings, oldest first. Changing relay.mjs means a new RELAY_VERSION (the release's version) and a new entry here; smoke and sign-update check it. The signed relay-update.json carries RELAY_VERSION, and a relay only takes a newer one.",
+  "versions": [
+    { "version": "1.5.47", "sha256": "a7807d94e1eed411f4e549ad79e1b221a03a2feb8852b500c6803c02c78f4790" },
+    { "version": "1.5.49", "sha256": "93e5a432d0d8d7f4408c590921cccd55724af96ab4b22aaf91968d47bfeb7b8c" }
+  ]
+}

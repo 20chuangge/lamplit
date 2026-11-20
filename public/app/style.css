@@ -2838,6 +2838,22 @@
   /* generated videos in chat */
   .att-video { display: flex; flex-direction: column; gap: 8px; max-width: min(520px, 100%); }
   .att-video video { width: 100%; border-radius: 12px; background: #000; display: block; }
+  /* 1.5.49: a frame, a play button and the length until played */
+  /* Wide enough for the player's controls on a phone too (1.5.49 test: ~228 px in a 375 px bubble, no time shown). */
+  .att-video { width: min(520px, calc(100vw - 64px)); max-width: none; }
+  .att-video-stage { position: relative; border-radius: 12px; overflow: hidden; background: #000; min-height: 120px; aspect-ratio: 16 / 9; }
+  .att-video-stage video { height: 100%; object-fit: contain; border-radius: 0; }
+  .att-video.playing .att-video-stage { aspect-ratio: auto; }
+  .att-video.playing .att-video-stage video { height: auto; }
+  .att-video-play { position: absolute; inset: 0; margin: auto; width: 60px; height: 60px; border-radius: 50%; border: 0; display: grid; place-items: center; padding-left: 4px;
+    background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4); }
+  .att-video-play:hover { background: rgba(0, 0, 0, 0.72); }
+  .att-video-dur { position: absolute; right: 8px; bottom: 8px; padding: 2px 6px; border-radius: 6px; font-size: 12px; color: #fff; background: rgba(0, 0, 0, 0.6); font-variant-numeric: tabular-nums; }
+  .att-video-dur:empty { display: none; }
+  .att-video.playing .att-video-play, .att-video.playing .att-video-dur { display: none; }
+  .att-video-fallback .att-video-stage { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; aspect-ratio: auto; min-height: 110px; background: var(--panel-2); color: var(--text); }
+  .att-video-icon { font-size: 28px; }
+  .att-video-note { font-size: 12px; color: var(--dim); padding: 0 10px; text-align: center; }
   .att-video-bar { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .att-video-name { flex: 1; min-width: 0; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .att-act {

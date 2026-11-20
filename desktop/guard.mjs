@@ -50,15 +50,49 @@ export function isProgramFile(name) {
 }
 
 /** Windows Firewall (1.5.29) - see firewallStatus in main.mjs. */
-/** From the rules of this program and the networks it is on: does Windows let a phone on the LAN in? */
-export function firewallVerdict({ block = [], allow = [], ours = false, networks = [] } = {}) {
+/**
+ * From the rules of this program and the networks it is on: does Windows let
+ * a phone on the LAN in (TCP), and a direct connection (UDP, 1.5.49)?
+ * Input: {rules:[{action, profile, protocol, name}], ours, networks}; the
+ * older {block:[profiles], allow:[profiles]} (TCP only) still reads.
+ * A Block rule beats any Allow on the same network (Windows' order).
+ */
+export function firewallVerdict({ rules, block = [], allow = [], ours = false, networks = [] } = {}) {
   const list = (x) => (Array.isArray(x) ? x : x == null ? [] : [x]).map(String);
   const nets = list(networks).filter((n) => /Public|Private|Domain/i.test(n));
   const covers = (profile, net) => /Any/i.test(profile) || profile.toLowerCase().includes(net.toLowerCase().replace('domainauthenticated', 'domain'));
   const want = nets.length ? nets : ['Public'];
-  const blocked = list(block).some((p) => want.some((n) => covers(p, n)));
-  const allowed = want.every((n) => list(allow).some((p) => covers(p, n)));
-  return { blocked, allowed, ok: !blocked && allowed, ours: Boolean(ours), networks: nets };
+  const legacy = !Array.isArray(rules);
+  const all = legacy
+    ? [...list(block).map((profile) => ({ action: 'Block', profile, protocol: 'TCP' })), ...list(allow).map((profile) => ({ action: 'Allow', profile, protocol: 'TCP' }))]
+    : rules.map((r) => ({ action: String(r?.action || ''), profile: String(r?.profile || ''), protocol: String(r?.protocol || 'Any'), name: String(r?.name || '') }));
+  const forProto = (proto) => all.filter((r) => /^any$/i.test(r.protocol) || r.protocol.toUpperCase() === proto);
+  const judge = (proto) => {
+    const mine = forProto(proto);
+    const blocked = mine.some((r) => r.action === 'Block' && want.some((n) => covers(r.profile, n)));
+    const allowed = want.every((n) => mine.some((r) => r.action === 'Allow' && covers(r.profile, n)));
+    return { blocked, allowed, ok: !blocked && allowed, known: true };
+  };
+  const tcp = judge('TCP');
+  const udp = legacy ? { blocked: false, allowed: false, ok: false, known: false } : judge('UDP');
+  const words = { public: '公用网络', private: '专用网络', domain: '域网络', any: '所有网络' };
+  const where = (p) => p.split(/[,\s]+/).filter(Boolean).map((x) => words[x.toLowerCase()] || x).join('、');
+  // Block rules of this program on a network it is on: the fix removes them (often from an old app name).
+  const staleBlocks = legacy ? [] : all.filter((r) => r.action === 'Block' && want.some((n) => covers(r.profile, n)))
+    .map((r) => `${r.name || '（没有名字）'}（${/^any$/i.test(r.protocol) ? 'TCP 和 UDP' : r.protocol.toUpperCase()}，${where(r.profile)}）`);
+  return { ...tcp, tcp, udp, staleBlocks, ours: Boolean(ours), networks: nets };
+}
+
+/**
+ * What the one-click fix will change (1.5.49), in words, shown before the
+ * UAC prompt: [] when nothing is needed. Mirrors firewallFix in main.mjs.
+ */
+export function firewallPlan(verdict) {
+  if (!verdict || (verdict.ok && verdict.udp?.ok && !(verdict.staleBlocks || []).length)) return [];
+  const out = (verdict.staleBlocks || []).map((name) => `删掉挡住 Lamplit 的规则「${name}」`);
+  out.push('添加（或更新）一条：允许 Lamplit 从局域网和 Tailscale 接收 TCP（手机在家连这台电脑）');
+  out.push('添加（或更新）一条：允许 Lamplit 接收 UDP（直连用，所有网络；只认配对设备的加密包）');
+  return out;
 }
 
 /** `tailscale netcheck` output -> the relay regions and their distance (1.5.29). */

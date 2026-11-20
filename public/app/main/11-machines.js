@@ -1908,12 +1908,8 @@ async function gatherCheckup() {
   }
   const local = window.desk && onLocalMachine();
   const fw = local && window.desk.firewallStatus ? await window.desk.firewallStatus().catch(() => null) : null;
-  const remoteOn = Boolean(state.settings?.server?.lanUrl);
-  if (fw?.applies && fw.known && remoteOn) {
-    items.push(fw.ok
-      ? { id: 'firewall', title: 'Windows 防火墙', state: 'ok', text: '同一个 Wi-Fi 里的手机可以直接连进来。' }
-      : { id: 'firewall', title: 'Windows 防火墙', state: 'bad', text: '挡住了同一个 Wi-Fi 里的手机，手机只能绕远路连进来。', action: { kind: 'firewall', label: '修复防火墙' } });
-  }
+  // TCP for the phone at home, UDP for 直连 (1.5.49): 08-settings.js firewallCheckupItems.
+  items.push(...firewallCheckupItems(fw, Boolean(state.settings?.server?.lanUrl), fw ? await api('/api/relay-link').catch(() => null) : null));
   const ts = local && window.desk.tailscaleNetcheck ? await window.desk.tailscaleNetcheck().catch(() => null) : null;
   if (ts?.ok && (ts.regions || []).length) {
     const best = [...ts.regions].sort((a, b) => a.ms - b.ms)[0];

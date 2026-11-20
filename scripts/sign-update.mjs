@@ -24,8 +24,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packApp, cleanupPack } from '../src/bundle.mjs';
 import { verifyUpdate } from '../src/selfupdate.mjs';
-import { makeRelayManifest } from '../src/relayupdate.mjs';
-import { verifyRelayUpdate } from '../hub/relay/relay.mjs';
+import { makeRelayManifest, relayVersionProblems } from '../src/relayupdate.mjs';
+import { RELAY_VERSION, compareRelayVersions, verifyRelayUpdate } from '../hub/relay/relay.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KEY = process.env.LAMPLIT_UPDATE_KEY || path.join(os.homedir(), '.lamplit-release', 'update-ed25519.pem');
@@ -49,9 +49,18 @@ for (const m of MODULES) copy(path.join('node_modules', m), path.join('node_modu
 // only when this key signed "lamplit-relay-update v1 / version / sha256" for it.
 // It rides along in the package (hub/relay/relay-update.json) and in the
 // installer (server/update/relay-update.json); the relay checks it itself.
+// It carries RELAY_VERSION (1.5.49), not the app's version: one number per relay
+// code, the same one a fresh install in /opt reports, raised only when relay.mjs
+// changes (scripts/relay-versions.json records each; a relay takes only newer).
 const appVersion = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
 const relayBytes = fs.readFileSync(path.join(STAGE, 'hub', 'relay', 'relay.mjs'));
-const relayManifest = makeRelayManifest({ version: appVersion, bytes: relayBytes, privateKey: fs.readFileSync(KEY) });
+const relayProblems = relayVersionProblems({ code: relayBytes.toString('utf8'), record: JSON.parse(fs.readFileSync(path.join(REPO, 'scripts', 'relay-versions.json'), 'utf8')) });
+if (compareRelayVersions(RELAY_VERSION, appVersion) > 0) relayProblems.push(`RELAY_VERSION ${RELAY_VERSION} is above the app's ${appVersion}`);
+if (relayProblems.length) {
+  console.error(`[sign-update] the relay's version is not right - relays would never take this code:\n  ${relayProblems.join('\n  ')}`);
+  process.exit(1);
+}
+const relayManifest = makeRelayManifest({ version: RELAY_VERSION, bytes: relayBytes, privateKey: fs.readFileSync(KEY) });
 if (!verifyRelayUpdate(relayManifest, relayBytes)) {
   console.error('[sign-update] the key does not match the public key built into hub/relay/relay.mjs (RELAY_UPDATE_KEYS): relays would refuse to update.');
   process.exit(1);

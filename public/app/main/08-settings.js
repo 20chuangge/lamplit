@@ -518,14 +518,43 @@ async function checkFirewall(remoteOn) {
       : `这台电脑的网络被 Windows 标成了「${(st.networks || []).includes('Public') ? '公用' : '专用'}」，没有放行 Lamplit：同一个 Wi-Fi 里的手机连不进来，只能绕 Tailscale。`;
   }
 }
+/**
+ * 体检's Windows Firewall lines (1.5.49): TCP for the phone at home (with
+ * 允许手机连接 on), UDP for 直连 (this computer's relay in use, 「先试直连」 on).
+ * On the user's PC a Block rule left from the app's former name kept direct shut while
+ * 体检 said nothing: it checked TCP only.
+ */
+function firewallCheckupItems(fw, remoteOn, relay) {
+  if (!fw?.applies || !fw.known) return [];
+  state.firewall = fw;
+  const fix = { kind: 'firewall', label: '修复防火墙' };
+  const out = [];
+  if (remoteOn) {
+    out.push(fw.ok
+      ? { id: 'firewall', title: 'Windows 防火墙', state: 'ok', text: '同一个 Wi-Fi 里的手机可以直接连进来。' }
+      : { id: 'firewall', title: 'Windows 防火墙', state: 'bad', text: '挡住了同一个 Wi-Fi 里的手机，手机只能绕远路连进来。', action: fix });
+  }
+  const direct = relay?.enabled && relay.direct?.enabled !== false && relay.direct?.applies !== false;
+  if (direct && fw.udp?.known) {
+    out.push(fw.udp.ok
+      ? { id: 'firewall-udp', title: 'Windows 防火墙（直连）', state: 'ok', text: '放行了直连用的 UDP。' }
+      : { id: 'firewall-udp', title: 'Windows 防火墙（直连）', state: 'warn', text: '挡住了直连用的 UDP：手机在外面打不通直连，只能走中转（能用，只是看屏幕慢一点、也占服务器流量）。', action: fix });
+  }
+  return out;
+}
+
 async function fixFirewall() {
   const btn = $('firewall-fix');
   if (!window.desk?.firewallFix) return;
+  // Say exactly what will change before Windows asks for admin (1.5.49).
+  const st = await window.desk.firewallStatus?.().catch(() => null);
+  const plan = Array.isArray(st?.plan) ? st.plan : [];
+  if (plan.length && !window.confirm(`修复 Windows 防火墙会做这些改动（接下来 Windows 会弹出管理员确认）：\n\n• ${plan.join('\n• ')}\n\n要继续吗？`)) return;
   if (btn) btn.disabled = true;
   toast('Windows 会弹出管理员确认，点「是」');
   try {
     const res = await window.desk.firewallFix();
-    if (res?.ok) toast('好了：同一个 Wi-Fi 里的手机现在能直接连进来');
+    if (res?.ok) toast('好了：同一个 Wi-Fi 里的手机能直接连进来，直连用的 UDP 也放行了');
     else toast(res?.declined ? '没有修改：管理员确认被取消了' : '没修好，请在 Windows 防火墙里放行 Lamplit', true);
   } finally {
     if (btn) btn.disabled = false;
@@ -1799,6 +1828,43 @@ function relayUpdateWords(view) {
 
 /** 直连 (1.5.46) in the relay card, in words: on or off, working or why not. */
 function directWords(d, port) {
+  const base = directWordsBase(d, port);
+  if (!d || d.enabled === false || d.active > 0 || d.stun === 'no') return base;
+  // Something on this computer is in the way (1.5.49 beginner test): what to do, in order -
+  // not the generic 「多半是两边的网络…」, not the same cause twice.
+  const steps = directSteps(d);
+  if (steps.length) {
+    const lead = d.last === 'failed' ? '刚才试过直连，没打通，现在走中转（能用）。这台电脑上有东西挡着，' : '直连还没试过。为了能打通，先在这台电脑上';
+    const list = steps.length > 1 ? `按顺序做：${steps.map((s, i) => `${'①②③'[i]} ${s}`).join('；')}` : `这样做：${steps[0]}`;
+    return `${lead}${list}。`;
+  }
+  // Nothing found here: what the last try saw, when it says more than the base line.
+  if (d.last === 'failed' && /no probe arrived/.test(d.lastFailure || '')) return '刚才试过直连，没打通，现在走中转（能用）。对方的探测包一个也没到这台电脑：多半是防火墙或代理挡住了 UDP。';
+  if (d.last === 'failed' && /probes arrived/.test(d.lastFailure || '')) return '刚才试过直连，没打通，现在走中转（能用）。对方的探测包到了，但这台电脑发出去的没有回音：多半是对方那边的网络限制，换个网络会再试。';
+  return base;
+}
+
+/**
+ * What to do on this computer so direct gets through (1.5.49), in order:
+ * Windows Firewall first, then a proxy's TUN (or, if it must stay on, the
+ * rule that worked for Tailscale's UDP on the user's PC 11-17: by process
+ * name, first; port and IP rules did not). An address that differs with no
+ * TUN seen means a proxy all the same. Plain words; nothing is changed here.
+ */
+function directSteps(d) {
+  if (state.firewall === undefined && window.desk?.firewallStatus && onLocalMachine()) {
+    state.firewall = null; // asked once; the card is drawn again when the answer is in
+    window.desk.firewallStatus().then((fw) => { state.firewall = fw || null; renderTunnel(false); }).catch(() => {});
+  }
+  const out = [];
+  const fw = state.firewall;
+  if (fw?.applies && fw.known && fw.udp?.known && !fw.udp.ok) out.push('Windows 防火墙挡住了直连用的 UDP：在「设置 → 体检」里点「修复防火墙」');
+  const tun = (d.tun || []).length ? `（${d.tun.join('、')}）` : '';
+  if (tun || d.addressHint === 'differ') out.push(`这台电脑开着代理${tun}，直连的 UDP 会被它绕走：暂时关掉 Clash 的 TUN 模式；要一直开着的话，在 Clash 规则的最前面加一条 PROCESS-NAME,Lamplit.exe,DIRECT，保存后重启 Lamplit`);
+  return out;
+}
+
+function directWordsBase(d, port) {
   if (!d || d.enabled === false) return '「先试直连」关着：手机在外面都走中转。';
   // The relay can answer but UDP does not get through: only the firewall rule is missing (1.5.47 beginner test).
   if (d.stun === 'no' && d.stunCause === 'firewall') return `现在都走中转，能用。想直连，还差一步：到云服务器控制台的「防火墙」（或「安全组」）加一条 UDP ${port} 的规则。`;

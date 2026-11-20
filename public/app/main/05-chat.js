@@ -460,7 +460,8 @@ function splitAttachments(text) {
   const files = raw.slice(at + ATTACH_MARK.length).split('\n')
     .map((line) => /^- (.+?)（(图片|文件)，([^）]+)）$/.exec(line.trim()))
     .filter(Boolean)
-    .map(([, p, kind, size]) => ({ path: p, image: kind === '图片', size, name: p.split('/').pop() }));
+    // A video attached as a file is a video (1.5.49: an .mp4 showed as a plain file icon).
+    .map(([, p, kind, size]) => ({ path: p, image: kind === '图片', video: kind === '文件' && /\.(mp4|webm|mov|m4v)$/i.test(p), size, name: p.split('/').pop() }));
   const body = raw.slice(0, at);
   return { text: body === '（见附件）' ? '' : body, files };
 }
@@ -547,44 +548,7 @@ function attachmentNode(file) {
     return card;
   }
   const url = chatFileUrl(file.path); // from the machine of the chat's bot (1.5.42)
-  if (file.video) {
-    const box = el('div', 'att-video');
-    const v = document.createElement('video');
-    v.src = url;
-    v.controls = true;
-    v.preload = 'metadata';
-    v.playsInline = true;
-    v.addEventListener('error', () => {
-      if (v.dataset.tried) { box.remove(); return; }
-      v.dataset.tried = '1';
-      findElsewhere(file.path).then((machine) => {
-        if (!machine) { box.remove(); return; }
-        v.src = remoteFileUrl(machine, file.path);
-        dl.href = v.src;
-        box.title = `在「${machine}」上`;
-      });
-    });
-    box.appendChild(v);
-    // Under the video: its name, then small icon buttons (download, show in folder).
-    const bar = el('div', 'att-video-bar');
-    bar.appendChild(el('span', 'att-video-name', file.name));
-    const icon = (d) => `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
-    const dl = el('a', 'att-act');
-    dl.href = url;
-    dl.setAttribute('download', file.name);
-    dl.innerHTML = `${icon('<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>')}<span>下载</span>`;
-    bar.appendChild(dl);
-    if (canOpenLocally()) {
-      const show = el('button', 'att-act');
-      show.type = 'button';
-      show.title = '在文件夹中显示';
-      show.innerHTML = `${icon('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>')}<span>打开位置</span>`;
-      show.addEventListener('click', () => openLocalFile(file.path, true));
-      bar.appendChild(show);
-    }
-    box.appendChild(bar);
-    return box;
-  }
+  if (file.video) return videoCard(file, url); // a frame, play, its length (1.5.49, 10-computer.js)
   if (file.image) {
     const a = el('a', 'att-img');
     a.href = url;

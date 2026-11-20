@@ -23,7 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  RELAY_UPDATE_KEYS, chooseCode, createRelay, createRelayUpdater, makeSelfSignedCert, runSupervisor, verifyRelayUpdate,
+  RELAY_UPDATE_KEYS, RELAY_VERSION, chooseCode, createRelay, createRelayUpdater, makeSelfSignedCert, runSupervisor, verifyRelayUpdate,
 } from '../hub/relay/relay.mjs';
 import { createRelayLink } from '../src/relaylink.mjs';
 import { makeRelayManifest, readRelayUpdate } from '../src/relayupdate.mjs';
@@ -208,7 +208,7 @@ async function inner({ check, tmp }) {
   if (ready?.port) {
     const { checkRelay } = await import('../src/relaylink.mjs');
     const health = await checkRelay({ host: '127.0.0.1', port: ready.port, relayFingerprint: ready.fingerprint });
-    check('service: its health says which version runs and that it updates itself', health.ok && health.version === '1.5.47' && health.auto === true, JSON.stringify(health));
+    check('service: its health says which version runs and that it updates itself', health.ok && health.version === RELAY_VERSION && health.auto === true, JSON.stringify(health));
     proc.kill();
     const net = await import('node:net');
     const gone = await until(() => new Promise((resolve) => {

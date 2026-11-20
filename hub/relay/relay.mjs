@@ -753,7 +753,7 @@ export const DEFAULT_LIMITS = {
 // Settings, join secret and registered computers live in the data folder and
 // are never touched. Anything needing root (the service file) still needs 「重装」.
 
-export const RELAY_VERSION = '1.5.47';
+export const RELAY_VERSION = '1.5.49';
 /** Lamplit's release key (Ed25519, SPKI DER, base64) - equal to UPDATE_PUBLIC_KEYS in src/selfupdate.mjs. */
 export const RELAY_UPDATE_KEYS = ['MCowBQYDK2VwAyEA4GZ8GzzbeRaLOSrj9YgUcZ7JKoIbczSLfVv5XSot9ms='];
 const MAX_RELAY_CODE = 2 * 1024 * 1024;
@@ -1126,7 +1126,8 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
     // 1.5.47: the computer says hello back with what relay version it has (a
     // nudge: no code). The answer is what this relay runs and how its last
     // update went; a newer offer makes the updater fetch it through this tunnel.
-    const tell = () => mux.control({ type: 'relay-info', ...(updater ? updater.status() : { version: RELAY_VERSION, auto: false }) });
+    // seenIp (1.5.49): the address this tunnel came from - the computer compares it with its STUN answer (a proxy in between?).
+    const tell = () => mux.control({ type: 'relay-info', ...(updater ? updater.status() : { version: RELAY_VERSION, auto: false }), seenIp: ip });
     let nudges = 0;
     mux.on('control', (msg) => {
       if (msg?.type !== 'relay-hello' || (nudges += 1) > 20) return;

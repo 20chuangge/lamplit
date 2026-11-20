@@ -302,3 +302,70 @@ function wireChromeResizers() {
   });
 }
 
+
+/* ---------------------------------------------------------------------
+   video cards (1.5.49): an attached or mentioned video shows its first
+   frame, a play button and its length - an .mp4 used to look like any other
+   file. A tap plays it right there with the native controls (full screen is
+   one of them). A file on another machine comes from there, under the same
+   pairing rules (findElsewhere, as for pictures). No frame to be read (a
+   format this browser cannot decode): a plain 「视频」 card, still downloadable.
+   --------------------------------------------------------------------- */
+function videoCard(file, url) {
+  const box = el('div', 'att-video');
+  const stage = el('div', 'att-video-stage');
+  const v = document.createElement('video');
+  v.preload = 'metadata';
+  v.playsInline = true;
+  v.muted = true; // the frame only; the sound once played
+  v.src = `${url}#t=0.1`; // the frame at 0.1 s instead of black (a byte range, not the whole file)
+  const play = el('button', 'att-video-play');
+  play.type = 'button';
+  play.setAttribute('aria-label', '播放视频');
+  play.innerHTML = '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>';
+  const dur = el('span', 'att-video-dur', '');
+  stage.append(v, play, dur);
+  box.appendChild(stage);
+  const length = (s) => (Number.isFinite(s) && s > 0 ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}` : '');
+  v.addEventListener('loadedmetadata', () => { dur.textContent = length(v.duration); });
+  play.addEventListener('click', () => {
+    box.classList.add('playing');
+    v.muted = false;
+    v.controls = true;
+    v.play().catch(() => {});
+  });
+  const fallback = () => {
+    box.classList.add('att-video-fallback');
+    stage.replaceChildren(el('span', 'att-video-icon', '🎬'), el('b', 'att-video-kind', '视频'), el('span', 'att-video-note', '这里读不出画面，可以下载后观看'));
+  };
+  v.addEventListener('error', () => {
+    if (v.dataset.tried) { fallback(); return; }
+    v.dataset.tried = '1';
+    findElsewhere(file.path).then((machine) => {
+      if (!machine) { fallback(); return; }
+      const far = remoteFileUrl(machine, file.path);
+      v.src = `${far}#t=0.1`;
+      dl.href = far;
+      box.title = `在「${machine}」上`;
+    });
+  });
+  // Under it: name and size, then small icon buttons (download, show in folder).
+  const bar = el('div', 'att-video-bar');
+  bar.appendChild(el('span', 'att-video-name', file.size ? `${file.name} · ${file.size}` : file.name));
+  const icon = (d) => `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  const dl = el('a', 'att-act');
+  dl.href = url;
+  dl.setAttribute('download', file.name);
+  dl.innerHTML = `${icon('<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>')}<span>下载</span>`;
+  bar.appendChild(dl);
+  if (canOpenLocally()) {
+    const show = el('button', 'att-act');
+    show.type = 'button';
+    show.title = '在文件夹中显示';
+    show.innerHTML = `${icon('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>')}<span>打开位置</span>`;
+    show.addEventListener('click', () => openLocalFile(file.path, true));
+    bar.appendChild(show);
+  }
+  box.appendChild(bar);
+  return box;
+}

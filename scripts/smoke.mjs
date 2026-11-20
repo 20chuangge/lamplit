@@ -156,6 +156,10 @@ async function main() {
     await stage('relay without Tailscale (第 1 步原型)', scenarioRelay);
     await stage('direct connection (1.5.46 直连)', scenarioDirect);
     await stage('relay updates itself (1.5.47)', async () => (await import('./smoke-relay-update.mjs')).relayUpdateChecks({ check }));
+    await stage('why direct fails on a PC (1.5.49)', async () => (await import('./smoke-1549.mjs')).directBlockerChecks({ check }));
+    await stage('video cards (1.5.49)', async () => (await import('./smoke-1549.mjs')).videoChecks({ check, base, keyDir: keyDir || process.env.ASSIST_DATA_DIR }));
+    await stage('relay version raised when relay.mjs changes (1.5.49)', async () => (await import('./smoke-1549.mjs')).relayVersionChecks({ check }));
+    await stage('a 1.5.47 relay with this hub (1.5.49)', async () => (await import('./smoke-1549.mjs')).oldRelayChecks({ check }));
     await stage('bots', scenarioBots);
     await stage('bot avatars', scenarioBotAvatars);
     await stage('chief turn', scenarioChiefTurn);
@@ -9482,7 +9486,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         const ids = (cu.json?.items || []).map((i) => i.id);
         check('E30 checkup: one list of how the machine is - model, voice, phones, its load, the other machines - each problem with the button that fixes it',
           cu.status === 200 && ids.includes('model') && ids.includes('phone') && ids.includes('load') && (cu.json.items || []).every((i) => ['ok', 'warn', 'bad', 'info'].includes(i.state) && i.title && i.text)
-          && pageSrc.includes('id="sec-checkup"') && mach29.includes('async function gatherCheckup()') && mach29.includes("action: { kind: 'firewall', label: '修复防火墙' }"));
+          && pageSrc.includes('id="sec-checkup"') && mach29.includes('async function gatherCheckup()')
+          // 1.5.49: the firewall lines (TCP and UDP) and their fix button live in 08-settings.js firewallCheckupItems.
+          && mach29.includes('firewallCheckupItems(fw,') && fsSync.readFileSync(new URL('../public/app/main/08-settings.js', import.meta.url), 'utf8').includes("const fix = { kind: 'firewall', label: '修复防火墙' };"));
         const SV = await import('../src/server.mjs');
         check('E30 checkup: the balance is said with how long it lasts at the recent daily spend (¥14 at ¥25 a day is today, not fine)',
           SV.balanceVerdict(14.06, 25).state === 'bad' && SV.balanceVerdict(40, 15).state === 'warn' && /大约还能用 2 天/.test(SV.balanceVerdict(40, 15).text)

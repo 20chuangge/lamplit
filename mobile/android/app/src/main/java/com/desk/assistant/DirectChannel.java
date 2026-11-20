@@ -444,6 +444,7 @@ final class DirectChannel {
         long counter = 0;
         final Replay window = new Replay();
         boolean heard = false;
+        int probesSent = 0;
         long lastHeard, lastSent, startedAt, nextProbe, upAt;
         final byte[] nonce = random(8);
         final CountDownLatch settled = new CountDownLatch(1);
@@ -556,7 +557,7 @@ final class DirectChannel {
         private synchronized void probe() {
             if (!"punching".equals(state)) return;
             byte[] body = probeBody();
-            for (InetSocketAddress c : cands) raw(PROBE, body, body.length, c);
+            for (InetSocketAddress c : cands) { raw(PROBE, body, body.length, c); probesSent++; }
             nextProbe = System.currentTimeMillis() + o.probeEveryMs;
         }
 
@@ -801,7 +802,8 @@ final class DirectChannel {
             long now = System.currentTimeMillis();
             if ("punching".equals(state)) {
                 if (now - startedAt > o.punchMs) {
-                    reason = heard ? "punch: heard the other side but no path both ways" : "punch: nothing came back (NAT or firewall)";
+                    // Per side, what was seen (1.5.49): did any probe of the computer arrive here?
+                    reason = heard ? "punch: probes arrived but ours were not answered" : "punch: no probe arrived (sent " + probesSent + " to " + cands.size() + " addresses) - NAT or firewall";
                     closeLocked(reason);
                     return;
                 }
@@ -1182,6 +1184,14 @@ final class DirectChannel {
         return b.length == 16 && (b[0] & 0xfe) == 0xfc; // IPv6 ULA fc00::/7
     }
 
+    /** A punch failure in words for 关于 (1.5.49); anything else as it is, without addresses. */
+    static String reasonWords(String reason) {
+        String r = String.valueOf(reason == null ? "" : reason);
+        if (r.startsWith("punch: no probe arrived")) return "对方的探测包一个也没到（多半是电脑那边的防火墙或代理挡住了 UDP）";
+        if (r.startsWith("punch: probes arrived")) return "收到了电脑的探测包，但手机发的没有回音（多半是这边的网络限制）";
+        return noAddresses(r);
+    }
+
     /** No addresses in what the app shows (a reason may carry one from an exception). */
     static String noAddresses(String text) {
         return String.valueOf(text == null ? "" : text)
@@ -1242,7 +1252,7 @@ final class DirectChannel {
             if (l == null || (l.lastTryAt == 0 && l.reason.isEmpty())) return s.append(" · 还没试过直连").toString();
             if (l.pending) s.append(" · 正在试直连");
             if (!route.startsWith("direct")) {
-                if (!l.reason.isEmpty()) s.append(" · 上次：").append(noAddresses(l.reason));
+                if (!l.reason.isEmpty()) s.append(" · 上次：").append(reasonWords(l.reason));
                 if (l.lastTryAt > 0) s.append("（").append(Math.max(0, (now - l.lastTryAt) / 60000)).append(" 分钟前）");
                 if (l.nextTry > now) s.append(" · ").append(Math.max(1, (l.nextTry - now) / 1000)).append(" 秒后再试");
             }

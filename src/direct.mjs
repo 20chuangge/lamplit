@@ -155,12 +155,43 @@ export function cleanCandidates(list, { allowLoopback = false } = {}) {
     const key = `${address}|${port}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ address, port });
+    // Its kind (host / srflx), for saying why a punch failed (1.5.49).
+    out.push({ address, port, kind: /^(host|srflx)$/.test(String(c?.k || '')) ? c.k : '' });
   }
   return out;
 }
 
 /** This machine's own addresses worth offering: LAN IPv4, global or LAN IPv6. Not Tailscale's, not Clash's TUN. */
+/**
+ * A proxy's virtual adapter (1.5.49): Clash Verge / mihomo name theirs 「Meta」,
+ * others wintun, sing-box …; their TUN addresses sit in 198.18.0.0/15. With
+ * one up, UDP may go out through the proxy and a punch cannot work. -> names.
+ */
+export function proxyTunInterfaces(interfaces = os.networkInterfaces()) {
+  const all = typeof interfaces === 'function' ? interfaces() : interfaces;
+  const out = [];
+  for (const [name, addrs] of Object.entries(all || {})) {
+    const list = Array.isArray(addrs) ? addrs.filter((a) => a && !a.internal) : [];
+    if (!list.length) continue;
+    const byName = /meta|mihomo|clash|wintun|sing-?box|v2ray|xray|nekoray|tun2socks/i.test(name);
+    const byAddress = list.some((a) => /^198\.1[89]\./.test(String(a.address || '')));
+    if (byName || byAddress) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * The address STUN gave this computer vs the one the relay saw its tunnel
+ * come from (1.5.49): 'differ' means a proxy carried one of them, 'same',
+ * or 'unknown' (one missing, or IPv4 against IPv6).
+ */
+export function addressHint({ stunIp = '', seenIp = '' } = {}) {
+  const a = String(stunIp || '').replace(/^::ffff:/, '');
+  const b = String(seenIp || '').replace(/^::ffff:/, '');
+  if (!net.isIP(a) || !net.isIP(b) || net.isIP(a) !== net.isIP(b)) return 'unknown';
+  return a === b ? 'same' : 'differ';
+}
+
 export function localAddresses(interfaces = os.networkInterfaces) {
   const out = [];
   const all = typeof interfaces === 'function' ? interfaces() : interfaces;
@@ -404,7 +435,7 @@ export class DirectSession extends EventEmitter {
   _probe() {
     if (this.state !== 'punching') return;
     const body = this._probeBody();
-    for (const c of this.cands) this._raw(PT.PROBE, body, c);
+    for (const c of this.cands) { this._raw(PT.PROBE, body, c); this.probesSent = (this.probesSent || 0) + 1; }
     this.nextProbe = now() + this.o.probeEveryMs;
   }
 
@@ -427,12 +458,17 @@ export class DirectSession extends EventEmitter {
     this.lastHeard = now();
     const type = opened.plain[0];
     const body = opened.plain.subarray(1);
+    // Which kind of the other side's addresses got through (1.5.49: the reason when the punch fails).
+    if (this.state === 'punching') {
+      const known = this.cands.find((c) => c.address === from.address && c.port === from.port);
+      (this.heardKinds ||= new Set()).add(known?.kind || 'prflx');
+    }
     if (type === PT.PROBE) {
       if (body.length >= 8) this._raw(PT.PROBE_ACK, body.subarray(0, 8), from);
       // A probe from an address the other side never listed: its router gave it
       // a new port for us (symmetric NAT). Probe back there too ("peer-reflexive").
       if (this.state === 'punching' && this.cands.length < MAX_CANDIDATES + 4 && !this.cands.some((c) => c.address === from.address && c.port === from.port)) {
-        this.cands.push(from);
+        this.cands.push({ ...from, kind: 'prflx' });
         this._raw(PT.PROBE, this._probeBody(), from);
       }
       return;
@@ -617,7 +653,11 @@ export class DirectSession extends EventEmitter {
     const t = now();
     if (this.state === 'punching') {
       if (t - this.startedAt > this.o.punchMs) {
-        this.reason = this.heard ? 'punch: heard the other side but no path both ways' : 'punch: nothing came back (NAT or firewall)';
+        // Per side, what was seen (1.5.49): did any probe of the other side arrive, from which kind of address?
+        const kinds = [...new Set(this.cands.map((c) => c.kind || 'address'))].join('+') || 'no address';
+        this.reason = this.heard
+          ? `punch: probes arrived (from ${[...(this.heardKinds || [])].join('+') || 'somewhere'}) but ours were not answered`
+          : `punch: no probe arrived (sent ${this.probesSent || 0} to ${this.cands.length} addresses: ${kinds}) - NAT or firewall`;
         this.close(this.reason);
         return;
       }
@@ -659,7 +699,7 @@ const halfFrom = (text) => {
  * acceptStream gets each stream a device opens, meta {ip, direct: true}: the
  * relay link's own TLS end (relaylink.mjs), so it is the same as through the relay.
  */
-export function createDirectServer({ acceptStream, relay = () => null, enabled = () => true, endpointOptions = {}, allowLoopback = false, sessionOptions = {}, maxSessions = 32, maxPerDevice = 4, offersPerMinute = 12, log = () => {} } = {}) {
+export function createDirectServer({ acceptStream, relay = () => null, enabled = () => true, endpointOptions = {}, allowLoopback = false, sessionOptions = {}, maxSessions = 32, maxPerDevice = 4, offersPerMinute = 12, relaySeenIp = () => '', log = () => {} } = {}) {
   let endpoint = null;
   const offerTimes = new Map(); // who -> recent offer times
   let binding = null;
@@ -739,7 +779,10 @@ export function createDirectServer({ acceptStream, relay = () => null, enabled =
       if (live.get(sid) === entry) live.delete(sid);
       stats.bytesIn += session.bytesIn;
       stats.bytesOut += session.bytesOut;
-      if (!session.upAt) { stats.failed += 1; stats.lastFailure = why; stats.last = 'failed'; }
+      if (!session.upAt) {
+        stats.failed += 1; stats.lastFailure = why; stats.last = 'failed';
+        log(`direct: a device could not punch through - ${why}`); // the computer's side of why (1.5.49), no addresses
+      }
     });
     return { v: 1, sid, half: mineHalf.toString('base64url'), cands: e.candidates(out) };
   }
@@ -777,6 +820,10 @@ export function createDirectServer({ acceptStream, relay = () => null, enabled =
         streams: stats.streams,
         bytesIn: stats.bytesIn + sessions.reduce((n, l) => n + l.session.bytesIn, 0),
         bytesOut: stats.bytesOut + sessions.reduce((n, l) => n + l.session.bytesOut, 0),
+        // What may stop direct on this computer (1.5.49): a proxy's TUN adapter, and whether the
+        // relay saw the tunnel come from another address than STUN gave (a proxy in between).
+        tun: proxyTunInterfaces(endpointOptions.interfaces ? (typeof endpointOptions.interfaces === 'function' ? endpointOptions.interfaces() : endpointOptions.interfaces) : os.networkInterfaces()),
+        addressHint: addressHint({ stunIp: outside.value?.address || '', seenIp: relaySeenIp() }),
       };
     },
     /** Forget the cached outside address (the network or the relay changed). */

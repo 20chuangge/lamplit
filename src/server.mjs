@@ -21,6 +21,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn as spawnChild } from 'node:child_process';
 import fsp from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import zlib from 'node:zlib';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
@@ -1621,9 +1622,11 @@ const peerPath = (raw) => {
   return p;
 };
 const peerPagePath = (p) => /^pages\/([a-z0-9-]{1,60})\.html$/.exec(p)?.[1] || null;
-const remoteFetch = (state, peer, p) => {
+const remoteFetch = (state, peer, p, { range = '' } = {}) => {
   const page = peerPagePath(p);
-  return state.peers.call(peer, 'GET', page ? `/api/pages/${page}` : `/api/workspace/file?path=${encodeURIComponent(p)}`, { timeoutMs: 60000 });
+  // A byte range goes along (1.5.49: videos from another machine seek, and show a frame without the whole file).
+  const headers = !page && /^bytes=\d*-\d*$/.test(String(range || '')) ? { range: String(range) } : {};
+  return state.peers.call(peer, 'GET', page ? `/api/pages/${page}` : `/api/workspace/file?path=${encodeURIComponent(p)}`, { timeoutMs: 60000, headers });
 };
 const locateCache = new Map(); // path -> {machine, at}
 
@@ -1661,9 +1664,12 @@ route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/file$/, async (req, res, { param
   const peer = state.peers.find(params.machine);
   if (!peer) throw httpError(404, 'PEER_NOT_FOUND', 'no such machine');
   let r;
-  try { r = await remoteFetch(state, peer, p); } catch (err) { throw httpError(502, err.code || 'PEER_UNREACHABLE', err.message); }
+  try { r = await remoteFetch(state, peer, p, { range: req.headers.range }); } catch (err) { throw httpError(502, err.code || 'PEER_UNREACHABLE', err.message); }
+  if (r.status === 416) { await r.body?.cancel().catch(() => {}); res.writeHead(416, { 'content-range': r.headers.get('content-range') || 'bytes */0' }); res.end(); return undefined; }
   if (!r.ok) return errorResponse(res, 404, 'FILE_NOT_FOUND', `「${peer.name}」上没有这个文件`);
-  const bytes = Buffer.from(await r.arrayBuffer());
+  // A range answered as a range (206), streamed (1.5.49); a page as before, whole.
+  const ranged = r.status === 206 && /^bytes \d+-\d+\/\d+$/.test(r.headers.get('content-range') || '');
+  const bytes = ranged || !peerPagePath(p) ? null : Buffer.from(await r.arrayBuffer());
   const headers = peerPagePath(p)
     ? { ...PAGE_HEADERS }
     : {
@@ -1673,9 +1679,18 @@ route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/file$/, async (req, res, { param
       'x-content-type-options': 'nosniff',
       'content-disposition': /^(image\/(png|jpe?g|gif|webp)|video\/)/i.test(r.headers.get('content-type') || '') || (query.get('inline') === '1' && /^application\/pdf/i.test(r.headers.get('content-type') || '')) ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(p.split('/').pop())}`,
       'cache-control': 'private, max-age=600',
+      'accept-ranges': 'bytes',
     };
-  res.writeHead(200, { ...headers, 'content-length': bytes.length });
-  res.end(bytes);
+  if (bytes) { res.writeHead(200, { ...headers, 'content-length': bytes.length }); res.end(bytes); return undefined; }
+  const length = Number(r.headers.get('content-length'));
+  res.writeHead(ranged ? 206 : 200, {
+    ...headers,
+    ...(ranged ? { 'content-range': r.headers.get('content-range') } : {}),
+    ...(Number.isFinite(length) && length >= 0 ? { 'content-length': length } : {}),
+  });
+  const body = Readable.fromWeb(r.body);
+  body.on('error', () => res.destroy());
+  body.pipe(res);
   return undefined;
 });
 
@@ -2855,10 +2870,18 @@ async function directCheckupItem(state) {
     return checkupItem('direct', '直连', 'info', `现在都走中转，能用。想直连，中转要更新一次：在「设置 → 手机和外网」点「重装 / 换端口」，装完再到云服务器控制台加一条 UDP ${link.port} 的规则。`, { ...toPair, label: '去更新中转' });
   }
   if (d.active > 0) return checkupItem('direct', '直连', 'ok', `现在有 ${d.active} 台设备直连这台电脑：数据不经过你的服务器，也不占它的流量。`);
+  // What this computer can see in the way (1.5.49): a proxy's TUN adapter, the last try's own account.
+  // One thing to do, not the same cause said three ways (1.5.49 beginner test). A proxy first:
+  // off for now, or by process name first in the rules - what worked for Tailscale's UDP on the user's PC (11-17).
+  const hints = [];
+  const tun = (d.tun || []).length ? `（${d.tun.join('、')}）` : '';
+  if (tun || d.addressHint === 'differ') hints.push(`这台电脑开着代理${tun}，直连的 UDP 会被它绕走：暂时关掉 Clash 的 TUN 模式；要一直开着的话，在 Clash 规则的最前面加一条 PROCESS-NAME,Lamplit.exe,DIRECT，保存后重启 Lamplit。`);
+  else if (d.last === 'failed' && /no probe arrived/.test(d.lastFailure || '')) hints.push('对方的探测包一个也没到这台电脑：多半是防火墙挡住了 UDP，看「Windows 防火墙（直连）」那一行。');
+  const more = hints.length ? ` ${hints.join(' ')}` : '';
   // The latest try first (1.5.46 beginner test): a failure after an earlier success is said.
-  if (d.last === 'failed') return checkupItem('direct', '直连', 'info', '直连没打通，正在走中转：能用，只是看屏幕慢一点，也占服务器流量。多半是两边的网络不让直接连（手机流量常见），换个网络会再试。');
-  if (d.up > 0) return checkupItem('direct', '直连', 'ok', '手机在外面直连过这台电脑：数据不经过你的服务器，也不占它的流量。');
-  return checkupItem('direct', '直连', 'info', '准备好了：手机下次在外面连这台电脑时会先试直连，打不通就走中转。');
+  if (d.last === 'failed') return checkupItem('direct', '直连', 'info', `直连没打通，正在走中转：能用，只是看屏幕慢一点，也占服务器流量。${hints.length ? '' : '多半是两边的网络不让直接连（手机流量常见），换个网络会再试。'}${more}`);
+  if (d.up > 0) return checkupItem('direct', '直连', 'ok', `手机在外面直连过这台电脑：数据不经过你的服务器，也不占它的流量。${more}`);
+  return checkupItem('direct', '直连', 'info', `准备好了：手机下次在外面连这台电脑时会先试直连，打不通就走中转。${more}`);
 }
 
 // The Tailscale relay in China (1.5.29).
@@ -3308,22 +3331,45 @@ route('GET', /^\/api\/workspace\/stat$/, async (_req, _res, { state, query }) =>
   return st && st.isFile() ? { exists: true, size: st.size } : { exists: false };
 });
 
-route('GET', /^\/api\/workspace\/file$/, async (_req, res, { state, query }) => {
+/**
+ * One byte range of a file of `size` (1.5.49: a video's first frame and
+ * seeking without the whole file; some phone WebViews play only with ranges).
+ * -> null (no range, or several: the whole file), 'bad' (416), or {start, end}.
+ */
+export function byteRange(header, size) {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(String(header || '').trim());
+  if (!m || (!m[1] && !m[2])) return null;
+  let start;
+  let end;
+  if (!m[1]) { start = Math.max(0, size - Number(m[2])); end = size - 1; } // the last N bytes
+  else { start = Number(m[1]); end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1; }
+  if (!(start <= end) || start >= size) return 'bad';
+  return { start, end };
+}
+
+route('GET', /^\/api\/workspace\/file$/, async (req, res, { state, query }) => {
   const abs = workspaceFile(state, query.get('path'));
-  let data;
-  try { data = await fsp.readFile(abs); } catch { return errorResponse(res, 404, 'FILE_NOT_FOUND', 'no such file in the workspace'); }
+  const st = await fsp.stat(abs).catch(() => null);
+  if (!st?.isFile()) return errorResponse(res, 404, 'FILE_NOT_FOUND', 'no such file in the workspace');
   const mime = mimeOf(abs);
-  // A PDF may be shown in the app's viewer (?inline=1, 1.5.11); everything else that is not a picture downloads.
-  const inline = (mime.startsWith('image/') && mime !== 'image/svg+xml') || (mime === 'application/pdf' && query.get('inline') === '1');
-  res.writeHead(200, {
+  // A PDF may be shown in the app's viewer (?inline=1, 1.5.11); pictures and videos (1.5.49) inline; the rest downloads.
+  const inline = (mime.startsWith('image/') && mime !== 'image/svg+xml') || mime.startsWith('video/') || (mime === 'application/pdf' && query.get('inline') === '1');
+  const headers = {
     // Never let an uploaded HTML/SVG run as part of the app.
     'content-type': mime === 'image/svg+xml' ? 'text/plain; charset=utf-8' : mime,
-    'content-length': data.length,
     'x-content-type-options': 'nosniff',
     'content-disposition': inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(abs))}`,
     'cache-control': 'private, max-age=3600',
-  });
-  res.end(data);
+    'accept-ranges': 'bytes',
+  };
+  const range = byteRange(req.headers.range, st.size);
+  if (range === 'bad') { res.writeHead(416, { 'content-range': `bytes */${st.size}` }); res.end(); return undefined; }
+  if (range) res.writeHead(206, { ...headers, 'content-range': `bytes ${range.start}-${range.end}/${st.size}`, 'content-length': range.end - range.start + 1 });
+  else res.writeHead(200, { ...headers, 'content-length': st.size });
+  // Streamed, not read whole into memory (videos are tens of MB).
+  const stream = fs.createReadStream(abs, range ? { start: range.start, end: range.end } : {});
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
   return undefined;
 });
 

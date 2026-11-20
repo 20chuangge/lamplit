@@ -23,7 +23,7 @@ import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pickDataDir } from './datadir.mjs';
 import { textMenuTemplate } from './textmenu.mjs';
-import { senderKind, mayUse, isProgramFile, firewallVerdict, parseNetcheck, pushUpdateAddress } from './guard.mjs';
+import { senderKind, mayUse, isProgramFile, firewallVerdict, firewallPlan, parseNetcheck, pushUpdateAddress } from './guard.mjs';
 import { readSecretJson } from './sealed.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1269,6 +1269,8 @@ handle('desk:use-local', (_event, message) => switchTo('', message));
  * and Tailscale (100.64.0.0/10) only. Pairing is still required to get in.
  */
 const FIREWALL_RULE = 'Lamplit phone access (local network + Tailscale)';
+// 直连 (1.5.49): UDP from anywhere, for the direct channel - it takes only packets sealed with a paired device's key.
+const FIREWALL_UDP_RULE = 'Lamplit direct (UDP)';
 const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
 function runPowerShell(script, { timeoutMs = 30000 } = {}) {
   return new Promise((resolve) => {
@@ -1295,18 +1297,26 @@ $exe = ${psQuote(exe)}
 $mine = Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue | Where-Object { $_.Program -and $_.Program -ieq $exe } | Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Direction -eq 'Inbound' -and $_.Enabled -eq 'True' }`;
 async function firewallStatus() {
   if (process.platform !== 'win32') return { applies: false };
+  // Each rule with its protocol (1.5.49: UDP for 直连 too; an old 「Evenlight …」 Block on UDP kept it shut).
+  // Proxies' TUN adapters (Clash/mihomo 「Meta」) are skipped: they are not the network the PC is on.
   const script = `${FIREWALL_RULES_OF_THIS_APP(process.execPath)}
-$cats = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notmatch 'Tailscale' -and $_.IPv4Connectivity -ne 'Disconnected' } | ForEach-Object { $_.NetworkCategory.ToString() })
+$cats = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -notmatch 'Tailscale|Meta|mihomo|Clash|wintun|sing-box' -and $_.IPv4Connectivity -ne 'Disconnected' } | ForEach-Object { $_.NetworkCategory.ToString() })
+$rules = @($mine | ForEach-Object {
+  $pf = $_ | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
+  [pscustomobject]@{ action = $_.Action.ToString(); profile = $_.Profile.ToString(); protocol = $(if ($pf) { [string]$pf.Protocol } else { 'Any' }); name = $_.DisplayName }
+})
 [pscustomobject]@{
-  block = @($mine | Where-Object { $_.Action -eq 'Block' } | ForEach-Object { $_.Profile.ToString() })
-  allow = @($mine | Where-Object { $_.Action -eq 'Allow' } | ForEach-Object { $_.Profile.ToString() })
+  rules = $rules
   ours = [bool]($mine | Where-Object { $_.DisplayName -eq ${psQuote(FIREWALL_RULE)} })
   networks = $cats
-} | ConvertTo-Json -Compress`;
+} | ConvertTo-Json -Compress -Depth 4`;
   const res = await runPowerShell(script);
   let data;
   try { data = JSON.parse(res.out.trim().split(/\r?\n/).pop()); } catch { return { applies: true, known: false, error: (res.err || res.out).slice(0, 200) }; }
-  return { applies: true, known: true, ...firewallVerdict(data) };
+  if (data && !Array.isArray(data.rules)) data.rules = data.rules ? [data.rules] : []; // one rule comes back as an object
+  const verdict = firewallVerdict(data);
+  // plan: what 「修复防火墙」 would change, said before the UAC prompt (1.5.49).
+  return { applies: true, known: true, ...verdict, plan: firewallPlan(verdict) };
 }
 async function firewallFix() {
   if (process.platform !== 'win32') return { ok: false, error: 'only on Windows' };
@@ -1315,14 +1325,16 @@ ${FIREWALL_RULES_OF_THIS_APP(process.execPath)}
 $mine | Where-Object { $_.Action -eq 'Block' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 Get-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 Get-NetFirewallRule -DisplayName 'Nightshift phone access*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -Direction Inbound -Action Allow -Program $exe -Protocol TCP -Profile Any -RemoteAddress LocalSubnet,100.64.0.0/10 | Out-Null`;
+New-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -Direction Inbound -Action Allow -Program $exe -Protocol TCP -Profile Any -RemoteAddress LocalSubnet,100.64.0.0/10 | Out-Null
+Get-NetFirewallRule -DisplayName ${psQuote(FIREWALL_UDP_RULE)} -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName ${psQuote(FIREWALL_UDP_RULE)} -Direction Inbound -Action Allow -Program $exe -Protocol UDP -Profile Any | Out-Null`;
   const encoded = Buffer.from(inner, 'utf16le').toString('base64');
   // The elevated copy runs the rules; this one waits for it (a "No" on the prompt is an error here).
   const res = await runPowerShell(`try { $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}'; exit $p.ExitCode } catch { Write-Output 'DECLINED'; exit 5 }`, { timeoutMs: 180000 });
   if (/DECLINED/.test(res.out)) return { ok: false, declined: true };
   const after = await firewallStatus();
-  bootLog(`firewall fix: exit ${res.code}, now ${after.ok ? 'open to the LAN' : 'still closed'}`);
-  return { ok: Boolean(after.ok), status: after };
+  bootLog(`firewall fix: exit ${res.code}, now TCP ${after.ok ? 'open to the LAN' : 'still closed'}, UDP ${after.udp?.ok ? 'open' : 'still closed'}`);
+  return { ok: Boolean(after.ok && after.udp?.ok !== false), status: after };
 }
 handle('desk:firewall-status', () => firewallStatus());
 

@@ -706,7 +706,13 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 
   // The human's other machines, as the desktop client hands them over: bots
   // here can hand work to bots there and move files, machine to machine.
-  refs.peers = createPeers({ file: path.join(P.dataDir, 'peers.json') });
+  // 直连 (1.5.46): machines reached through the relay are tried directly too,
+  // while this computer's 「先试直连」 is on.
+  refs.peers = createPeers({
+    file: path.join(P.dataDir, 'peers.json'),
+    directWanted: () => Boolean(state.relayLink?.view?.().direct?.enabled),
+    directOptions: process.env.LAMPLIT_DIRECT_ALLOW_LOOPBACK === '1' ? { allowLoopback: true, endpointOptions: { bindHost: process.env.LAMPLIT_DIRECT_BIND || '', ipv6: false } } : {},
+  });
   await refs.peers.load();
   state.peers = refs.peers;
   // One roster (1.5.42): the other machines' bots in this window's sidebar,
@@ -867,7 +873,12 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     // The relay's connections (relaylink.mjs): TLS ends in this process, then
     // the same routes as the public socket - never local, whatever the address.
     makeRelayLink: () => {
-      const link = createRelayLink({ dataDir: P.dataDir, handler: hubRequestHandler(state, true) });
+      // Tests on one computer: loopback candidates, a loopback UDP socket (直连, 1.5.46).
+      const directOptions = {
+        ...(process.env.LAMPLIT_DIRECT_ALLOW_LOOPBACK === '1' ? { allowLoopback: true } : {}),
+        ...(process.env.LAMPLIT_DIRECT_BIND ? { endpointOptions: { bindHost: process.env.LAMPLIT_DIRECT_BIND, ipv6: false } } : {}),
+      };
+      const link = createRelayLink({ dataDir: P.dataDir, handler: hubRequestHandler(state, true), directOptions });
       attachHubUpgrade(link.server, state, true);
       return link;
     },
@@ -885,7 +896,9 @@ function hubRequestHandler(state, viaPublic) {
   return (req, res) => {
     if (viaPublic) req.viaPublic = true;
     // Through the relay (relaylink.mjs): remote like the public door, whatever the socket says.
+    // 直连 (1.5.46) arrives at the same TLS end: the same, plus where it came from.
     if (req.socket?.viaRelay) { req.viaPublic = true; req.viaRelay = true; req.relayCookieName = relayCookieName(state); }
+    if (req.socket?.viaDirect) req.viaDirect = true;
     handleRequest(req, res, state).catch((err) => {
       // Last-resort guard: no route may ever produce an unhandled rejection.
       console.error('[assistant] unhandled request error:', err);
@@ -900,6 +913,7 @@ function attachHubUpgrade(server, state, viaPublic) {
   server.on('upgrade', (req, socket, head) => {
     if (viaPublic) req.viaPublic = true;
     if (req.socket?.viaRelay) { req.viaPublic = true; req.viaRelay = true; req.relayCookieName = relayCookieName(state); }
+    if (req.socket?.viaDirect) req.viaDirect = true;
     const refuse = (status, text) => {
       try { socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); } catch { /* gone */ }
     };
@@ -1554,7 +1568,7 @@ async function fetchPeerNames(state) {
 // How fast this machine reaches each of the others (1.5.28, 网络诊断): three
 // small requests each, the middle time. A proxy that sends Tailscale abroad
 // shows up here as hundreds of milliseconds between machines in one city.
-//   GET /api/peers/latency -> {machines:[{machine, ms, via:'lan'|'tailscale'|'relay', error?}]}
+//   GET /api/peers/latency -> {machines:[{machine, ms, via:'lan'|'tailscale'|'relay'|'direct', error?}]}
 export function middle(times) {
   const s = times.filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
   return s.length ? s[Math.floor((s.length - 1) / 2)] : null;
@@ -1571,7 +1585,7 @@ route('GET', /^\/api\/peers\/latency$/, async (_req, _res, { state }) => {
         const res = await state.peers.call(peer, 'GET', '/api/health', { timeoutMs: 3000 });
         await res.text().catch(() => '');
         times.push(Date.now() - started);
-        via = res.viaRelay ? 'relay' : res.url && peer.tailnetUrl && res.url.startsWith(String(peer.tailnetUrl).replace(/\/+$/, '')) ? 'tailscale' : 'lan';
+        via = res.viaDirect ? 'direct' : res.viaRelay ? 'relay' : res.url && peer.tailnetUrl && res.url.startsWith(String(peer.tailnetUrl).replace(/\/+$/, '')) ? 'tailscale' : 'lan';
       } catch (err) { error = err.message; break; }
     }
     return { machine: name, ms: middle(times), via, ...(times.length ? {} : { error }) };
@@ -2420,6 +2434,26 @@ route('PUT', /^\/api\/relay-link$/, async (req, _res, { body, state }) => {
   return { ...view, descriptor: state.relayLink.descriptor() };
 });
 
+// 直连 (1.5.46, src/direct.mjs). A paired device (its token: the relay cannot
+// introduce strangers) sends its addresses and half a key, inside the TLS
+// pinned to this computer; this computer answers with its own and starts
+// punching. Refused (409) when 「先试直连」 is off or no relay is in use.
+//   POST /api/direct/offer {v:1, sid, half, cands:[{a, p}]} -> {v:1, sid, half, cands}
+//   GET  /api/direct/route -> {route:'direct'|'relay'|'other'}  how THIS request arrived
+route('POST', /^\/api\/direct\/offer$/, async (req, _res, { body, state }) => {
+  if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
+  const who = req.auth?.deviceId || req.auth?.mode || 'device';
+  try {
+    return await state.relayLink.offer(body || {}, who);
+  } catch (err) {
+    if (err.code === 'DIRECT_OFF') throw httpError(409, err.code, err.message);
+    if (err.code === 'DIRECT_BAD_OFFER') throw httpError(400, err.code, err.message);
+    if (err.code === 'DIRECT_BUSY') throw httpError(429, err.code, err.message);
+    throw httpError(503, err.code || 'DIRECT_FAILED', err.message);
+  }
+});
+route('GET', /^\/api\/direct\/route$/, async (req) => ({ route: req.viaDirect ? 'direct' : req.viaRelay ? 'relay' : 'other' }));
+
 route('GET', /^\/api\/devices$/, async (_req, _res, { state }) => ({ devices: state.devices.list() }));
 // Old logins of phones and browsers, not used for a while (1.5.30): the one asking stays.
 //   POST /api/devices/prune {olderThanHours?=24} -> {removed}
@@ -2760,8 +2794,32 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
         ? checkupItem(`machine:${m.name}`, `机器「${m.name}」`, 'warn', `连得上，但很慢（${m.ms} 毫秒）：多半是代理软件让网络绕了远路。`, { kind: 'settings', target: 'sec-machines', label: '网络诊断' })
         : checkupItem(`machine:${m.name}`, `机器「${m.name}」`, 'ok', `在线，${m.ms} 毫秒。`));
   }
+  // 直连 (1.5.46): only with this computer's own relay in use. Never red or
+  // yellow: when direct does not work, the relay does.
+  const item = await directCheckupItem(state).catch(() => null);
+  if (item) items.push(item);
   return { items, at: nowIso() };
 });
+
+async function directCheckupItem(state) {
+  const link = state.relayLink?.view?.();
+  if (!link?.enabled || !link.direct?.applies) return null;
+  const d = link.direct;
+  const toPair = { kind: 'settings', target: 'sec-pair', label: '去设置' };
+  if (!d.enabled) return checkupItem('direct', '直连', 'info', '「先试直连」关着：手机在外面都走中转。打开后，能直连时数据不经过你的服务器，也不占它的流量。', toPair);
+  const stun = d.stun === 'unknown' ? await state.relayLink.probeStun().catch(() => 'no') : d.stun;
+  if (stun === 'no') {
+    // An old relay, or a new one whose UDP port the cloud firewall still drops.
+    const health = await state.relayLink.check().catch(() => null);
+    if (health?.ok && health.stun) return checkupItem('direct', '直连', 'info', `现在都走中转，能用。想直连，还差一步：到云服务器控制台的「防火墙」（或「安全组」）加一条 UDP ${link.port} 的规则。`, toPair);
+    return checkupItem('direct', '直连', 'info', `现在都走中转，能用。想直连，中转要更新一次：在「设置 → 手机和外网」点「重装 / 换端口」，装完再到云服务器控制台加一条 UDP ${link.port} 的规则。`, { ...toPair, label: '去更新中转' });
+  }
+  if (d.active > 0) return checkupItem('direct', '直连', 'ok', `现在有 ${d.active} 台设备直连这台电脑：数据不经过你的服务器，也不占它的流量。`);
+  // The latest try first (1.5.46 beginner test): a failure after an earlier success is said.
+  if (d.last === 'failed') return checkupItem('direct', '直连', 'info', '直连没打通，正在走中转：能用，只是看屏幕慢一点，也占服务器流量。多半是两边的网络不让直接连（手机流量常见），换个网络会再试。');
+  if (d.up > 0) return checkupItem('direct', '直连', 'ok', '手机在外面直连过这台电脑：数据不经过你的服务器，也不占它的流量。');
+  return checkupItem('direct', '直连', 'info', '准备好了：手机下次在外面连这台电脑时会先试直连，打不通就走中转。');
+}
 
 // The Tailscale relay in China (1.5.29).
 //   POST /api/remote/relay {host, sshPort?, username, password, publicIp?} -> {job}   install it over SSH

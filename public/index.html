@@ -971,7 +971,9 @@
             <span class="relay-chip" id="tunnel-chip">没装</span>
           </div>
           <label class="switch-row" for="tunnel-enabled"><input type="checkbox" id="tunnel-enabled" /> 通过中转连接</label>
+          <label class="switch-row" for="tunnel-direct" hidden><input type="checkbox" id="tunnel-direct" /> 先试直连（打不通自动走中转）</label>
           <div class="relay-status" id="tunnel-status"></div>
+          <div class="row-note" id="tunnel-direct-status" hidden></div>
           <div class="row-note warn-note" id="tunnel-port-note" hidden></div>
           <div class="relay-actions" id="tunnel-actions" hidden>
             <button class="btn tiny" id="tunnel-test" type="button">再测一次</button>
@@ -999,6 +1001,7 @@
               <li>手机和这台电脑之间是加密的（TLS），加解密只在手机和电脑上做，证书的私钥只在这台电脑上。中转只看得到「哪台电脑、什么时候、多少流量」，看不到对话、文件、屏幕，也拿不到登录凭据。</li>
               <li>手机只认配对时记下的这台电脑的证书：中转或别人冒充这台电脑，手机不会连。</li>
               <li>能不能操作这台电脑，仍然看配对：从中转进来的请求都算外网，不能用 8 位配对码，只认扫码配对过的设备，「只有你能批准」的事也不能从这里做。</li>
+              <li>先试直连：手机和这台电脑能直接连上时，数据不经过中转，同样加密，手机同样只认这台电脑的证书。只有配对过的设备才能直连；双方的地址装在加密连接里交换，中转看不到。打不通就照常走中转。</li>
               <li>想马上断开：关掉上面的「通过中转连接」。不想要某台手机了：在下面「已连接的设备」里移除它。不要这个中转了：点「卸载中转」，再到云服务器控制台删掉放行端口的规则。</li>
             </ul>
           </details>

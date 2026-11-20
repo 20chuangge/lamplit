@@ -34,6 +34,7 @@
  */
 
 import crypto from 'node:crypto';
+import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -600,8 +601,121 @@ export function createLimiter({ rate, perMs, burst = rate, maxKeys = 50000 }) {
   };
 }
 
+// ===========================================================================
+// STUN (1.5.46 直连): "at which address and port do you see me?"
+// ===========================================================================
+//
+// Before two of the owner's devices try to reach each other directly (src/
+// direct.mjs), each asks the relay this over UDP, on the same port number as
+// the relay's TCP. Only RFC 5389 Binding Requests are answered, with one
+// XOR-MAPPED-ADDRESS; nothing is stored or forwarded. A request must be at
+// least as long as the longest answer (Lamplit pads it with PADDING), so the
+// relay can never be used to send anyone more bytes than it was sent.
+
+const STUN_MAGIC = 0x2112a442;
+const STUN_ANSWER_MAX = 20 + 4 + 20; // header + XOR-MAPPED-ADDRESS for IPv6
+export const STUN_REQUEST_BYTES = STUN_ANSWER_MAX;
+
+/** A padded Binding Request. -> {buf, txid} */
+export function stunRequest(txid = crypto.randomBytes(12)) {
+  const buf = Buffer.alloc(STUN_REQUEST_BYTES);
+  buf.writeUInt16BE(0x0001, 0); // Binding Request
+  buf.writeUInt16BE(STUN_REQUEST_BYTES - 20, 2);
+  buf.writeUInt32BE(STUN_MAGIC, 4);
+  txid.copy(buf, 8, 0, 12);
+  buf.writeUInt16BE(0x0026, 20); // PADDING (RFC 5780), zeros
+  buf.writeUInt16BE(STUN_REQUEST_BYTES - 24, 22);
+  return { buf, txid: buf.subarray(8, 20) };
+}
+
+/** Does this datagram look like STUN (and not a 直连 packet)? */
+export function isStun(buf) {
+  return Boolean(buf) && buf.length >= 20 && (buf[0] & 0xc0) === 0 && buf.readUInt32BE(4) === STUN_MAGIC && buf.readUInt16BE(2) === buf.length - 20;
+}
+
+function xorAddress(address, port, txid) {
+  const v6 = net.isIPv6(address);
+  const body = Buffer.alloc(v6 ? 20 : 8);
+  body[1] = v6 ? 0x02 : 0x01;
+  body.writeUInt16BE((port ^ (STUN_MAGIC >>> 16)) & 0xffff, 2);
+  const key = Buffer.concat([Buffer.from([0x21, 0x12, 0xa4, 0x42]), txid]);
+  const raw = v6 ? ipv6Bytes(address) : Buffer.from(address.split('.').map(Number));
+  for (let i = 0; i < raw.length; i += 1) body[4 + i] = raw[i] ^ key[i];
+  return body;
+}
+
+function ipv6Bytes(text) {
+  const [head, tail = ''] = String(text).split('::');
+  const part = (s) => (s ? s.split(':') : []);
+  const h = part(head);
+  const t = part(tail);
+  const words = String(text).includes('::') ? [...h, ...Array(8 - h.length - t.length).fill('0'), ...t] : h;
+  const out = Buffer.alloc(16);
+  words.slice(0, 8).forEach((w, i) => out.writeUInt16BE(parseInt(w, 16) || 0, i * 2));
+  return out;
+}
+
+function ipv6Text(buf) {
+  const words = [];
+  for (let i = 0; i < 16; i += 2) words.push(buf.readUInt16BE(i).toString(16));
+  // Shorten the longest run of zeros, the way net and the OS print it.
+  let best = -1; let bestLen = 0;
+  for (let i = 0; i < 8;) {
+    if (words[i] !== '0') { i += 1; continue; }
+    let j = i;
+    while (j < 8 && words[j] === '0') j += 1;
+    if (j - i > bestLen && j - i > 1) { best = i; bestLen = j - i; }
+    i = j;
+  }
+  if (best < 0) return words.join(':');
+  return `${words.slice(0, best).join(':')}::${words.slice(best + bestLen).join(':')}`;
+}
+
+/** The relay's answer to one datagram from rinfo, or null (not a padded Binding Request). */
+export function stunAnswer(buf, rinfo) {
+  if (!isStun(buf) || buf.readUInt16BE(0) !== 0x0001 || buf.length < STUN_REQUEST_BYTES) return null;
+  const address = String(rinfo?.address || '').replace(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/, '$1');
+  if (!net.isIP(address) || !(rinfo.port > 0)) return null;
+  const txid = buf.subarray(8, 20);
+  const value = xorAddress(address, rinfo.port, txid);
+  const out = Buffer.alloc(20 + 4 + value.length);
+  out.writeUInt16BE(0x0101, 0); // Binding Success
+  out.writeUInt16BE(4 + value.length, 2);
+  out.writeUInt32BE(STUN_MAGIC, 4);
+  txid.copy(out, 8);
+  out.writeUInt16BE(0x0020, 20); // XOR-MAPPED-ADDRESS
+  out.writeUInt16BE(value.length, 22);
+  value.copy(out, 24);
+  return out;
+}
+
+/** The address in an answer to the request with this txid -> {address, port} | null. */
+export function parseStunAnswer(buf, txid) {
+  if (!isStun(buf) || buf.readUInt16BE(0) !== 0x0101 || !txid || !buf.subarray(8, 20).equals(Buffer.from(txid))) return null;
+  let p = 20;
+  while (p + 4 <= buf.length) {
+    const type = buf.readUInt16BE(p);
+    const len = buf.readUInt16BE(p + 2);
+    const v = buf.subarray(p + 4, p + 4 + len);
+    if (v.length !== len) return null;
+    if (type === 0x0020 && len >= 8) {
+      const port = v.readUInt16BE(2) ^ (STUN_MAGIC >>> 16);
+      const key = Buffer.concat([Buffer.from([0x21, 0x12, 0xa4, 0x42]), buf.subarray(8, 20)]);
+      const n = v[1] === 0x02 ? 16 : 4;
+      if (len < 4 + n) return null;
+      const raw = Buffer.alloc(n);
+      for (let i = 0; i < n; i += 1) raw[i] = v[4 + i] ^ key[i];
+      return { address: n === 4 ? Array.from(raw).join('.') : ipv6Text(raw), port };
+    }
+    p += 4 + len + ((4 - (len % 4)) % 4);
+  }
+  return null;
+}
+
 export const DEFAULT_LIMITS = {
   helloTimeoutMs: 10000,
+  stunPerIpPerMin: 120, // a phone asks once per try; a few phones behind one carrier NAT more
+  stunBurst: 30,
   connPerIpPerMin: 240, // a page load opens a handful; a VNC reconnect a few more
   connBurst: 60,
   maxConnPerIp: 96,
@@ -654,7 +768,9 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
   const registerLimiter = createLimiter({ rate: L.registerPerIpPerMin, perMs: 60000 });
   const missLimiter = createLimiter({ rate: L.missesPerIpPer10Min, perMs: 600000 });
   const failLimiter = createLimiter({ rate: L.authFailuresPerIpPer10Min, perMs: 600000 });
-  const counters = { connections: 0, refused: 0, misses: 0, authFailures: 0, replaced: 0, bytesUp: 0, bytesDown: 0 };
+  const stunLimiter = createLimiter({ rate: L.stunPerIpPerMin, perMs: 60000, burst: L.stunBurst });
+  const counters = { connections: 0, refused: 0, misses: 0, authFailures: 0, replaced: 0, bytesUp: 0, bytesDown: 0, stun: 0 };
+  let stunSocket = null;
 
   // id -> {keyHash, createdAt, lastSeen}. Only hashes of the machines' keys.
   let registry = {};
@@ -691,7 +807,7 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
   const control = http.createServer((req, res) => {
     if (req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, relay: 'lamplit', tunnels: tunnels.size }));
+      res.end(JSON.stringify({ ok: true, relay: 'lamplit', tunnels: tunnels.size, stun: Boolean(stunSocket) }));
       return;
     }
     res.writeHead(404);
@@ -841,14 +957,39 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
     stream.on('error', () => {});
   }
 
+  /** STUN on UDP port `port` (1.5.46 直连). Resolves when bound; rejects if the port is taken. */
+  function listenStun(port, host = '0.0.0.0') {
+    return new Promise((resolve, reject) => {
+      const sock = dgram.createSocket({ type: net.isIPv6(host) ? 'udp6' : 'udp4' });
+      sock.once('error', reject);
+      sock.on('message', (msg, rinfo) => {
+        const ip = cleanIp(rinfo.address);
+        if (isBlocked(ip) || !stunLimiter.take(ip)) return;
+        const out = stunAnswer(msg, rinfo);
+        if (!out) return;
+        counters.stun += 1;
+        sock.send(out, rinfo.port, rinfo.address);
+      });
+      sock.bind(port, host, () => {
+        sock.removeListener('error', reject);
+        sock.on('error', (err) => log(`stun: ${err.message}`));
+        stunSocket = sock;
+        resolve(sock.address().port);
+      });
+    });
+  }
+
   return {
     server,
     tunnels,
+    listenStun,
     registry: () => ({ ...registry }),
-    stats: () => ({ ...counters, tunnels: tunnels.size, ips: perIp.size, blocked: blocked.size }),
+    stats: () => ({ ...counters, tunnels: tunnels.size, ips: perIp.size, blocked: blocked.size, stunOn: Boolean(stunSocket) }),
     close() {
       for (const t of tunnels.values()) t.mux.close();
       server.close();
+      try { stunSocket?.close(); } catch { /* closed */ }
+      stunSocket = null;
     },
   };
 }
@@ -939,9 +1080,13 @@ async function main() {
   const log = (line) => console.error(`[relay] ${new Date().toISOString()} ${line}`);
   const relay = createRelay({ identity, joinSecret, registryFile: path.join(dataDir, 'machines.json'), log });
   relay.server.on('error', (err) => { log(`listen failed: ${err.message}`); process.exit(1); });
-  relay.server.listen(port, host, () => {
-    console.log(JSON.stringify({ event: 'ready', port: relay.server.address().port, fingerprint: identity.fingerprint }));
-    log(`listening on ${host}:${relay.server.address().port}; certificate ${identity.fingerprint}`);
+  relay.server.listen(port, host, async () => {
+    const bound = relay.server.address().port;
+    // STUN on the same port number, UDP (1.5.46 直连). Without it everything still works through the relay.
+    let stun = false;
+    try { await relay.listenStun(bound, host); stun = true; } catch (err) { log(`STUN (UDP ${bound}) not started: ${err.message}`); }
+    console.log(JSON.stringify({ event: 'ready', port: bound, fingerprint: identity.fingerprint, stun }));
+    log(`listening on ${host}:${bound} (TCP${stun ? ' + UDP for STUN' : ''}); certificate ${identity.fingerprint}`);
   });
   setInterval(() => {
     const s = relay.stats();

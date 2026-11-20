@@ -30,6 +30,7 @@ import { Readable } from 'node:stream';
 import tls from 'node:tls';
 
 import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, shieldStream } from '../hub/relay/relay.mjs';
+import { createDirectServer } from './direct.mjs';
 
 /**
  * Is the relay at host:port there, and is it the one installed (its
@@ -66,7 +67,8 @@ export function checkRelay({ host, port, relayFingerprint, timeoutMs = 8000 } = 
       // The body may come chunked: look for the fields, not for clean JSON.
       const body = text.slice(text.indexOf('\r\n\r\n') + 4);
       if (/"relay"\s*:\s*"lamplit"/.test(body) && /"tunnels"\s*:\s*\d+/.test(body)) {
-        finish({ ok: true, ms: Date.now() - started, tunnels: Number(/"tunnels"\s*:\s*(\d+)/.exec(body)[1]) });
+        // stun (1.5.46): a relay new enough to answer 「我在公网上是什么地址」 for 直连.
+        finish({ ok: true, ms: Date.now() - started, tunnels: Number(/"tunnels"\s*:\s*(\d+)/.exec(body)[1]), stun: /"stun"\s*:\s*true/.test(body) });
       }
     });
     socket.on('error', (err) => finish({ ok: false, code: 'RELAY_UNREACHABLE', message: err.message }));
@@ -95,12 +97,55 @@ export function cleanDescriptor(d) {
 export const relayServerName = (id) => `${id}.${RELAY_SNI_SUFFIX}`;
 
 /**
- * A TLS connection to computer `desc.id` through its relay, its certificate
- * checked against desc.fp BEFORE anything of ours is sent.
+ * TLS to computer d over a stream of its direct channel (直连, 1.5.46): the same
+ * handshake and the same pinned certificate as through the relay.
  */
-export function connectViaRelay(desc, { timeoutMs = 10000 } = {}) {
+function tlsOverDirect(stream, d, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect({ socket: stream, servername: relayServerName(d.id), rejectUnauthorized: false, ALPNProtocols: ['http/1.1'] });
+    const timer = setTimeout(() => { socket.destroy(); reject(Object.assign(new Error('direct: no answer'), { code: 'DIRECT_TIMEOUT' })); }, timeoutMs);
+    socket.once('secureConnect', () => {
+      clearTimeout(timer);
+      const cert = socket.getPeerCertificate();
+      if (!cert?.raw || certFingerprint(cert) !== d.fp) {
+        socket.destroy();
+        reject(Object.assign(new Error('that computer presented a different certificate'), { code: 'RELAY_CERT_MISMATCH' }));
+        return;
+      }
+      socket.viaDirect = true;
+      resolve(socket);
+    });
+    socket.on('error', (err) => { clearTimeout(timer); reject(Object.assign(err, { code: err.code || 'DIRECT_FAILED' })); });
+  });
+}
+
+/**
+ * A TLS connection to computer `desc.id` through its relay, its certificate
+ * checked against desc.fp BEFORE anything of ours is sent. With `direct` (a
+ * dialer from direct.mjs): over the direct channel when it is up, else
+ * through the relay - and then a try at going direct for the next time.
+ */
+export async function connectViaRelay(desc, { timeoutMs = 10000, direct = null } = {}) {
   const d = cleanDescriptor(desc);
-  if (!d) return Promise.reject(Object.assign(new Error('not a relay address'), { code: 'RELAY_BAD_ADDRESS' }));
+  if (!d) throw Object.assign(new Error('not a relay address'), { code: 'RELAY_BAD_ADDRESS' });
+  const stream = direct?.stream?.(d);
+  if (stream) {
+    try {
+      return await tlsOverDirect(stream, d, 4000);
+    } catch (err) {
+      stream.destroy();
+      if (err.code === 'RELAY_CERT_MISMATCH') throw err;
+      // The direct path stalled: this connection goes through the relay, and
+      // so do the next ones until a new try (no 4 s wait each until the heartbeat notices).
+      direct.drop?.(d.id, 'stalled');
+    }
+  }
+  const socket = await connectThroughRelay(d, timeoutMs);
+  if (direct?.kick) direct.kick(d).catch(() => {});
+  return socket;
+}
+
+function connectThroughRelay(d, timeoutMs) {
   return new Promise((resolve, reject) => {
     const socket = tls.connect({ host: d.host, port: d.port, servername: relayServerName(d.id), rejectUnauthorized: false, ALPNProtocols: ['http/1.1'] });
     const timer = setTimeout(() => { socket.destroy(); reject(Object.assign(new Error('relay: no answer'), { code: 'RELAY_UNREACHABLE' })); }, timeoutMs);
@@ -126,7 +171,7 @@ export function connectViaRelay(desc, { timeoutMs = 10000 } = {}) {
  * fetch() for a machine reached through the relay: same call shape, returns a
  * real Response. The request is written only after the certificate matched.
  */
-export function relayFetch(desc, urlPath, { method = 'GET', headers = {}, body, signal } = {}) {
+export function relayFetch(desc, urlPath, { method = 'GET', headers = {}, body, signal, direct = null } = {}) {
   const d = cleanDescriptor(desc);
   if (!d) return Promise.reject(Object.assign(new Error('not a relay address'), { code: 'RELAY_BAD_ADDRESS' }));
   return new Promise((resolve, reject) => {
@@ -134,11 +179,12 @@ export function relayFetch(desc, urlPath, { method = 'GET', headers = {}, body, 
     const plain = {};
     for (const [k, v] of headers instanceof Headers ? headers.entries() : Object.entries(headers || {})) if (v !== undefined) plain[k] = v;
     plain.host = relayServerName(d.id);
+    let viaDirect = false;
     const req = http.request({
       method,
       path: urlPath,
       headers: plain,
-      createConnection: (_opts, cb) => { connectViaRelay(d).then((s) => cb(null, s), (err) => cb(err)); },
+      createConnection: (_opts, cb) => { connectViaRelay(d, { direct }).then((s) => { viaDirect = Boolean(s.viaDirect); cb(null, s); }, (err) => cb(err)); },
     });
     const abort = () => req.destroy(signal.reason || new Error('aborted'));
     signal?.addEventListener('abort', abort, { once: true });
@@ -151,7 +197,10 @@ export function relayFetch(desc, urlPath, { method = 'GET', headers = {}, body, 
       const status = res.statusCode || 502;
       const noBody = method === 'HEAD' || status === 204 || status === 304;
       if (noBody) res.resume();
-      resolve(new Response(noBody ? null : Readable.toWeb(res), { status, statusText: res.statusMessage, headers: out }));
+      const response = new Response(noBody ? null : Readable.toWeb(res), { status, statusText: res.statusMessage, headers: out });
+      // Which way it went (1.5.46): 直连 or 中转, for the machine list.
+      if (viaDirect) { try { Object.defineProperty(response, 'viaDirect', { value: true }); } catch { /* frozen */ } }
+      resolve(response);
     });
     if (body === undefined || body === null) req.end();
     else if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) req.end(body);
@@ -198,7 +247,7 @@ export function openRelayForwarder(desc, { host = '127.0.0.2', port = 0 } = {}) 
 // The link: settings, the tunnel, and the TLS end of every relayed connection
 // ---------------------------------------------------------------------------
 
-export function createRelayLink({ dataDir, handler, upgrade, log = (line) => console.error(`[relay-link] ${line}`), openTunnelImpl = openTunnel, replacedWaitMs = 60000 } = {}) {
+export function createRelayLink({ dataDir, handler, upgrade, log = (line) => console.error(`[relay-link] ${line}`), openTunnelImpl = openTunnel, replacedWaitMs = 60000, directOptions = {} } = {}) {
   const file = path.join(dataDir, 'relay-link.json');
   let cfg = readConfig();
   let identity = null;
@@ -254,11 +303,15 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
   }
 
   const configured = () => Boolean(cfg.host && cfg.port && FP_RE.test(String(cfg.relayFingerprint || '')));
+  /** The Lamplit on the relay's own server reaches it on 127.0.0.1: direct saves nothing there. */
+  const sameHost = () => /^(127\.|localhost$|::1$|\[::1\]$)/.test(String(cfg.dial || ''));
+  const directWanted = () => Boolean(cfg.enabled) && cfg.direct !== false && configured() && !sameHost();
 
-  /** One relayed connection: finish TLS here, then hand it to the hub's handler. */
+  /** One relayed (or direct) connection: finish TLS here, then hand it to the hub's handler. */
   function acceptStream(stream) {
     ensureIdentity();
-    status.connections += 1;
+    const viaDirect = stream.meta?.direct === true;
+    if (!viaDirect) status.connections += 1;
     const ip = String(stream.meta?.ip || '');
     // Never loopback: whatever the relay says, this is somebody remote.
     const shown = net.isIP(ip) && !isLoopbackIp(ip) ? ip : 'relay';
@@ -271,11 +324,23 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
       Object.defineProperty(sock, 'remoteAddress', { value: shown, configurable: true });
       Object.defineProperty(sock, 'remotePort', { value: 0, configurable: true });
       sock.viaRelay = true;
+      // 直连 (1.5.46): the same TLS end, the same rules (remote); only the road differs.
+      if (viaDirect) sock.viaDirect = true;
       server.emit('connection', sock);
     });
     // The hub is done with this connection: the shield sends what is left, then closes.
     sock.once('close', () => clearTimeout(timer));
   }
+
+  // 直连 (1.5.46): paired devices that ask (POST /api/direct/offer) and can punch
+  // through to this computer bring their streams here, into acceptStream.
+  const direct = createDirectServer({
+    acceptStream,
+    relay: () => (directWanted() ? { host: cfg.host, port: Number(cfg.port) || DEFAULT_PORT } : null),
+    enabled: directWanted,
+    log,
+    ...directOptions,
+  });
 
   function schedule(ms) {
     clearTimeout(retryTimer);
@@ -364,6 +429,7 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
 
   function stop() {
     wanted = false;
+    direct.closeAll('relay link off');
     clearTimeout(retryTimer);
     if (tunnel) tunnel.mux.close();
     tunnel = null;
@@ -393,8 +459,15 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
         connections: status.connections,
         bytesIn: status.bytesIn + (tunnel?.mux.bytesIn || 0),
         bytesOut: status.bytesOut + (tunnel?.mux.bytesOut || 0),
+        // 「先试直连」 (1.5.46): on unless turned off; never for the relay's own server.
+        direct: (() => { const { remotes: _r, ...v } = direct.view(); return { ...v, enabled: cfg.direct !== false, applies: !sameHost() }; })(),
       };
     },
+    /** A paired device asks to go direct (POST /api/direct/offer). */
+    offer: (body, who) => direct.offer(body, { who }),
+    /** Does the relay answer STUN (a new relay, UDP open)? For 体检. -> 'yes' | 'no' | 'unknown' */
+    probeStun: () => (directWanted() ? direct.probeStun() : Promise.resolve('unknown')),
+    closeDirect: () => direct.close(),
     /** What another of the owner's machines needs to join the same relay (secret: only for the share route). */
     shareable() {
       if (!configured() || !cfg.join) return null;
@@ -457,11 +530,14 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
       }
       if (patch.join !== undefined && String(patch.join).trim()) next.join = String(patch.join).trim().slice(0, 200);
       if (patch.enabled !== undefined) next.enabled = Boolean(patch.enabled);
+      if (patch.direct !== undefined) next.direct = Boolean(patch.direct);
       if (next.enabled && !(next.host && next.port && FP_RE.test(String(next.relayFingerprint || '')))) {
         throw Object.assign(new Error('fill in the relay address and its fingerprint first'), { code: 'RELAY_NOT_CONFIGURED' });
       }
       const moved = next.host !== cfg.host || next.port !== cfg.port || next.relayFingerprint !== cfg.relayFingerprint || next.join !== cfg.join || (next.dial || '') !== (cfg.dial || '');
       cfg = { ...next, updatedAt: new Date().toISOString() };
+      if (moved || !directWanted()) direct.closeAll(moved ? 'relay changed' : 'turned off');
+      if (moved) direct.forgetOutside();
       if (cfg.enabled) { ensureIdentity(); ensureMachineSecrets(); }
       saveConfig();
       if (moved || !cfg.enabled) stop();

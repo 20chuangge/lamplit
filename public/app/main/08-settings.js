@@ -1723,3 +1723,41 @@ function renderVault() {
   }
 }
 
+/* ---------------------------------------------------------------------
+   直连 (1.5.46): the phone app reaches a computer directly when it can,
+   the relay only introducing them (src/direct.mjs, DirectChannel.java).
+   The relay card (11-machines.js) and the route words use these.
+   --------------------------------------------------------------------- */
+/**
+ * 直连 (1.5.46): does the phone app reach this computer (its forwarder URL, or
+ * a relay id) over the direct channel right now? 'direct' | 'relay' | ''.
+ */
+function phoneRelayRoute(urlOrId) {
+  try {
+    const shell = window.NightshiftShell;
+    return shell && typeof shell.relayRoute === 'function' ? String(shell.relayRoute(String(urlOrId || '')) || '') : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 直连 (1.5.46) in the relay card, in words: on or off, working or why not. */
+function directWords(d, port) {
+  if (!d || d.enabled === false) return '「先试直连」关着：手机在外面都走中转。';
+  if (d.stun === 'no') return `现在都走中转，能用。想直连，中转要更新一次：点下面的「重装 / 换端口」，装完再到云服务器控制台加一条 UDP ${port} 的规则。`;
+  if (d.active > 0) return `直连中：${d.active} 台设备直接连着这台电脑，数据不经过中转。`;
+  // The latest try first (1.5.46 beginner test: after one success, a later failure was never said).
+  if (d.last === 'failed') return '刚才试过直连，没打通，都走中转（能用）。多半是两边的网络不让直接连，换个网络会再试。';
+  if (d.up > 0) return '以前直连成功过，现在没有设备直连。手机在外面连这台电脑时会再试。';
+  return '还没有设备试过直连：手机在外面连这台电脑时会自动试。';
+}
+
+/** 「先试直连」 on or off (1.5.46). Off closes the direct links; the relay carries on. */
+async function setDirect(on) {
+  try {
+    await api('/api/relay-link', { method: 'PUT', body: { direct: on } });
+  } catch (err) {
+    toast(err.message || String(err), true);
+  }
+  renderTunnel();
+}

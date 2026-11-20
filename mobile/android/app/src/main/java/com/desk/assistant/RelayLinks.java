@@ -56,7 +56,115 @@ public final class RelayLinks {
 
     private static final Map<Integer, ServerSocket> listening = new ConcurrentHashMap<>();
 
+    /**
+     * 直连 (1.5.46, DirectChannel.java): each computer this phone reaches
+     * through the relay is also tried directly; when that works, new
+     * connections take the direct channel, else the relay as before.
+     */
+    static final DirectChannel.Links DIRECT = new DirectChannel.Links(new DirectChannel.Options());
+    private static volatile boolean watchingNetwork = false;
+
     private RelayLinks() {}
+
+    /** 'direct' or 'relay' for the computer behind a forwarder URL (http://127.0.0.1:144xx); '' when it is not one. */
+    static String routeFor(Context context, String url) {
+        if (!isRelayLocal(url)) return "";
+        try {
+            JSONObject row = rowFor(context, new java.net.URL(url).getPort());
+            return row == null ? "" : DIRECT.route(row.optString("id", ""));
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * The network changed (Wi-Fi to mobile data, another Wi-Fi): a direct path
+     * is gone with it. Drop them now - new connections take the relay - and try
+     * again on the next connection. Only real changes: a new network, a lost
+     * one, new addresses; not the signal-strength updates.
+     */
+    private static void watchNetwork(Context context) {
+        if (watchingNetwork || Build.VERSION.SDK_INT < 24) return;
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager) context.getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return;
+            cm.registerDefaultNetworkCallback(new android.net.ConnectivityManager.NetworkCallback() {
+                private String network = "";
+                private String addresses = "";
+
+                private void drop(String why) {
+                    Log.i(TAG, "network changed (" + why + "): direct links dropped, the relay carries on");
+                    DIRECT.reset();
+                }
+
+                @Override
+                public void onAvailable(android.net.Network n) {
+                    String now = String.valueOf(n);
+                    // The first call only tells which network is in use.
+                    if (!network.isEmpty() && !network.equals(now)) drop("another network");
+                    if (!network.equals(now)) addresses = "";
+                    network = now;
+                }
+
+                @Override
+                public void onLost(android.net.Network n) {
+                    if (String.valueOf(n).equals(network)) {
+                        network = "";
+                        addresses = "";
+                        drop("network lost");
+                    }
+                }
+
+                @Override
+                public void onLinkPropertiesChanged(android.net.Network n, android.net.LinkProperties lp) {
+                    StringBuilder s = new StringBuilder();
+                    for (android.net.LinkAddress a : lp.getLinkAddresses()) s.append(a.getAddress().getHostAddress()).append(',');
+                    String now = s.toString();
+                    if (!addresses.isEmpty() && !addresses.equals(now)) drop("new address");
+                    addresses = now;
+                }
+            });
+            watchingNetwork = true;
+        } catch (Exception err) {
+            Log.w(TAG, "cannot watch the network: " + err.getMessage());
+        }
+    }
+
+    /**
+     * Ask computer `id` to go direct: POST /api/direct/offer through this very
+     * forwarder (so through the relay, inside the pinned TLS) with this phone's
+     * device token for it. No token (a one-time visit): no direct.
+     */
+    private static void kickDirect(Context context, final int local, String host, int port, String id) {
+        SharedPreferences store = context.getApplicationContext().getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
+        final String base = "http://127.0.0.1:" + local;
+        String sealed = store.getString("desk.token:" + base, null);
+        if (sealed == null) sealed = store.getString("desk.token:" + base + "/", null);
+        final String token = sealed == null ? null : TokenBox.open(sealed);
+        if (token == null || token.isEmpty()) return;
+        DIRECT.kick(id, host, port, body -> {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(base + "/api/direct/offer").openConnection();
+            try {
+                c.setConnectTimeout(10000);
+                c.setReadTimeout(15000);
+                c.setRequestMethod("POST");
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type", "application/json");
+                c.setRequestProperty("Authorization", "Bearer " + token);
+                c.getOutputStream().write(body.getBytes("UTF-8"));
+                int status = c.getResponseCode();
+                if (status != 200) throw new java.io.IOException("offer: HTTP " + status);
+                java.io.ByteArrayOutputStream all = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                InputStream in = c.getInputStream();
+                int n;
+                while ((n = in.read(buf)) >= 0 && all.size() < 64 * 1024) all.write(buf, 0, n);
+                return all.toString("UTF-8");
+            } finally {
+                c.disconnect();
+            }
+        });
+    }
 
     private static SharedPreferences prefs(Context context) {
         return context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -223,13 +331,39 @@ public final class RelayLinks {
             String fp = row.getString("fp");
             SSLContext ssl = SSLContext.getInstance("TLS");
             ssl.init(null, new TrustManager[] { new PinnedTrust(fp) }, null);
-            Socket plain = new Socket();
-            plain.connect(new InetSocketAddress(host, port), 10000);
-            plain.setTcpNoDelay(true);
-            outer = (SSLSocket) ssl.getSocketFactory().createSocket(plain, host, port, true);
-            setServerName(outer, id + SNI_SUFFIX);
+            // 直连 first (1.5.46): the same pinned TLS, over the direct channel.
+            DirectChannel.Mux direct = DIRECT.muxFor(id);
+            if (direct != null) {
+                Socket plain = null;
+                try {
+                    plain = direct.openSocket();
+                    outer = (SSLSocket) ssl.getSocketFactory().createSocket(plain, host, port, true);
+                    setServerName(outer, id + SNI_SUFFIX);
+                    outer.setSoTimeout(4000); // a stalled direct path: the relay takes this one
+                    outer.startHandshake();
+                } catch (Exception err) {
+                    closeQuietly(outer);
+                    closeQuietly(plain);
+                    outer = null;
+                    // Another certificate is never "try the relay instead": it is not the computer.
+                    if (String.valueOf(err.getMessage()).contains("not the computer you paired with")) throw err;
+                    // Stalled: the next connections take the relay at once, until a new try.
+                    DIRECT.drop(id);
+                }
+            }
+            if (outer == null) {
+                Socket plain = new Socket();
+                plain.connect(new InetSocketAddress(host, port), 10000);
+                plain.setTcpNoDelay(true);
+                outer = (SSLSocket) ssl.getSocketFactory().createSocket(plain, host, port, true);
+                setServerName(outer, id + SNI_SUFFIX);
+                outer.setSoTimeout(0);
+                outer.startHandshake();
+                // Through the relay: try going direct for the next connections (it waits between tries).
+                watchNetwork(context);
+                kickDirect(context, local, host, port, id);
+            }
             outer.setSoTimeout(0);
-            outer.startHandshake();
             inner.setTcpNoDelay(true);
             final Socket a = inner;
             final SSLSocket b = outer;
@@ -343,7 +477,7 @@ public final class RelayLinks {
         }
     }
 
-    /** For the launcher: every relay row as {local, host, port, id}. */
+    /** For the launcher: every relay row as {local, host, port, id, route: 'direct'|'relay'}. */
     static String describe(Context context) {
         org.json.JSONArray out = new org.json.JSONArray();
         for (Iterator<? extends Map.Entry<String, ?>> it = prefs(context).getAll().entrySet().iterator(); it.hasNext(); ) {
@@ -355,6 +489,7 @@ public final class RelayLinks {
                 shown.put("host", row.optString("host"));
                 shown.put("port", row.optInt("port"));
                 shown.put("id", row.optString("id"));
+                shown.put("route", DIRECT.route(row.optString("id")));
                 out.put(shown);
             } catch (Exception ignored) {
                 // not ours

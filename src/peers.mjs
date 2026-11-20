@@ -11,6 +11,7 @@
 import fsp from 'node:fs/promises';
 import { readJson, writeJsonAtomic } from './store.mjs';
 import { cleanDescriptor, relayFetch } from './relaylink.mjs';
+import { createDirectDialer } from './direct.mjs';
 
 const clean = (u) => String(u || '').trim().replace(/\/+$/, '');
 
@@ -28,9 +29,23 @@ export function friendlyHostname(hostname) {
 /** A peer's relay address as a candidate base ("relay:<id>"), next to its URLs. */
 const relayBase = (peer) => (peer?.relay ? `relay:${peer.relay.id}` : '');
 
-export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFetch } = {}) {
+export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFetch, directWanted = () => false, directOptions = {} } = {}) {
   let peers = [];
   const rosters = new Map(); // name -> {at, bots}
+
+  // 直连 (1.5.46): a machine reached through the relay is tried directly too,
+  // asked with this machine's token for it (only paired machines punch).
+  const dialer = createDirectDialer({
+    ...directOptions,
+    offer: async (desc, body) => {
+      const peer = peers.find((p) => p.relay?.id === desc.id);
+      if (!peer) throw Object.assign(new Error('not one of ours'), { code: 'DIRECT_OFF' });
+      const res = await relayFetchImpl(desc, '/api/direct/offer', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${peer.token}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw Object.assign(new Error(data?.error?.message || `HTTP ${res.status}`), { code: data?.error?.code || 'DIRECT_OFFER_FAILED' });
+      return data;
+    },
+  });
 
   async function save() {
     await writeJsonAtomic(file, peers);
@@ -62,7 +77,7 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
     const bases = base ? [base] : (good && known.includes(good) ? [good, ...known.filter((b) => b !== good)] : known);
     for (const candidate of bases) {
       try {
-        const send = candidate.startsWith('relay:') ? (_u, init) => relayFetchImpl(peer.relay, path, init) : fetchImpl;
+        const send = candidate.startsWith('relay:') ? (_u, init) => relayFetchImpl(peer.relay, path, { ...init, direct: directWanted() ? dialer : null }) : fetchImpl;
         const res = await send(`${clean(candidate)}${path}`, {
           method,
           headers: { authorization: `Bearer ${peer.token}`, ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
@@ -156,6 +171,10 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
     find,
     call,
     json,
+    /** 直连 (1.5.46): 'direct' | 'relay' for a machine's relay address. */
+    directRoute: (peer) => (peer?.relay ? dialer.route(peer.relay.id) : 'relay'),
+    /** The network or the setting changed: drop direct links to the machines. */
+    resetDirect: () => dialer.reset(),
 
     /** The bots on every peer (cached 5 min; unreachable peers are skipped). */
     async rosters({ fresh = false } = {}) {

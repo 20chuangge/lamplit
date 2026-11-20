@@ -171,6 +171,19 @@ public class ShellBridge {
         return RelayLinks.localUrl(activity, host, port, id, fp);
     }
 
+    /**
+     * 直连 (1.5.46): does this phone reach the computer behind a relay
+     * forwarder URL (or a computer's relay id) over the direct channel right
+     * now? "direct" or "relay"; "" for anything else. Only the route, in words.
+     */
+    @JavascriptInterface
+    public String relayRoute(final String urlOrId) {
+        if ((!fromAppPage() && !fromMachinePage()) || urlOrId == null) return "";
+        String v = urlOrId.trim();
+        if (v.matches("^[a-z0-9]{16,40}$")) return RelayLinks.DIRECT.route(v);
+        return RelayLinks.routeFor(activity, v);
+    }
+
     @JavascriptInterface
     public void setImmersive(final boolean on) {
         activity.runOnUiThread(() -> {

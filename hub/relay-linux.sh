@@ -40,9 +40,11 @@ if [ "$SRC" = "--uninstall" ]; then
   if [ -n "$OLD_PORT" ]; then
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
       ufw delete allow "$OLD_PORT/tcp" >/dev/null 2>&1 || true
+      ufw delete allow "$OLD_PORT/udp" >/dev/null 2>&1 || true
     fi
     if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
       firewall-cmd --permanent --remove-port="$OLD_PORT/tcp" >/dev/null 2>&1 || true
+      firewall-cmd --permanent --remove-port="$OLD_PORT/udp" >/dev/null 2>&1 || true
       firewall-cmd --reload >/dev/null 2>&1 || true
     fi
   fi
@@ -104,15 +106,17 @@ systemctl daemon-reload
 systemctl enable "$SERVICE" >/dev/null 2>&1 || true
 systemctl restart "$SERVICE" || fail "服务没能启动（journalctl -u $SERVICE 看原因）"
 
-# 4. 本机防火墙（如果开着）放行这个端口；云服务器控制台的安全组要你自己去放行。
-# 换了端口：旧端口在本机防火墙里的放行也删掉。
+# 4. 本机防火墙（如果开着）放行这个端口：TCP 给中转，UDP 给直连时问地址（STUN，1.5.46）；
+# 云服务器控制台的安全组要你自己去放行。换了端口：旧端口在本机防火墙里的放行也删掉。
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "$PORT/tcp" >/dev/null 2>&1 || true
-  [ -n "$OLD_PORT" ] && [ "$OLD_PORT" != "$PORT" ] && { ufw delete allow "$OLD_PORT/tcp" >/dev/null 2>&1 || true; }
+  ufw allow "$PORT/udp" >/dev/null 2>&1 || true
+  [ -n "$OLD_PORT" ] && [ "$OLD_PORT" != "$PORT" ] && { ufw delete allow "$OLD_PORT/tcp" >/dev/null 2>&1 || true; ufw delete allow "$OLD_PORT/udp" >/dev/null 2>&1 || true; }
 fi
 if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
   firewall-cmd --permanent --add-port="$PORT/tcp" >/dev/null 2>&1 || true
-  [ -n "$OLD_PORT" ] && [ "$OLD_PORT" != "$PORT" ] && { firewall-cmd --permanent --remove-port="$OLD_PORT/tcp" >/dev/null 2>&1 || true; }
+  firewall-cmd --permanent --add-port="$PORT/udp" >/dev/null 2>&1 || true
+  [ -n "$OLD_PORT" ] && [ "$OLD_PORT" != "$PORT" ] && { firewall-cmd --permanent --remove-port="$OLD_PORT/tcp" >/dev/null 2>&1 || true; firewall-cmd --permanent --remove-port="$OLD_PORT/udp" >/dev/null 2>&1 || true; }
   firewall-cmd --reload >/dev/null 2>&1 || true
 fi
 

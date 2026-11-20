@@ -154,6 +154,7 @@ async function main() {
     await stage('pairing', scenarioPairing);
     await stage('phone pairing link', scenarioPairingLink);
     await stage('relay without Tailscale (第 1 步原型)', scenarioRelay);
+    await stage('direct connection (1.5.46 直连)', scenarioDirect);
     await stage('bots', scenarioBots);
     await stage('bot avatars', scenarioBotAvatars);
     await stage('chief turn', scenarioChiefTurn);
@@ -291,7 +292,8 @@ function pointEnvAt(target) {
 async function startServerChild(target, extraEnv = {}) {
   // DESK_VNC_PORT: a port nothing listens on, so a VNC server the human runs
   // on this machine (TightVNC on 5900) is never mistaken for a bot desktop.
-  const env = { ...process.env, ASSIST_HOME: target, PORT: '0', DESK_VNC_PORT: '1', ...extraEnv };
+  // LAMPLIT_DIRECT_*: 直连 (1.5.46) on loopback only, so a test never opens a UDP port on the network.
+  const env = { ...process.env, ASSIST_HOME: target, PORT: '0', DESK_VNC_PORT: '1', LAMPLIT_DIRECT_ALLOW_LOOPBACK: '1', LAMPLIT_DIRECT_BIND: '127.0.0.1', ...extraEnv };
   const proc = spawn(process.execPath, [path.join(REPO, 'src', 'server.mjs')], {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -2692,6 +2694,21 @@ async function scenarioRelay() {
     return { status: r.status, body: r.json };
   };
   await relayServerChecks({ check, api: wrap, makePairLink: async () => (await api('/api/pairing/link', { method: 'POST' })).json });
+}
+
+/**
+ * 直连 (src/direct.mjs): the channel, punching through every kind of NAT on a
+ * pretend network (scripts/smoke-direct.mjs), then a paired device going
+ * direct to this hub over loopback UDP: paired only, still remote, still pinned.
+ */
+async function scenarioDirect() {
+  const { directChecks, directServerChecks } = await import('./smoke-direct.mjs');
+  await directChecks({ check });
+  const wrap = async (p, { method = 'GET', body } = {}) => {
+    const r = await api(p, { method, body });
+    return { status: r.status, body: r.json };
+  };
+  await directServerChecks({ check, api: wrap, makePairLink: async () => (await api('/api/pairing/link', { method: 'POST' })).json });
 }
 
 async function scenarioPairingLink() {

@@ -2756,4 +2756,26 @@ window.DESK_I18N_EN = {
   "Client ID（现在是 {0}，不改就留空）": "Client ID (now {0}; leave empty to keep it)",
   // 1.5.45 retest
   "这次改的每一项都改回改之前的样子。": "Every part of this change goes back to how it was.",
+  // 1.5.46 直连 (direct connection through the relay's introduction)
+  "先试直连（打不通自动走中转）": "Try a direct connection first (falls back to the relay when it can't)",
+  "先试直连：手机和这台电脑能直接连上时，数据不经过中转，同样加密，手机同样只认这台电脑的证书。只有配对过的设备才能直连；双方的地址装在加密连接里交换，中转看不到。打不通就照常走中转。": "Try direct first: when the phone and this computer can reach each other directly, the data skips the relay, still encrypted, and the phone still trusts only this computer's certificate. Only paired devices can connect directly; both sides swap their addresses inside the encrypted connection, so the relay cannot see them. When it can't connect directly, the relay carries on as before.",
+  "直连": "Direct",
+  "现在打开的这台 · 直连": "The one on screen · direct",
+  "你正在用的这台 · 直连": "The one you are using · direct",
+  "在云服务器控制台放行 TCP {0}，再加一条 UDP {1}（直连用；来源都是 0.0.0.0/0）：腾讯云轻量应用服务器在实例详情的「防火墙」页添加规则；腾讯云 CVM（云服务器）在「安全组」的入站规则里添加；阿里云 ECS 也是「安全组」。": "In the cloud console allow TCP {0}, and add UDP {1} (for direct connections; source 0.0.0.0/0 for both): on a Tencent Cloud Lighthouse server, add the rules on the instance's \"Firewall\" page; on Tencent Cloud CVM, in the security group's inbound rules; Alibaba Cloud ECS also uses a security group.",
+  "「先试直连」关着：手机在外面都走中转。": "\"Try direct first\" is off: away from home the phone always goes through the relay.",
+  "现在都走中转，能用。想直连，中转要更新一次：点下面的「重装 / 换端口」，装完再到云服务器控制台加一条 UDP {0} 的规则。": "Everything goes through the relay for now, which works. For direct connections the relay needs one update: click \"Reinstall / change port\" below, then add a UDP {0} rule in the cloud console.",
+  "直连中：{0} 台设备直接连着这台电脑，数据不经过中转。": "Direct: {0} device(s) connected straight to this computer, the data skips the relay.",
+  "以前直连成功过，现在没有设备直连。手机在外面连这台电脑时会再试。": "A direct connection worked before; no device is connected directly right now. The phone tries again when it connects to this computer from outside.",
+  "刚才试过直连，没打通，都走中转（能用）。多半是两边的网络不让直接连，换个网络会再试。": "The latest try at a direct connection did not get through, so everything goes through the relay (which works). Most likely one of the two networks does not allow it; it tries again on another network.",
+  "还没有设备试过直连：手机在外面连这台电脑时会自动试。": "No device has tried a direct connection yet: the phone tries by itself when it connects to this computer from outside.",
+  // 1.5.46 体检 (the check-up's direct line, from the computer)
+  "「先试直连」关着：手机在外面都走中转。打开后，能直连时数据不经过你的服务器，也不占它的流量。": "\"Try direct first\" is off: away from home the phone always goes through the relay. Turned on, whenever a direct connection works the data skips your server and uses none of its traffic.",
+  "现在都走中转，能用。想直连，还差一步：到云服务器控制台的「防火墙」（或「安全组」）加一条 UDP {0} 的规则。": "Everything goes through the relay for now, which works. One step left for direct connections: add a UDP {0} rule under \"Firewall\" (or \"Security group\") in the cloud console.",
+  "现在都走中转，能用。想直连，中转要更新一次：在「设置 → 手机和外网」点「重装 / 换端口」，装完再到云服务器控制台加一条 UDP {0} 的规则。": "Everything goes through the relay for now, which works. For direct connections the relay needs one update: in Settings → Phone & internet click \"Reinstall / change port\", then add a UDP {0} rule in the cloud console.",
+  "现在有 {0} 台设备直连这台电脑：数据不经过你的服务器，也不占它的流量。": "{0} device(s) are connected directly to this computer: the data skips your server and uses none of its traffic.",
+  "手机在外面直连过这台电脑：数据不经过你的服务器，也不占它的流量。": "The phone has connected directly to this computer from outside: the data skips your server and uses none of its traffic.",
+  "直连没打通，正在走中转：能用，只是看屏幕慢一点，也占服务器流量。多半是两边的网络不让直接连（手机流量常见），换个网络会再试。": "No direct connection, going through the relay: it works, but viewing the screen is a little slower and uses the server's traffic. Most likely one of the networks does not allow it (common on mobile data); it tries again on another network.",
+  "准备好了：手机下次在外面连这台电脑时会先试直连，打不通就走中转。": "Ready: next time the phone connects to this computer from outside it tries direct first, and uses the relay if that doesn't work.",
+  "去更新中转": "Update the relay",
 };

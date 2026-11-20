@@ -34,9 +34,10 @@ async function routeWords(m) {
   const first = await firstReachable(tries, viaRelay ? 1000 : 4000);
   if (first && first === m.url) return lanLike(m.url) ? '局域网' : '外网';
   if (first) return 'Tailscale';
-  if (viaRelay) return '中转';
+  if (viaRelay) return phoneRelayRoute(m.relay.id) === 'direct' ? '直连' : '中转';
   return '连不上';
 }
+
 
 
 /** A page the phone app opened through its relay forwarder (RelayLinks: 127.0.0.1:14440-14499). */
@@ -61,9 +62,10 @@ function machineDisplayName() {
   return row?.name || selfMachineName || state.computer?.host?.hostname || (throughPhoneRelay() ? '' : location.hostname);
 }
 
-/** How this page reached its machine, in words: 中转 (the desktop's door 127.0.0.N or the phone's forwarder), Tailscale (100.x), else the host name. */
+/** How this page reached its machine, in words: 直连 / 中转 (the desktop's door 127.0.0.N or the phone's forwarder), Tailscale (100.x), else the host name. */
 function pageRouteWords() {
   const h = location.hostname;
+  if (throughPhoneRelay() && phoneRelayRoute(location.origin) === 'direct') return '直连';
   if (throughPhoneRelay() || (/^127\.0\.0\.\d+$/.test(h) && h !== '127.0.0.1')) return '中转';
   if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return 'Tailscale';
   if (/^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+/.test(h)) return '局域网';
@@ -1078,6 +1080,8 @@ function saveMachineFromModal() {
  */
 function selfSub() {
   // Opened by name from another machine (1.5.44 test): the one on screen, not the one in your hand.
+  // 直连 (1.5.46): through the relay's introduction, but the data goes straight.
+  if (throughPhoneRelay() && phoneRelayRoute(location.origin) === 'direct') return singleVisit() ? '现在打开的这台 · 直连' : '你正在用的这台 · 直连';
   if (singleVisit()) return throughPhoneRelay() ? '现在打开的这台 · 经过中转' : '现在打开的这台';
   return throughPhoneRelay() ? '你正在用的这台 · 经过中转' : '你正在用的这台';
 }
@@ -1533,7 +1537,7 @@ async function runNetCheck() {
   };
   const current = machineDisplayName();
   const rows = [line(isMobile() ? '这部手机' : '这台设备', current, here)];
-  for (const m of peers.machines || []) rows.push(line(current, m.machine, m.ms, m.error ? '没连上' : (m.via === 'tailscale' ? '走 Tailscale' : m.via === 'relay' ? '走中转' : '')));
+  for (const m of peers.machines || []) rows.push(line(current, m.machine, m.ms, m.error ? '没连上' : (m.via === 'tailscale' ? '走 Tailscale' : m.via === 'relay' ? '走中转' : m.via === 'direct' ? '直连' : '')));
   const ts = window.desk?.tailscaleNetcheck && onLocalMachine() ? await window.desk.tailscaleNetcheck().catch(() => null) : null;
   const cn = (ts?.regions || []).find((r) => r.code === 'lamplit');
   if (cn) rows.push(line(isMobile() ? '这部手机' : '这台设备', '国内中转（Tailscale）', cn.ms, '直连打不通时走它'));
@@ -1677,8 +1681,10 @@ document.addEventListener('toggle', (event) => {
 /** Where to open the relay's port in the cloud console (src/remote.mjs says the same). */
 function relayPortAdvice(port) {
   const p = Number(port) || 34443;
-  return `在云服务器控制台放行 TCP ${p}（来源 0.0.0.0/0）：腾讯云轻量应用服务器在实例详情的「防火墙」页添加规则；腾讯云 CVM（云服务器）在「安全组」的入站规则里添加；阿里云 ECS 也是「安全组」。`;
+  return `在云服务器控制台放行 TCP ${p}，再加一条 UDP ${p}（直连用；来源都是 0.0.0.0/0）：腾讯云轻量应用服务器在实例详情的「防火墙」页添加规则；腾讯云 CVM（云服务器）在「安全组」的入站规则里添加；阿里云 ECS 也是「安全组」。`;
 }
+
+
 
 const isShown = (node) => Boolean(node && node.offsetParent !== null);
 
@@ -1763,6 +1769,11 @@ async function renderTunnel() {
   else if (view.state === 'error') lines.push(why[view.error] || `连不上中转（${view.error}）`);
   else lines.push('正在连接中转…');
   for (const line of lines) box.appendChild(el('div', '', line));
+  // 「先试直连」 (1.5.46): with the relay on; not on the relay's own server (nothing to save there).
+  const direct = view.direct || {};
+  const showDirect = configured && view.enabled && direct.applies !== false;
+  if ($('tunnel-direct')) { $('tunnel-direct').checked = direct.enabled !== false; $('tunnel-direct').closest('label').hidden = !showDirect; }
+  if ($('tunnel-direct-status')) { $('tunnel-direct-status').hidden = !showDirect; $('tunnel-direct-status').textContent = showDirect ? directWords(direct, view.port) : ''; }
   // Port closed in the cloud console: say where to open it, every time it is the reason.
   if (portNote) {
     const closed = view.enabled && view.state === 'error' && view.error === 'RELAY_UNREACHABLE';
@@ -1782,6 +1793,8 @@ async function setTunnel(enabled) {
   renderTunnel();
   loadSettings().then(() => renderPairing()).catch(() => {});
 }
+
+
 
 function tunnelSay(text, bad = false) {
   const note = $('tunnel-note');
@@ -1874,6 +1887,7 @@ document.addEventListener('click', (event) => {
 });
 document.addEventListener('change', (event) => {
   if (event.target?.id === 'tunnel-enabled') setTunnel(event.target.checked);
+  if (event.target?.id === 'tunnel-direct') setDirect(event.target.checked);
 });
 
 /* ---------------------------------------------------------------------

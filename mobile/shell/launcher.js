@@ -471,6 +471,16 @@
       return '';
     }
   }
+  /** 直连 (1.5.46): 'direct' when the app reaches this forwarder's computer directly, else 'relay' or ''. */
+  function relayRoute(raw) {
+    const shell = globalThis.NightshiftShell;
+    if (!shell || typeof shell.relayRoute !== 'function' || !isRelayLocal(raw)) return '';
+    try {
+      return String(shell.relayRoute(String(raw)) || '');
+    } catch {
+      return '';
+    }
+  }
   /** relay=host:port&rid=…&rfp=… in a pairing code -> the local address ('' when absent). */
   function relayFromCode(url) {
     const where = url.searchParams.get('relay') || '';
@@ -595,6 +605,12 @@
           slow = !(await probe(best, RELAY_SLOW_MS * 4)) || Date.now() - started > RELAY_SLOW_MS;
         }
         if (best) { url.textContent = slow ? '中转 · 较慢' : linkLabel(best, entry); url.title = best; }
+        // 直连 (1.5.46): the first connection through the relay starts a try at
+        // going direct (a few seconds); say so here once it worked.
+        if (best && relayRoute(best) === 'direct') url.textContent = '直连';
+        else if (best && linkKind(best) === '中转') {
+          setTimeout(() => { if (url.isConnected && relayRoute(best) === 'direct') url.textContent = '直连'; }, 10000);
+        }
         if (best && best !== entry.best) {
           // Remember it for the next time this list opens.
           const all = await readHubs();

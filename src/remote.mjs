@@ -61,7 +61,8 @@ export const TUNNEL_PORT = 34443;
  */
 export function relayPortAdvice(port) {
   const p = Number(port) || TUNNEL_PORT;
-  return `在云服务器控制台放行 TCP ${p}（来源 0.0.0.0/0）：腾讯云轻量应用服务器在实例详情的「防火墙」页添加规则；腾讯云 CVM（云服务器）在「安全组」的入站规则里添加；阿里云 ECS 也是「安全组」。`;
+  // UDP on the same port number (1.5.46): the relay answers STUN there for 直连.
+  return `在云服务器控制台放行 TCP ${p}，再加一条 UDP ${p}（直连用；来源都是 0.0.0.0/0）：腾讯云轻量应用服务器在实例详情的「防火墙」页添加规则；腾讯云 CVM（云服务器）在「安全组」的入站规则里添加；阿里云 ECS 也是「安全组」。`;
 }
 
 /**

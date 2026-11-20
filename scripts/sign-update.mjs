@@ -10,6 +10,7 @@
  *
  *   desktop/build/update/lamplit-update.tar.gz
  *   desktop/build/update/lamplit-update.json   {version, sha256, signature}
+ *   desktop/build/update/relay-update.json     the relay's own signature (1.5.47)
  *
  * electron-builder copies that folder to resources/server/update; the desktop
  * app pushes exactly these bytes to the other machines.
@@ -23,6 +24,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packApp, cleanupPack } from '../src/bundle.mjs';
 import { verifyUpdate } from '../src/selfupdate.mjs';
+import { makeRelayManifest } from '../src/relayupdate.mjs';
+import { verifyRelayUpdate } from '../hub/relay/relay.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const KEY = process.env.LAMPLIT_UPDATE_KEY || path.join(os.homedir(), '.lamplit-release', 'update-ed25519.pem');
@@ -42,6 +45,18 @@ const copy = (from, to, filter) => fs.cpSync(path.join(REPO, from), path.join(ST
 copy('src', 'src', (p) => fs.statSync(p).isDirectory() || /\.(mjs|cjs)$|LICENSE$/.test(p));
 for (const dir of ['public', 'config', 'skills', 'hub']) copy(dir, dir);
 for (const m of MODULES) copy(path.join('node_modules', m), path.join('node_modules', m));
+// The relay's own signature (1.5.47): relays update themselves with relay.mjs
+// only when this key signed "lamplit-relay-update v1 / version / sha256" for it.
+// It rides along in the package (hub/relay/relay-update.json) and in the
+// installer (server/update/relay-update.json); the relay checks it itself.
+const appVersion = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
+const relayBytes = fs.readFileSync(path.join(STAGE, 'hub', 'relay', 'relay.mjs'));
+const relayManifest = makeRelayManifest({ version: appVersion, bytes: relayBytes, privateKey: fs.readFileSync(KEY) });
+if (!verifyRelayUpdate(relayManifest, relayBytes)) {
+  console.error('[sign-update] the key does not match the public key built into hub/relay/relay.mjs (RELAY_UPDATE_KEYS): relays would refuse to update.');
+  process.exit(1);
+}
+fs.writeFileSync(path.join(STAGE, 'hub', 'relay', 'relay-update.json'), `${JSON.stringify(relayManifest, null, 2)}\n`);
 // The build (1.5.19): a fingerprint of the code, so a rebuild under the same
 // version still reaches the other machines (11-17: the cloud machine kept the
 // first 1.5.17 build, as updates compared version numbers only).
@@ -73,4 +88,5 @@ fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, 'lamplit-update.tar.gz'), bytes);
 fs.writeFileSync(path.join(OUT, 'lamplit-update.json'), `${JSON.stringify({ version, build, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), signature }, null, 2)}\n`);
+fs.writeFileSync(path.join(OUT, 'relay-update.json'), `${JSON.stringify(relayManifest, null, 2)}\n`);
 console.log(`[sign-update] ${version} (build ${build}): ${Math.round(bytes.length / 1024)} KB signed`);

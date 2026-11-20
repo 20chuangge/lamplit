@@ -155,6 +155,7 @@ async function main() {
     await stage('phone pairing link', scenarioPairingLink);
     await stage('relay without Tailscale (第 1 步原型)', scenarioRelay);
     await stage('direct connection (1.5.46 直连)', scenarioDirect);
+    await stage('relay updates itself (1.5.47)', async () => (await import('./smoke-relay-update.mjs')).relayUpdateChecks({ check }));
     await stage('bots', scenarioBots);
     await stage('bot avatars', scenarioBotAvatars);
     await stage('chief turn', scenarioChiefTurn);

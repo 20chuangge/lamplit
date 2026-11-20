@@ -19,6 +19,7 @@
 import crypto from 'node:crypto';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -378,7 +379,31 @@ async function directServerChecksInner({ check, api, makePairLink }) {
     // A relay from before 1.5.46 (no STUN): 体检 says to update it, as a note, not a problem.
     const old = ((await api('/api/checkup')).body.items || []).find((it) => it.id === 'direct');
     check('direct (hub): with an old relay, 体检 says it works through the relay, and how to update it for direct (a note, not a problem)', old?.state === 'info' && /^现在都走中转，能用/.test(old.text) && /中转要更新一次/.test(old.text) && /重装/.test(old.text) && new RegExp(`UDP ${relayPort}`).test(old.text), JSON.stringify(old));
-    await relay.listenStun(relayPort, '127.0.0.1');
+    const oldCard = (await api('/api/relay-link?probe=1')).body.direct;
+    check('direct (hub): a relay without STUN is named as old (update it), not as a firewall problem', oldCard?.stun === 'no' && oldCard.stunCause === 'old', JSON.stringify(oldCard));
+    // A new relay whose UDP the cloud firewall still drops: card and 体检 both say only the firewall rule is missing (1.5.47 beginner test).
+    let firewall = true;
+    await relay.listenStun(relayPort, '127.0.0.1', { drop: () => firewall });
+    const fwCard = (await api('/api/relay-link?probe=1')).body.direct;
+    const fwItem = ((await api('/api/checkup')).body.items || []).find((it) => it.id === 'direct');
+    check('direct (hub): UDP dropped by a firewall in front of a new relay: card and 体检 say to add the firewall rule, not to reinstall', fwCard?.stun === 'no' && fwCard.stunCause === 'firewall' && /还差一步/.test(fwItem?.text || '') && !/重装/.test(fwItem?.text || ''), JSON.stringify({ fwCard, fwItem }));
+    firewall = false;
+    // The human opened UDP in the firewall (here: the relay answers now) and looks again (1.5.47):
+    // the card when opened, then 「重新体检」. Neither may repeat the old 'no'.
+    // A relay that cannot update itself (here: no updater, like one from before 1.5.47 that never answers):
+    // the card and 体检 say one last manual 「重装」 is needed, as a note.
+    const seen1546 = (await api('/api/relay-link')).body.relay;
+    const upd = ((await api('/api/checkup')).body.items || []).find((it) => it.id === 'relay-update');
+    check('relay update (hub): a relay that does not update itself is named as such: one last 「重装」, then it updates with Lamplit', seen1546?.auto === false && upd?.state === 'info' && /最后一次手动/.test(upd.text), JSON.stringify({ seen1546, upd }));
+    const asked0 = relay.stats().stun;
+    const again = ((await api('/api/checkup')).body.items || []).find((it) => it.id === 'direct');
+    check('direct (hub): 「重新体检」 asks the relay again: once its UDP answers, 体检 no longer says it cannot', again && !/要更新一次|还差一步/.test(again.text) && again.state !== 'bad' && relay.stats().stun > asked0, JSON.stringify(again));
+    const asked1 = relay.stats().stun;
+    const card = (await api('/api/relay-link?probe=1')).body;
+    check('direct (hub): the relay card asks the relay again when opened (not an old answer)', card.direct?.stun === 'yes' && relay.stats().stun > asked1, JSON.stringify(card.direct));
+    const asked2 = relay.stats().stun;
+    await api('/api/relay-link');
+    check('direct (hub): the card\'s 15 s refresh does not ask the relay each time (cheap)', relay.stats().stun === asked2);
     const desc = { ...(await api('/api/relay-link')).body.descriptor, host: '127.0.0.1', port: relayPort };
     const made = await makePairLink();
     const paired = await relayFetch(desc, '/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: made.token, client: 'app' }) });
@@ -413,6 +438,8 @@ async function directServerChecksInner({ check, api, makePairLink }) {
     check('direct (hub): the hub knows a request came directly (for 「直连」 in the list)', r1.route === 'direct', JSON.stringify(r1));
     check('direct (hub): that request did not go through the relay', seen.length === 0);
     const a = await viaDirect('/api/auth').then((r) => r.json());
+    const localAuth = (await api('/api/auth')).body;
+    check('direct (hub): /api/auth tells the page the 8-digit code cannot be used through the relay or direct (so it does not offer it), and can at the computer', a.codeAllowed === false && localAuth?.codeAllowed === true, JSON.stringify({ a, localAuth }));
     check('direct (hub): a direct request is still remote: not the human at the computer', a.mode === 'none' && a.authorized === false, JSON.stringify(a));
     const bots = await viaDirect('/api/bots');
     check('direct (hub): without a token nothing is served directly either', bots.status === 401);
@@ -457,6 +484,27 @@ async function directServerChecksInner({ check, api, makePairLink }) {
       peers.resetDirect();
       fs.rmSync(peersFile, { force: true });
     }
+
+    // The desktop window on a machine only the relay reaches (1.5.47): its loopback door goes direct too.
+    await api('/api/peers', { method: 'PUT', body: { peers: [{ name: 'far', url: 'http://127.0.0.1:9', token, relay: desc }] } });
+    const door = await api('/api/remote/relay-door', { method: 'POST', body: { url: 'http://127.0.0.1:9' } });
+    let doorRoutes = [];
+    if (door.status === 200) {
+      for (let i = 0; i < 12 && !doorRoutes.includes('direct'); i += 1) {
+        // A new connection each time (no keep-alive): each one picks its road anew.
+        const r = await new Promise((resolve) => {
+          http.get(`${door.body.url}/api/direct/route`, { agent: false, headers: { authorization: `Bearer ${token}` } }, (res) => {
+            let t = '';
+            res.on('data', (d) => { t += d; });
+            res.on('end', () => { try { resolve(JSON.parse(t)); } catch { resolve({}); } });
+          }).on('error', () => resolve({}));
+        });
+        doorRoutes.push(r.route);
+        await sleep(400);
+      }
+    }
+    check('direct (desktop window): a machine only the relay reaches opens through its door, first through the relay, then directly', door.status === 200 && doorRoutes[0] === 'relay' && doorRoutes.includes('direct'), JSON.stringify({ door, doorRoutes }));
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } });
 
     const off = await api('/api/relay-link', { method: 'PUT', body: { direct: false } });
     check('direct (hub): 「先试直连」 can be turned off; open direct links close', off.status === 200 && off.body.direct?.enabled === false && (await until(() => dialer.route(desc.id) === 'relay', 6000)));

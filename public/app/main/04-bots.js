@@ -357,7 +357,8 @@ async function apiRequest(path, options = {}) {
   // Not while the page is spending a one-time code from its address (boot): the
   // requests that start before it is spent are refused, and that is no reason
   // to show the pairing screen (1.5.39: it stayed up after pairing had worked).
-  if (res.status === 401 && path !== '/api/pair' && !pairingFromAddress) enterAuth('这台设备的授权已失效，请重新配对。');
+  // A first visit is not a lost login (1.5.47 beginner test: 「已失效」 on a browser that had never paired).
+  if (res.status === 401 && path !== '/api/pair' && !pairingFromAddress) enterAuth(pairedHereBefore() ? '这台设备的授权已失效，请重新配对。' : codeAllowedHere ? '这个浏览器还没有配对：输入配对码，或者用 Lamplit 手机 App 扫码。' : '这个浏览器还没有配对。从这个地址进来不能用 8 位配对码（为了安全）：请用 Lamplit 手机 App 扫二维码，或者在 Lamplit 桌面应用里打开这台机器。');
 
   const text = await res.text();
   let json = null;
@@ -598,9 +599,20 @@ function enterAuth(reason) {
   if (!isMobile()) setTimeout(() => $('auth-code').focus(), 80);
 }
 
+/** Can the 8-digit code be used at this address? (no through the relay, direct or the public door; /api/auth says, 1.5.47) */
+let codeAllowedHere = true;
+
+/** Was this browser signed in at this address before? (localStorage is per address) */
+function pairedHereBefore() {
+  try { return localStorage.getItem('lamplit.pairedHere') === '1'; } catch { return false; }
+}
+
 async function checkAuth() {
   try {
-    return await api('/api/auth');
+    const auth = await api('/api/auth');
+    if (auth && auth.codeAllowed === false) codeAllowedHere = false;
+    if (auth?.authorized) { try { localStorage.setItem('lamplit.pairedHere', '1'); } catch { /* no storage */ } }
+    return auth;
   } catch (err) {
     if (err.status === 401) return { required: true, authorized: false, mode: 'pairing' };
     if (err.status === 404) return { required: false, authorized: true, supported: false };
@@ -699,6 +711,8 @@ async function connectDevice() {
     button.textContent = '连接';
     if (err.code === 'PAIR_INVALID_CODE' || err.status === 401) {
       setAuthMsg('配对码不对。配对码每天换一次，看下面「找不到配对码？」。');
+    } else if (err.code === 'PAIR_CODE_NOT_ALLOWED_PUBLIC') {
+      setAuthMsg('从这个地址进来不能用 8 位配对码（为了安全）：请用 Lamplit 手机 App 扫二维码，或者在 Lamplit 桌面应用里打开这台机器。');
     } else if (err.code === 'PAIR_RATE_LIMITED' || err.status === 429) {
       setAuthMsg('试得太多次了，等一分钟再试。');
     } else if (err.status === 404) {
@@ -906,6 +920,7 @@ function updateModelUi() {
   if ($('about-update-row')) $('about-update-row').hidden = !canUpdateHere();
   const server = st.server || {};
   $('about-server').textContent = `${server.host || location.hostname}${server.port ? ':' + server.port : (location.port ? ':' + location.port : '')}`;
+  refreshDoorRoute();
   syncMachineBranding();
   const authRequired = state.auth ? Boolean(state.auth.required) : Boolean(server.requireAuth);
   $('about-auth').textContent = authRequired ? '需要配对（本机除外）' : '本机：桌面应用里直接用；在浏览器里批准、改权限，要先把浏览器配对一次';

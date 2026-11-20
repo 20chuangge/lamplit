@@ -33,6 +33,7 @@
  * and the certificate maker are exported.
  */
 
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
@@ -733,6 +734,270 @@ export const DEFAULT_LIMITS = {
 // The relay
 // ===========================================================================
 
+// ===========================================================================
+// Updating itself, safely (1.5.47)
+// ===========================================================================
+//
+// This relay runs only code signed with Lamplit's release key. Trust chain:
+//   - the private key stays on the computer that builds releases;
+//     scripts/sign-update.mjs signs "lamplit-relay-update v1\n<version>\n<sha256>\n"
+//     for the relay.mjs it ships (relay-update.json next to it);
+//   - the public key below came here with this file, installed over SSH into
+//     /opt (root-owned); src/selfupdate.mjs holds the same key (a smoke check);
+//   - a registered computer only SAYS it has a newer version (relay-hello, no
+//     code). The relay fetches the file through that computer's own tunnel and
+//     checks version (newer, never seen failing), size, hash and signature;
+//     whoever carries the bytes cannot change what runs;
+//   - the supervisor (this file, from /opt) checks the signature again before
+//     every start and rolls back a version that does not come up.
+// Settings, join secret and registered computers live in the data folder and
+// are never touched. Anything needing root (the service file) still needs 「重装」.
+
+export const RELAY_VERSION = '1.5.47';
+/** Lamplit's release key (Ed25519, SPKI DER, base64) - equal to UPDATE_PUBLIC_KEYS in src/selfupdate.mjs. */
+export const RELAY_UPDATE_KEYS = ['MCowBQYDK2VwAyEA4GZ8GzzbeRaLOSrj9YgUcZ7JKoIbczSLfVv5XSot9ms='];
+const MAX_RELAY_CODE = 2 * 1024 * 1024;
+const VERSION_RE = /^\d{1,4}\.\d{1,5}\.\d{1,6}$/;
+const sha256Bytes = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+
+/** What the release key signs for a relay version (never the same bytes as an app package). */
+export function relayUpdateMessage(version, sha256) {
+  return Buffer.from(`lamplit-relay-update v1\n${version}\n${sha256}\n`, 'utf8');
+}
+
+/** -1 / 0 / 1 for dotted versions. */
+export function compareRelayVersions(a, b) {
+  const pa = String(a || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+/** Is `bytes` the relay.mjs the release key signed in `manifest` {v:1, version, sha256, signature}? */
+export function verifyRelayUpdate(manifest, bytes, keys = RELAY_UPDATE_KEYS) {
+  if (!manifest || manifest.v !== 1 || !VERSION_RE.test(String(manifest.version)) || !/^[0-9a-f]{64}$/.test(String(manifest.sha256))) return false;
+  if (!bytes || !bytes.length || bytes.length > MAX_RELAY_CODE || sha256Bytes(bytes) !== manifest.sha256) return false;
+  const sig = Buffer.from(String(manifest.signature || ''), 'base64');
+  if (sig.length !== 64) return false;
+  const message = relayUpdateMessage(manifest.version, manifest.sha256);
+  return keys.some((k) => {
+    try {
+      return crypto.verify(null, message, crypto.createPublicKey({ key: Buffer.from(k, 'base64'), format: 'der', type: 'spki' }), sig);
+    } catch {
+      return false;
+    }
+  });
+}
+
+// The book: data/updates.json {current, previous, bad:[versions], last:{ok, version, at, reason?}}
+//   current/previous: {version, sha256, signature} of a staged file (null = the one in /opt)
+function readBook(stateDir) {
+  try {
+    const b = JSON.parse(fs.readFileSync(path.join(stateDir, 'updates.json'), 'utf8'));
+    return { current: null, previous: null, bad: [], last: null, ...b, bad: Array.isArray(b.bad) ? b.bad.slice(-20) : [] };
+  } catch {
+    return { current: null, previous: null, bad: [], last: null };
+  }
+}
+
+function writeBook(stateDir, book) {
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const file = path.join(stateDir, 'updates.json');
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(book, null, 1), { mode: 0o600 });
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+const stagedFile = (stateDir, version) => path.join(stateDir, 'updates', version, 'relay.mjs');
+
+/**
+ * A GET to the computer behind `entry` through its own tunnel: a stream the
+ * relay opens itself, TLS to the computer. The computer's certificate is not
+ * what makes the bytes trusted - the signature is - so it is not pinned here.
+ */
+function fetchViaTunnel(entry, urlPath, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (err, value) => { if (done) return; done = true; clearTimeout(timer); if (err) reject(err); else resolve(value); };
+    const stream = entry.mux.open({ ip: 'relay-update' });
+    const sock = tls.connect({ socket: stream, servername: `${entry.id}.relay.lamplit`, rejectUnauthorized: false, ALPNProtocols: ['http/1.1'] });
+    sock.on('error', (err) => finish(err));
+    const req = http.request({ createConnection: () => sock, path: urlPath, method: 'GET', headers: { host: `${entry.id}.relay.lamplit`, connection: 'close' } }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); finish(new Error(`HTTP ${res.statusCode}`)); return; }
+      const parts = [];
+      let n = 0;
+      res.on('data', (d) => {
+        n += d.length;
+        if (n > maxBytes) { req.destroy(); finish(new Error('too large')); return; }
+        parts.push(d);
+      });
+      res.on('end', () => finish(null, Buffer.concat(parts)));
+      res.on('error', (err) => finish(err));
+    });
+    const timer = setTimeout(() => { req.destroy(); finish(new Error('no answer in time')); }, 30000);
+    req.on('error', (err) => finish(err));
+    req.end();
+  });
+}
+
+/**
+ * createRelayUpdater({running:{version, sha256}, stateDir, keys?, onStaged(version), minIntervalMs?, log?})
+ *   offer(from, {version, sha256})  a computer's nudge; from = {id, fetch(path, max), tell?()}
+ *   install(manifest, bytes)        check and stage (also used by the tests)
+ *   status()                        {version, sha256, auto, fetching, last}
+ */
+export function createRelayUpdater({ running, stateDir, keys = RELAY_UPDATE_KEYS, onStaged = () => {}, minIntervalMs = 10 * 60 * 1000, log = () => {} }) {
+  let fetching = false;
+  let lastFetchAt = 0;
+  let last = readBook(stateDir).last;
+
+  const remember = (result) => {
+    last = { ...result, at: new Date().toISOString() };
+    const book = readBook(stateDir);
+    book.last = last;
+    writeBook(stateDir, book);
+  };
+
+  async function install(manifest, bytes) {
+    const refuse = (reason) => Object.assign(new Error(reason), { reason });
+    if (!manifest || compareRelayVersions(manifest.version, running.version) <= 0) throw refuse('不是更新的版本，没有换');
+    if (!verifyRelayUpdate(manifest, bytes, keys)) throw refuse('签名对不上，没有换（中转只运行 Lamplit 签过名的程序）');
+    const book = readBook(stateDir);
+    if (book.bad.includes(manifest.version)) throw refuse(`${manifest.version} 以前没能正常启动，不再试`);
+    const file = stagedFile(stateDir, manifest.version);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, bytes, { mode: 0o600 });
+    // "Previous" is what runs now: a staged version, or (null) the one in /opt.
+    book.previous = book.current && book.current.version === running.version ? book.current : null;
+    book.current = { v: 1, version: manifest.version, sha256: manifest.sha256, signature: manifest.signature };
+    writeBook(stateDir, book);
+    // Only the current and previous staged versions stay on disk.
+    const keep = new Set([book.current.version, book.previous?.version].filter(Boolean));
+    try {
+      for (const v of fs.readdirSync(path.join(stateDir, 'updates'))) if (!keep.has(v)) fs.rmSync(path.join(stateDir, 'updates', v), { recursive: true, force: true });
+    } catch { /* nothing to tidy */ }
+    log(`relay ${manifest.version} checked (signature, hash, size) and staged`);
+    onStaged(manifest.version);
+    return manifest.version;
+  }
+
+  function offer(from, msg) {
+    const version = String(msg?.version || '');
+    const sha = String(msg?.sha256 || '');
+    // Quietly ignored: not newer, the same code, known bad, busy, asked too recently.
+    if (!VERSION_RE.test(version) || compareRelayVersions(version, running.version) <= 0 || sha === running.sha256) return;
+    const book = readBook(stateDir);
+    if (book.bad.includes(version) || book.current?.version === version) return;
+    if (fetching || Date.now() - lastFetchAt < minIntervalMs) return;
+    fetching = true;
+    lastFetchAt = Date.now();
+    (async () => {
+      try {
+        const manifest = JSON.parse((await from.fetch('/api/relay-update', 16 * 1024)).toString('utf8'));
+        const bytes = await from.fetch('/api/relay-update/relay.mjs', MAX_RELAY_CODE + 1);
+        await install(manifest, bytes);
+      } catch (err) {
+        remember({ ok: false, version, reason: err.reason || `没能从电脑取到新版（${err.message}）` });
+        log(`relay ${version} not taken: ${last.reason}`);
+      } finally {
+        fetching = false;
+        try { from.tell?.(); } catch { /* tunnel gone */ }
+      }
+    })();
+  }
+
+  return {
+    offer,
+    install,
+    status: () => ({ version: running.version, sha256: running.sha256, auto: true, fetching, last }),
+  };
+}
+
+/** What to start: a staged, signed, newer version not known bad - else the one in /opt. Checked at every start. */
+export function chooseCode({ stateDir, builtin, keys = RELAY_UPDATE_KEYS }) {
+  const book = readBook(stateDir);
+  const c = book.current;
+  if (c && !book.bad.includes(c.version) && compareRelayVersions(c.version, builtin.version) > 0) {
+    try {
+      const file = stagedFile(stateDir, c.version);
+      if (verifyRelayUpdate({ ...c, v: 1 }, fs.readFileSync(file), keys)) return { file, version: c.version, sha256: c.sha256, updated: true };
+    } catch { /* missing: the builtin */ }
+  }
+  return { ...builtin, updated: false };
+}
+
+/**
+ * Keep a relay running (the service's own process). A started version must
+ * print its ready line within readyMs and live settleMs; an updated one that
+ * does not is marked bad and the one before it starts instead. Exit 75 means
+ * "an update is staged": start again at once.
+ */
+export function runSupervisor({ stateDir, builtin, keys = RELAY_UPDATE_KEYS, spawnChild, readyMs = 30000, settleMs = 60000, restartDelayMs = 3000, log = () => {} }) {
+  let stopped = false;
+  let child = null;
+  let timer = null;
+
+  function rollback(pick, why) {
+    const book = readBook(stateDir);
+    book.bad = [...new Set([...book.bad, pick.version])];
+    const back = book.previous && book.previous.version !== pick.version ? book.previous : null;
+    book.current = back;
+    book.previous = null;
+    // Said plainly on the computer (1.5.47 beginner test: the technical cause read like programmer talk); the cause goes to the log.
+    book.last = { ok: false, version: pick.version, at: new Date().toISOString(), reason: `新版本 ${pick.version} 没能正常启动，已退回 ${back ? back.version : builtin.version}` };
+    writeBook(stateDir, book);
+    log(`${book.last.reason} (${why})`);
+  }
+
+  function start() {
+    if (stopped) return;
+    const pick = chooseCode({ stateDir, builtin, keys });
+    let ready = false;
+    let settled = false;
+    let out = '';
+    let settleTimer = null;
+    const c = spawnChild(pick);
+    child = c;
+    const readyTimer = setTimeout(() => { if (!ready) { log(`relay ${pick.version} did not say ready`); c.kill(); } }, readyMs);
+    c.stdout?.on('data', (d) => {
+      if (ready) return;
+      out = (out + d).slice(-8192);
+      if (!/"event"\s*:\s*"ready"/.test(out)) return;
+      ready = true;
+      clearTimeout(readyTimer);
+      settleTimer = setTimeout(() => {
+        settled = true;
+        if (!pick.updated) return;
+        const book = readBook(stateDir);
+        if (book.last?.ok && book.last.version === pick.version) return;
+        book.last = { ok: true, version: pick.version, at: new Date().toISOString() };
+        writeBook(stateDir, book);
+        log(`relay ${pick.version} is running fine`);
+      }, settleMs);
+    });
+    c.on('exit', (code) => {
+      clearTimeout(readyTimer);
+      clearTimeout(settleTimer);
+      child = null;
+      if (stopped) return;
+      if (code === 75) { timer = setTimeout(start, 10); return; }
+      if (pick.updated && !settled) rollback(pick, ready ? 'exited soon after starting' : 'never said ready');
+      timer = setTimeout(start, restartDelayMs);
+    });
+  }
+
+  start();
+  return {
+    stop() {
+      stopped = true;
+      clearTimeout(timer);
+      try { child?.kill(); } catch { /* gone */ }
+    },
+  };
+}
+
 const cleanIp = (ip) => String(ip || '').replace(/^::ffff:/, '');
 
 /** A stream that yields `head` and then whatever `socket` reads (unshift does not reach a TLS wrap). */
@@ -757,7 +1022,8 @@ function replay(socket, head) {
  * server.listen(port, host) is the caller's. `tap(id, 'up'|'down', bytes)` sees
  * every passed-through chunk - the tests use it to show they are ciphertext.
  */
-export function createRelay({ identity, joinSecret, registryFile = '', limits = {}, log = () => {}, tap = null } = {}) {
+export function createRelay({ identity, joinSecret, registryFile = '', limits = {}, log = () => {}, tap = null, updater: updaterIn = null } = {}) {
+  let updater = updaterIn;
   if (!identity?.key || !identity?.cert) throw new Error('relay needs a TLS identity for its control plane');
   if (!joinSecret || String(joinSecret).length < 16) throw new Error('relay needs a join secret (16+ chars)');
   const L = { ...DEFAULT_LIMITS, ...limits };
@@ -807,7 +1073,7 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
   const control = http.createServer((req, res) => {
     if (req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, relay: 'lamplit', tunnels: tunnels.size, stun: Boolean(stunSocket) }));
+      res.end(JSON.stringify({ ok: true, relay: 'lamplit', tunnels: tunnels.size, stun: Boolean(stunSocket), version: updater?.status().version || RELAY_VERSION, auto: Boolean(updater) }));
       return;
     }
     res.writeHead(404);
@@ -857,6 +1123,19 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
     tunnels.set(id, entry);
     log(`tunnel up: ${id.slice(0, 6)}… from ${ip}${old ? ' (replaced the old one)' : ''}`);
     mux.control({ type: 'hello', id });
+    // 1.5.47: the computer says hello back with what relay version it has (a
+    // nudge: no code). The answer is what this relay runs and how its last
+    // update went; a newer offer makes the updater fetch it through this tunnel.
+    const tell = () => mux.control({ type: 'relay-info', ...(updater ? updater.status() : { version: RELAY_VERSION, auto: false }) });
+    let nudges = 0;
+    mux.on('control', (msg) => {
+      if (msg?.type !== 'relay-hello' || (nudges += 1) > 20) return;
+      tell();
+      const offer = msg.offer;
+      if (updater && offer && typeof offer === 'object') {
+        updater.offer({ id, fetch: (p, max) => fetchViaTunnel(entry, p, max), tell }, { type: 'relay-version', version: offer.version, sha256: offer.sha256 });
+      }
+    });
     const beat = setInterval(() => {
       if (Date.now() - ws.lastHeard > L.deadAfterMs) { log(`tunnel ${id.slice(0, 6)}… silent, dropped`); mux.close(); return; }
       ws.ping();
@@ -958,11 +1237,13 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
   }
 
   /** STUN on UDP port `port` (1.5.46 直连). Resolves when bound; rejects if the port is taken. */
-  function listenStun(port, host = '0.0.0.0') {
+  // `drop()` (tests only): act as if a cloud firewall in front dropped the UDP.
+  function listenStun(port, host = '0.0.0.0', { drop = () => false } = {}) {
     return new Promise((resolve, reject) => {
       const sock = dgram.createSocket({ type: net.isIPv6(host) ? 'udp6' : 'udp4' });
       sock.once('error', reject);
       sock.on('message', (msg, rinfo) => {
+        if (drop()) return;
         const ip = cleanIp(rinfo.address);
         if (isBlocked(ip) || !stunLimiter.take(ip)) return;
         const out = stunAnswer(msg, rinfo);
@@ -983,6 +1264,8 @@ export function createRelay({ identity, joinSecret, registryFile = '', limits = 
     server,
     tunnels,
     listenStun,
+    /** Tests: swap the updater (a new one per case). */
+    setUpdater(u) { updater = u; },
     registry: () => ({ ...registry }),
     stats: () => ({ ...counters, tunnels: tunnels.size, ips: perIp.size, blocked: blocked.size, stunOn: Boolean(stunSocket) }),
     close() {
@@ -1064,11 +1347,52 @@ function arg(name, fallback) {
   return eq ? eq.slice(name.length + 3) : fallback;
 }
 
+/**
+ * Started as a service (no --serve): the supervisor (1.5.47). It runs the
+ * relay as a child - this very file, or a signed newer version staged in the
+ * data folder - and rolls back one that does not come up. This part is the
+ * copy installed over SSH into /opt (root-owned): keep it small.
+ */
+function supervise(dataDir) {
+  const log = (line) => console.error(`[relay-supervisor] ${new Date().toISOString()} ${line}`);
+  const self = fileURLToPath(import.meta.url);
+  const builtin = { file: self, version: RELAY_VERSION, sha256: sha256Bytes(fs.readFileSync(self)) };
+  const passArgs = process.argv.slice(2);
+  const sup = runSupervisor({
+    stateDir: dataDir,
+    builtin,
+    log,
+    spawnChild: (pick) => {
+      log(`starting relay ${pick.version}${pick.updated ? ' (updated, signature checked)' : ''}`);
+      // stdin is a pipe the child watches: when this process dies (even killed hard), the child goes too.
+      const c = spawn(process.execPath, [pick.file, '--serve', ...passArgs], {
+        env: { ...process.env, LAMPLIT_RELAY_RUNNING: JSON.stringify({ version: pick.version, sha256: pick.sha256 }) },
+        stdio: ['pipe', 'pipe', 'inherit'],
+      });
+      c.stdout.on('data', (d) => process.stdout.write(d));
+      c.on('error', (err) => log(`could not start: ${err.message}`));
+      return c;
+    },
+  });
+  const stop = () => { sup.stop(); setTimeout(() => process.exit(0), 300); };
+  process.on('SIGTERM', stop);
+  process.on('SIGINT', stop);
+}
+
 async function main() {
   const port = Number(arg('port', process.env.LAMPLIT_RELAY_PORT || DEFAULT_PORT));
   const host = arg('host', process.env.LAMPLIT_RELAY_HOST || '0.0.0.0');
   const dataDir = path.resolve(arg('data', process.env.LAMPLIT_RELAY_DATA || path.join(process.cwd(), 'relay-data')));
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  if (!process.argv.includes('--serve')) { supervise(dataDir); return; }
+  // Under the supervisor: what runs, and the updater; gone when the supervisor is.
+  let running = null;
+  try { running = JSON.parse(process.env.LAMPLIT_RELAY_RUNNING || 'null'); } catch { running = null; }
+  if (running) {
+    process.stdin.on('end', () => process.exit(0));
+    process.stdin.on('close', () => process.exit(0));
+    process.stdin.resume();
+  }
   const identity = loadOrMakeIdentity(path.join(dataDir, 'tls'), 'lamplit-relay');
   const joinFile = path.join(dataDir, 'join-secret');
   let joinSecret = '';
@@ -1078,7 +1402,12 @@ async function main() {
     fs.writeFileSync(joinFile, `${joinSecret}\n`, { mode: 0o600 });
   }
   const log = (line) => console.error(`[relay] ${new Date().toISOString()} ${line}`);
-  const relay = createRelay({ identity, joinSecret, registryFile: path.join(dataDir, 'machines.json'), log });
+  let relay = null;
+  // A staged update: close the tunnels (the computers reconnect in a second), exit 75, the supervisor starts it.
+  const updater = running && /^\d+\.\d+\.\d+$/.test(String(running.version)) && /^[0-9a-f]{64}$/.test(String(running.sha256))
+    ? createRelayUpdater({ running, stateDir: dataDir, log, onStaged: (v) => { log(`relay ${v} staged; restarting into it`); setTimeout(() => { relay?.close(); process.exit(75); }, 1000); } })
+    : null;
+  relay = createRelay({ identity, joinSecret, registryFile: path.join(dataDir, 'machines.json'), log, updater });
   relay.server.on('error', (err) => { log(`listen failed: ${err.message}`); process.exit(1); });
   relay.server.listen(port, host, async () => {
     const bound = relay.server.address().port;

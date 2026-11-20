@@ -31,6 +31,16 @@ import tls from 'node:tls';
 
 import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, shieldStream } from '../hub/relay/relay.mjs';
 import { createDirectServer } from './direct.mjs';
+import { readRelayUpdate } from './relayupdate.mjs';
+
+/** The relay's own report (1.5.47), kept to what Settings shows. */
+function cleanRelayInfo(msg) {
+  const text = (v, n) => String(v ?? '').slice(0, n);
+  const last = msg.last && typeof msg.last === 'object'
+    ? { ok: Boolean(msg.last.ok), version: text(msg.last.version, 20), at: text(msg.last.at, 40), reason: text(msg.last.reason, 300) }
+    : null;
+  return { version: text(msg.version, 20), auto: Boolean(msg.auto), fetching: Boolean(msg.fetching), last };
+}
 
 /**
  * Is the relay at host:port there, and is it the one installed (its
@@ -68,7 +78,8 @@ export function checkRelay({ host, port, relayFingerprint, timeoutMs = 8000 } = 
       const body = text.slice(text.indexOf('\r\n\r\n') + 4);
       if (/"relay"\s*:\s*"lamplit"/.test(body) && /"tunnels"\s*:\s*\d+/.test(body)) {
         // stun (1.5.46): a relay new enough to answer 「我在公网上是什么地址」 for 直连.
-        finish({ ok: true, ms: Date.now() - started, tunnels: Number(/"tunnels"\s*:\s*(\d+)/.exec(body)[1]), stun: /"stun"\s*:\s*true/.test(body) });
+        // version / auto (1.5.47): which relay runs, and whether it updates itself.
+        finish({ ok: true, ms: Date.now() - started, tunnels: Number(/"tunnels"\s*:\s*(\d+)/.exec(body)[1]), stun: /"stun"\s*:\s*true/.test(body), version: /"version"\s*:\s*"([0-9.]{1,20})"/.exec(body)?.[1] || '', auto: /"auto"\s*:\s*true/.test(body) });
       }
     });
     socket.on('error', (err) => finish({ ok: false, code: 'RELAY_UNREACHABLE', message: err.message }));
@@ -218,15 +229,17 @@ export function relayFetch(desc, urlPath, { method = 'GET', headers = {}, body, 
  * forwarder does. Each machine gets its own loopback address (127.0.0.2, .3 …)
  * so cookies of different machines never mix. Whoever uses the door still
  * needs that machine's login: through the relay it treats every request as remote.
+ * `direct` (1.5.47): () => a dialer from direct.mjs, or null - asked per connection,
+ * so 「先试直连」 turned off takes effect at once. Same rules as connectViaRelay.
  * -> Promise<{url, host, port, close()}>
  */
-export function openRelayForwarder(desc, { host = '127.0.0.2', port = 0 } = {}) {
+export function openRelayForwarder(desc, { host = '127.0.0.2', port = 0, direct = () => null } = {}) {
   const d = cleanDescriptor(desc);
   if (!d) return Promise.reject(Object.assign(new Error('not a relay address'), { code: 'RELAY_BAD_ADDRESS' }));
   const server = net.createServer({ allowHalfOpen: true }, (inner) => {
     inner.on('error', () => {});
     inner.pause();
-    connectViaRelay(d).then((outer) => {
+    connectViaRelay(d, { direct: typeof direct === 'function' ? direct() : direct }).then((outer) => {
       outer.on('error', () => inner.destroy());
       inner.on('error', () => outer.destroy());
       inner.pipe(outer);
@@ -247,7 +260,7 @@ export function openRelayForwarder(desc, { host = '127.0.0.2', port = 0 } = {}) 
 // The link: settings, the tunnel, and the TLS end of every relayed connection
 // ---------------------------------------------------------------------------
 
-export function createRelayLink({ dataDir, handler, upgrade, log = (line) => console.error(`[relay-link] ${line}`), openTunnelImpl = openTunnel, replacedWaitMs = 60000, directOptions = {} } = {}) {
+export function createRelayLink({ dataDir, handler, upgrade, log = (line) => console.error(`[relay-link] ${line}`), openTunnelImpl = openTunnel, replacedWaitMs = 60000, directOptions = {}, relayUpdate = () => readRelayUpdate() } = {}) {
   const file = path.join(dataDir, 'relay-link.json');
   let cfg = readConfig();
   let identity = null;
@@ -260,7 +273,21 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
 
   // The relayed requests are served by this http server: it never listens,
   // it is handed TLS sockets that already finished their handshake here.
-  const server = http.createServer(handler);
+  // The relay asks for its signed update through this computer's tunnel
+  // (1.5.47): the manifest and relay.mjs, open source, served without a login.
+  // Trust is the signature, which the relay checks; everything else goes on to the hub.
+  const server = http.createServer((req, res) => {
+    const want = req.method === 'GET' ? String(req.url || '') : '';
+    if (want === '/api/relay-update' || want === '/api/relay-update/relay.mjs') {
+      const src = relayUpdate();
+      if (!src) { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":{"code":"NO_RELAY_UPDATE"}}'); return; }
+      const body = want.endsWith('.mjs') ? src.bytes : Buffer.from(JSON.stringify(src.manifest));
+      res.writeHead(200, { 'content-type': want.endsWith('.mjs') ? 'text/javascript' : 'application/json', 'content-length': body.length });
+      res.end(body);
+      return;
+    }
+    handler(req, res);
+  });
   if (upgrade) server.on('upgrade', upgrade);
   server.on('clientError', (_err, socket) => { try { socket.destroy(); } catch { /* gone */ } });
 
@@ -391,7 +418,15 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
           status.replaced = true;
           log('another tunnel with this id replaced ours');
         }
+        // What the relay runs and how its last self-update went (1.5.47).
+        if (msg?.type === 'relay-info') status.relay = cleanRelayInfo(msg);
       });
+      // Hello back (1.5.47): the relay version this computer can hand over - a
+      // nudge only; the relay fetches and checks it itself. A relay from before
+      // 1.5.47 does not answer: it still needs one manual 「重装」.
+      status.relay = null;
+      const offer = relayUpdate();
+      t.mux.control({ type: 'relay-hello', offer: offer ? { version: offer.manifest.version, sha256: offer.manifest.sha256 } : null });
       // The client pings too: a NAT that silently dropped the connection is noticed.
       const beat = setInterval(() => {
         if (Date.now() - t.ws.lastHeard > 60000) { t.mux.close(); return; }
@@ -460,13 +495,28 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
         bytesIn: status.bytesIn + (tunnel?.mux.bytesIn || 0),
         bytesOut: status.bytesOut + (tunnel?.mux.bytesOut || 0),
         // 「先试直连」 (1.5.46): on unless turned off; never for the relay's own server.
-        direct: (() => { const { remotes: _r, ...v } = direct.view(); return { ...v, enabled: cfg.direct !== false, applies: !sameHost() }; })(),
+        direct: (() => { const { remotes: _r, ...v } = direct.view(); return { ...v, enabled: cfg.direct !== false, applies: !sameHost(), stunCause: v.stun === 'no' ? status.stunCause || '' : '' }; })(),
+        // 1.5.47: what the relay runs (null: not heard; with relayOld, a relay before 1.5.47) and what this computer offers it.
+        relay: status.relay || null,
+        relayOld: Boolean(tunnel && !status.relay && status.connectedAt && Date.now() - Date.parse(status.connectedAt) > 5000),
+        relayUpdate: (() => { const o = relayUpdate(); return o ? { version: o.manifest.version } : null; })(),
       };
     },
     /** A paired device asks to go direct (POST /api/direct/offer). */
     offer: (body, who) => direct.offer(body, { who }),
     /** Does the relay answer STUN (a new relay, UDP open)? For 体检. -> 'yes' | 'no' | 'unknown' */
-    probeStun: () => (directWanted() ? direct.probeStun() : Promise.resolve('unknown')),
+    // On 'no' it also finds out why (1.5.47 beginner test: the card told an
+    // up-to-date relay to reinstall): 'firewall' = the relay can answer (its
+    // health says so) but UDP does not get through; 'old' = a relay without STUN.
+    async probeStun() {
+      if (!directWanted()) return 'unknown';
+      const got = await direct.probeStun();
+      if (got === 'no') {
+        const health = await this.check().catch(() => null);
+        status.stunCause = health?.ok && health.stun ? 'firewall' : 'old';
+      } else status.stunCause = '';
+      return got;
+    },
     closeDirect: () => direct.close(),
     /** What another of the owner's machines needs to join the same relay (secret: only for the share route). */
     shareable() {

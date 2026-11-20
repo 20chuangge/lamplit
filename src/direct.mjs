@@ -683,6 +683,8 @@ export function createDirectServer({ acceptStream, relay = () => null, enabled =
     if (!r?.host) { stunState = 'unknown'; return null; }
     if (outside.value && Date.now() - outside.at < 30000) return outside.value;
     const got = await e.stun(r.host, r.port);
+    // UDP just started getting through (the firewall was opened): failures from before say nothing about now.
+    if (got && stunState === 'no' && stats.last === 'failed') stats.last = '';
     stunState = got ? 'yes' : 'no';
     outside = { at: Date.now(), value: got };
     return got;

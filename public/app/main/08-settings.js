@@ -1741,9 +1741,42 @@ function phoneRelayRoute(urlOrId) {
   }
 }
 
+/**
+ * The desktop window's door to a machine only the relay reaches (127.0.0.N,
+ * 1.5.47): its requests go direct when they can. Ask that machine how this
+ * page's requests arrive, at most once a minute, so the route says 直连 then.
+ */
+function refreshDoorRoute() {
+  const h = location.hostname;
+  if (!/^127\.0\.0\.\d+$/.test(h) || h === '127.0.0.1' || Date.now() - (state.doorRouteAt || 0) < 60000) return;
+  state.doorRouteAt = Date.now();
+  api('/api/direct/route').then((r) => {
+    if (r?.route && r.route !== state.doorRoute) { state.doorRoute = r.route; syncMachineBranding(); }
+  }).catch(() => {});
+}
+
+/**
+ * The relay updating itself (1.5.47), in words for the relay card: what it
+ * runs, that it updated, why it did not, or that it needs one last manual
+ * 「重装」 (a relay from before 1.5.47). '' while there is nothing to say yet.
+ */
+function relayUpdateWords(view) {
+  const r = view?.relay;
+  const newer = (a, b) => { const x = String(a).split('.').map(Number); const y = String(b).split('.').map(Number); for (let i = 0; i < 3; i += 1) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+  if ((!r && view?.relayOld) || (r && !r.auto)) return '这个中转还不会自己更新：再点一次下面的「重装 / 换端口」（最后一次手动），以后它会跟着 Lamplit 自己更新。';
+  if (!r) return '';
+  if (r.last && !r.last.ok) return `中转这次没有更新：${r.last.reason}。现在用的是 ${r.version}，照常能用。`;
+  const offer = view.relayUpdate?.version;
+  if (offer && newer(offer, r.version)) return r.fetching ? `中转正在更新到 ${offer}…` : `中转会自己更新到 ${offer}（几分钟内）。`;
+  if (r.last?.ok && r.last.version === r.version) return `中转已更新到 ${r.version}，以后也会自己更新。`;
+  return `中转是最新的（${r.version}），以后会自己更新。`;
+}
+
 /** 直连 (1.5.46) in the relay card, in words: on or off, working or why not. */
 function directWords(d, port) {
   if (!d || d.enabled === false) return '「先试直连」关着：手机在外面都走中转。';
+  // The relay can answer but UDP does not get through: only the firewall rule is missing (1.5.47 beginner test).
+  if (d.stun === 'no' && d.stunCause === 'firewall') return `现在都走中转，能用。想直连，还差一步：到云服务器控制台的「防火墙」（或「安全组」）加一条 UDP ${port} 的规则。`;
   if (d.stun === 'no') return `现在都走中转，能用。想直连，中转要更新一次：点下面的「重装 / 换端口」，装完再到云服务器控制台加一条 UDP ${port} 的规则。`;
   if (d.active > 0) return `直连中：${d.active} 台设备直接连着这台电脑，数据不经过中转。`;
   // The latest try first (1.5.46 beginner test: after one success, a later failure was never said).

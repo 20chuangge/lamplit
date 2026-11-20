@@ -65,7 +65,7 @@ function machineDisplayName() {
 /** How this page reached its machine, in words: 直连 / 中转 (the desktop's door 127.0.0.N or the phone's forwarder), Tailscale (100.x), else the host name. */
 function pageRouteWords() {
   const h = location.hostname;
-  if (throughPhoneRelay() && phoneRelayRoute(location.origin) === 'direct') return '直连';
+  if ((throughPhoneRelay() && phoneRelayRoute(location.origin) === 'direct') || state.doorRoute === 'direct') return '直连';
   if (throughPhoneRelay() || (/^127\.0\.0\.\d+$/.test(h) && h !== '127.0.0.1')) return '中转';
   if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return 'Tailscale';
   if (/^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+/.test(h)) return '局域网';
@@ -1715,12 +1715,12 @@ function tunnelFormMode(mode, view = state.tunnel || {}) {
   }
 }
 
-async function renderTunnel() {
+async function renderTunnel(probe = true) {
   const box = $('tunnel-status');
   if (!box) return;
   let view;
   try {
-    view = await api('/api/relay-link');
+    view = await api(probe === false ? '/api/relay-link' : '/api/relay-link?probe=1'); // opened: ask the relay again (1.5.47)
   } catch (err) {
     box.textContent = err.message || String(err);
     return;
@@ -1768,6 +1768,7 @@ async function renderTunnel() {
   else if (view.state === 'online') lines.push(`已连上。经过中转的连接 ${view.connections} 个，收 ${mb(view.bytesIn)} MB，发 ${mb(view.bytesOut)} MB。手机 App 扫过 设置 → 手机和外网 的二维码，出门用流量也能连回来。`);
   else if (view.state === 'error') lines.push(why[view.error] || `连不上中转（${view.error}）`);
   else lines.push('正在连接中转…');
+  if (view.enabled && view.state === 'online' && relayUpdateWords(view)) lines.push(relayUpdateWords(view)); // 1.5.47: it updates itself
   for (const line of lines) box.appendChild(el('div', '', line));
   // 「先试直连」 (1.5.46): with the relay on; not on the relay's own server (nothing to save there).
   const direct = view.direct || {};
@@ -1781,7 +1782,7 @@ async function renderTunnel() {
     if (closed) portNote.textContent = `${relayPortAdvice(view.port)}放行后点「再测一次」。`;
   }
   clearTimeout(state.tunnelTimer);
-  if (isShown($('tunnel-box'))) state.tunnelTimer = setTimeout(renderTunnel, view.enabled && view.state !== 'online' ? 3000 : 15000);
+  if (isShown($('tunnel-box'))) state.tunnelTimer = setTimeout(() => renderTunnel(false), view.enabled && view.state !== 'online' ? 3000 : 15000);
 }
 
 async function setTunnel(enabled) {

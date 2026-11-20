@@ -171,6 +171,8 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
     find,
     call,
     json,
+    /** The direct dialer while 「先试直连」 is on, else null (1.5.47: the desktop window's relay door uses it too). */
+    directDialer: () => (directWanted() ? dialer : null),
     /** 直连 (1.5.46): 'direct' | 'relay' for a machine's relay address. */
     directRoute: (peer) => (peer?.relay ? dialer.route(peer.relay.id) : 'relay'),
     /** The network or the setting changed: drop direct links to the machines. */

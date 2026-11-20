@@ -2198,7 +2198,8 @@ route('GET', /^\/api\/auth$/, async (req, _res, { state }) => {
   const auth = evaluateAuth(req, state.security, state.devices);
   // authority: whether this client may decide approvals (1.5.32): a browser on
   // this computer without the app's key is told so before the human clicks.
-  return { required: auth.required, authorized: auth.authorized, mode: auth.mode, authority: auth.authorized && carriesLocalKey(req, auth, P.dataDir, state.devices, state.security) };
+  // codeAllowed (1.5.47): through the relay, direct or the public door the 8-digit code is refused, so the page does not offer it.
+  return { required: auth.required, authorized: auth.authorized, mode: auth.mode, authority: auth.authorized && carriesLocalKey(req, auth, P.dataDir, state.devices, state.security), codeAllowed: !req.viaPublic };
 });
 
 route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
@@ -2397,8 +2398,10 @@ async function shareRelayWithMachines(state, { onlyHost = '' } = {}) {
 // 「通过中转连接」 (relaylink.mjs). Off by default; on once a relay is installed from here.
 //   GET /api/relay-link -> {enabled, host, port, relayFingerprint, id, fingerprint, state, error, …, descriptor}
 //   PUT /api/relay-link {enabled?, host?, port?, relayFingerprint?, join?} -> the same (the human only)
-route('GET', /^\/api\/relay-link$/, async (_req, _res, { state }) => {
+route('GET', /^\/api\/relay-link$/, async (_req, _res, { state, query }) => {
   if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
+  // ?probe=1 (1.5.47): the card was just opened - ask the relay's STUN again rather than show an old answer.
+  if (query.get('probe') === '1') await state.relayLink.probeStun().catch(() => {});
   return { ...state.relayLink.view(), descriptor: state.relayLink.descriptor() };
 });
 // Can this computer reach its relay's port right now (第 2 步: after opening it in the cloud console)?
@@ -2406,6 +2409,7 @@ route('GET', /^\/api\/relay-link$/, async (_req, _res, { state }) => {
 route('POST', /^\/api\/relay-link\/test$/, async (_req, _res, { state }) => {
   if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
   const result = await state.relayLink.check();
+  await state.relayLink.probeStun().catch(() => {}); // UDP may have just been opened too (1.5.47)
   // The port just opened: do not wait out the backoff to reconnect.
   const view = state.relayLink.view();
   if (result.ok && view.enabled && view.state !== 'online') state.relayLink.retryNow();
@@ -2798,8 +2802,22 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
   // yellow: when direct does not work, the relay does.
   const item = await directCheckupItem(state).catch(() => null);
   if (item) items.push(item);
+  const updating = relayUpdateCheckupItem(state);
+  if (updating) items.push(updating);
   return { items, at: nowIso() };
 });
+
+/** The relay updating itself (1.5.47): one line while the tunnel is up; a note, never a problem. */
+function relayUpdateCheckupItem(state) {
+  const link = state.relayLink?.view?.();
+  if (!link?.enabled || link.state !== 'online') return null;
+  const r = link.relay;
+  const toPair = { kind: 'settings', target: 'sec-pair', label: '去设置' };
+  if ((!r && link.relayOld) || (r && !r.auto)) return checkupItem('relay-update', '中转更新', 'info', '这个中转还不会自己更新：在「设置 → 手机和外网」再点一次「重装 / 换端口」（最后一次手动），以后它会跟着 Lamplit 自己更新。', toPair);
+  if (!r) return null;
+  if (r.last && !r.last.ok) return checkupItem('relay-update', '中转更新', 'info', `中转这次没有更新：${r.last.reason}。现在用的是 ${r.version}，照常能用。`);
+  return checkupItem('relay-update', '中转更新', 'ok', `中转会跟着 Lamplit 自己更新，现在是 ${r.version}。`);
+}
 
 async function directCheckupItem(state) {
   const link = state.relayLink?.view?.();
@@ -2807,11 +2825,12 @@ async function directCheckupItem(state) {
   const d = link.direct;
   const toPair = { kind: 'settings', target: 'sec-pair', label: '去设置' };
   if (!d.enabled) return checkupItem('direct', '直连', 'info', '「先试直连」关着：手机在外面都走中转。打开后，能直连时数据不经过你的服务器，也不占它的流量。', toPair);
-  const stun = d.stun === 'unknown' ? await state.relayLink.probeStun().catch(() => 'no') : d.stun;
+  // Asked again on every run (1.5.47): the human may have just opened UDP in the
+  // cloud firewall, and an old 'no' must not stay. One small UDP question, 1.5 s at most.
+  const stun = await state.relayLink.probeStun().catch(() => 'no');
   if (stun === 'no') {
-    // An old relay, or a new one whose UDP port the cloud firewall still drops.
-    const health = await state.relayLink.check().catch(() => null);
-    if (health?.ok && health.stun) return checkupItem('direct', '直连', 'info', `现在都走中转，能用。想直连，还差一步：到云服务器控制台的「防火墙」（或「安全组」）加一条 UDP ${link.port} 的规则。`, toPair);
+    // An old relay, or a new one whose UDP port the cloud firewall still drops (probeStun found out which; the card says the same).
+    if (state.relayLink.view().direct?.stunCause === 'firewall') return checkupItem('direct', '直连', 'info', `现在都走中转，能用。想直连，还差一步：到云服务器控制台的「防火墙」（或「安全组」）加一条 UDP ${link.port} 的规则。`, toPair);
     return checkupItem('direct', '直连', 'info', `现在都走中转，能用。想直连，中转要更新一次：在「设置 → 手机和外网」点「重装 / 换端口」，装完再到云服务器控制台加一条 UDP ${link.port} 的规则。`, { ...toPair, label: '去更新中转' });
   }
   if (d.active > 0) return checkupItem('direct', '直连', 'ok', `现在有 ${d.active} 台设备直连这台电脑：数据不经过你的服务器，也不占它的流量。`);
@@ -2985,7 +3004,8 @@ route('POST', /^\/api\/remote\/relay-door$/, async (req, _res, { body, state }) 
   const used = new Set([...relayDoors.values()].map((d) => d.host));
   let n = 2;
   while (used.has(`127.0.0.${n}`) && n < 250) n += 1;
-  const door = await openRelayForwarder(relay, { host: `127.0.0.${n}` });
+  // 直连 (1.5.47): the door's connections go direct when they can, like the machines' own calls.
+  const door = await openRelayForwarder(relay, { host: `127.0.0.${n}`, direct: () => state.peers.directDialer() });
   relayDoors.set(relay.id, { ...door, fp: relay.fp, relayAt: `${relay.host}:${relay.port}` });
   return { url: door.url, cookieName };
 });

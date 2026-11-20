@@ -4,14 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Documentation · Lamplit</title>
-<meta name="description" content="Lamplit documentation: install, connect a model, work with the assistants, add machines (a computer at home, a cloud server) and the usual pitfalls, approvals and the vault, connected apps, coding assistants, phone and Feishu." />
+<meta name="description" content="Lamplit documentation: install, connect a model, work with the assistants, phone and Feishu, reaching home from outside (Tailscale, your own relay, direct), add machines (a computer at home, a cloud server) and the usual pitfalls, approvals and the vault, connected apps, coding assistants." />
 <meta name="theme-color" content="#0A0A0A" />
 <link rel="icon" href="../icon.svg?v=1513" type="image/svg+xml" />
 <link rel="alternate" hreflang="zh-CN" href="../docs.html" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="../style.css?v=1533" />
+<!-- No web fonts (11-18): Google Fonts is often unreachable in China; the system serif and sans are used. -->
+<link rel="stylesheet" href="../style.css?v=1549" />
 </head>
 <body data-lang="en" data-other="../docs.html">
 
@@ -32,24 +30,33 @@
 <div class="wrap docs">
   <nav class="toc" aria-label="Contents">
     <p>Contents</p>
+    <p class="grp">Getting started</p>
     <a href="#install">Install</a>
     <a href="#model">Connect a model</a>
     <a href="#chat">Working with the assistants</a>
     <a href="#tasks">Long jobs and stopping</a>
     <a href="#workspace">Workspace and files</a>
+    <p class="grp">Phone and away</p>
+    <a href="#phone">Phone and Feishu</a>
+    <a href="#outside">Away from home</a>
+    <a href="#outside-road">· Which route</a>
+    <a href="#outside-why">· Direct did not connect?</a>
+    <p class="grp">More machines</p>
     <a href="#machines">Add machines</a>
     <a href="#machine-home">· A computer at home</a>
     <a href="#machine-cloud">· A cloud server</a>
     <a href="#pitfalls">· Common pitfalls</a>
     <a href="#screen">Watching and taking over</a>
+    <p class="grp">Safety</p>
     <a href="#safety">Approvals and boundaries</a>
     <a href="#vault">Sign-ins and the vault</a>
+    <a href="#data">Where my data goes</a>
+    <p class="grp">More features</p>
     <a href="#apps">Connected apps</a>
     <a href="#coding">Coding assistants</a>
     <a href="#media">Images, video, voice</a>
-    <a href="#phone">Phone and Feishu</a>
     <a href="#more">Memory, skills, routines</a>
-    <a href="#data">Where my data goes</a>
+    <p class="grp">When something is wrong</p>
     <a href="#update">Updates and data</a>
     <a href="#trouble">Troubleshooting</a>
   </nav>
@@ -106,6 +113,125 @@
       <li>Beyond the workspace you can open other folders to it for reading (or writing); see "Approvals and boundaries".</li>
     </ul>
 
+    <h2 id="phone">Phone and Feishu</h2>
+    <ol>
+      <li>On the computer open <strong>Settings → Phone &amp; away</strong> and turn on "Allow phone connections" (the switch is in the desktop app only).</li>
+      <li>Install the Android app and scan the code on the computer. Without scanning, open the address shown there in the phone's browser and enter the pairing code.</li>
+      <li>Away from home (on mobile data) too: pick a way for the phone to find the computer at home; see the next section, <a href="#outside">Away from home</a>.</li>
+      <li>In the Android app, turn on "Let bots use this phone" and the bots can see the screen, tap, type and open apps. With the screen off they light it first; a phone with a lock code they ask you to unlock, and never type a code.</li>
+    </ol>
+    <ul>
+      <li><strong>Sending, publishing, agreeing and deleting ask you each time</strong>; tell the assistant "send them yourself" and it shows a card. Once you agree, that assistant does that kind of step in that app without asking (today or always; undo it in the assistant's settings). <strong>Paying always asks.</strong></li>
+      <li><strong>Staying connected</strong>: with "Let bots use this phone" on, Lamplit keeps running in the background; allow it when the phone settings ask. On OPPO, vivo, Xiaomi and similar phones also turn on background activity and auto-launch in App info, and lock Lamplit in the recent apps.</li>
+      <li><strong>When the system turns it off</strong>: an update or a cleaner can turn "Let bots use this phone" off. Opening Lamplit once turns it back on (after a one-time grant from a computer, see <a href="#trouble">Troubleshooting</a>).</li>
+    </ul>
+    <p>No app: connect a Feishu bot in <strong>Settings → Feishu</strong> and message the assistants from Feishu; results, pictures and videos come back there, and you approve by replying.</p>
+
+    <h2 id="outside">Away from home: three ways</h2>
+    <p>At home the phone and the computer share the Wi-Fi, and scanning the code is all it takes. On mobile data the phone cannot find the computer behind your router, so pick a way for it to get there. You can have more than one; the app picks the route that works.</p>
+    <div class="table compare"><table>
+      <tr><th></th><th>Tailscale</th><th>Your own relay (experimental)</th><th>Lamplit relay</th></tr>
+      <tr><td>What you need</td><td>Tailscale on the phone and every computer, signed in to one account</td><td>A Linux cloud server with a public IP (Tencent Cloud, Aliyun…) and its SSH password</td><td>Nothing</td></tr>
+      <tr><td>Cost</td><td>Free for personal use</td><td>Only what your cloud server costs (nothing extra if you have one)</td><td rowspan="5" class="soon-cell">Coming soon</td></tr>
+      <tr><td>Speed</td><td>Usually a direct connection; when that fails it goes round Tailscale's relays abroad, which is slower from China (add a <a href="#outside-tailscale-cn">relay in China</a>)</td><td><a href="#outside-direct">Direct</a> when it can be; otherwise through your server. A small server bandwidth makes the screen lag; chat and approvals are fine</td></tr>
+      <tr><td>Who sees what</td><td>Content is encrypted end to end; Tailscale the company knows which devices you have</td><td>Content is encrypted end to end; your server knows which computer, when and how much (<a href="#outside-see">details</a>)</td></tr>
+      <tr><td>Devices</td><td>Android app, iPhone (browser), all your machines</td><td>Android app and your machines; not yet iPhone or a plain browser</td></tr>
+      <tr><td>Where</td><td>Settings → Phone &amp; away → "Using it away from home"</td><td>Settings → Phone &amp; away → "When you are out: relay through your cloud server"</td></tr>
+    </table></div>
+    <div class="tip"><p><strong>Not sure?</strong> Start with Tailscale: it is free, and installing and signing in is all. If you already have a cloud server and would rather not keep Tailscale on the phone, try your own relay.</p></div>
+
+    <h3 id="outside-tailscale">With Tailscale</h3>
+    <ol>
+      <li>On the computer at home open <strong>Settings → Phone &amp; away</strong>, scroll to "Using it away from home", and click <strong>Install Tailscale</strong> on the Tailscale card.</li>
+      <li>Click <strong>Log in to Tailscale</strong> and sign in with your own account on the Tailscale page that opens. The password goes into Tailscale's page only; Lamplit never sees it.</li>
+      <li>Install <a href="https://tailscale.com/download">Tailscale</a> on the phone too, sign in to the same account and turn it on.</li>
+      <li>Open the Lamplit app once at home so it learns the new address. From then on, when the home Wi-Fi is out of reach it switches to Tailscale without pairing again. On an iPhone, open the address starting with 100 shown on the card in the browser and enter the pairing code.</li>
+      <li>Other machines at home: click <strong>Let the other machines use Tailscale</strong> and they join one by one.</li>
+    </ol>
+    <details class="fold">
+      <summary>More: joining with a key, removing it, slow from China</summary>
+      <ul>
+        <li><strong>No signing in one by one</strong>: open "Join with an auth key" and paste a key made under Settings → Keys in the Tailscale admin console (starts with <code>tskey-auth-</code>). It is used once and not kept.</li>
+        <li><strong>Remove it</strong>: "Remove Tailscale" on the same card.</li>
+        <li><strong>Adding a new machine</strong>: choose Tailscale under "Away from home, how do you reach it?" and setup installs it too; see <a href="#machine-cloud">A cloud server</a>.</li>
+        <li id="outside-tailscale-cn"><strong>Slow from China</strong>: when the two ends cannot connect directly, Tailscale relays through its servers abroad, hundreds of milliseconds each way. With a cloud server in China, make it a relay under <strong>Settings → Machines → Relay in China (for Tailscale)</strong> (follow the page: allow TCP 33445 and UDP 3478, and paste the shown configuration into Access controls in the Tailscale admin console) and it drops to tens of milliseconds. It is for Tailscale only and is not the same thing as "your own relay" below; both can sit on one server.</li>
+        <li><strong>No Tailscale on the phone</strong>: once the computer has Tailscale, the same page has "Public access (no Tailscale on the phone)": a public HTTPS address the phone's browser opens directly, usable only by paired devices. Turn on Funnel and HTTPS certificates in the Tailscale admin console first.</li>
+      </ul>
+    </details>
+
+    <h3 id="outside-relay">With your own cloud server as a relay (experimental)</h3>
+    <p>The computer at home connects out to one of your cloud servers; the phone, away from home, connects to that server too, and the server passes the <strong>encrypted data</strong> along unchanged. No Tailscale, no router settings.</p>
+    <ol>
+      <li><strong>A cloud server</strong>: Linux with a public IP (Tencent Cloud Lighthouse or CVM, Aliyun ECS and the like), reachable over SSH (<code>root</code>, or an account with sudo). It needs Node.js 20 or newer: a server you added with "Add machine" has it already; otherwise the install tells you.</li>
+      <li><strong>Install the relay</strong>: on the computer at home open <strong>Settings → Phone &amp; away</strong>, find "When you are out: relay through your cloud server", enter the server's public IP, SSH user and password, and click <strong>Install the relay on this server</strong>. About 10 seconds. The SSH password is used this once and not kept.</li>
+      <li><strong>Open the port in the cloud console</strong> (only you can): add two rules, <strong>TCP 34443</strong> and <strong>UDP 34443</strong>, both from <code>0.0.0.0/0</code>. The UDP one is for the <a href="#outside-direct">direct connection</a>.
+        <ul>
+          <li>Tencent Cloud Lighthouse: instance details → "Firewall" → add a rule.</li>
+          <li>Tencent Cloud CVM, Aliyun ECS: "Security group" → inbound rules → add a rule.</li>
+        </ul>
+        Then click <strong>Test again</strong> in Lamplit.</li>
+      <li><strong>Scan once with the phone</strong>: "Show the QR code" on the same page, scanned with the Android app. At home it uses the local network; away it uses the relay by itself.</li>
+      <li><strong>Other machines from outside too</strong>: click <strong>Let the other machines use this relay</strong>.</li>
+    </ol>
+    <details class="fold">
+      <summary>More: updates, changing the port, cutting off, uninstalling</summary>
+      <ul>
+        <li><strong>The relay updates itself</strong>: since 1.5.47 it updates with Lamplit, takes only versions carrying Lamplit's release signature, and goes back by itself if a new one does not start. <strong>A relay installed with 1.5.46 or older</strong> does not yet: click "Reinstall / change port" once (the last time by hand) until the card says the relay is up to date.</li>
+        <li><strong>Change the port</strong>: "Reinstall / change port". The join password and registered computers stay. Open the new port in the console; the phone learns it once you open the app at home or scan again.</li>
+        <li><strong>Cut it off now</strong>: turn off "Connect through the relay". <strong>Stop one phone</strong>: remove it under "Connected devices".</li>
+        <li><strong>No more relay</strong>: "Uninstall the relay" (needs the SSH password), then delete the port rules in the cloud console.</li>
+        <li><strong>Bandwidth</strong>: on a small server (say 3 Mbps) the screen lags through the relay; a direct connection is not affected.</li>
+        <li>Technical details (certificates, signatures, uninstalling by hand) are in <a href="https://github.com/20chuangge/lamplit/blob/main/docs/RELAY.md">docs/RELAY.md</a> on GitHub (in Chinese).</li>
+      </ul>
+    </details>
+
+    <h3 id="outside-direct">Direct connection: automatic, nothing to set</h3>
+    <p>With your own relay, the phone away from home first connects through the relay, and in the background tries to connect <strong>straight</strong> to the computer ("hole punching"). When that works the data skips the server: the screen is smoother and the server's traffic is spared. When it does not, everything keeps going through the relay, with no error.</p>
+    <ul>
+      <li><strong>The one thing to do</strong>: allow <strong>UDP 34443</strong> in step 3 above.</li>
+      <li><strong>The switch</strong>: "Try a direct connection first (falls back to the relay when it can't)" on the relay card, on by default. Off means everything uses the relay.</li>
+      <li><strong>No sign-in, no one else's server</strong>: only paired devices connect directly, and addresses are exchanged through your own relay.</li>
+      <li>Changing networks (Wi-Fi to mobile data) goes back to the relay first and tries direct again a little later; a screen you are watching drops for a moment and reconnects.</li>
+      <li>Machines talking to each other through the relay (updates, teamwork) try direct first too.</li>
+    </ul>
+
+    <h3 id="outside-road">Which route am I on?</h3>
+    <p>The machine list in the Android app, and the line under the machine name at the top left, say the route:</p>
+    <div class="table"><table>
+      <tr><th>It says</th><th>Meaning</th></tr>
+      <tr><td>LAN</td><td>The phone and the computer are on the same Wi-Fi and connect directly; the fastest</td></tr>
+      <tr><td>Direct</td><td>Away from home, connected straight to the computer; the data skips the server</td></tr>
+      <tr><td>Relay</td><td>Away from home, through your cloud server. The app's list adds "slow" when it is</td></tr>
+      <tr><td>through the relay (the relay runs on this machine)</td><td>You opened the cloud server the relay runs on. The data passes it once anyway; this is as it should be</td></tr>
+      <tr><td>Tailscale</td><td>Through Tailscale</td></tr>
+    </table></div>
+    <ul>
+      <li><strong>On the phone</strong>: Settings → About → "Phone to this machine" says the route, why direct did not work last time and when it tries again (in the app only).</li>
+      <li><strong>On the computer</strong>: the relay card in Settings → Phone &amp; away names the devices connected directly; <strong>Settings → Checkup</strong> has a "Direct" and a "Relay updates" line saying what is missing. After changing a firewall, click "Check again" and it tests anew.</li>
+    </ul>
+
+    <h3 id="outside-why">Direct did not connect? Check these</h3>
+    <p>First, nothing is broken: it works through the relay, the screen is just slower and the server carries the traffic. The "Direct" line in the checkup is a note, not a fault. To get direct working, go down the list:</p>
+    <ol>
+      <li><strong>The cloud server does not allow UDP</strong>: the checkup says one step is missing, a UDP 34443 rule. Add it in the console and click "Check again".</li>
+      <li><strong>The relay is too old</strong>: the checkup says the relay needs one update. Click "Reinstall / change port" once.</li>
+      <li><strong>Windows Firewall on the computer blocks Lamplit</strong>: if its first prompt was cancelled, Windows keeps blocking it. When <strong>Settings → Phone &amp; away</strong> shows a notice, click "Fix the firewall" and Yes on the admin prompt.</li>
+      <li><strong>A proxy on the computer runs in TUN (virtual adapter) mode</strong> (Clash and the like): it takes the UDP that direct needs. Put <code>PROCESS-NAME,Lamplit.exe,DIRECT</code> first in its rules, or turn TUN mode off for now. A proxy VPN on the phone does the same.</li>
+      <li><strong>Both networks are strict</strong>: mobile data and some office or hotel networks do not allow a direct connection. Then the relay is what you get, and it tries again on another network.</li>
+    </ol>
+    <details class="fold">
+      <summary>More: checking the firewall by hand</summary>
+      <p>Open "Control Panel → Windows Defender Firewall → Advanced settings → Inbound Rules", find rules named Lamplit with a red circle (Block), delete them, and restart Lamplit. Leave other programs' rules alone.</p>
+    </details>
+
+    <h3 id="outside-see">What the relay can see</h3>
+    <ul>
+      <li><strong>It sees</strong>: which computer (a random number), the IP a connection comes from, when, and how much traffic.</li>
+      <li><strong>It does not see</strong>: chats, files, the screen, pairing credentials. Encryption happens only on the phone and the computer, and the certificate's private key stays on your computer.</li>
+      <li><strong>It cannot pretend</strong>: the phone trusts only the computer it paired with; the computer trusts only the relay it installed.</li>
+      <li><strong>Everything from outside counts as outside</strong>: the 8-digit pairing code does not work, only devices paired by scanning; the things only you may approve cannot be done from there. The same goes for direct connections.</li>
+    </ul>
+
     <h2 id="machines">Add machines</h2>
     <p>An old laptop, a desktop at home or a cloud server can all become computers it works on. Each machine has its own assistants, memory, workspace and desktop; switch between them at the top left. Added machines <strong>update with this computer</strong>, and one that was off updates when it comes back.</p>
     <p>Go to <strong>Settings → Machines → Add machine</strong>. You enter only a name, the IP address, the SSH user, port and password. "Connect and set up" then installs what is needed over SSH, deploys Lamplit, gives each assistant a desktop, pairs, and adds the machine to the list. The password is used this once and not kept.</p>
@@ -127,14 +253,15 @@
     <div class="tip"><p>On an added Windows machine, the assistants' commands run as a separate low-privilege account, <code>lamplit-runner</code>, which cannot touch Lamplit's own data; setup creates it.</p></div>
 
     <h3 id="machine-cloud">A cloud server</h3>
-    <p>A cloud server has a public address, and the one rule that matters: <strong>do not open Lamplit's port (4390) to the internet</strong>. Its connection is not encrypted, so the pairing credentials could be seen. Use <a href="https://tailscale.com/">Tailscale</a> to join the server and your devices into a private network:</p>
+    <p>A cloud server has a public address, and the one rule that matters: <strong>do not open Lamplit's port (4390) to the internet</strong>. Its connection is not encrypted, so the pairing credentials could be seen. Below, <a href="https://tailscale.com/">Tailscale</a> joins the server and your devices into a private network (your own relay works too; see <a href="#outside">Away from home</a>):</p>
     <ol>
       <li><strong>Get a Tailscale key</strong>: install Tailscale on your computer and phone and sign in; in the Tailscale admin console open <a href="https://login.tailscale.com/admin/settings/keys">Settings → Keys</a> and click "Generate auth key". You want an Auth key starting with <code>tskey-auth-</code>, not an API access token.</li>
       <li><strong>The server's security group</strong>: allow only SSH (port 22 by default) from your computer, for this one-time setup; <strong>do not open 4390</strong>.</li>
-      <li><strong>Add it in Lamplit</strong>: the public IP, the SSH user (often <code>ubuntu</code> on Ubuntu images, <code>root</code> on some clouds) and password; open "Reach it from outside too (optional, Tailscale)" and paste the key. Lamplit points to this step when you enter a public IP.</li>
+      <li><strong>Add it in Lamplit</strong>: the public IP, the SSH user (often <code>ubuntu</code> on Ubuntu images, <code>root</code> on some clouds) and password; under "Away from home, how do you reach it?" choose <strong>Tailscale</strong> and paste the key.</li>
       <li><strong>Done</strong>: Lamplit installs Tailscale on the server and joins your network; from then on it uses the encrypted Tailscale address (<code>100.x.x.x</code>). The key is used once and deleted from the server.</li>
     </ol>
     <div class="tip"><p>Cloud servers usually have no screen; the assistants' browser and desktop run on a virtual display. When a site needs a QR scan to sign in, the assistant asks you to take over in the Computer panel.</p></div>
+    <p>The four answers to "Away from home, how do you reach it?": <strong>Only at home</strong> (the default), <strong>Tailscale</strong>, <strong>Your own relay (experimental)</strong> (the one you installed in Settings → Phone &amp; away), and <strong>Lamplit relay</strong> (coming soon, not selectable yet). How to choose: <a href="#outside">Away from home</a>. While adding, this computer must still reach the new machine directly (same network, or a public address).</p>
 
     <h3 id="pitfalls">Common pitfalls</h3>
     <div class="table"><table>
@@ -183,6 +310,17 @@
     <p>When a site needs a sign-in, Lamplit shows a secure form for the user name and password. They are encrypted in that machine's vault; the assistant fills them into the page without seeing them, and they are never sent to the AI model.</p>
     <p>App tokens and mail authorization codes live in the vault too. Any attempt to read the vault (or Lamplit's local key) from a script asks you first, at every approval level, on every machine.</p>
 
+    <h2 id="data">Where my data goes</h2>
+    <p>Lamplit has no accounts and no servers of ours: chats, memory, the vault, settings and the files in the workspace stay on your own computer (and the machines you add). No usage statistics are collected or sent. These are all the places Lamplit connects to by itself (checked line by line against the code for 1.5.33):</p>
+    <ul>
+      <li><strong>The model provider you chose</strong> (DeepSeek, Qwen, OpenAI…): each turn's messages, and the files and pages an assistant reads, go to it; the model needs them to work. Voice, vision, images and video go to the provider you set for them in Settings → Model. The checkup asks DeepSeek for your balance.</li>
+      <li><strong>Update checks</strong>: every few hours Lamplit asks GitHub (api.github.com) for the latest version number; the installer is downloaded from GitHub when you click Update.</li>
+      <li><strong>Your own machines</strong>: computers, servers and phones you add talk to each other directly (local network, Tailscale, your own relay, or a direct connection once punched through). Adding a machine downloads Node from nodejs.org (or the npmmirror.com mirror), and TightVNC for Windows machines, then copies them over.</li>
+      <li><strong>Reaching home from outside</strong>: with Tailscale, Tailscale's servers know which devices you have, and the content is encrypted. Your own relay runs on your own cloud server and only passes encrypted data along (<a href="#outside-see">what it can see</a>); this computer copies the program over SSH and later brings its updates. A direct connection uses no public server at all. The "Relay in China (for Tailscale)" also runs on your own server and downloads its program from Go's site and the Aliyun mirror.</li>
+      <li><strong>What you let it use</strong>: web pages an assistant opens or fetches, apps you connect (Feishu, mail, GitHub, Notion…), coding assistants you hand work to. These connect only when used or turned on, and steps that change things ask you first.</li>
+    </ul>
+    <p>Passwords and codes live in an encrypted vault on this computer; they are typed into sign-in pages directly and never sent to the model. This website is on GitHub Pages; the Windows installers are on GitHub, and the Android app is on GitHub and Gitee.</p>
+
     <h2 id="apps">Connected apps</h2>
     <p><strong>Settings → Connected apps</strong> shows the apps as tiles, with filters by category (communication, development, creative, productivity, daily life…). Open one, follow its steps, and the assistants can use the app's own interface, every step under your approval level:</p>
     <ul>
@@ -220,36 +358,12 @@
       <li><strong>Calls</strong>: the phone button next to the message box. Stop talking and what you said is sent; answers are read aloud sentence by sentence. It does not listen while it reads (so it does not hear itself); tap Interrupt to speak, and Done talking when it is too noisy to tell you have finished. Approvals are never spoken: it says one is waiting on the screen. Keep Lamplit open during a call.</li>
     </ul>
 
-    <h2 id="phone">Phone and Feishu</h2>
-    <ol>
-      <li>On the computer open <strong>Settings → Phone &amp; away</strong> and turn on "Allow phone connections" (the switch is in the desktop app only).</li>
-      <li>Install the Android app and scan the code on the computer. Without scanning, open the address shown there in the phone's browser and enter the pairing code.</li>
-      <li>Away from home: install <a href="https://tailscale.com/">Tailscale</a> on the phone and the computer; when the home network is out of reach it switches to Tailscale without pairing again.</li>
-      <li>In the Android app, turn on "Let bots use this phone" and the bots can see the screen, tap, type and open apps. With the screen off they light it first; a phone with a lock code they ask you to unlock, and never type a code.</li>
-    </ol>
-    <ul>
-      <li><strong>Sending, publishing, agreeing and deleting ask you each time</strong>; tell the assistant "send them yourself" and it shows a card. Once you agree, that assistant does that kind of step in that app without asking (today or always; undo it in the assistant's settings). <strong>Paying always asks.</strong></li>
-      <li><strong>Staying connected</strong>: with "Let bots use this phone" on, Lamplit keeps running in the background; allow it when the phone settings ask. On OPPO, vivo, Xiaomi and similar phones also turn on background activity and auto-launch in App info, and lock Lamplit in the recent apps.</li>
-      <li><strong>When the system turns it off</strong>: an update or a cleaner can turn "Let bots use this phone" off. Opening Lamplit once turns it back on (after a one-time grant from a computer, see <a href="#trouble">Troubleshooting</a>).</li>
-    </ul>
-    <p>No app: connect a Feishu bot in <strong>Settings → Feishu</strong> and message the assistants from Feishu; results, pictures and videos come back there, and you approve by replying.</p>
-
     <h2 id="more">Memory, skills, routines</h2>
     <ul>
       <li><strong>Memory</strong>: it keeps your habits and preferences; each assistant has its own, and there is one they share.</li>
       <li><strong>Skills</strong>: a workflow it has done can be saved as a skill and reused with one sentence.</li>
       <li><strong>Routines</strong>: daily briefings and regular checks run on time, whether or not you are there. In the chat each run takes one line, "⏱ time · task · how often"; "Show instruction" lets you edit it, pause it or run it again now. A run that found nothing new does not disturb you. To change the time or delete one, use "Change time" and "Delete" on the Tasks tab of the panel at the top right.</li>
     </ul>
-
-    <h2 id="data">Where my data goes</h2>
-    <p>Lamplit has no accounts and no servers of ours: chats, memory, the vault, settings and the files in the workspace stay on your own computer (and the machines you add). No usage statistics are collected or sent. These are all the places Lamplit connects to by itself (checked line by line against the code for 1.5.33):</p>
-    <ul>
-      <li><strong>The model provider you chose</strong> (DeepSeek, Qwen, OpenAI…): each turn's messages, and the files and pages an assistant reads, go to it; the model needs them to work. Voice, vision, images and video go to the provider you set for them in Settings → Model. The checkup asks DeepSeek for your balance.</li>
-      <li><strong>Update checks</strong>: every few hours Lamplit asks GitHub (api.github.com) for the latest version number; the installer is downloaded from GitHub when you click Update.</li>
-      <li><strong>Your own machines</strong>: computers, servers and phones you add talk to each other directly (local network or Tailscale), through no one else's server. Adding a machine downloads Node from nodejs.org (or the npmmirror.com mirror), and TightVNC for Windows machines, then copies them over. The China relay runs on your own server and downloads its program from Go's site and the Aliyun mirror.</li>
-      <li><strong>What you let it use</strong>: web pages an assistant opens or fetches, apps you connect (Feishu, mail, GitHub, Notion…), coding assistants you hand work to. These connect only when used or turned on, and steps that change things ask you first.</li>
-    </ul>
-    <p>Passwords and codes live in an encrypted vault on this computer; they are typed into sign-in pages directly and never sent to the model. This website is on GitHub Pages; the installers behind the download buttons are on GitHub, Tencent Cloud and Gitee.</p>
 
     <h2 id="update">Updates and data</h2>
     <ul>
@@ -259,10 +373,19 @@
     </ul>
 
     <h2 id="trouble">Troubleshooting</h2>
+    <div class="tip"><p><strong>Start with the checkup</strong>: open <strong>Settings → Checkup</strong>. It goes through the model, balance, phone, this machine, the relay and direct connections, and says what is wrong and how to fix it. Click "Check again" after a change.</p></div>
     <h3>It does not answer, or answers slowly</h3>
     <p>Look for a notice at the top such as "this machine is running out of memory"; then click "Test connection" in Settings → Model to check the key and balance.</p>
+    <h3>Switching machines or assistants is slow, the phone reaches the computer slowly</h3>
+    <p>Open <strong>Settings → Machines → Network check</strong>. Hundreds of milliseconds between machines in one country usually means a proxy on the computer (Clash, V2Ray and the like) sends Tailscale's traffic abroad and back.</p>
+    <details class="fold">
+      <summary>More: what to change in the proxy</summary>
+      <p>Put <code>PROCESS-NAME,tailscaled.exe,DIRECT</code> first in the proxy rules, exclude the local networks in its TUN settings (<code>route-exclude-address</code>: 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12), then close all connections in the proxy. Do not exclude 100.64.0.0/10: that is Tailscale's own range. With your own relay, also add <code>PROCESS-NAME,Lamplit.exe,DIRECT</code> so direct connections can get through.</p>
+    </details>
+    <p><strong>The phone is slow on the same Wi-Fi as the computer</strong>: Windows Firewall most likely keeps the local network out (its first prompt was cancelled, or the home network is marked Public). <strong>Settings → Phone &amp; away</strong> says so; click "Fix the firewall" and Yes on the admin prompt.</p>
+    <p><strong>Slow from outside (on mobile data)</strong>: with Tailscale, see <a href="#outside-tailscale-cn">Relay in China (for Tailscale)</a>; with your own relay, look at <a href="#outside-road">which route</a> you are on, and if it keeps saying Relay, go through <a href="#outside-why">Direct did not connect?</a></p>
     <h3>The phone does not connect</h3>
-    <p>Check "Allow phone connections" is on and the phone is on the same network; away from home, use Tailscale. The pairing code changes daily; see <a href="#pitfalls">Common pitfalls</a>.</p>
+    <p>Check "Allow phone connections" is on and the phone is on the same network; away from home, set up one of the ways in <a href="#outside">Away from home</a> first. The pairing code changes daily; see <a href="#pitfalls">Common pitfalls</a>.</p>
     <h3>The screen says it cannot connect to the server</h3>
     <p>Click Refresh in the Computer panel. Right after start-up or a display switch, the screen service needs a few seconds.</p>
     <h3>"Let bots use this phone" keeps turning off</h3>
@@ -271,10 +394,6 @@
     <p>Since 1.5.26 each assistant's browser opens on its own screen: take over from the chat of the assistant that asked. After the update, sign in once on that assistant's screen for each site.</p>
     <h3>Approving in a browser says "This step needs you"</h3>
     <p>Approving and changing permissions work only in the Lamplit app or on a paired device, so a program a bot runs cannot click "Allow" for you. Using Lamplit in a browser instead of the desktop app, pair that browser once: type the pairing code into the box that opens (in the Lamplit app under Settings → Phone &amp; away, or in the startup output if you started it from a terminal), and the step you clicked goes ahead. Use the code of the Lamplit at this address. Saving your first model key needs no pairing.</p>
-    <h3>Switching machines or assistants is slow, the phone reaches the computer slowly</h3>
-    <p>Open <strong>Settings → Machines → Network check</strong>. Hundreds of milliseconds between machines in one country usually means a proxy on the computer (Clash, V2Ray and the like) sends Tailscale's traffic abroad and back. Put <code>PROCESS-NAME,tailscaled.exe,DIRECT</code> first in the proxy rules, exclude the local networks in its TUN settings (<code>route-exclude-address</code>: 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12), then close all connections in the proxy. Do not exclude 100.64.0.0/10: that is Tailscale's own range.</p>
-    <p><strong>The phone is slow on the same Wi-Fi as the computer</strong>: Windows Firewall most likely keeps the local network out (its first prompt was cancelled, or the home network is marked Public). <strong>Settings → Phone &amp; internet</strong> says so; click "Fix the firewall" and Yes on the admin prompt.</p>
-    <p><strong>Slow from outside (on mobile data)</strong>: when the two ends cannot connect directly, Tailscale relays through its servers abroad. With a cloud server in China, install a relay on it in <strong>Settings → Machines → Relay in China</strong> (its public IP and SSH password), then follow the page: allow TCP 33445 and UDP 3478 in the server's security group and paste the shown configuration into Access controls in the Tailscale admin console. Only devices in your own Tailscale account can use it.</p>
     <h3>Still stuck</h3>
     <p>Open an issue on <a href="https://github.com/20chuangge/lamplit/issues">GitHub</a> with a screenshot of the error.</p>
   </article>
@@ -294,6 +413,6 @@
   </div>
 </footer>
 
-<script src="../site.js?v=1513"></script>
+<script src="../site.js?v=1549"></script>
 </body>
 </html>

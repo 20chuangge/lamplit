@@ -57,6 +57,31 @@
     for (const t of targets) { t.classList.add('reveal'); io.observe(t); }
   }
 
+  // Docs on a phone (11-20): the side contents are hidden there, so the same
+  // links fold under the title; a tap closes the fold.
+  const toc = document.querySelector('.toc');
+  const intro = document.querySelector('.doc .intro');
+  if (toc && intro) {
+    const fold = document.createElement('details');
+    fold.className = 'mtoc';
+    const sum = document.createElement('summary');
+    sum.textContent = toc.querySelector('p')?.textContent || 'Contents';
+    const nav = document.createElement('nav');
+    [...toc.children].slice(1).forEach((n) => nav.appendChild(n.cloneNode(true)));
+    // Close first, then jump: closing after the jump would pull the section up out of view.
+    nav.addEventListener('click', (e) => {
+      const a = e.target.closest('a');
+      const target = a && document.getElementById(a.getAttribute('href').slice(1));
+      if (!target) return;
+      e.preventDefault();
+      fold.open = false;
+      history.pushState(null, '', a.getAttribute('href'));
+      target.scrollIntoView();
+    });
+    fold.append(sum, nav);
+    intro.after(fold);
+  }
+
   // Docs: highlight the section being read.
   const links = [...document.querySelectorAll('.toc a')];
   if (links.length && 'IntersectionObserver' in window) {

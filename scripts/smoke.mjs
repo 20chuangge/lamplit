@@ -5628,7 +5628,7 @@ async function scenarioDocs1513() {
   check('D1 site: every page has its twin in the other language (data-other, hreflang, a 中文 / EN switch); a choice is kept; a browser that reads no Chinese goes to English once; the Chinese pages link the user survey',
     zhHome.includes('data-other="en/"') && enHome.includes('data-other="../"') && zhDocs.includes('data-other="en/docs.html"') && enDocs.includes('data-other="../docs.html"')
     && [zhHome, zhDocs].every((p) => p.includes('data-lang-switch="en"') && p.includes('hreflang="en"')) && [enHome, enDocs].every((p) => p.includes('data-lang-switch="zh"') && p.includes('lang="en"'))
-    && enHome.includes('../style.css?v=1533') && zhHome.includes('id="survey"') && zhHome.includes('href="https://wj.qq.com/s2/') && zhDocs.includes('href="https://wj.qq.com/s2/') && siteJs.includes("localStorage.setItem(LANG, a.dataset.langSwitch)") && siteJs.includes('if (!chosen && lang === \'zh\' && !readsChinese'));
+    && /\.\.\/style\.css\?v=\d+/.test(enHome) && zhHome.includes('id="survey"') && zhHome.includes('href="https://wj.qq.com/s2/') && zhDocs.includes('href="https://wj.qq.com/s2/') && siteJs.includes("localStorage.setItem(LANG, a.dataset.langSwitch)") && siteJs.includes('if (!chosen && lang === \'zh\' && !readsChinese'));
   check('D1b site (11-18): the Chinese pages load no Google Fonts; each home page has a real title, a 1200x630 share image and the first-run note (unsigned installer: 更多信息 → 仍要运行, SHA-256 on the release page)',
     ![zhHome, zhDocs].some((p) => p.includes('fonts.googleapis.com')) && zhHome.includes('<title>Lamplit：有自己电脑的 AI 助理</title>') && enHome.includes('<title>Lamplit — an AI assistant with a computer of its own</title>')
     && zhHome.includes('<meta property="og:image" content="https://20chuangge.github.io/lamplit/og.png" />') && enHome.includes('og-en.png') && zhHome.includes('summary_large_image')
@@ -5644,7 +5644,12 @@ async function scenarioDocs1513() {
   const dict = new Function(`const window = {}; ${en}; return window.DESK_I18N_EN;`)();
   const uiWords = new Set(Object.values(dict));
   const named = ['Model', 'Approval', 'Boundaries', 'Activity log', 'Machines', 'Phone & away', 'Feishu', 'Connected apps', 'Appearance', 'Add machine', 'Connect and set up',
-    'Reach it from outside too (optional, Tailscale)', 'Switch to this machine', 'Change location', 'Test connection', 'Coding assistants on your subscription', 'Allow phone connections', 'Done, continue', 'Stop', 'Image understanding'];
+    // 1.5.43: the add-machine fold-out became a four-way choice.
+    'Away from home, how do you reach it?', 'Only at home', 'Your own relay (experimental)', 'Lamplit relay', 'Switch to this machine',
+    // 11-20 docs: away from home.
+    'Install Tailscale', 'Log in to Tailscale', 'Let the other machines use Tailscale', 'Connect through the relay', 'Install the relay on this server', 'Test again',
+    'Let the other machines use this relay', 'Reinstall / change port', 'Uninstall the relay', 'Try a direct connection first (falls back to the relay when it can\'t)',
+    'Phone to this machine', 'Checkup', 'Check again', 'Fix the firewall', 'Relay in China (for Tailscale)', 'Relay updates', 'Change location', 'Test connection', 'Coding assistants on your subscription', 'Allow phone connections', 'Done, continue', 'Stop', 'Image understanding'];
   const enText = enDocs.replace(/&amp;/g, '&');
   check('D3 the English docs call menus and buttons what the English app calls them', named.every((w) => uiWords.has(w) && enText.includes(w)), named.filter((w) => !uiWords.has(w) || !enText.includes(w)).join(', '));
   const html = await readText('../public/index.html');

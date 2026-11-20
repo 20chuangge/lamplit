@@ -4,12 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>使用文档 · Lamplit</title>
-<meta name="description" content="Lamplit 使用文档：安装、接模型、和助手一起做事、添加机器（家里的电脑、云服务器）和常见的坑、权限与保险箱、连接应用、编程助手、手机与飞书。" />
+<meta name="description" content="Lamplit 使用文档：安装、接模型、和助手一起做事、手机与飞书、在外面也能用（Tailscale、自建中转、直连）、添加机器（家里的电脑、云服务器）和常见的坑、权限与保险箱、连接应用、编程助手。" />
 <meta name="theme-color" content="#0A0A0A" />
 <link rel="icon" href="icon.svg?v=1513" type="image/svg+xml" />
 <link rel="alternate" hreflang="en" href="en/docs.html" />
 <!-- No web fonts (11-18): Google Fonts is often unreachable in China; the system serif and sans are used. -->
-<link rel="stylesheet" href="style.css?v=1533" />
+<link rel="stylesheet" href="style.css?v=1549" />
 </head>
 <body data-lang="zh" data-other="en/docs.html">
 
@@ -30,24 +30,33 @@
 <div class="wrap docs">
   <nav class="toc" aria-label="目录">
     <p>目录</p>
+    <p class="grp">开始用</p>
     <a href="#install">安装</a>
     <a href="#model">接一个模型</a>
     <a href="#chat">和助手一起做事</a>
     <a href="#tasks">长任务与停下</a>
     <a href="#workspace">工作区与文件</a>
+    <p class="grp">手机和在外面</p>
+    <a href="#phone">手机与飞书</a>
+    <a href="#outside">在外面也能用</a>
+    <a href="#outside-road">· 走的是哪条路</a>
+    <a href="#outside-why">· 直连没打通？</a>
+    <p class="grp">更多机器</p>
     <a href="#machines">添加机器</a>
     <a href="#machine-home">· 家里的电脑</a>
     <a href="#machine-cloud">· 云服务器</a>
     <a href="#pitfalls">· 常见的坑</a>
     <a href="#screen">看屏幕与接管</a>
+    <p class="grp">安全</p>
     <a href="#safety">权限与审批</a>
     <a href="#vault">登录与保险箱</a>
+    <a href="#data">我的数据去了哪</a>
+    <p class="grp">更多功能</p>
     <a href="#apps">连接应用</a>
     <a href="#coding">编程助手</a>
     <a href="#media">看图、画图、视频、语音</a>
-    <a href="#phone">手机与飞书</a>
     <a href="#more">记忆、技能、定时任务</a>
-    <a href="#data">我的数据去了哪</a>
+    <p class="grp">出问题时</p>
     <a href="#update">更新与数据</a>
     <a href="#trouble">遇到问题</a>
   </nav>
@@ -104,6 +113,125 @@
       <li>工作区之外，你还可以开放别的文件夹给它读（或读写），见下面的「权限与审批」。</li>
     </ul>
 
+    <h2 id="phone">手机与飞书</h2>
+    <ol>
+      <li>电脑上打开 <strong>设置 → 手机和外网</strong>，打开「允许手机连接」（这个开关只在桌面应用里有）。</li>
+      <li>手机装上安卓 App，扫电脑上的二维码就连上了；不扫码的话，在手机浏览器里打开上面的地址，输入配对码。</li>
+      <li>在外面（用流量）也想用：选一种方式让手机找到家里的电脑，见下一节<a href="#outside">在外面也能用</a>。</li>
+      <li>安卓 App 里打开「让机器人用这部手机」，机器人就能看屏幕、点、输入、打开 App。手机灭屏时它会先点亮屏幕；设了锁屏密码的，它会请你解锁，从不替你输密码。</li>
+    </ol>
+    <ul>
+      <li><strong>发送、发布、同意、删除默认每次问你</strong>；你在聊天里说「你自己发吧」，它会弹一张卡片，点同意后，这个助手在这个 App 上的这类操作就不再问（今天或一直，可在助手设置里撤销）。<strong>付款永远每次问你。</strong></li>
+      <li><strong>保持连接</strong>：开着「让机器人用这部手机」时，Lamplit 会在后台保持运行；手机设置里提示你「允许在后台一直运行」时点允许。OPPO、vivo、小米等手机还要在应用信息里打开「允许后台运行」和「自启动」，并在最近任务里锁定 Lamplit。</li>
+      <li><strong>开关被系统关了</strong>：更新、清理软件可能会关掉「让机器人用这部手机」。打开一次 Lamplit 它就会自己恢复（需要在电脑上授一次权限，见<a href="#trouble">遇到问题</a>）。</li>
+    </ul>
+    <p>不想装 App：在 <strong>设置 → 飞书</strong> 里接一个飞书机器人，出门在外用飞书给助手发消息，结果、图片、视频都发回飞书；需要批准时回一句「批准」。</p>
+
+    <h2 id="outside">在外面也能用：三种方式</h2>
+    <p>在家时，手机和电脑连着同一个 Wi-Fi，扫码就能用。出门用流量时，手机找不到藏在路由器后面的家里电脑，要选一种方式帮它找到。三种方式可以同时开，App 会自己挑能用的那条。</p>
+    <div class="table compare"><table>
+      <tr><th></th><th>Tailscale</th><th>自建中转（试验）</th><th>Lamplit 中转</th></tr>
+      <tr><td>要准备什么</td><td>手机和每台电脑都装 Tailscale，用同一个账号登录</td><td>一台有公网 IP 的 Linux 云服务器（腾讯云、阿里云等）和它的 SSH 密码</td><td>什么都不用准备</td></tr>
+      <tr><td>花钱吗</td><td>个人用免费</td><td>只花你那台云服务器的钱（已经有的就不用另花）</td><td rowspan="5" class="soon-cell">即将推出</td></tr>
+      <tr><td>快不快</td><td>多数时候直接连上；打不通时绕国外的中转，会慢一些（可以加一台<a href="#outside-tailscale-cn">国内中转</a>）</td><td>能<a href="#outside-direct">直连</a>就直连；打不通走你的服务器，服务器带宽小时看屏幕会卡，聊天和审批不受影响</td></tr>
+      <tr><td>谁看得到什么</td><td>内容全程加密；Tailscale 公司知道你有哪些设备</td><td>内容全程加密；你的服务器只知道哪台电脑、什么时候、多少流量（<a href="#outside-see">详细</a>）</td></tr>
+      <tr><td>能用的设备</td><td>安卓 App、iPhone（浏览器）、你的所有机器</td><td>安卓 App 和你的机器；iPhone 和普通浏览器暂时不行</td></tr>
+      <tr><td>在哪里开</td><td>设置 → 手机和外网 →「出门在外怎么用」</td><td>设置 → 手机和外网 →「出门在外：用你的云服务器中转」</td></tr>
+    </table></div>
+    <div class="tip"><p><strong>不知道选哪个？</strong>先用 Tailscale：免费，装上登录就行。手边正好有一台云服务器、又不想让手机一直开着 Tailscale，再试自建中转。</p></div>
+
+    <h3 id="outside-tailscale">用 Tailscale</h3>
+    <ol>
+      <li>在家里那台电脑上打开 <strong>设置 → 手机和外网</strong>，往下找到「出门在外怎么用」，在 Tailscale 卡片上点 <strong>装上 Tailscale</strong>。</li>
+      <li>点 <strong>登录 Tailscale</strong>，在打开的 Tailscale 页面上用你自己的账号登录。密码只在 Tailscale 自己的页面上输，Lamplit 碰不到。</li>
+      <li>手机也装上 <a href="https://tailscale.com/download">Tailscale</a>，用同一个账号登录，打开它。</li>
+      <li>在家里打开一次 Lamplit App，它会记下新地址。以后出门连不上家里的 Wi-Fi，就自动改走 Tailscale，不用重新配对。iPhone：用浏览器打开卡片上那个 100 开头的地址，输入配对码。</li>
+      <li>家里还有别的机器：点 <strong>让其他机器也用 Tailscale</strong>，它们会一台台加进来。</li>
+    </ol>
+    <details class="fold">
+      <summary>更多：一次加入、卸载、国内很慢怎么办</summary>
+      <ul>
+        <li><strong>不想一台台登录</strong>：展开「用 Auth key 一次加入」，贴一个 Tailscale 后台 Settings → Keys 里生成的密钥（<code>tskey-auth-</code> 开头）。密钥只用这一次，不保存。</li>
+        <li><strong>卸载</strong>：同一张卡片上点「卸载 Tailscale」。</li>
+        <li><strong>添加新机器时</strong>在「出门在外，怎么连上它？」里选 Tailscale，配置时会顺便装好，见<a href="#machine-cloud">云服务器</a>。</li>
+        <li id="outside-tailscale-cn"><strong>在国内连得很慢</strong>：两边打不通直接连接时，Tailscale 走它在国外的中转，一来一回几百毫秒。有一台国内云服务器的话，在 <strong>设置 → 机器 → 国内中转（给 Tailscale 用）</strong> 把它做成中转（照页面提示放行 TCP 33445 和 UDP 3478，再把显示的配置贴进 Tailscale 后台的 Access controls），就只要几十毫秒。它只给 Tailscale 用，和下面的「自建中转」是两回事，两个可以装在同一台服务器上。</li>
+        <li><strong>手机不想装 Tailscale</strong>：电脑装了 Tailscale 后，同一页还有「外网访问（手机不用装 Tailscale）」：给一个公开的 HTTPS 网址，手机浏览器直接打开，只有配对过的设备能用。要先在 Tailscale 后台打开 Funnel 和 HTTPS 证书。</li>
+      </ul>
+    </details>
+
+    <h3 id="outside-relay">用自己的云服务器中转（试验）</h3>
+    <p>家里的电脑主动连到你的一台云服务器上，手机在外面也连这台服务器，服务器把<strong>加密的数据</strong>原样转给电脑。不用装 Tailscale，也不用改路由器。</p>
+    <ol>
+      <li><strong>准备一台云服务器</strong>：有公网 IP 的 Linux（腾讯云轻量、CVM、阿里云 ECS 等都行），能用 SSH 登录（<code>root</code>，或能 sudo 的账号）。服务器上要有 Node.js 20 或更新：用「添加机器」装过 Lamplit 的服务器已经有了，没有的话安装时会提示你。</li>
+      <li><strong>装中转</strong>：在家里那台电脑上打开 <strong>设置 → 手机和外网</strong>，找到「出门在外：用你的云服务器中转」，填服务器的公网 IP、SSH 用户名和密码，点 <strong>在这台服务器上装中转</strong>。大约 10 秒。SSH 密码只用这一次，不保存。</li>
+      <li><strong>在云服务器控制台放行端口</strong>（只有你能做）：加两条规则，<strong>TCP 34443</strong> 和 <strong>UDP 34443</strong>，来源都填 <code>0.0.0.0/0</code>。UDP 那条是给<a href="#outside-direct">直连</a>用的。
+        <ul>
+          <li>腾讯云轻量应用服务器：实例详情 →「防火墙」→ 添加规则。</li>
+          <li>腾讯云 CVM、阿里云 ECS：「安全组」→ 入站规则 → 添加规则。</li>
+        </ul>
+        放行后回到 Lamplit 点 <strong>再测一次</strong>。</li>
+      <li><strong>手机扫一次码</strong>：同一页点「显示二维码」，用安卓 App 扫。以后在家走局域网，出门自动走中转。</li>
+      <li><strong>别的机器也要从外面连</strong>：点 <strong>让其他机器也用这个中转</strong>。</li>
+    </ol>
+    <details class="fold">
+      <summary>更多：更新、换端口、断开、卸载</summary>
+      <ul>
+        <li><strong>中转自己更新</strong>：1.5.47 起，中转跟着 Lamplit 一起更新，只换上带 Lamplit 发版签名的新版，新版起不来就自动退回。<strong>1.5.46 及更早装的中转</strong>还不会：在中转卡片上点一次「重装 / 换端口」（最后一次手动），卡片写「中转是最新的」就好了。</li>
+        <li><strong>换端口</strong>：点「重装 / 换端口」。加入密码和登记过的电脑都保留。换完记得在控制台放行新端口；手机要在家里打开一次 App 或重新扫码，才会记下新端口。</li>
+        <li><strong>马上断开</strong>：关掉「通过中转连接」。<strong>不让某台手机再连</strong>：在「已连接的设备」里移除它。</li>
+        <li><strong>不要这个中转了</strong>：点「卸载中转」（要 SSH 密码），再到云服务器控制台删掉放行端口的规则。</li>
+        <li><strong>带宽</strong>：云服务器带宽小（比如 3 Mbps）时，经中转看屏幕会卡；能直连时不受影响。</li>
+        <li>技术细节（证书、签名、手动卸载）见 GitHub 上的 <a href="https://github.com/20chuangge/lamplit/blob/main/docs/RELAY.md">docs/RELAY.md</a>。</li>
+      </ul>
+    </details>
+
+    <h3 id="outside-direct">直连：自动的，不用设置</h3>
+    <p>装了自建中转以后，手机在外面会先经中转连上家里的电脑，同时在后台试着让两边<strong>直接</strong>连上（俗称「打洞」）。打通了，数据就不经过服务器：看屏幕更快，也不占服务器的流量。打不通就一直走中转，照样能用，不会报错。</p>
+    <ul>
+      <li><strong>要做的只有一件事</strong>：上面第 3 步放行 <strong>UDP 34443</strong>。</li>
+      <li><strong>开关</strong>：中转卡片上的「先试直连（打不通自动走中转）」，默认打开。关掉以后都走中转。</li>
+      <li><strong>不用登录、不借别人的服务器</strong>：只有配对过的设备之间才会直连，交换地址用的也是你自己的中转。</li>
+      <li>换网络（Wi-Fi 换成流量）时会先回到中转，过一会儿再试直连；正在看的屏幕会断一下再自动连上。</li>
+      <li>机器之间（推更新、协作）经中转时，也会先试直连。</li>
+    </ul>
+
+    <h3 id="outside-road">现在走的是哪条路</h3>
+    <p>安卓 App 的机器列表、页面左上角机器名下面那一行，都会写当前走的路：</p>
+    <div class="table"><table>
+      <tr><th>写着</th><th>意思</th></tr>
+      <tr><td>局域网</td><td>手机和电脑在同一个 Wi-Fi 里，直接连着，最快</td></tr>
+      <tr><td>直连</td><td>在外面，和家里电脑直接连上了，数据不经过服务器</td></tr>
+      <tr><td>中转</td><td>在外面，经你的云服务器转发。慢的时候写「中转 · 较慢」</td></tr>
+      <tr><td>经中转（中转就在这台上）</td><td>你打开的就是装着中转的那台云服务器。数据本来就只经过它一次，这样是对的</td></tr>
+      <tr><td>Tailscale</td><td>经 Tailscale 连着</td></tr>
+    </table></div>
+    <ul>
+      <li><strong>手机上</strong>：设置 → 关于 →「手机到这台」写着现在走哪条路、上次没直连的原因、下次什么时候再试（只在 App 里显示）。</li>
+      <li><strong>电脑上</strong>：设置 → 手机和外网 的中转卡片写着哪台设备在直连；<strong>设置 → 体检</strong> 里「直连」「中转更新」两行说还差什么。改完防火墙后点「重新体检」，马上会重新测。</li>
+    </ul>
+
+    <h3 id="outside-why">直连没打通？查这几样</h3>
+    <p>先放心：没打通也能用，只是走中转，看屏幕慢一点、占服务器流量。体检里「直连」这一行是说明，不是故障。想打通的话，按顺序看：</p>
+    <ol>
+      <li><strong>云服务器没放行 UDP</strong>：体检写「还差一步：…加一条 UDP 34443 的规则」。去控制台加上，再点「重新体检」。</li>
+      <li><strong>中转太旧</strong>：体检写「中转要更新一次」。点一次「重装 / 换端口」。</li>
+      <li><strong>电脑的 Windows 防火墙挡住了 Lamplit</strong>：第一次弹出防火墙提示时点了取消，Windows 会一直挡着它。<strong>设置 → 手机和外网</strong> 出现提示时，点「修复防火墙」，Windows 弹出管理员确认时点「是」。</li>
+      <li><strong>电脑开着代理软件的 TUN（虚拟网卡）模式</strong>（Clash 等）：直连用的 UDP 被代理接走了。在代理规则最前面加一条 <code>PROCESS-NAME,Lamplit.exe,DIRECT</code>，或者暂时关掉 TUN 模式。手机上开着代理 VPN 也一样。</li>
+      <li><strong>两边的网络都很严</strong>：手机流量和有的公司、酒店网络不让直接连。这时没打通是正常的，就走中转，换个网络会再试。</li>
+    </ol>
+    <details class="fold">
+      <summary>更多：手动检查防火墙</summary>
+      <p>打开「控制面板 → Windows Defender 防火墙 → 高级设置 → 入站规则」，找名字是 Lamplit、前面是红色圆圈（阻止）的规则，右键删除，然后重启 Lamplit。不要删别的程序的规则。</p>
+    </details>
+
+    <h3 id="outside-see">中转看得到什么</h3>
+    <ul>
+      <li><strong>看得到</strong>：哪台电脑（一个随机编号）、从哪个 IP 来、什么时候、多少流量。</li>
+      <li><strong>看不到</strong>：对话、文件、屏幕画面、配对凭据。加密和解密只在手机和电脑上做，证书的私钥只在你的电脑上。</li>
+      <li><strong>冒充不了</strong>：手机只认配对时记下的那台电脑；电脑只认装中转时记下的那个中转。</li>
+      <li><strong>从外面进来的都算外网</strong>：8 位配对码不能用，只认扫码配对过的设备；「只有你能批准」的事也不能从这里做。直连进来的也一样。</li>
+    </ul>
+
     <h2 id="machines">添加机器</h2>
     <p>家里的旧笔记本、台式机、云服务器，都可以变成它干活的电脑。每台机器有自己的一套助手、记忆、工作区和桌面；左上角可以随时切换在哪台机器上做事。添加之后它们会跟着这台电脑<strong>自动更新</strong>，晚开机的机器开机后也会更新上。</p>
     <p>入口：<strong>设置 → 机器 → 添加机器</strong>。要填的只有：名字、IP 地址、SSH 用户名、端口和密码。点「连接并自动配置」后，Lamplit 会通过 SSH 装好依赖、部署自己、给每个助手配好桌面，最后自动配对并加进机器列表。密码只用这一次，不会保存。</p>
@@ -125,14 +253,15 @@
     <div class="tip"><p>添加的 Windows 机器上，助手的命令用一个单独的低权限账户 <code>lamplit-runner</code> 运行，碰不到 Lamplit 自己的数据；这个账户在自动配置时就建好了。</p></div>
 
     <h3 id="machine-cloud">云服务器</h3>
-    <p>云服务器有公网地址，最要紧的是：<strong>不要把 Lamplit 的端口（4390）直接开放到公网</strong>。它的连接没有加密，配对后的凭据在公网上会被看到。用 <a href="https://tailscale.com/">Tailscale</a> 把云服务器和你的设备连成一个私人网络：</p>
+    <p>云服务器有公网地址，最要紧的是：<strong>不要把 Lamplit 的端口（4390）直接开放到公网</strong>。它的连接没有加密，配对后的凭据在公网上会被看到。下面用 <a href="https://tailscale.com/">Tailscale</a> 把云服务器和你的设备连成一个私人网络（也可以选自建中转，见<a href="#outside">在外面也能用</a>）：</p>
     <ol>
       <li><strong>Tailscale 准备一个密钥</strong>：在你的电脑和手机上装好 Tailscale 并登录；打开 Tailscale 后台的 <a href="https://login.tailscale.com/admin/settings/keys">Settings → Keys</a>，点「Generate auth key」。要的是 <code>tskey-auth-</code> 开头的 Auth key，不是 API access token。</li>
       <li><strong>云服务器的安全组</strong>：只需要放行 SSH（默认 22 端口）给你的电脑，用于这一次自动配置；<strong>4390 不要放行</strong>。</li>
-      <li><strong>在 Lamplit 里添加</strong>：填公网 IP、SSH 用户名（Ubuntu 镜像常见的是 <code>ubuntu</code>，有的云是 <code>root</code>）和密码；展开「在外面也要连上它」，贴上 Tailscale 密钥。填了公网 IP 时 Lamplit 会自动提示这一步。</li>
+      <li><strong>在 Lamplit 里添加</strong>：填公网 IP、SSH 用户名（Ubuntu 镜像常见的是 <code>ubuntu</code>，有的云是 <code>root</code>）和密码；在「出门在外，怎么连上它？」里选 <strong>Tailscale</strong>，贴上 Tailscale 密钥。</li>
       <li><strong>装完</strong>：Lamplit 会顺便在服务器上装好 Tailscale、加入你的网络，以后都走加密的 Tailscale 地址（<code>100.x.x.x</code>）。密钥只用这一次，用完就从服务器上删掉。</li>
     </ol>
     <div class="tip"><p>云服务器一般没有显示器，机器人的浏览器和桌面在它自己的虚拟屏幕上；需要扫码登录时，助手会请你在「电脑」面板里接管。</p></div>
+    <p>「出门在外，怎么连上它？」的四个选项：<strong>只在家里用</strong>（默认）、<strong>Tailscale</strong>、<strong>自建中转（试验）</strong>（用你在 设置 → 手机和外网 里装好的中转）、<strong>Lamplit 中转</strong>（即将推出，现在还不能选）。怎么选见<a href="#outside">在外面也能用</a>。添加时这台电脑还要能直接连到新机器（同一个网络里，或者它有公网地址）。</p>
 
     <h3 id="pitfalls">常见的坑</h3>
     <div class="table"><table>
@@ -181,6 +310,17 @@
     <p>需要登录网站时，Lamplit 会弹出一个安全表单让你填账号密码。它们加密存在那台机器的保险箱里，助手直接填进网页，自己看不到，也不会发给 AI 模型。</p>
     <p>应用的令牌、邮箱的授权码同样放在保险箱。任何想从脚本里读取保险箱（或 Lamplit 的本机钥匙）的操作，不管什么审批级别、哪台机器，都会先问你。</p>
 
+    <h2 id="data">我的数据去了哪</h2>
+    <p>Lamplit 没有账号，也没有我们的服务器：对话、记忆、保险箱、设置和工作区里的文件，都存在你自己的电脑（和你添加的机器）上。不收集使用统计，不上报。下面是 Lamplit 会主动连到别处的全部情况（1.5.33 对照代码逐条核过）：</p>
+    <ul>
+      <li><strong>你选的模型服务商</strong>（DeepSeek、通义、OpenAI 等）：每一轮对话的内容、助手读到的文件和网页内容会发给它，这是模型干活必须的。语音、看图、生图和视频，发给你在 设置 → 模型 里配的那一家。体检会向 DeepSeek 查一次余额。</li>
+      <li><strong>检查更新</strong>：每隔几个小时访问一次 GitHub 上 Lamplit 的发布页（api.github.com），只问最新版本号；点「更新」时再从 GitHub 下载安装包。</li>
+      <li><strong>你自己的机器</strong>：添加的电脑、云服务器、手机之间直接互相连接（局域网、Tailscale、你自己的中转，或打通后的直连）。添加机器时会从 nodejs.org（或国内镜像 npmmirror.com）下载 Node，Windows 机器还会下载 TightVNC，再传过去装好。</li>
+      <li><strong>在外面连回家</strong>：用 Tailscale 时，Tailscale 公司的服务器知道你有哪些设备，内容是加密的；自建中转装在你自己的云服务器上，只转发加密的数据（<a href="#outside-see">它看得到什么</a>），程序由这台电脑经 SSH 传过去，以后的更新也经这台电脑带过去；直连不借用任何公共服务器。「国内中转（给 Tailscale 用）」也装在你自己的服务器上，会从 Go 的官方和阿里云镜像下载程序。</li>
+      <li><strong>你让它用的东西</strong>：助手打开的网页、抓取的网址、接上的应用（飞书、邮箱、GitHub、Notion 等）、交给它的编程助手——只在它干活用到、或你开启了这些功能时才连接；有影响的操作会先问你。</li>
+    </ul>
+    <p>密码和授权码存在本机加密的保险箱里，填网页登录时直接填进去，不会发给模型。官网本身（这个页面）放在 GitHub Pages 上；Windows 安装包在 GitHub，安卓 App 在 GitHub 和 Gitee。</p>
+
     <h2 id="apps">连接应用</h2>
     <p><strong>设置 → 连接应用</strong> 里一格一格列着能连的应用，上面可以按分类筛选（通信、开发、创作、效率、生活…）。点一个，照着里面的说明连上，助手就能直接用它的接口做事，每一步按你的审批级别来：</p>
     <ul>
@@ -218,36 +358,12 @@
       <li><strong>通话</strong>：输入框旁的电话按钮。说完停一下，它自动发出去；回复一句一句念出来。它念的时候不听（免得把自己的声音当成你说的），要插话就点「打断」；太吵听不出说完时点「说完了」。审批不靠嘴：它只念「需要你在屏幕上确认一下」。通话时 Lamplit 的界面要开着。</li>
     </ul>
 
-    <h2 id="phone">手机与飞书</h2>
-    <ol>
-      <li>电脑上打开 <strong>设置 → 手机和外网</strong>，打开「允许手机连接」（这个开关只在桌面应用里有）。</li>
-      <li>手机装上安卓 App，扫电脑上的二维码就连上了；不扫码的话，在手机浏览器里打开上面的地址，输入配对码。</li>
-      <li>在外面：手机和电脑都装 <a href="https://tailscale.com/">Tailscale</a>，连不上家里网络时会自动改走 Tailscale，不用重新配对。</li>
-      <li>安卓 App 里打开「让机器人用这部手机」，机器人就能看屏幕、点、输入、打开 App。手机灭屏时它会先点亮屏幕；设了锁屏密码的，它会请你解锁，从不替你输密码。</li>
-    </ol>
-    <ul>
-      <li><strong>发送、发布、同意、删除默认每次问你</strong>；你在聊天里说「你自己发吧」，它会弹一张卡片，点同意后，这个助手在这个 App 上的这类操作就不再问（今天或一直，可在助手设置里撤销）。<strong>付款永远每次问你。</strong></li>
-      <li><strong>保持连接</strong>：开着「让机器人用这部手机」时，Lamplit 会在后台保持运行；手机设置里提示你「允许在后台一直运行」时点允许。OPPO、vivo、小米等手机还要在应用信息里打开「允许后台运行」和「自启动」，并在最近任务里锁定 Lamplit。</li>
-      <li><strong>开关被系统关了</strong>：更新、清理软件可能会关掉「让机器人用这部手机」。打开一次 Lamplit 它就会自己恢复（需要在电脑上授一次权限，见<a href="#trouble">遇到问题</a>）。</li>
-    </ul>
-    <p>不想装 App：在 <strong>设置 → 飞书</strong> 里接一个飞书机器人，出门在外用飞书给助手发消息，结果、图片、视频都发回飞书；需要批准时回一句「批准」。</p>
-
     <h2 id="more">记忆、技能、定时任务</h2>
     <ul>
       <li><strong>记忆</strong>：它会记下你的习惯和偏好，每个助手各有一份，也有一份大家共享的。</li>
       <li><strong>技能</strong>：做过的流程可以存成技能，下次一句话就能复用。</li>
       <li><strong>定时任务</strong>：每天的简报、定期的检查，到点自己跑，你不在也照样做完。在对话里，每次运行只占一行「⏱ 时间 · 任务名 · 多久一次」，点「看指令」可以改指令、暂停、马上再跑一次；没有变化的那一轮不打扰你。想改时间、删掉，在右上角工作面板的「任务」页签里点「改时间」「删除」；时间可以写「每天 9:00」「工作日 8:30」「每周五 18:00」「每 30 分钟」。</li>
     </ul>
-
-    <h2 id="data">我的数据去了哪</h2>
-    <p>Lamplit 没有账号，也没有我们的服务器：对话、记忆、保险箱、设置和工作区里的文件，都存在你自己的电脑（和你添加的机器）上。不收集使用统计，不上报。下面是 Lamplit 会主动连到别处的全部情况（1.5.33 对照代码逐条核过）：</p>
-    <ul>
-      <li><strong>你选的模型服务商</strong>（DeepSeek、通义、OpenAI 等）：每一轮对话的内容、助手读到的文件和网页内容会发给它，这是模型干活必须的。语音、看图、生图和视频，发给你在 设置 → 模型 里配的那一家。体检会向 DeepSeek 查一次余额。</li>
-      <li><strong>检查更新</strong>：每隔几个小时访问一次 GitHub 上 Lamplit 的发布页（api.github.com），只问最新版本号；点「更新」时再从 GitHub 下载安装包。</li>
-      <li><strong>你自己的机器</strong>：添加的电脑、云服务器、手机之间直接互相连接（局域网或 Tailscale），不经过别人的服务器。添加机器时会从 nodejs.org（或国内镜像 npmmirror.com）下载 Node，Windows 机器还会下载 TightVNC，再传过去装好。国内中转装在你自己的云服务器上，会从 Go 的官方和阿里云镜像下载程序。</li>
-      <li><strong>你让它用的东西</strong>：助手打开的网页、抓取的网址、接上的应用（飞书、邮箱、GitHub、Notion 等）、交给它的编程助手——只在它干活用到、或你开启了这些功能时才连接；有影响的操作会先问你。</li>
-    </ul>
-    <p>密码和授权码存在本机加密的保险箱里，填网页登录时直接填进去，不会发给模型。官网本身（这个页面）放在 GitHub Pages 上，下载按钮的安装包在腾讯云和 Gitee 上。</p>
 
     <h2 id="update">更新与数据</h2>
     <ul>
@@ -257,14 +373,19 @@
     </ul>
 
     <h2 id="trouble">遇到问题</h2>
+    <div class="tip"><p><strong>先看体检</strong>：打开 <strong>设置 → 体检</strong>，它会逐项检查模型、余额、手机、这台机器、中转和直连，并说哪里不对、怎么修。改完点「重新体检」。</p></div>
     <h3>它一直不回 / 回得很慢</h3>
     <p>看顶部有没有「这台机器内存快用完了」之类的提示；再到设置 → 模型 点「测试连接」，确认密钥和余额正常。</p>
     <h3>切换机器、切换助手很卡，手机连电脑很慢</h3>
-    <p>打开 <strong>设置 → 机器 → 网络诊断</strong>。国内机器之间超过 150 毫秒，多半是电脑上的代理软件（Clash、V2Ray 等）把 Tailscale 的流量送到了国外再绕回来。在代理规则的最前面加 <code>PROCESS-NAME,tailscaled.exe,DIRECT</code>，在 TUN（虚拟网卡）设置里排除局域网网段（<code>route-exclude-address</code>：192.168.0.0/16、10.0.0.0/8、172.16.0.0/12），然后在代理软件里「关闭全部连接」。注意不要排除 100.64.0.0/10，那是 Tailscale 自己的网段。</p>
+    <p>打开 <strong>设置 → 机器 → 网络诊断</strong>。国内机器之间超过 150 毫秒，多半是电脑上的代理软件（Clash、V2Ray 等）把 Tailscale 的流量送到了国外再绕回来。</p>
+    <details class="fold">
+      <summary>更多：代理软件里怎么改</summary>
+      <p>在代理规则的最前面加 <code>PROCESS-NAME,tailscaled.exe,DIRECT</code>，在 TUN（虚拟网卡）设置里排除局域网网段（<code>route-exclude-address</code>：192.168.0.0/16、10.0.0.0/8、172.16.0.0/12），然后在代理软件里「关闭全部连接」。注意不要排除 100.64.0.0/10，那是 Tailscale 自己的网段。用自建中转时，再加一条 <code>PROCESS-NAME,Lamplit.exe,DIRECT</code>，直连才打得通。</p>
+    </details>
     <p><strong>手机和电脑在同一个 Wi-Fi，手机却连得慢</strong>：多半是 Windows 防火墙挡住了局域网（第一次弹窗时点了取消，或家里网络被标成「公用」）。在 <strong>设置 → 手机和外网</strong> 里会看到提示，点「修复防火墙」，Windows 弹出管理员确认时点「是」。</p>
-    <p><strong>在外面（手机流量）连回家很慢</strong>：两边打不通直连时，Tailscale 走它在国外的中转。有一台国内云服务器的话，在 <strong>设置 → 机器 → 国内中转</strong> 填它的公网 IP 和 SSH 密码装上中转，再照页面提示在云服务器安全组放行 TCP 33445 和 UDP 3478、把显示的配置贴进 Tailscale 后台的 Access controls。只有你自己 Tailscale 账号里的设备能用它。</p>
+    <p><strong>在外面（手机流量）连回家很慢</strong>：用 Tailscale 的，见<a href="#outside-tailscale-cn">国内中转（给 Tailscale 用）</a>；用自建中转的，看<a href="#outside-road">现在走的是哪条路</a>，一直是「中转」就按<a href="#outside-why">直连没打通？</a>查一遍。</p>
     <h3>手机连不上</h3>
-    <p>确认电脑上打开了「允许手机连接」，手机和电脑在同一个网络；在外面就用 Tailscale。配对码每天换，看<a href="#pitfalls">常见的坑</a>。</p>
+    <p>确认电脑上打开了「允许手机连接」，手机和电脑在同一个网络；在外面要先选好一种方式，见<a href="#outside">在外面也能用</a>。配对码每天换，看<a href="#pitfalls">常见的坑</a>。</p>
     <h3>屏幕显示「无法连接到服务器」</h3>
     <p>点「电脑」面板的「刷新」。刚开机或刚切换屏幕时，屏幕服务需要几秒钟准备。</p>
     <h3>「让机器人用这部手机」总被关掉</h3>
@@ -294,6 +415,6 @@
   </div>
 </footer>
 
-<script src="site.js?v=1513"></script>
+<script src="site.js?v=1549"></script>
 </body>
 </html>

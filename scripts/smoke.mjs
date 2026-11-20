@@ -224,6 +224,8 @@ async function main() {
     await stage('1.5.43: Tailscale the way the relay card works', scenarioTailscale1543);
     await stage('1.5.43: undo asks first, sits under the reply, never lists 「-p」; replies do not fold', scenarioUndoFold1543);
     await stage('1.5.44: 建在哪台, a machine picked by name, the app opens on its home machine, whose settings', scenarioRoster1544);
+    await stage('1.5.45: 替你想 - the machine picked for you, drafts before anything goes out, bots changed by saying so, what waits for you', scenarioThink1545);
+    await stage('1.5.45: the four building blocks - initiative, the outgoing gate, adjust by talking, the machine profile', scenarioBlocks1545);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -7702,7 +7704,7 @@ async function scenarioV156() {
       .map((m) => [m[1], [...m[2].matchAll(/data-set-target="([^"]+)"/g)].map((x) => x[1]).join(',')]);
     check('S1 settings: four groups with titles - 助理 / 安全 / 连接 / 通用 - in the design\'s order',
       JSON.stringify(groups) === JSON.stringify([
-        ['助理', 'sec-model,sec-skills,sec-memory'],
+        ['助理', 'sec-model,sec-skills,sec-memory,sec-initiative'],
         ['安全', 'sec-run,sec-bounds,sec-vault,sec-audit'],
         ['连接', 'sec-machines,sec-pair,sec-feishu,sec-mcp'],
         ['通用', 'sec-checkup,sec-appearance,sec-usage,sec-pages,sec-about'],
@@ -7905,9 +7907,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       && pageA.includes("const ink = isLightColor(bg) ? '#1c1a17' : '#fff';") && pageA.includes('function isLightColor(hex)'));
     // L4: the approval card in the design's shape - nothing lost (approve once, deny, a note, the raw details).
     check('L4 approval card: one row 允许这一次 / (以后都允许) / 拒绝 / 看详情 plus the optional note; 看详情 opens the technical details; it still decides through the same call',
-      pageA.includes("const allow = el('button', 'btn primary approval-allow', many ? `允许这 ${many.length} 条` : '允许这一次');") && pageA.includes("const reject = el('button', 'btn approval-reject', '拒绝');")
+      pageA.includes("const allow = el('button', 'btn primary approval-allow', words ? words.yes : many ? `允许这 ${many.length} 条` : '允许这一次');") && pageA.includes("const reject = el('button', 'btn approval-reject', words ? words.no : '拒绝');")
       && pageA.includes("const more = el('button', 'btn approval-more', '看详情');") && pageA.includes("note.placeholder = '想补一句话？（可选）';")
-      && pageA.includes("tech.open = !tech.open;") && pageA.includes("allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject));")
+      && pageA.includes("tech.open = !tech.open;") && pageA.includes("allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject, null, data.draft ? draftEdits(card, data) : null));")
       && pageA.includes("card.classList.remove('pending');"));
     check('L4 phone: a pending approval sits at the bottom of the chat (sticky); home is a list with the main assistant as a row; rows and the search bar stay inside the screen',
       pageA.includes('.messages .approval.pending {\n      position: sticky; bottom: 8px;') && pageA.includes('.sidebar.open .bot.is-primary { flex-direction: row;')
@@ -9971,7 +9973,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const srv = await readText('../src/server.mjs');
     check('approval: a decision from a paired device is audited as "device"',
       srv.includes("viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human'") &&
-      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine })"));
+      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits })"));
   }
   // Public port (G1): a tunnel socket that never counts as the local human.
   {
@@ -11550,4 +11552,577 @@ async function scenarioRoster1544() {
     /#local-pair-scrim \{ z-index: 98; \}\s+#local-pair-modal \{ z-index: 99; \}/.test(css) && css.indexOf('#local-pair-modal { z-index: 99; }') > css.indexOf('#group-scrim, #vnc-scrim')
     && groupsJs.includes('const av = avatarNode(faceOf(bot), size);') && groupsJs.includes('function faceOf(b) {')
     && fsSync.readFileSync(new URL('../public/app/main/02-avatars.js', import.meta.url), 'utf8').includes('const a = avatarOf(faceOf(bot));'));
+}
+
+// ---------------------------------------------------------------------------
+// 1.5.45 第四步「替你想」: the main assistant picks the machine, what goes out is
+// a draft first, a bot is changed by saying so, and once a day 「有什么在等你」.
+// ---------------------------------------------------------------------------
+async function scenarioThink1545() {
+  const AP = await import('../src/approvals.mjs');
+  const toolsMod = await import('../src/tools.mjs');
+  const { AgentRuntime } = await import('../src/agent.mjs');
+  const D = await import('../src/drafts.mjs');
+  const X = await import('../src/xpost.mjs');
+  const MN = await import('../src/machinenotes.mjs');
+  const ADJ = await import('../src/adjust.mjs');
+  const NG = await import('../src/nudge.mjs');
+  const storeMod = await import('../src/store.mjs');
+  const ws = path.join(home, 'workspace');
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-think-'));
+
+  // --- 2. drafts: which steps send something out, and what may be edited -------------------
+  const regT = toolsMod.createRegistry({ workspaceDir: ws, config: {} });
+  const xd = D.draftFor('x_post', { text: '今天上线了 1.5.45', replyTo: 'https://x.com/someone/status/1234567890123' }, { outgoing: regT.get('x_post').outgoing });
+  const MAILT = (await import('../src/mail.mjs')).MAIL_TOOLS.find((t) => t.name === 'mail_send');
+  const mailOut = MAILT.annotations.lamplitOutgoing;
+  const mailD = D.draftFor('mcp__mail__mail_send', { to: ['a@example.com'], subject: '周报', body: '这周做了三件事', attachments: ['r.pdf'] }, { mcp: { server: '邮箱', tool: 'mail_send', outgoing: mailOut } });
+  const lark = D.draftFor('mcp__feishu__im_v1_message_create', { data: { receive_id: 'oc_1', msg_type: 'text', content: JSON.stringify({ text: '明天十点开会' }) }, params: { receive_id_type: 'chat_id' } }, { mcp: { server: '飞书', tool: 'im.v1.message.create' } });
+  const xhs = D.draftFor('post_draft', { channel: '小红书', title: '秋天的成都', body: '去了宽窄巷子……', files: ['cover.png'] }, { outgoing: regT.get('post_draft').outgoing });
+  check('T45-1 a step that sends something out is a draft: X posts and replies (the post id read from a link), mail (to, subject, body), a connected app\'s send (Feishu\'s text inside its JSON), a post through the browser (小红书); looking and other writes are not',
+    xd?.channel === 'X' && xd.kind === 'reply' && xd.replyTo === '1234567890123' && xd.fields.map((f) => f.key).join() === 'text' && xd.fields[0].max === 280
+    && mailD?.fields.map((f) => f.key).join() === 'to,subject,body' && mailD.fields[0].value === 'a@example.com'
+    && lark?.fields.length === 1 && lark.fields[0].key === 'data.content#text' && lark.fields[0].value === '明天十点开会'
+    && xhs?.channel === '小红书' && xhs.fields.map((f) => f.key).join() === 'title,body'
+    && D.draftFor('mcp__mail__mail_list', { folder: 'INBOX' }, { mcp: { server: '邮箱', tool: 'mail_list' } }) === null
+    && D.draftFor('mcp__notion__update_page', { page: 'x', title: 'y' }, { mcp: { server: 'Notion', tool: 'update_page' } }) === null
+    && D.draftFor('shell', { command: 'ls' }) === null,
+    JSON.stringify({ xd, mailD, lark, xhs }));
+
+  const e1 = D.applyEdits({ to: ['a@example.com'], subject: '周报', body: '旧', attachments: ['r.pdf'] }, mailD, { body: '新的正文', to: 'b@example.com, c@example.com', attachments: ['/etc/passwd'], account: 'evil' });
+  const e2 = D.applyEdits(JSON.parse(JSON.stringify({ data: { receive_id: 'oc_1', msg_type: 'text', content: JSON.stringify({ text: '明天十点开会' }) } })), lark, { 'data.content#text': '明天十一点开会' });
+  const e3 = D.applyEdits({ text: 'a' }, xd, { text: 'x'.repeat(400) });
+  check('T45-2 edits change only the fields on the card (attachments, account and anything else stay as the bot wrote them); a recipient list stays a list; Feishu\'s text goes back inside its JSON; too long for X is refused',
+    e1.args.body === '新的正文' && JSON.stringify(e1.args.to) === JSON.stringify(['b@example.com', 'c@example.com']) && JSON.stringify(e1.args.attachments) === JSON.stringify(['r.pdf']) && !('account' in e1.args)
+    && e1.changed.sort().join() === 'body,to'
+    && JSON.parse(e2.args.data.content).text === '明天十一点开会' && e2.args.data.receive_id === 'oc_1'
+    && e3.error && /280/.test(e3.error),
+    JSON.stringify({ e1, e2, e3 }));
+
+  // The card: always asked, at any level, no 「以后都允许」; the edited text is what goes out.
+  const harness = ({ id, script, policy = {}, botPolicy = { autoApproveMedium: true }, onCard, tools = [], setup = () => {}, primary = false, deps = {} }) => {
+    const q = new AP.ApprovalQueue({ timeoutMs: 60000 });
+    const ev = [];
+    const cards = [];
+    const seen = [];
+    const reg = toolsMod.createRegistry({ workspaceDir: ws, config: {}, ...deps });
+    setup(reg);
+    let n = 0;
+    const model = { provider: 'fake', model: 'fake', complete: async (msgs) => { seen.push(msgs.map((m) => ({ role: m.role, content: String(m.content || '') }))); const step = script[Math.min(n, script.length - 1)]; n += 1; return step; } };
+    const bot = { id, name: '测', role: '', tools, skills: [], policy: botPolicy, primary };
+    const rt = new AgentRuntime({ config: { workspaceDir: ws, policy, primaryBotId: primary ? id : 'chief' }, registry: reg, model,
+      bots: { getBot: async (bid) => (bid === id ? bot : null), listBots: async () => [bot], updateBot: async (bid, patch) => Object.assign(bot, patch) }, memory: { renderMemoryDigest: async () => '' }, skills: { renderSkillsDigest: async () => '' },
+      approvals: q, bus: { emit: (e) => { ev.push(e); if (e.type === 'approval.request') { cards.push(e); setTimeout(() => onCard(e, { q, rt, cards }), 5); } } } });
+    rt.record = async () => {};
+    return { rt, q, ev, cards, seen, bot, reg };
+  };
+  const say = (content) => ({ content, toolCalls: [] });
+  {
+    const sent = [];
+    const h = harness({ id: 't45mail', policy: { level: 'auto' },
+      setup: (reg) => {
+        reg.tools.set('mcp__mail__mail_send', { name: 'mcp__mail__mail_send', description: '［邮箱］send', risk: AP.RISK.MEDIUM, mcp: { server: '邮箱', tool: 'mail_send', outgoing: mailOut }, parameters: { type: 'object' }, run: async (a) => { sent.push(a); return { ok: true }; } });
+        reg.mcpGate = () => true;
+        reg.mcpTrust = () => ({ server: '邮箱', tool: 'mail_send', trust: 'always', readOnly: false });
+      },
+      onCard: (e, { q }) => q.decide(e.approvalId, 'approve', '', 'human', { edits: { body: '老板好，周报见附件。' } }),
+      script: [{ content: '', toolCalls: [{ id: 'm1', name: 'mcp__mail__mail_send', arguments: { to: ['boss@example.com'], subject: '周报', body: '周报', attachments: ['r.pdf'] } }] }, say('发好了。')] });
+    const r = await h.rt.runTurn({ botId: 't45mail', text: '把周报发给老板' });
+    const card = h.cards[0];
+    const back = (h.seen[1] || []).filter((m) => m.role === 'tool').map((m) => m.content).join('\n');
+    const rec = h.q.list({ status: 'history' })[0];
+    check('T45-3 sending mail is a draft card even at 放手 with the app on 「始终允许」 (asked, high, no 以后都允许); what goes out is the human\'s edited body; the bot is told it was edited; the card keeps the edit',
+      r.status === 'success' && h.cards.length === 1 && card.draft?.fields?.length === 3 && !card.remember && card.risk === 'HIGH'
+      && sent.length === 1 && sent[0].body === '老板好，周报见附件。' && JSON.stringify(sent[0].attachments) === JSON.stringify(['r.pdf'])
+      && /你改|edited/.test(back) && rec?.edited === true && rec?.edits?.body === '老板好，周报见附件。',
+      JSON.stringify({ status: r.status, card, sent, back: back.slice(0, 300), rec }));
+  }
+
+  // --- X: the human's own developer app, OAuth 2.0 with PKCE; tokens sealed, never shown -----
+  {
+    const calls = [];
+    const fakeX = async (url, init = {}) => {
+      const u = String(url);
+      calls.push({ url: u, method: init.method || 'GET', headers: init.headers || {}, body: String(init.body || '') });
+      const ok = (data) => ({ ok: true, status: 200, json: async () => data, text: async () => JSON.stringify(data) });
+      if (u === X.X_TOKEN_URL) {
+        const p = new URLSearchParams(String(init.body || ''));
+        if (p.get('grant_type') === 'authorization_code') return ok({ access_token: 'AT-secret-1', refresh_token: 'RT-secret-1', expires_in: 7200, scope: 'tweet.read tweet.write users.read offline.access' });
+        return ok({ access_token: 'AT-secret-2', refresh_token: 'RT-secret-2', expires_in: 7200 });
+      }
+      if (u === `${X.X_API}/2/users/me`) return ok({ data: { id: '42', username: 'lamp_owner', name: 'Owner' } });
+      if (u === `${X.X_API}/2/tweets`) return ok({ data: { id: '1999', text: JSON.parse(init.body).text } });
+      return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
+    };
+    let clock = Date.now();
+    const file = path.join(tmp, 'x-account.json');
+    const acct = X.createXAccount({ file, fetchImpl: fakeX, now: () => clock });
+    await acct.setApp({ clientId: 'cid-123', clientSecret: 'csecret-xyz' });
+    const start = await acct.beginLogin({ redirectUri: 'http://127.0.0.1:4390/api/x/callback' });
+    const au = new URL(start.url);
+    const stateParam = au.searchParams.get('state');
+    const done = await acct.finishLogin({ state: stateParam, code: 'code-1' });
+    const again = await acct.finishLogin({ state: stateParam, code: 'code-1' }).catch((e) => e);
+    const tokenCall = calls.find((c) => c.url === X.X_TOKEN_URL);
+    const view = acct.view();
+    const disk = fsSync.readFileSync(file, 'utf8');
+    check('T45-4 X sign-in is on X\'s own page (x.com/i/oauth2/authorize, S256, scopes to post and stay signed in, the callback given); the code is swapped once, with the app\'s secret as Basic auth; the account name is read; a used state is refused',
+      au.origin + au.pathname === 'https://x.com/i/oauth2/authorize' && au.searchParams.get('code_challenge_method') === 'S256' && au.searchParams.get('client_id') === 'cid-123'
+      && au.searchParams.get('scope') === 'tweet.read tweet.write users.read offline.access' && au.searchParams.get('redirect_uri') === 'http://127.0.0.1:4390/api/x/callback'
+      && done.username === 'lamp_owner' && /^Basic /.test(tokenCall?.headers?.authorization || '') && /code_verifier=/.test(tokenCall?.body || '')
+      && again instanceof Error && again.code === 'X_STATE',
+      JSON.stringify({ url: start.url, done, again: again?.code, tokenCall }));
+    check('T45-5 what the page sees has no key or token in it; on disk it is sealed when there is a master key (x-account.json is a sealed file), never in the vault the bots can list',
+      view.connected === true && view.username === 'lamp_owner' && view.hasClientSecret === true && !/secret|AT-|RT-|cid-123/.test(JSON.stringify(view).replace(/hasClientSecret/, ''))
+      && storeMod.SEALED_FILES.has('x-account.json') && (storeMod.masterKey() ? !disk.includes('AT-secret-1') : true),
+      JSON.stringify(view));
+    clock += 3 * 3600 * 1000; // past the two hours: refreshed first
+    const posted = await acct.post({ text: '你好', replyTo: '1234567890123' });
+    const tweetCall = calls.filter((c) => c.url === `${X.X_API}/2/tweets`).pop();
+    const refreshed = calls.some((c) => c.url === X.X_TOKEN_URL && /grant_type=refresh_token/.test(c.body));
+    check('T45-6 a post goes to POST /2/tweets as the human (Bearer, a reply names the post it answers); an expired token is refreshed first; the result is a link, never a token',
+      posted.id === '1999' && posted.url === 'https://x.com/lamp_owner/status/1999' && refreshed && tweetCall?.headers?.authorization === 'Bearer AT-secret-2'
+      && JSON.parse(tweetCall.body).reply?.in_reply_to_tweet_id === '1234567890123' && !/AT-|RT-/.test(JSON.stringify(posted)),
+      JSON.stringify({ posted, refreshed }));
+    // x_post: a draft card every time; who may post is the human's pick.
+    const sent = [];
+    const h = harness({ id: 't45x', policy: { level: 'auto' }, deps: { getXAccount: () => ({ allows: (b) => b === 't45x', view: () => ({ connected: true, username: 'lamp_owner' }), post: async (a) => { sent.push(a); return { id: '7', url: 'https://x.com/lamp_owner/status/7' }; } }) },
+      onCard: (e, { q }) => q.decide(e.approvalId, 'approve', '', 'human', { edits: { text: '改过的帖子' } }),
+      script: [{ content: '', toolCalls: [{ id: 'x1', name: 'x_post', arguments: { text: '原来的帖子' } }] }, say('发了。')] });
+    await h.rt.runTurn({ botId: 't45x', text: '发一条' });
+    const other = harness({ id: 't45nox', deps: { getXAccount: () => ({ allows: () => false, view: () => ({ connected: true }) }) }, onCard: () => {}, script: [say('好')] });
+    check('T45-7 x_post: a draft card at any level, the edited text is posted; a bot the human did not pick for X does not have it',
+      h.cards.length === 1 && h.cards[0].draft?.channel === 'X' && sent.length === 1 && sent[0].text === '改过的帖子'
+      && h.reg.isGranted(h.bot, 'x_post') && !other.reg.isGranted(other.bot, 'x_post'),
+      JSON.stringify({ cards: h.cards.map((c) => c.draft), sent }));
+    // post_draft: any bot, before it publishes through the browser or the phone.
+    const p = harness({ id: 't45xhs', onCard: (e, { q }) => q.decide(e.approvalId, 'approve', '', 'human', { edits: { body: '人改过的正文' } }),
+      script: [{ content: '', toolCalls: [{ id: 'p1', name: 'post_draft', arguments: { channel: '小红书', title: '成都', body: '机器写的正文' } }] }, say('按你定的稿发。')] });
+    await p.rt.runTurn({ botId: 't45xhs', text: '发小红书' });
+    const pBack = (p.seen[1] || []).filter((m) => m.role === 'tool').map((m) => m.content).join('\n');
+    check('T45-8 post_draft (every bot has it): a draft card; the bot gets back the final text to publish exactly as approved',
+      p.cards.length === 1 && p.cards[0].draft?.channel === '小红书' && /人改过的正文/.test(pBack) && /exactly|原样|一字不改/.test(pBack), pBack.slice(0, 300));
+  }
+
+  // --- 1. machines: what each is good for; the first hand-off to a machine asks once -------
+  {
+    const notes = MN.createMachineNotes({ file: path.join(tmp, 'machine-notes.json') });
+    const auto = MN.suggestNote({ name: '腾讯云', bots: [{ name: '发布', role: '后台登录、上传、定时发布（B站/抖音/小红书/公众号）' }, { name: '策略', role: '求职策略与筛岗' }], alwaysOn: true });
+    await notes.autoFill('腾讯云', auto);
+    await notes.set('书房电脑', '处理文件，有你的照片', 'human');
+    await notes.autoFill('书房电脑', '别的');
+    check('T45-9 each machine has a line on what it is good for: written from its bots when it is new, the human\'s (or the assistant\'s) words win and are not overwritten',
+      /一直开着/.test(auto) && /发布/.test(auto) && /策略/.test(auto) && notes.get('腾讯云').note === auto && notes.get('腾讯云').by === 'auto'
+      && notes.get('书房电脑').note === '处理文件，有你的照片' && notes.get('书房电脑').by === 'human');
+    const lines = MN.machinesPrompt({ notes: notes.all(), roster: [{ machine: '腾讯云', online: true, bots: [{ id: 'b1', name: '策略', role: '求职策略与筛岗' }] }, { machine: '书房电脑', online: false, bots: [] }], here: '客厅电脑' }).join('\n');
+    check('T45-10 the main assistant\'s prompt names each machine, whether it answers, what it is good for and its bots - names only, no addresses - and how to pick (said > fits > personal files stay > ask)',
+      /腾讯云/.test(lines) && /策略（b1）|策略 \(b1\)/.test(lines) && /书房电脑.*(off|关着|连不上)/.test(lines) && !/https?:\/\//.test(lines) && /machine_switch/.test(lines) && /machine_note/.test(lines), lines);
+
+    const delivered = [];
+    const roster = { selfName: () => '客厅电脑', primaryOf: () => 'chief', deliver: async (o) => { delivered.push(o); return { turnId: 't1' }; }, list: async () => [{ machine: '腾讯云', online: true, bots: [{ id: 'b1', name: '策略' }] }] };
+    const peers = { find: (n) => (n === '腾讯云' ? { name: '腾讯云' } : null), list: () => [{ name: '腾讯云' }] };
+    const deps = { getPeers: () => peers, getRoster: () => roster, getMachineNotes: () => notes };
+    const h = harness({ id: 't45pick', primary: true, tools: ['machine_switch'], deps, onCard: (e, { q }) => q.decide(e.approvalId, 'approve'),
+      script: [{ content: '', toolCalls: [{ id: 's1', name: 'machine_switch', arguments: { machine: '腾讯云', bot: '策略', task: '筛今天的岗位', why: '策略在腾讯云上管筛岗' } }] },
+        { content: '', toolCalls: [{ id: 's2', name: 'machine_switch', arguments: { machine: '腾讯云', bot: '策略', task: '再筛一次' } }] }, say('交给腾讯云上的「策略」了。')] });
+    await h.rt.runTurn({ botId: 't45pick', text: '帮我筛一下岗位' });
+    check('T45-11 the first hand-off to a machine asks once (「交给腾讯云上的「策略」」, even for a trusted main assistant); after a yes that machine is remembered and the next hand-off goes without a card; the task goes to the named bot there, the window stays',
+      h.cards.length === 1 && /腾讯云/.test(h.cards[0].reason || '') && /策略/.test(h.cards[0].reason || '') && !h.cards[0].remember
+      && delivered.length === 2 && delivered[0].botId === 'b1' && delivered[0].machine === '腾讯云' && notes.get('腾讯云').confirmed === true,
+      JSON.stringify({ cards: h.cards.map((c) => c.reason), delivered }));
+  }
+
+  // --- 3. a bot changed by saying so: a card with before and after; undo ------------------
+  {
+    const plan = ADJ.planAdjust({ id: 'b1', name: '策略', role: '求职策略与筛岗', persona: '每天筛新岗。\n只看后端岗位。' }, { addRules: ['只看北京的岗位'], removeRules: ['只看后端岗位。'] });
+    const none = (() => { try { ADJ.planAdjust({ id: 'b1', name: '策略', role: 'r', persona: 'p' }, { addRules: [] }); return null; } catch (e) { return e; } })();
+    check('T45-12 a change to a bot\'s rules is planned as lines added and removed, the before kept whole; nothing to change is said so',
+      plan.after.persona.includes('只看北京的岗位') && !plan.after.persona.includes('只看后端岗位') && plan.before.persona.includes('只看后端岗位')
+      && plan.lines.some((l) => l.op === '+' && l.text === '只看北京的岗位') && plan.lines.some((l) => l.op === '-' && l.text === '只看后端岗位。')
+      && none?.code === 'ADJUST_NOTHING');
+    const store = ADJ.createAdjustments({ file: path.join(tmp, 'bot-adjustments.json') });
+    const local = { id: 'b1', name: '策略', role: '求职策略与筛岗', persona: '每天筛新岗。' };
+    const h = harness({ id: 't45adj', primary: true, tools: ['bot_update'], deps: { getAdjustments: () => store },
+      setup: () => {}, onCard: (e, { q }) => q.decide(e.approvalId, 'approve'),
+      script: [{ content: '', toolCalls: [{ id: 'a1', name: 'bot_adjust', arguments: { bot: 'b1', addRules: ['只看北京的岗位'], summary: '以后只看北京的岗位' } }] }, say('改好了。')] });
+    h.rt.bots.getBot = async (bid) => (bid === 'b1' ? local : bid === 't45adj' ? h.bot : null);
+    h.rt.bots.updateBot = async (bid, patch) => Object.assign(local, patch);
+    await h.rt.runTurn({ botId: 't45adj', text: '让策略以后只看北京的岗位' });
+    const card = h.cards[0];
+    const last = store.list()[0];
+    check('T45-13 bot_adjust: always a card (even for the trusted main assistant), the card shows before and after line by line; approved, the bot\'s rules change and the change is kept for undo',
+      h.cards.length === 1 && card.adjust?.lines?.some((l) => l.op === '+' && /北京/.test(l.text)) && card.risk === 'HIGH' && !card.remember
+      && local.persona.includes('只看北京的岗位') && last?.botId === 'b1' && last.before.persona === '每天筛新岗。',
+      JSON.stringify({ card, local, last }));
+    const undone = await ADJ.undoAdjust(store, last.id, { getBot: async () => local, updateBot: async (bid, p) => Object.assign(local, p) });
+    local.persona += '\n手改的一行';
+    const twice = await ADJ.undoAdjust(store, last.id, { getBot: async () => local, updateBot: async (bid, p) => Object.assign(local, p) }).catch((e) => e);
+    check('T45-14 undo puts the rules back as they were and is done once; changed again by hand since, it says so instead of overwriting',
+      undone.ok === true && local.persona.startsWith('每天筛新岗。') && !local.persona.includes('北京') && twice?.code === 'ADJUST_ALREADY_UNDONE', JSON.stringify({ undone, twice: twice?.code }));
+    const s2 = ADJ.createAdjustments({ file: path.join(tmp, 'adj2.json') });
+    const b2 = { id: 'b2', name: '文案', role: 'r', persona: 'A' };
+    const id2 = await s2.record({ botId: 'b2', botName: '文案', before: { role: 'r', persona: 'A' }, after: { role: 'r', persona: 'A\nB' }, summary: 'x' });
+    b2.persona = 'A\nB\nC';
+    const drift = await ADJ.undoAdjust(s2, id2, { getBot: async () => b2, updateBot: async (bid, p) => Object.assign(b2, p) }).catch((e) => e);
+    check('T45-14b undo after someone else changed the same bot: refused in words (ADJUST_CHANGED_SINCE), nothing overwritten', drift?.code === 'ADJUST_CHANGED_SINCE' && b2.persona === 'A\nB\nC');
+  }
+
+  // --- 4. 「有什么在等你」 once a day ------------------------------------------------------
+  {
+    const empty = NG.buildNudge({ cards: [], unread: [], queued: [] });
+    const text = NG.buildNudge({
+      cards: [{ machine: '腾讯云', botName: 'X 账号管家', what: '发一条帖子' }, { botName: '小笔', what: '运行一条命令' }],
+      unread: [{ machine: '腾讯云', name: '策略', what: '北京岗位筛选' }],
+      queued: [{ machine: '书房电脑', count: 1 }],
+    });
+    check('T45-15 the daily note: nothing waiting, nothing said; else a short note - the cards (which machine, which bot, what), the work done but not looked at, the messages waiting for a machine that is off',
+      empty === '' && /有 4 件事在等你/.test(text) && /2 张卡等你点头/.test(text) && /腾讯云 · X 账号管家「发一条帖子」/.test(text) && /1 件做完了你还没看/.test(text)
+      && /书房电脑/.test(text) && text.split('\n').length <= 8, text);
+    const at = (h, m) => { const d = new Date(2026, 10, 20, h, m); return d.getTime(); };
+    check('T45-16 when: on by default at 09:00; not before the time, once a day (a computer that was off says it when it is back the same day), not when switched off',
+      NG.DEFAULT_NUDGE.enabled === true && NG.DEFAULT_NUDGE.time === '09:00'
+      && !NG.nudgeDue({ now: at(8, 59), settings: { enabled: true, time: '09:00' }, lastDay: '' })
+      && NG.nudgeDue({ now: at(9, 0), settings: { enabled: true, time: '09:00' }, lastDay: '' })
+      && NG.nudgeDue({ now: at(15, 30), settings: { enabled: true, time: '09:00' }, lastDay: '2026-11-19' })
+      && !NG.nudgeDue({ now: at(15, 30), settings: { enabled: true, time: '09:00' }, lastDay: '2026-11-20' })
+      && !NG.nudgeDue({ now: at(9, 1), settings: { enabled: false, time: '09:00' }, lastDay: '' }));
+  }
+
+  // --- the hub: routes, the human's answer with edits, passed on to another machine --------
+  {
+    const xs = await api('/api/x');
+    const app = await api('/api/x/app', { method: 'PUT', body: { clientId: 'cid-hub', clientSecret: 'sec-hub' } });
+    const xs2 = await api('/api/x');
+    const noKey = await api('/api/x/app', { method: 'PUT', body: { clientId: 'evil' }, headers: { 'x-no-local-key': '1' } });
+    const login = await api('/api/x/login', { method: 'POST', body: {} });
+    const loginUrl = login.json?.url ? new URL(login.json.url) : null;
+    check('T45-17 /api/x: shows whether X is set up and signed in (never a key or token); setting the app and signing in are the human\'s (an unpaired browser or a program gets 403); the sign-in link goes to x.com with this hub\'s callback',
+      xs.status === 200 && xs.json?.configured === false && app.status === 200 && xs2.json?.configured === true && !/sec-hub/.test(xs2.text) && !/cid-hub/.test(xs2.text.replace(/"clientIdHint":"[^"]*"/, ''))
+      && noKey.status === 403 && login.status === 200 && loginUrl?.hostname === 'x.com' && /\/api\/x\/callback$/.test(loginUrl.searchParams.get('redirect_uri') || '')
+      && typeof xs.json?.callback === 'string' && /\/api\/x\/callback$/.test(xs.json.callback),
+      JSON.stringify({ xs: xs.json, app: app.status, noKey: noKey.status, login: login.json }));
+    const bad = await rawFetch(`${base}/api/x/callback?state=nope&code=c`);
+    const badText = await bad.text();
+    check('T45-18 the callback page: a wrong or used state signs nothing in and says so in words (no stack, no token)', bad.status === 400 && /没有完成|重新/.test(badText) && !/Error:|at /.test(badText), badText.slice(0, 200));
+    await api('/api/x', { method: 'DELETE' });
+
+    const mn = await api('/api/machine-notes');
+    const setNote = await api('/api/machine-notes', { method: 'PUT', body: { machine: '腾讯云', note: '一直开着，跑发布和筛岗' } });
+    const mn2 = await api('/api/machine-notes');
+    check('T45-19 /api/machine-notes: the lines on what each machine is good for; the human edits one',
+      mn.status === 200 && setNote.status === 200 && mn2.json?.notes?.['腾讯云']?.note === '一直开着，跑发布和筛岗' && mn2.json.notes['腾讯云'].by === 'human', JSON.stringify(mn2.json));
+
+    const ng = await api('/api/nudge');
+    const ngSet = await api('/api/nudge', { method: 'PUT', body: { enabled: false, time: '21:30' } });
+    const ngBad = await api('/api/nudge', { method: 'PUT', body: { time: '25:00' } });
+    const ngNow = await api('/api/nudge/preview');
+    await api('/api/nudge', { method: 'PUT', body: { enabled: true, time: '09:00' } });
+    check('T45-20 /api/nudge: on at 09:00 by default; the human turns it off or moves it; a bad time is refused; a preview says what it would say now (empty when nothing waits)',
+      ng.json?.enabled === true && ng.json?.time === '09:00' && ngSet.json?.enabled === false && ngSet.json?.time === '21:30' && ngBad.status === 400
+      && ngNow.status === 200 && typeof ngNow.json?.text === 'string', JSON.stringify({ ng: ng.json, ngSet: ngSet.json, ngNow: ngNow.json }));
+
+    // The inbox passes the edits on, only for a card that is a draft over there.
+    const seen = [];
+    const fake = http.createServer(async (req, res) => {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      let body = null;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* none */ }
+      seen.push({ method: req.method, path: req.url, body });
+      const send = (status, data) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+      if (req.url.startsWith('/api/approvals?')) return send(200, [{ id: 'ap_d', botId: 'x', toolName: 'x_post', args: '{"text":"a"}', risk: 'HIGH', status: 'pending', createdAt: new Date().toISOString(), draft: { channel: 'X', kind: 'post', fields: [{ key: 'text', label: '正文', value: 'a', multiline: true, max: 280 }] } }]);
+      if (req.url === '/api/bots') return send(200, [{ id: 'x', name: 'X 账号管家' }]);
+      if (req.url.startsWith('/api/approvals/')) return send(200, { approval: { id: 'ap_d', status: 'approved', botId: 'x', toolName: 'x_post', edited: true } });
+      return send(404, {});
+    });
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+    try {
+      await api('/api/peers', { method: 'PUT', body: { self: { name: '客厅电脑' }, peers: [{ name: '腾讯云', url: `http://127.0.0.1:${fake.address().port}`, token: 'tok-1545' }] } });
+      const inbox = await api('/api/inbox');
+      await api(`/api/inbox/${encodeURIComponent('腾讯云')}/ap_d`, { method: 'POST', body: { decision: 'approve', edits: { text: '改过的' } } });
+      const fwd = seen.filter((s) => s.method === 'POST').pop();
+      check('T45-21 another machine\'s draft card comes to the inbox whole (its draft fields); answered here with edits, the edits go to that machine with the answer',
+        inbox.json?.items?.[0]?.draft?.channel === 'X' && fwd?.body?.edits?.text === '改过的' && fwd?.body?.decision === 'approve', JSON.stringify({ inbox: inbox.json, fwd }));
+    } finally {
+      await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
+      await new Promise((r) => fake.close(r));
+    }
+    const q = new AP.ApprovalQueue({ timeoutMs: 60000 });
+    const p1 = q.request({ turnId: 't', botId: 'b', toolName: 'shell', args: { command: 'ls' }, risk: 'MEDIUM', reason: 'x' });
+    const noDraft = q.decide(p1.record.id, 'approve', '', 'human', { edits: { command: 'rm -rf /' } });
+    const r1 = await p1;
+    check('T45-22 edits on a card that is not a draft are ignored (a command cannot be changed by "editing" its card)', noDraft.status === 'approved' && !noDraft.edits && !r1.approval.edits);
+  }
+
+  // --- the page --------------------------------------------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    const en = await readText('../public/i18n-en.js');
+    check('T45-23 the draft card: the text in boxes that can be edited, 「发送」 and 「不发了」, the edits sent with the answer; after it, 「已发送（你改过）」',
+      page.includes("'approval-draft'") && page.includes("'发送'") && page.includes("'不发了'") && page.includes('edits') && page.includes('已发送（你改过）') && en.includes('"不发了"'));
+    check('T45-24 a change to a bot is shown before and after, line by line; 「撤销」 under it; X in 连接应用 with the callback to paste and 「去 X 登录授权」; 「适合」 on each machine; the daily note\'s switch and time',
+      page.includes("'adjust-diff'") && page.includes('/api/adjustments/') && page.includes('去 X 登录授权') && page.includes('/api/x/login') && page.includes('适合：')
+      && page.includes('id="nudge-on"') && page.includes('每天告诉我有什么在等你'));
+  }
+
+  // --- small things from the step-three test -------------------------------------------------
+  {
+    const serverSrc = await readText('../src/server.mjs');
+    const modelMod = await import('../src/model.mjs');
+    check('T45-25 (1.5.44 leftover) a device removed in Settings: its open live streams are closed at once, it gets nothing new',
+      serverSrc.includes('closeStreamsOf('));
+    check('T45-26 (1.5.44 leftover) the demo script reads only the line it must answer (a group\'s wrapped message), so 「@管家 你好」 is not taken for 「运行一个命令」',
+      typeof modelMod.demoAsk === 'function' && modelMod.demoAsk('【群聊「新群」】……背景……运行一个命令看看……\n\n现在要你回答的：你好') === '你好');
+  }
+  {
+    const { AgentRuntime: RT } = await import('../src/agent.mjs');
+    const storeM = await import('../src/store.mjs');
+    const id = `t45hist${Date.now()}`;
+    await storeM.appendJsonl(storeM.sessionFile(id), { kind: 'user', text: '你好', turnId: 'a' });
+    await storeM.appendJsonl(storeM.sessionFile(id), { kind: 'assistant', text: '你好，有事叫我。', turnId: 'a' });
+    await storeM.appendJsonl(storeM.sessionFile(id), { kind: 'assistant', text: '早上好，有 1 件事在等你：…', turnId: 'nudge_1', source: 'nudge' });
+    await storeM.appendJsonl(storeM.sessionFile(id), { kind: 'user', text: '是什么事', turnId: 'b' });
+    const hist = await RT.prototype.loadHistory.call({}, id, 16);
+    const roles = hist.map((m) => m.role);
+    check('T45-27 the daily note in the main assistant\'s chat joins the reply before it: the model never gets two assistant messages in a row',
+      roles.join() === 'user,assistant,user' && /每天的提醒/.test(hist[1].content), JSON.stringify(hist));
+  }
+  await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// 1.5.45 第四步, the human's ask (11-20): 「要可复用的呀」. Four building blocks
+// any bot can use; the four step-4 features are only their first instances.
+// ---------------------------------------------------------------------------
+async function scenarioBlocks1545() {
+  const AP = await import('../src/approvals.mjs');
+  const toolsMod = await import('../src/tools.mjs');
+  const { AgentRuntime } = await import('../src/agent.mjs');
+  const D = await import('../src/drafts.mjs');
+  const IN = await import('../src/initiative.mjs');
+  const MN = await import('../src/machinenotes.mjs');
+  const ADJ = await import('../src/adjust.mjs');
+  const ws = path.join(home, 'workspace');
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-blocks-'));
+  const at = (h, m = 0, day = 20) => new Date(2026, 10, day, h, m).getTime();
+
+  // --- A. one initiative layer -----------------------------------------------------------
+  {
+    let clock = at(10);
+    const said = [];
+    const turns = [];
+    const bus = { subs: [], subscribe(fn) { this.subs.push(fn); return () => {}; }, emit(e) { this.subs.forEach((fn) => fn(e)); } };
+    const layer = IN.createInitiative({
+      file: path.join(tmp, 'initiative.json'), bus, now: () => clock,
+      primaryId: () => 'chief',
+      say: async (botId, text, meta) => { said.push({ botId, text, ...meta }); },
+      runTurn: async (o) => { turns.push(o); return { status: 'success' }; },
+      waiting: async () => ({ cards: [{ botName: '小笔', what: '运行一条命令' }], unread: [], queued: [] }),
+      listDir: async () => [],
+    });
+    await layer.load();
+    const s = layer.settings();
+    check('B45-1 the initiative layer\'s defaults are the human\'s (11-20): every bot may speak, the main assistant leads, no quiet hours, at most 3 a day per bot, a notification when the window is not in front, the daily note at 09:00',
+      s.maxPerDay === 3 && s.quiet.on === false && s.notify === true && s.daily.enabled === true && s.daily.time === '09:00' && s.leader === 'primary'
+      && s.events.card_waiting === true && s.events.machine_back === true && s.events.routine_failed === true && s.events.outbox_sent === true, JSON.stringify(s));
+
+    await layer.update({ daily: { enabled: false } });
+    // Several things at once are one message; nothing said until the merge window is over.
+    layer.push({ kind: 'machine_back', text: '「书房电脑」又连上了' });
+    layer.push({ kind: 'outbox_sent', text: '等「书房电脑」的 2 条消息交过去了' });
+    await layer.tick();
+    const early = said.length;
+    clock += 90 * 1000;
+    await layer.tick();
+    check('B45-2 events are said by the main assistant, several at once merged into one short message (after a minute, not one by one)',
+      early === 0 && said.length === 1 && said[0].botId === 'chief' && /书房电脑」又连上了/.test(said[0].text) && /2 条消息交过去了/.test(said[0].text) && said[0].notify === true, JSON.stringify(said));
+
+    // At most 3 a day per bot; the rest wait for tomorrow's first message.
+    for (let i = 0; i < 4; i += 1) { layer.push({ kind: 'routine_failed', botId: 'pen', text: `定时任务「${i}」没跑成` }); clock += 90 * 1000; await layer.tick(); }
+    const pens = said.filter((x) => x.botId === 'pen');
+    check('B45-3 at most 3 a day for one bot: the 4th waits (is not lost) and comes with the next day\'s first message; a bot speaks for its own routine',
+      pens.length === 3 && layer.pending('pen').length === 1, JSON.stringify(pens.map((p) => p.text)));
+    clock = at(8, 0, 21);
+    layer.push({ kind: 'routine_failed', botId: 'pen', text: '定时任务「5」没跑成' });
+    clock += 90 * 1000;
+    await layer.tick();
+    const next = said.filter((x) => x.botId === 'pen').pop();
+    check('B45-3b the next day it says what waited, merged with what is new', /「3」/.test(next.text) && /「5」/.test(next.text), next.text);
+
+    // A bot the human switched off is quiet; quiet hours (when the human sets them) hold things back and merge them.
+    await layer.update({ bots: { pen: false }, quiet: { on: true, from: '22:00', to: '08:00' } });
+    layer.push({ kind: 'routine_failed', botId: 'pen', text: '又没跑成' });
+    clock = at(23, 0, 21);
+    layer.push({ kind: 'machine_back', text: '「腾讯云」又连上了' });
+    clock += 5 * 60 * 1000;
+    const before = said.length;
+    await layer.tick();
+    const inQuiet = said.length - before;
+    clock = at(8, 5, 22);
+    await layer.tick();
+    check('B45-4 a bot switched off says nothing (what it had is dropped); in quiet hours nothing is said, and it comes after them',
+      inQuiet === 0 && !said.some((x) => /又没跑成/.test(x.text)) && said.some((x) => /腾讯云」又连上了/.test(x.text)), JSON.stringify(said.slice(before)));
+    await layer.update({ bots: { pen: true }, quiet: { on: false } });
+
+    // The daily note is one time trigger of the main assistant on this layer.
+    await layer.update({ daily: { enabled: true, time: '09:00' } });
+    clock = at(9, 0, 23);
+    await layer.tick();
+    const daily = said.filter((x) => x.kind === 'daily').pop();
+    check('B45-5 「有什么在等你」 is the main assistant\'s daily trigger on the same layer (once a day, only when something waits)',
+      daily?.botId === 'chief' && /1 张卡等你点头/.test(daily.text), JSON.stringify(daily));
+    const dailyCount = said.filter((x) => x.kind === 'daily').length;
+    clock += 3600 * 1000;
+    await layer.tick();
+    check('B45-5b not twice the same day', said.filter((x) => x.kind === 'daily').length === dailyCount);
+
+    // A bot's own follow-up: it comes back by itself, in its own chat; a follow-up of a bot switched off does not run.
+    const f = await layer.addFollowUp({ botId: 'pen', at: at(15, 0, 23), about: '看看周报改完没有' });
+    clock = at(15, 1, 23);
+    await layer.tick();
+    check('B45-6 follow_up: at its time the bot that set it runs a short turn of its own ("（你之前约好的回头看）…", told to say nothing when there is nothing new); once',
+      f.id && turns.length === 1 && turns[0].botId === 'pen' && /回头看/.test(turns[0].text) && /看看周报改完没有/.test(turns[0].text) && /没有变化/.test(turns[0].text) && layer.followUps().every((x) => x.done || x.id !== f.id),
+      JSON.stringify(turns));
+    await layer.tick();
+    check('B45-6b a follow-up runs once', turns.length === 1);
+
+    // A watched folder: a new file there wakes the bot that watches it.
+    let files = ['a.txt'];
+    const layer2 = IN.createInitiative({ file: path.join(tmp, 'initiative2.json'), bus, now: () => clock, primaryId: () => 'chief', say: async () => {}, runTurn: async (o) => { turns.push(o); return {}; }, waiting: async () => ({ cards: [], unread: [], queued: [] }), listDir: async () => files });
+    await layer2.load();
+    await layer2.addWatch({ botId: 'pen', path: 'inbox', about: '新的简历来了就打分' });
+    await layer2.tick();
+    const n0 = turns.length;
+    files = ['a.txt', 'b.pdf'];
+    clock += 61 * 1000;
+    await layer2.tick();
+    check('B45-7 watch_folder: files already there do not count; a new one wakes the bot that watches, naming the file and what it watches for',
+      turns.length === n0 + 1 && /b\.pdf/.test(turns.at(-1).text) && !/a\.txt/.test(turns.at(-1).text) && /新的简历来了就打分/.test(turns.at(-1).text), JSON.stringify(turns.at(-1)));
+
+    // Events off in settings: not said.
+    await layer.update({ events: { machine_back: false } });
+    const b2 = said.length;
+    layer.push({ kind: 'machine_back', text: '「X」又连上了' });
+    clock += 2 * 60 * 1000;
+    await layer.tick();
+    check('B45-8 an event switched off in settings is not said', said.length === b2);
+    check('B45-9 any future feature plugs in with a trigger and words: push({kind, botId?, text}) and the layer does the rest (rules, merge, quiet hours, settings)',
+      typeof layer.push === 'function' && typeof layer.addFollowUp === 'function' && typeof layer.addWatch === 'function' && Array.isArray(IN.EVENT_KINDS) && IN.EVENT_KINDS.includes('card_waiting'));
+  }
+
+  // The bots' own tools on the layer, and the hub.
+  {
+    const reg = toolsMod.createRegistry({ workspaceDir: ws, config: {}, getInitiative: () => ({ addFollowUp: async (o) => ({ id: 'fu_1', ...o }), addWatch: async (o) => ({ id: 'w_1', ...o }) }) });
+    const bot = { id: 'pen', tools: [] };
+    check('B45-10 every bot can set its own follow-up and watch a folder (follow_up, watch_folder)', reg.isGranted(bot, 'follow_up') && reg.isGranted(bot, 'watch_folder'));
+    const r = await reg.get('follow_up').run({ inMinutes: 60 * 24, about: '提醒他看结果' }, { bot: { id: 'pen', name: '小笔' }, workspaceDir: ws });
+    const bad = await reg.get('watch_folder').run({ path: '../../outside', about: 'x' }, { bot: { id: 'pen' }, workspaceDir: ws }).catch((e) => e);
+    check('B45-11 follow_up keeps the when and what; watch_folder only watches inside the workspace', r.ok && r.id === 'fu_1' && bad instanceof Error, JSON.stringify({ r, bad: bad?.message }));
+    const g = await api('/api/initiative');
+    const put = await api('/api/initiative', { method: 'PUT', body: { maxPerDay: 2, quiet: { on: true, from: '23:00', to: '07:00' } } });
+    const noKey = await api('/api/initiative', { method: 'PUT', body: { maxPerDay: 9 }, headers: { 'x-no-local-key': '1' } });
+    await api('/api/initiative', { method: 'PUT', body: { maxPerDay: 3, quiet: { on: false } } });
+    check('B45-12 /api/initiative: all of it in one place (per bot on/off, quiet hours, the daily limit, notifications, which events, the daily note); changing it is the human\'s',
+      g.status === 200 && g.json?.maxPerDay === 3 && put.json?.maxPerDay === 2 && put.json?.quiet?.from === '23:00' && noKey.status === 403 && Array.isArray(g.json?.followUps), JSON.stringify({ g: g.json, put: put.json }));
+  }
+
+  // --- B. one outgoing gate --------------------------------------------------------------
+  {
+    const reg = toolsMod.createRegistry({ workspaceDir: ws, config: {} });
+    const marked = reg.all().filter((t) => t.outgoing).map((t) => t.name).sort();
+    const src = await readText('../src/drafts.mjs');
+    check('B45-13 sending tools are marked outgoing (x_post, post_draft, http_fetch to the internet); the gate has no channel of its own written in (X is not a special case)',
+      marked.includes('x_post') && marked.includes('post_draft') && marked.includes('http_fetch') && !/x_post|post_draft/.test(src), marked.join());
+    const fake = { name: 'wechat_send', outgoing: { channel: '微信', fields: [{ key: 'text', label: '正文', multiline: true }] } };
+    const d1 = D.draftFor(fake.name, { to: '小王', text: '晚上吃饭吗' }, { outgoing: fake.outgoing });
+    check('B45-14 a new channel only has to be marked outgoing to get the card (a made-up 微信 tool: its channel and its field)', d1?.channel === '微信' && d1.fields[0].value === '晚上吃饭吗', JSON.stringify(d1));
+    const post = D.draftFor('http_fetch', { url: 'https://hooks.example.com/abc', method: 'POST', body: '{"msg":"hi"}' }, { outgoing: reg.get('http_fetch').outgoing });
+    const getReq = D.draftFor('http_fetch', { url: 'https://example.com/', method: 'GET' }, { outgoing: reg.get('http_fetch').outgoing });
+    const local = D.draftFor('http_fetch', { url: 'http://127.0.0.1:9/x', method: 'POST', body: 'x' }, { outgoing: reg.get('http_fetch').outgoing });
+    check('B45-15 a webhook (POST to an address on the internet) is a draft: where it goes and the body; a GET or a call on this computer is not',
+      post?.channel === 'hooks.example.com' && post.fields[0].key === 'body' && getReq === null && local === null, JSON.stringify({ post, getReq, local }));
+  }
+
+  // --- C. one adjust path: rules, job, skills, avatar, schedule -----------------------------
+  {
+    const bot = { id: 'b1', name: '文案', role: '写稿', persona: 'A', skills: ['周报'], avatar: { shape: 'squircle', color: '#7c6cf0' } };
+    const routines = [{ id: 'r1', botId: 'b1', name: '早报', schedule: '30 8 * * *', enabled: true }];
+    const plan = ADJ.planAdjust(bot, { addSkills: ['小红书文案'], removeSkills: ['周报'], avatar: { color: '#22c55e' }, routine: { name: '早报', schedule: '每天 9:00' } }, { routines });
+    const labels = plan.lines.map((l) => `${l.op}${l.label || ''}${l.text || ''}${l.to || ''}`).join(' | ');
+    check('B45-16 the same plan covers skills (+/-), the avatar and a schedule (before → after), not only rules',
+      plan.lines.some((l) => l.op === '+' && /小红书文案/.test(l.text)) && plan.lines.some((l) => l.op === '-' && /周报/.test(l.text))
+      && plan.lines.some((l) => l.op === '~' && /头像/.test(l.label) && l.to === '#22c55e') && plan.lines.some((l) => l.op === '~' && /早报/.test(l.label) && /9:00/.test(l.to))
+      && JSON.stringify(plan.after.skills) === JSON.stringify(['小红书文案']) && plan.after.routines?.[0]?.schedule === '每天 9:00', labels);
+    const store = ADJ.createAdjustments({ file: path.join(tmp, 'adj-b.json') });
+    const id = await store.record({ botId: 'b1', botName: '文案', before: plan.before, after: plan.after, lines: plan.lines });
+    const live = { ...bot, skills: plan.after.skills, avatar: { ...bot.avatar, color: '#22c55e' } };
+    const liveRoutines = [{ ...routines[0], schedule: '每天 9:00' }];
+    const undone = await ADJ.undoAdjust(store, id, {
+      getBot: async () => live, updateBot: async (_id, p) => Object.assign(live, p),
+      listRoutines: async () => liveRoutines, updateRoutine: async (rid, p) => Object.assign(liveRoutines.find((r) => r.id === rid), p),
+    });
+    check('B45-17 undo puts every part back: skills, avatar, the schedule', undone.ok && JSON.stringify(live.skills) === JSON.stringify(['周报']) && live.avatar.color === '#7c6cf0' && liveRoutines[0].schedule === '30 8 * * *', JSON.stringify({ live, liveRoutines }));
+    const page = await readText('../public/index.html');
+    check('B45-18 the card shows a change as 「before → after」 as well as + and -', page.includes("l.op === '~'") && page.includes('adjust-line change'));
+  }
+
+  // --- D. one machine profile, for any bot that hands work on ------------------------------
+  {
+    const notes = MN.createMachineNotes({ file: path.join(tmp, 'mn.json') });
+    await notes.noteRan('腾讯云', { bot: '策略', task: '筛今天的新岗位，按画像打分' });
+    await notes.noteRan('腾讯云', { bot: '发布', task: '发小红书：秋天的成都' });
+    await notes.setFacts('腾讯云', { alwaysOn: true, kind: 'bots', apps: ['飞书'], reach: 'Tailscale' });
+    const p = notes.get('腾讯云');
+    check('B45-19 a machine\'s profile: what it is for, what is on it, how it is reached, and what ran there (learned from each hand-off, newest first, a few kept)',
+      p.ran?.length === 2 && /发小红书/.test(p.ran[0].task) && p.facts?.alwaysOn === true && p.facts?.apps?.includes('飞书') && p.facts?.reach === 'Tailscale');
+    const lines = MN.machinesPrompt({ notes: notes.all(), roster: [{ machine: '腾讯云', online: true, bots: [{ id: 'b1', name: '策略' }] }], here: '客厅电脑' }).join('\n');
+    check('B45-20 the prompt\'s machine list carries the profile (ran there, apps, always on) - and it is for any bot that can hand work on',
+      /跑过|ran/.test(lines) && /飞书/.test(lines) && /bot_message|machine_switch/.test(lines), lines);
+    const agentSrc = await readText('../src/agent.mjs');
+    check('B45-21 not only the main assistant: any bot with machine_switch or bot_message gets 「你的机器」',
+      agentSrc.includes("this.registry.isGranted?.(bot, 'machine_switch') || this.registry.isGranted?.(bot, 'bot_message')"));
+    const toolsSrc = await readText('../src/tools.mjs');
+    check('B45-22 every hand-off to a machine (machine_switch, bot_message there) is noted in that machine\'s profile', (toolsSrc.match(/noteRan\?\.\(/g) || []).length >= 2);
+  }
+
+  // --- what the beginner test found (11-20) ----------------------------------------------
+  {
+    const X = await import('../src/xpost.mjs');
+    const acct = X.createXAccount({ file: path.join(tmp, 'x-keep.json'), fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }) });
+    await acct.setApp({ clientId: 'cid-keep-1', clientSecret: 'secret-one' });
+    const kept = await acct.setApp({ clientSecret: 'secret-two' }).then((v) => v).catch((e) => e);
+    const kept2 = await acct.setApp({ clientId: '' }).then((v) => v).catch((e) => e);
+    check('BT45-1 改应用 with the Client ID left empty keeps the saved one (only the secret changes); the page offers 取消',
+      kept.configured === true && kept.clientIdHint === 'cid-…p-1' && kept2.configured === true, JSON.stringify({ kept, kept2: kept2?.message || kept2 }));
+    const page = await readText('../public/index.html');
+    const toolsSrc = await readText('../src/tools.mjs');
+    check('BT45-2 the first hand-off card names the machine (「以后交给「腾讯云」不再问你」), the reason has one colon at most; a draft answered drops 「下面是草稿…」 and a draft not sent says 「没有发出去」',
+      page.includes('以后交给「${h.machine}」不再问你') && toolsSrc.includes("${why ? `（${why}）` : ''}") && page.includes("impact: data.decision ? '' :") && page.includes("if (draft) card.querySelector('.approval-impact')?.remove();") && page.includes('没有发出去，已经告诉它了。'));
+    check('BT45-3 undone changes are struck through; the rules as they are now are on the card; the X portal is a link with what to do without an app; 改 under a machine has 取消; names, not ids, in 最近动态; another machine\'s line follows at once after its card is answered',
+      page.includes("wrap.classList.add('undone')") && page.includes('现在的规则（') && toolsSrc.includes('rulesNow:') && page.includes('还没有开发者应用') && page.includes("no.addEventListener('click', show);")
+      && page.includes("${ev.botName || botById(ev.botId)?.name || ev.botId} 结束") && page.includes('setTimeout(() => loadRoster({ fresh: true }), 600);'));
+    const MN2 = await import('../src/machinenotes.mjs');
+    const line = MN2.suggestNote({ bots: [{ name: '发布', role: '后台登录、上传、定时发布与数据抓取（B站/抖音/小红书/公众号），只在人类点头后发' }] });
+    check('BT45-4 the automatic 「适合」 line cuts a job at a clause, never inside brackets', line.includes('发布（后台登录、上传、定时发布与数据抓取）') && !line.includes('B站'), line);
+  }
+
+  // --- the retest (11-20) ------------------------------------------------------------------
+  {
+    const NG2 = await import('../src/nudge.mjs');
+    const t = NG2.buildNudge({ cards: [{ botName: '小笔', what: '运行一条命令' }], unread: [], queued: [] });
+    const page = await readText('../public/index.html');
+    const toolsSrc = await readText('../src/tools.mjs');
+    check('RT45-1 the daily note says where its switch is now (设置 → 主动), not the 任务 tab; the undo confirm fits any change; 主动 says 已保存; editing 「适合」 takes the whole row; follow-ups are written to the human',
+      /设置 → 主动/.test(t) && !/「任务」/.test(t) && page.includes('这次改的每一项都改回改之前的样子。') && page.includes("async function saveInitiative(patch, okText = '已保存')")
+      && page.includes("line.closest('.machine-row')?.classList.add('noting');") && toolsSrc.includes('write it to them, in their language'), t);
+  }
+
+  // --- the page: one place for all of it ---------------------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    check('B45-23 设置 → 主动: one page with each bot on or off, quiet hours, the daily limit, notifications, which events, the daily note; the bots\' follow-ups listed',
+      page.includes('data-set-target="sec-initiative"') && page.includes('id="sec-initiative"') && page.includes('/api/initiative') && page.includes('安静时段') && page.includes('每个助手每天最多')
+      && page.includes('initiative.say'));
+  }
+  await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
 }

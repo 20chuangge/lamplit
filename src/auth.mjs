@@ -430,6 +430,13 @@ export function isAuthorityRequest(method, pathname, body = {}) {
   // Tailscale on this machine and the others (1.5.43): installing, logging in, removing, sharing.
   if (m === 'POST' && /^\/api\/tailscale\/(install|login|uninstall|share)$/.test(p)) return true;
   if (/^\/api\/peers\/outbox(\/|$)/.test(p)) return true;
+  // 1.5.45 第四步「替你想」: X (its app, signing in, who may post, signing out), what each
+  // machine is for, undoing a change to a bot, the daily note. X's callback is exempt (below).
+  if (m !== 'GET' && /^\/api\/x(\/(app|login|bots))?$/.test(p)) return true;
+  if (m !== 'GET' && (p === '/api/machine-notes' || p === '/api/nudge')) return true;
+  // The initiative layer's settings, and stopping a bot's follow-up or watch (1.5.45).
+  if (m !== 'GET' && /^\/api\/initiative(\/|$)/.test(p)) return true;
+  if (m === 'POST' && /^\/api\/adjustments\/[^/]+\/undo$/.test(p)) return true;
   // A file in another machine's workspace, read through this hub with that
   // machine's token: the human's file cards only, not a program here (1.5.42).
   // A group's automatic fetch goes to that machine directly and is not this route.
@@ -455,6 +462,8 @@ export function isAuthExemptPath(method, pathname) {
   // A connected app sends the browser back here after sign-in, maybe in the
   // system browser (no session). The one-time state in the query is the check.
   if (value === '/api/mcp/oauth/callback' && verb === 'GET') return true;
+  // X sends the browser back here after the human signed in on X's own page (1.5.45).
+  if (value === '/api/x/callback' && verb === 'GET') return true;
   return false;
 }
 

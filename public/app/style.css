@@ -3588,3 +3588,46 @@ button.roster-head:hover { color: var(--text); }
 .changes-pop { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); font-size: 12.5px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; max-width: 100%; }
 .changes-pop[hidden] { display: none; }
 .changes-names { color: var(--text); word-break: break-all; }
+
+/* 1.5.45 第四步「替你想」: drafts, a change to a bot, X, what a machine is for */
+.approval-draft { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 4px; }
+.approval-draft .lbl { margin-top: 4px; }
+.approval-draft .draft-field { width: 100%; box-sizing: border-box; font: inherit; font-size: 13.5px; line-height: 1.55; resize: vertical; }
+.approval-draft .draft-field[readonly] { opacity: 0.85; background: var(--bg); }
+.draft-count { text-align: right; }
+.draft-count.bad { color: var(--danger, #e5484d); }
+.adjust-diff { margin: 8px 0 4px; padding: 8px 10px; border-radius: 10px; background: var(--bg); font-size: 13px; line-height: 1.6; display: flex; flex-direction: column; gap: 2px; }
+.adjust-line { white-space: pre-wrap; word-break: break-word; padding: 1px 6px; border-radius: 6px; }
+.adjust-line.plus { color: var(--green, #2fbf71); background: color-mix(in srgb, var(--green, #2fbf71) 10%, transparent); }
+.adjust-line.minus { color: var(--danger, #e5484d); background: color-mix(in srgb, var(--danger, #e5484d) 10%, transparent); text-decoration: line-through; text-decoration-thickness: 1px; }
+.adjust-done { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--panel-2); max-width: 520px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.adjust-done-title { font-size: 13px; color: var(--text); }
+.adjust-done .adjust-diff { margin: 0; align-self: stretch; }
+.x-card { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 12px; }
+.x-card[hidden] { display: none; }
+.x-card-head { display: flex; align-items: center; gap: 10px; }
+.x-badge { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; background: #111; color: #fff; font-weight: 700; flex: none; }
+.x-bots { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.machine-note { display: flex; align-items: center; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+.machine-note .field { flex: 1; min-width: 160px; padding: 4px 8px; font-size: 12.5px; }
+.machine-note .link-btn { border: 0; background: none; padding: 0; color: var(--dim); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; font: inherit; }
+
+/* 1.5.45 设置 → 主动; a change shown as before → after */
+.initiative-card { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.initiative-card .row-2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.initiative-max { width: 72px; }
+.initiative-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px solid var(--border); }
+.adjust-line.change { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.adjust-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 4px; vertical-align: -2px; border: 1px solid var(--border); }
+
+/* 1.5.45 beginner test */
+.adjust-done.undone .adjust-diff { opacity: 0.5; text-decoration: line-through; }
+.adjust-now summary { cursor: pointer; margin-bottom: 2px; }
+.adjust-line.same { color: var(--muted); }
+.machine-note.editing { display: flex; width: 100%; }
+.machine-note.editing .field { flex: 1 1 100%; min-width: 0; }
+
+/* 1.5.45 retest: editing 「适合」 takes the whole row; the buttons wait below */
+.machine-row.noting { flex-wrap: wrap; }
+.machine-row.noting .machine-meta { flex: 1 1 0; min-width: 0; }
+.machine-row.noting .machine-actions { flex-basis: 100%; justify-content: flex-end; order: 3; }

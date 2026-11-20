@@ -262,7 +262,7 @@ function handleEvent(ev) {
     const active = document.querySelector('.setnav.active')?.dataset.setTarget || 'sec-model';
     const where = {
       model: 'sec-model', voice: 'sec-model', vision: 'sec-model', media: 'sec-model',
-      policy: ['sec-run', 'sec-bounds'], usage: 'sec-usage', feishu: 'sec-feishu', mcp: 'sec-mcp',
+      policy: ['sec-run', 'sec-bounds'], usage: 'sec-usage', feishu: 'sec-feishu', mcp: 'sec-mcp', x: 'sec-mcp', initiative: 'sec-initiative',
       machines: 'sec-machines', network: 'sec-pair',
     }[section];
     if (where && ![].concat(where).includes(active)) return;
@@ -273,6 +273,8 @@ function handleEvent(ev) {
     if (section === 'policy') loadPolicy().catch(() => {});
     if (section === 'usage') loadUsage().catch(() => {});
     if (section === 'feishu') loadFeishu().catch(() => {});
+    if (section === 'x') loadXCard().catch(() => {});
+    if (section === 'initiative') loadInitiative().catch(() => {});
     if (section === 'mcp') loadMcp().catch(() => {});
     if (section === 'machines') renderMachinesList();
     if (section === 'network') loadSettings().then(renderSettingsForm).catch(() => {});
@@ -445,6 +447,11 @@ function handleEvent(ev) {
       toast('有一个操作在等你批准');
       // In a call: said aloud, but given only on the screen (1.5.22).
       if (call.on && voice.status?.tts?.available) queueSpeech('需要你在屏幕上确认一下。');
+      break;
+
+    // A bot spoke up by itself (1.5.45): a notification when this window is not in front.
+    case 'initiative.say':
+      notifyHuman({ title: ev.botName || '助理', body: ev.text || '', tag: ev.botId ? `bot:${ev.botId}` : '' });
       break;
 
     case 'approval.resolved':
@@ -685,7 +692,9 @@ function buildApprovalCard(data) {
   const parked = data.decision === 'needs_approval';
   const parkedOpen = parked && (data.live || (state.approvals || []).some((a) => a.id === data.approvalId));
   const resolved = Boolean(data.decision) && !parked;
-  const info = describeTool(data.tool, data.args);
+  // A draft, a change to a bot, the first hand-off to a machine (1.5.45): their own headline.
+  const think = thinkCardInfo(data);
+  const info = think || describeTool(data.tool, data.args);
   // Several commands that only look, asked about once (1.5.40): each one shown in full.
   const many = Array.isArray(data.batch?.commands) && data.batch.commands.length > 1 ? data.batch.commands : null;
   if (many) {
@@ -741,6 +750,8 @@ function buildApprovalCard(data) {
     for (const command of many) list.appendChild(el('code', null, String(command)));
     card.appendChild(list);
   }
+  if (data.draft) { card.dataset.draft = '1'; card.appendChild(draftBox(data, { resolved: resolved || parked })); }
+  if (data.adjust) card.appendChild(adjustDiff(data.adjust));
 
   for (const [label, value] of info.facts) {
     if (info.detail && value === info.detail) continue;
@@ -784,8 +795,8 @@ function buildApprovalCard(data) {
     const good = data.decision === 'approved' || data.decision === 'approve';
     const cancelled = !good && /^已取消/.test(String(data.note || ''));
     const done = el('div', 'approval-done');
-    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : decisionLabel(data.decision)));
-    done.appendChild(el('span', 'muted tiny', good ? '这一轮已经继续跑了。' : cancelled ? String(data.note).replace(/^已取消[：:]\s*/, '') + '。' : '它已经收到「不要做」。'));
+    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : (think && thinkDoneLabel(data, good)) || decisionLabel(data.decision)));
+    done.appendChild(el('span', 'muted tiny', good ? '这一轮已经继续跑了。' : cancelled ? String(data.note).replace(/^已取消[：:]\s*/, '') + '。' : data.draft ? '没有发出去，已经告诉它了。' : '它已经收到「不要做」。'));
     actions.appendChild(done);
     if (data.note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${data.note}`));
     card.appendChild(actions);
@@ -801,10 +812,11 @@ function buildApprovalCard(data) {
   const actions = el('div', 'approval-actions');
   const choose = el('div', 'approval-buttons');
 
-  const allow = el('button', 'btn primary approval-allow', many ? `允许这 ${many.length} 条` : '允许这一次');
+  const words = thinkButtons(data);
+  const allow = el('button', 'btn primary approval-allow', words ? words.yes : many ? `允许这 ${many.length} 条` : '允许这一次');
   allow.type = 'button';
-  allow.title = many ? '这几条都会运行，不再一条条问' : '只批准这一步，下次同样的操作还会问你';
-  const always = data.remember?.key ? el('button', 'btn approval-always', '以后都允许') : null;
+  allow.title = words ? words.yesTip : many ? '这几条都会运行，不再一条条问' : '只批准这一步，下次同样的操作还会问你';
+  const always = data.remember?.key && !words ? el('button', 'btn approval-always', '以后都允许') : null;
   if (always) {
     always.type = 'button';
     always.title = `以后「${data.remember.label}」不再问你（机器人设置里可以撤销）`;
@@ -816,9 +828,9 @@ function buildApprovalCard(data) {
   const lookNote = data.lookTurn
     ? el('div', 'approval-scope muted tiny', many ? '允许后这几条都会运行；这一轮后面只是查看的命令也不再问你，会改动东西的照样先问。' : '允许后，这一轮后面只是查看的命令不再问你；会改动东西的照样先问。')
     : many ? el('div', 'approval-scope muted tiny', '允许后这几条都会运行，不再一条条问。') : null;
-  const reject = el('button', 'btn approval-reject', '拒绝');
+  const reject = el('button', 'btn approval-reject', words ? words.no : '拒绝');
   reject.type = 'button';
-  reject.title = many ? '都不执行，把「不行」告诉它' : '不执行，把「不行」告诉它';
+  reject.title = words ? words.noTip : many ? '都不执行，把「不行」告诉它' : '不执行，把「不行」告诉它';
   const more = el('button', 'btn approval-more', '看详情');
   more.type = 'button';
 
@@ -826,7 +838,8 @@ function buildApprovalCard(data) {
   note.placeholder = '想补一句话？（可选）';
   note.setAttribute('aria-label', '审批备注');
 
-  allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject));
+  // A draft goes with what the human left in its boxes (1.5.45).
+  allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject, null, data.draft ? draftEdits(card, data) : null));
   if (always) always.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject, data.remember));
   reject.addEventListener('click', () => decide(data.approvalId, 'deny', note.value, card, allow, reject));
 
@@ -877,8 +890,12 @@ function settleApprovalCard(card, decision, note) {
     // Closed by Lamplit (stopped, the bot deleted), not refused by you (1.5.33).
     const cancelled = !good && /^已取消/.test(String(note || ''));
     const done = el('div', 'approval-done');
-    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : decisionLabel(decision)));
-    done.appendChild(el('span', 'muted tiny', good ? '这一轮会继续跑。' : cancelled ? String(note).replace(/^已取消[：:]\s*/, '') + '。' : '已经告诉它不要做。'));
+    // A draft says 已发送 / 已发送（你改过） / 不发了 (1.5.45); its boxes stay, read-only.
+    const draft = card.dataset.draft === '1';
+    card.querySelectorAll('.draft-field').forEach((f) => { f.readOnly = true; });
+    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : draft ? (good ? (card.dataset.edited === '1' ? '已发送（你改过）' : '已发送') : '不发了') : decisionLabel(decision)));
+    if (draft) card.querySelector('.approval-impact')?.remove();
+    done.appendChild(el('span', 'muted tiny', good ? '这一轮会继续跑。' : cancelled ? String(note).replace(/^已取消[：:]\s*/, '') + '。' : draft ? '没有发出去，已经告诉它了。' : '已经告诉它不要做。'));
     actions.appendChild(done);
     if (note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${note}`));
   }
@@ -903,6 +920,8 @@ function dropAnswered(approvalId, card) {
     updateApprovalsPill();
     renderBots(); // the row 「别的机器上有 N 个操作等你确认」 follows (1.5.42 test)
     refreshInbox({ notify: false });
+    // That bot's line (「想给你看草稿」 and the badge) follows now, not after the next poll (1.5.45 test).
+    setTimeout(() => loadRoster({ fresh: true }), 600);
   } else {
     state.approvals = (state.approvals || []).filter((a) => a.id !== approvalId);
     refreshPendingApprovals();
@@ -966,12 +985,13 @@ async function decideParked(approvalId, decision, card, buttons) {
   }
 }
 
-async function decide(approvalId, decision, note, card, approve, deny, remember = null) {
+async function decide(approvalId, decision, note, card, approve, deny, remember = null, edits = null) {
   if (approve) approve.disabled = true;
   if (deny) deny.disabled = true;
   const alwaysBtn = card?.querySelector('.approval-always');
   if (alwaysBtn) alwaysBtn.disabled = true;
   const done = (res) => {
+    if (edits && card) card.dataset.edited = '1';
     settleApprovalCard(card, decision, note);
     if (res?.remembered) toast(`好的，以后${res.remembered.label}都不再问你${String(res.remembered.key || '').startsWith('shell:') ? '（危险操作和工作区外的改动照样会问）' : ''}`);
     dropAnswered(approvalId, card);
@@ -979,11 +999,13 @@ async function decide(approvalId, decision, note, card, approve, deny, remember 
   try {
     done(await api(approvalPath(approvalId, card), {
       method: 'POST',
-      body: { decision, note: note || '', ...(remember ? { always: true } : {}) },
+      body: { decision, note: note || '', ...(remember ? { always: true } : {}), ...(edits ? { edits } : {}) },
     }));
   } catch (err) {
     if (err.code === 'LOCAL_KEY_REQUIRED' && state.afterPair) state.afterPair.then = done;
     if (err.status === 409 || err.status === 404) { closeAnsweredElsewhere(card, err.message); dropAnswered(approvalId, card); return; }
+    // A draft too long or a recipient left empty (1.5.45): said on the card, it stays open to fix.
+    if (err.code === 'DRAFT_INVALID' && card) showCardProblem(card, err.message);
     if (approve) approve.disabled = false;
     if (deny) deny.disabled = false;
     if (alwaysBtn) alwaysBtn.disabled = false;
@@ -1043,6 +1065,7 @@ async function refreshPendingApprovals() {
       ...(approval.batch ? { batch: approval.batch } : {}),
       ...(approval.lookTurn ? { lookTurn: true } : {}),
       ...(approval.look ? { look: true } : {}),
+      ...cardExtras(approval),
       ...(parked ? { decision: 'needs_approval', live: true } : {}),
     };
     const existing = messagesEl.querySelector(`[data-approval="${CSS.escape(approval.id)}"]`);
@@ -1101,7 +1124,7 @@ async function focusApprovalCard(approvalId, botId) {
   if (!card && approvalId) {
     const a = (state.approvals || []).find((x) => x.id === approvalId);
     if (a) {
-      appendApprovalCard({ approvalId: a.id, tool: a.toolName, risk: a.risk, reason: a.reason, args: safeParse(a.args), ...(a.remember?.key ? { remember: a.remember } : {}), ...(a.status === 'awaiting_human' ? { decision: 'needs_approval', live: true } : {}) });
+      appendApprovalCard({ approvalId: a.id, tool: a.toolName, risk: a.risk, reason: a.reason, args: safeParse(a.args), ...(a.remember?.key ? { remember: a.remember } : {}), ...cardExtras(a), ...(a.status === 'awaiting_human' ? { decision: 'needs_approval', live: true } : {}) });
       card = messagesEl.querySelector(`[data-approval="${CSS.escape(approvalId)}"]`);
     }
   }
@@ -1145,6 +1168,7 @@ function inboxCardData(item) {
     ...(item.batch ? { batch: item.batch } : {}),
     ...(item.lookTurn ? { lookTurn: true } : {}),
     ...(item.look ? { look: true } : {}),
+    ...cardExtras(item),
     ...(item.status === 'awaiting_human' ? { decision: 'needs_approval', live: true } : {}),
   };
 }
@@ -1267,7 +1291,7 @@ const ACTIVITY_KIND_LABELS = { turn: '对话', tool: '工具', approval: '审批
 function activityLabel(ev) {
   switch (ev.type) {
     case 'turn.start': return { kind: 'turn', text: `${ev.botName || ev.botId}：${ev.source === 'task' ? (/先停下来/.test(ev.text || '') ? '任务没有进展，停下来说明情况' : '任务自动接着做') : truncate(ev.text, 90)}` };
-    case 'turn.end': return { kind: 'turn', text: `${ev.botName || ev.botId} 结束（${runStatusLabel(ev.status)}${ev.steps ? `，${ev.steps} 步` : ''}）` };
+    case 'turn.end': return { kind: 'turn', text: `${ev.botName || botById(ev.botId)?.name || ev.botId} 结束（${runStatusLabel(ev.status)}${ev.steps ? `，${ev.steps} 步` : ''}）` };
     case 'tool.call': return { kind: 'tool', text: `${ev.botName || ev.botId} · ${toolNameLabel(ev.name)}${ev.risk ? `（${riskLabel(ev.risk)}风险）` : ''} ${decisionLabel(ev.decision)}` };
     case 'tool.result': return { kind: ev.ok ? 'tool' : 'error', text: `${toolNameLabel(ev.name)} ${ev.ok ? '完成' : '没成功'}${ev.denied ? '（被拒绝）' : ''}` };
     case 'approval.request': return { kind: 'approval', text: `${toolNameLabel(ev.tool)} · 等你确认` };
@@ -1280,7 +1304,7 @@ function activityLabel(ev) {
           : `你拒绝了${who}的这一步`;
       return { kind: 'approval', text: ev.decidedOn ? `${what}（在「${ev.decidedOn}」上点的）` : what };
     }
-    case 'message': return { kind: 'message', text: `${ev.botName || ev.botId}：${truncate(ev.text, 90)}` };
+    case 'message': return { kind: 'message', text: `${ev.botName || botById(ev.botId)?.name || ev.botId}：${truncate(ev.text, 90)}` };
     case 'error': return { kind: 'error', text: truncate(ev.message, 110) };
     default: return null;
   }

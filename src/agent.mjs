@@ -38,6 +38,7 @@ import { checkBoundary, DEVTOOLS, lookOnly } from './boundary.mjs';
 import { sandboxStatus } from './sandbox.mjs';
 import { PHONE_KIND_LABEL } from './phone.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
+import { draftFor, applyEdits, fieldValue as getField } from './drafts.mjs';
 import { historyStart } from './groups.mjs';
 import { explainModelError } from './modelerrors.mjs';
 import { noteUsage, overBudget, allowMore } from './usage.mjs';
@@ -185,7 +186,8 @@ function machinesSection(ui) {
   if (machines.length < 2) return [];
   return [
     '## The human\'s machines',
-    ...machines.map((m) => `- ${m.name} (${m.url === 'local' ? 'their own computer' : m.url})${m.current ? ' <- this chat runs here' : ''}`),
+    // Names only (1.5.45): an address is nothing a bot needs to say or use.
+    ...machines.map((m) => `- ${m.name} (${m.url === 'local' ? 'their own computer' : 'another of their machines'})${m.current ? ' <- this chat runs here' : ''}`),
     'Each machine has its own bots, files and desktops. When the human asks for something on another machine, call machine_switch with a complete task for the assistant there; do not SSH in yourself.',
     '',
   ];
@@ -560,7 +562,7 @@ export function isStopWords(text) {
 }
 
 export class AgentRuntime {
-  constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers, machineName }) {
+  constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers, machineName, machineBrief }) {
     this.config = config;
     this.registry = registry;
     this.model = model;
@@ -569,6 +571,8 @@ export class AgentRuntime {
     // settings/ui tools read it; a runtime without it still runs every turn.
     this.getApp = typeof getApp === 'function' ? getApp : () => null;
     this.getPeers = typeof getPeers === 'function' ? getPeers : () => null;
+    // 1.5.45: the main assistant's 「你的机器」 (each machine, what it is good for, its bots) - lines for the prompt.
+    this.machineBrief = typeof machineBrief === 'function' ? machineBrief : null;
     // This machine's name in the human's lists (the one given in 添加机器), for the other machines.
     this.machineName = typeof machineName === 'function' ? machineName : () => friendlyHostname(os.hostname());
     // Group chats are optional: a runtime without them still runs 1:1 turns, and
@@ -995,6 +999,12 @@ export class AgentRuntime {
 
     const allBots = await this.bots.listBots();
     const others = allBots.filter((b) => b.id !== bot.id);
+    // The main assistant picks the machine for a job itself (1.5.45 第四步「替你想」).
+    let brief = [];
+    // Any bot that can hand work to another machine gets the machines' profiles (1.5.45), not only the main assistant.
+    if (this.machineBrief && (this.registry.isGranted?.(bot, 'machine_switch') || this.registry.isGranted?.(bot, 'bot_message'))) {
+      try { brief = (await this.machineBrief()) || []; } catch { brief = []; }
+    }
     // The primary bot sees the teams already set up (11-17: a job the 求职组 owns,
     // and its 08:45 routine, ran under the assistant).
     const teams = bot.primary && this.groups?.listGroups ? await this.groups.listGroups().catch(() => []) : [];
@@ -1069,7 +1079,7 @@ export class AgentRuntime {
           : [];
       })(),
       '',
-      ...machinesSection(this.getApp()?.uiState),
+      ...(brief.length ? brief : machinesSection(this.getApp()?.uiState)),
       ...TAKEOVER_RULES,
       ...(effectivePolicy(this.config.policy).mode === 'remote'
         ? ['## This machine', 'This is a remote machine dedicated to you. You may use sudo (it needs no password) and install what you need. Act without asking; only commands that could cut the machine off or wipe it wait for a human.', '']
@@ -1161,7 +1171,9 @@ export class AgentRuntime {
       const prev = usable[usable.length - 1];
       // An opening line and a reply cut into parts belong to one answer.
       if (prev && r.kind === 'assistant' && prev.kind === 'assistant' && r.turnId && prev.turnId === r.turnId) prev.text = `${prev.text}\n\n${r.text}`;
-      else usable.push({ kind: r.kind, text: String(r.text), turnId: r.turnId });
+      // The daily 「有什么在等你」 (1.5.45) follows a reply of its own: one assistant message, never two in a row.
+      else if (prev && r.kind === 'assistant' && prev.kind === 'assistant' && (r.source === 'nudge' || prev.source === 'nudge')) prev.text = `${prev.text}\n\n${r.source === 'nudge' ? '（每天的提醒）' : ''}${r.text}`;
+      else usable.push({ kind: r.kind, text: String(r.text), turnId: r.turnId, ...(r.source === 'nudge' ? { source: 'nudge' } : {}) });
     }
     return usable.slice(historyStart(usable.length, limit)).map((r) => ({ role: r.kind, content: r.text }));
   }
@@ -2525,7 +2537,7 @@ export class AgentRuntime {
       call = { ...call, name: String(call.arguments.tool), arguments: inner && typeof inner === 'object' && !Array.isArray(inner) ? inner : {} };
     }
     const name = call.name;
-    const args = call.arguments || {};
+    let args = call.arguments || {};
     const tool = this.registry.get(name);
     // An app tool in use: it rides along directly in this bot's next requests.
     if (tool?.mcp) this.registry.noteMcpUse?.(bot.id, name);
@@ -2697,6 +2709,15 @@ export class AgentRuntime {
       else if (ctx.lookTurn && !machine.careful) verdict = { ...verdict, decision: DECISION.AUTO, reason: '这一轮你已经允许过查看类命令' };
     }
 
+    // Something going out - a post, a mail, a message, a reply (1.5.45 第四步「替你想」):
+    // a draft card the human can edit, every time, at any level, whatever trust or
+    // 「以后都允许」 said. Only the human's 「发送」 sends it.
+    const draft = verdict.decision !== DECISION.DENY ? draftFor(name, args, { mcp: tool.mcp || null, outgoing: tool.outgoing || null }) : null;
+    if (draft) {
+      lookCommand = '';
+      verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: '往外发的东西，每次都先给你看草稿' };
+    }
+
     // What was read is not an instruction (1.5.2): after a web page, an email
     // or the phone screen in this turn, sending out and changing things asks -
     // whatever the level, trust or 「以后都允许」 said. Settings → 审批 turns it off.
@@ -2747,8 +2768,8 @@ export class AgentRuntime {
       const lookTurn = Boolean(lookCommand) && !machine.careful;
       // Whoever shows this card shows every command on it (the page, Feishu, the phone).
       const askArgs = batch ? { ...args, commands: lookBatch } : args;
-      // 「以后都允许」 is about one program: a card for several commands does not offer it.
-      const offered = batch ? null : remember;
+      // 「以后都允许」 is about one program: a card for several commands does not offer it; nor a draft.
+      const offered = batch || draft ? null : remember;
       const pending = this.approvals.request({
         turnId,
         botId: bot.id,
@@ -2761,6 +2782,9 @@ export class AgentRuntime {
         ...(batch ? { batch } : {}),
         ...(lookTurn ? { lookTurn } : {}),
         ...(lookCommand ? { look: true } : {}),
+        ...(draft ? { draft } : {}),
+        ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
+        ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
       });
 
       // approvals.request() exposes the record synchronously so the UI can show
@@ -2779,9 +2803,18 @@ export class AgentRuntime {
         ...(batch ? { batch } : {}),
         ...(lookTurn ? { lookTurn } : {}),
         ...(lookCommand ? { look: true } : {}),
+        ...(draft ? { draft } : {}),
+        ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
+        ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
       });
 
       const resolution = await pending;
+      // The human's edits to the draft (1.5.45): what goes out is what they left in the boxes.
+      const edits = draft && resolution.decision === 'approved' ? resolution.approval?.edits : null;
+      if (edits) {
+        const applied = applyEdits(args, draft, edits);
+        if (!applied.error) { args = applied.args; ctx.humanEdited = applied.changed; }
+      }
       // The human wrote something new instead of answering (aside() closed the card).
       const superseded = resolution.decision !== 'approved' && resolution.note === NEW_MESSAGE_NOTE;
       if (lookCommand && resolution.decision === 'approved') {
@@ -2813,6 +2846,10 @@ export class AgentRuntime {
         ...(batch ? { batch } : {}),
         // The answered card is drawn again from here (the turn's end, a reload): still a look-only card (1.5.40 retest).
         ...(lookCommand ? { look: true } : {}),
+        ...(draft ? { draft } : {}),
+        ...(edits ? { edits, edited: true } : {}),
+        ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
+        ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
         turnId,
       });
 
@@ -2883,6 +2920,12 @@ export class AgentRuntime {
     try {
       result = await tool.run(args, ctx);
       ok = result?.ok !== false && !result?.error;
+      // The human changed the draft before it went out: the bot is told, and what went out.
+      if (ok && draft && ctx.humanEdited?.length) {
+        const sent = Object.fromEntries(draft.fields.filter((f) => ctx.humanEdited.includes(f.key)).map((f) => [f.label, String(getField(args, f.key) ?? '').slice(0, 1500)]));
+        result = { ...(result && typeof result === 'object' && !Array.isArray(result) ? result : { result }), humanEdited: { note: '你改过的草稿：人类在卡片上改了这些地方，发出去的是他改后的版本。以后写类似的东西参考他的改法。The human edited the draft before it went out; what was sent is below.', sent } };
+      }
+      if (draft) delete ctx.humanEdited;
     } catch (err) {
       ok = false;
       result = { error: { code: err.code || 'TOOL_FAILED', message: err.message, details: err.details } };

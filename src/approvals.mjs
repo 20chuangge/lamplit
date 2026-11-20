@@ -17,6 +17,7 @@
 import path from 'node:path';
 import { uid, nowIso } from './store.mjs';
 import { lookOnly } from './boundary.mjs';
+import { applyEdits, cleanEdits } from './drafts.mjs';
 
 export const RISK = { LOW: 'LOW', MEDIUM: 'MEDIUM', HIGH: 'HIGH' };
 export const DECISION = { AUTO: 'auto', ASK: 'ask', DENY: 'deny' };
@@ -452,7 +453,7 @@ export class ApprovalQueue {
    * routine report that in chat. That is the honest behaviour - a scheduled run
    * should never hang for ten minutes pretending to work.
    */
-  request({ turnId, botId, toolName, args, risk, reason, unattended = false, remember = null, batch = null, lookTurn = false, look = false }) {
+  request({ turnId, botId, toolName, args, risk, reason, unattended = false, remember = null, batch = null, lookTurn = false, look = false, draft = null, adjust = null, handoff = null }) {
     const id = uid('ap');
     const record = {
       id,
@@ -475,6 +476,12 @@ export class ApprovalQueue {
       ...(lookTurn ? { lookTurn: true } : {}),
       // Commands that only look: the card says so before and after it is answered.
       ...(look ? { look: true } : {}),
+      // Something going out (1.5.45): the card shows its text in boxes the human can edit.
+      ...(draft && Array.isArray(draft.fields) ? { draft } : {}),
+      // A change to a bot (1.5.45): before and after, line by line.
+      ...(adjust ? { adjust } : {}),
+      // The first hand-off to a machine (1.5.45): which machine and bot.
+      ...(handoff ? { handoff } : {}),
     };
     this.records.set(id, record);
     void this.onAudit({ kind: 'approval.requested', ...record });
@@ -511,7 +518,7 @@ export class ApprovalQueue {
    * late, but we do NOT resume the finished run. Re-running the routine is the
    * explicit way to continue; see README "what this replica does NOT do".
    */
-  decide(id, decision, note = '', by = 'human', { decidedOn = '' } = {}) {
+  decide(id, decision, note = '', by = 'human', { decidedOn = '', edits = null } = {}) {
     const record = this.records.get(id);
     if (!record) return null;
     // Answered already (another device, another machine, or a second click):
@@ -535,6 +542,20 @@ export class ApprovalQueue {
     }
     const normalized = normalizeDecision(decision);
     if (!normalized) return { ...record, error: `这张卡不能这样处理（${String(decision).slice(0, 20)}）` };
+    // The human's edits to a draft (1.5.45): only its own fields, checked before anything is approved.
+    // A card that is not a draft takes no edits (a command cannot be changed by "editing" its card).
+    if (normalized === 'approved' && record.draft && edits) {
+      const clean = cleanEdits(record.draft, edits);
+      if (clean) {
+        let args = {};
+        try { args = JSON.parse(record.args); } catch { /* the card's own copy may be cut; the turn applies the edits */ }
+        const tried = applyEdits(args, record.draft, clean);
+        if (tried.error) return { ...record, error: tried.error, editError: true };
+        record.edits = clean;
+        record.edited = Object.keys(clean).some((k) => String(clean[k]) !== String(record.draft.fields.find((f) => f.key === k)?.value ?? ''));
+        if (!record.edited) delete record.edits;
+      }
+    }
 
     if (record.status === 'awaiting_human') {
       record.status = normalized === 'approved' ? 'approved' : 'denied';

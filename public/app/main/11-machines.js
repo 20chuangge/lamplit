@@ -379,6 +379,7 @@ function renderMachinesList() {
     rows.push('<div class="machine-empty">还没有别的机器。点「添加机器」，填 SSH 信息就能自动装好一台。</div>');
   }
   box.innerHTML = rows.join('');
+  addMachineNotes(box);
 }
 
 /**
@@ -415,6 +416,7 @@ async function renderBrowserMachines() {
     rows.push('<div class="machine-empty">这台电脑现在只在局域网/本机可用（没有打开「允许手机连接」），所以别的设备跳不过来。</div>');
   }
   box.innerHTML = rows.join('');
+  addMachineNotes(box);
   refreshMachineFunnelButtons();
 }
 

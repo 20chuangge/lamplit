@@ -563,7 +563,7 @@ export class Smtp {
 // ---------------------------------------------------------------------------
 // the app: tools a bot can use
 
-const TOOLS = [
+export const MAIL_TOOLS = [
   {
     name: 'mail_accounts',
     description: 'The mailboxes connected here (addresses).',
@@ -615,7 +615,8 @@ const TOOLS = [
       },
       required: ['to', 'body'],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false },
+    // The outgoing gate (1.5.45): a mail is a draft the human edits and sends.
+    annotations: { readOnlyHint: false, destructiveHint: false, lamplitOutgoing: { channel: '邮件', kind: 'mail', filesKey: 'attachments', fields: [{ key: 'to', label: '收件人', list: true }, { key: 'subject', label: '标题' }, { key: 'body', label: '正文', multiline: true }] } },
   },
   {
     name: 'mail_move',
@@ -886,7 +887,7 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
           }
           return reply({ protocolVersion: msg.params?.protocolVersion || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'nightshift-mail', version } });
         }
-        if (msg.method === 'tools/list') return reply({ tools: TOOLS });
+        if (msg.method === 'tools/list') return reply({ tools: MAIL_TOOLS });
         if (msg.method === 'tools/call') {
           const fn = tools[msg.params?.name];
           if (!fn) return fail(new Error(`没有工具 ${msg.params?.name}`));

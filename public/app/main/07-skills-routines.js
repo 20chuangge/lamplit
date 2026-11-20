@@ -60,6 +60,7 @@ async function loadRoutines() {
   }
   renderRoutines();
   loadBriefing().catch(() => { /* older server: no briefing */ });
+  loadNudge().catch(() => { /* older server: no daily note */ });
 }
 
 /** The daily briefing card: one switch, a time, Feishu or not. */
@@ -649,4 +650,506 @@ function routineRunRow(item) {
     toggle.textContent = body.hidden ? '看指令' : '收起';
   });
   return wrap;
+}
+
+/* ---------------------------------------------------------------------
+   1.5.45 第四步「替你想」: drafts, a change to a bot, the first hand-off to a
+   machine, X, what each machine is for, 「有什么在等你」
+   --------------------------------------------------------------------- */
+
+/** What a card needs beyond the usual, from any record of it (a pending card, the transcript, the inbox). */
+function cardExtras(src = {}) {
+  return {
+    ...(src.draft ? { draft: src.draft } : {}),
+    ...(src.adjust ? { adjust: src.adjust } : {}),
+    ...(src.handoff ? { handoff: src.handoff } : {}),
+    ...(src.edits ? { edits: src.edits } : {}),
+    ...(src.edited ? { edited: true } : {}),
+  };
+}
+
+/** The headline of a card that is a draft, a change to a bot or a hand-off. */
+function thinkCardInfo(data) {
+  const d = data.draft;
+  if (d) {
+    const where = d.channel === '邮件' ? '发一封邮件' : d.channel === 'X' ? (d.kind === 'reply' ? '在 X 上回复一条帖子' : '在 X 上发一条帖子') : `发到「${d.channel}」`;
+    return { title: `想${where}`, detail: '', facts: [], impact: data.decision ? '' : '下面是草稿，可以直接改。点「发送」才会发出去，发出去的就是框里的字。' };
+  }
+  const a = data.adjust;
+  if (a) return { title: `想改「${a.botName}」${a.machine ? `（${a.machine}）` : ''}`, detail: '', facts: [], impact: '同意后马上生效。之后可以在对话里点「撤销」改回去。' };
+  const h = data.handoff;
+  if (h) return { title: `想把一件事交给「${h.machine}」${h.bot ? `上的「${h.bot}」` : '上的主助理'}`, detail: '', facts: h.task ? [['要做的事', h.task]] : [], impact: `窗口不动。同意后，以后交给「${h.machine}」不再问你，只告诉你一声。` };
+  return null;
+}
+
+/** A draft: its text in boxes that can be edited (read-only once answered). */
+function draftBox(data, { resolved = false } = {}) {
+  const d = data.draft;
+  const box = el('div', 'approval-draft');
+  if (d.replyUrl) {
+    const to = el('div', 'approval-fact');
+    to.appendChild(el('span', 'approval-fact-k', '回复'));
+    const link = el('a', 'approval-fact-v', d.context ? `「${d.context}」` : '这条帖子');
+    link.href = d.replyUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    to.appendChild(link);
+    box.appendChild(to);
+  }
+  const edits = data.edits || {};
+  for (const f of d.fields || []) {
+    const id = `draft-${data.approvalId || 'x'}-${f.key}`.replace(/[^\w-]/g, '_');
+    const label = el('label', 'lbl', f.label);
+    label.htmlFor = id;
+    box.appendChild(label);
+    const input = el(f.multiline ? 'textarea' : 'input', 'field draft-field');
+    input.id = id;
+    input.dataset.key = f.key;
+    input.value = edits[f.key] !== undefined ? String(edits[f.key]) : String(f.value ?? '');
+    if (f.multiline) input.rows = Math.min(10, Math.max(3, Math.ceil(input.value.length / 40)));
+    if (resolved) input.readOnly = true;
+    box.appendChild(input);
+    if (f.max) {
+      const count = el('div', 'tiny muted draft-count');
+      const update = () => {
+        const n = [...input.value].length;
+        count.textContent = `${n} / ${f.max} 字`;
+        count.classList.toggle('bad', n > f.max);
+      };
+      input.addEventListener('input', update);
+      update();
+      box.appendChild(count);
+    }
+  }
+  if (Array.isArray(d.files) && d.files.length) box.appendChild(el('div', 'tiny muted', `一起发：${d.files.join('、')}`));
+  return box;
+}
+
+/** The boxes' text where it differs from the draft: what goes with 「发送」. */
+function draftEdits(card, data) {
+  const out = {};
+  for (const input of card.querySelectorAll('.draft-field')) {
+    const f = (data.draft?.fields || []).find((x) => x.key === input.dataset.key);
+    if (f && input.value !== String(f.value ?? '')) out[f.key] = input.value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** A change to a bot, line by line: + added (green), - removed (red), the job line before and after. */
+function adjustDiff(a) {
+  const box = el('div', 'adjust-diff');
+  // The rules as they are now (1.5.45 test: is the new one in conflict with an old one?).
+  if (Array.isArray(a.rulesNow) && a.rulesNow.length) {
+    const now = el('details', 'adjust-now');
+    now.appendChild(el('summary', 'tiny muted', `现在的规则（${a.rulesNow.length} 条）`));
+    for (const r of a.rulesNow) now.appendChild(el('div', 'adjust-line same', r));
+    box.appendChild(now);
+  }
+  if (a.roleChange) {
+    box.appendChild(el('div', 'adjust-line minus', `职责：${a.roleChange.from || '（空）'}`));
+    box.appendChild(el('div', 'adjust-line plus', `职责：${a.roleChange.to}`));
+  }
+  for (const l of a.lines || []) {
+    // A part that changes from one value to another (avatar, a routine's time): 「before → after」.
+    if (l.op === '~') {
+      // A colour is shown as a colour, not as its code.
+      const hex = (v) => /^#[0-9a-f]{3,8}$/i.test(String(v || ''));
+      if (hex(l.from) || hex(l.to)) {
+        const row = el('div', 'adjust-line change');
+        row.appendChild(document.createTextNode(`${l.label}：`));
+        for (const [i, v] of [l.from, l.to].entries()) {
+          if (i) row.appendChild(document.createTextNode(' → '));
+          const dot = el('span', 'adjust-swatch');
+          dot.style.background = hex(v) ? v : 'transparent';
+          dot.title = String(v || '');
+          row.appendChild(dot);
+        }
+        box.appendChild(row);
+      } else box.appendChild(el('div', 'adjust-line change', `${l.label}：${l.from || '（空）'} → ${l.to}`));
+      continue;
+    }
+    box.appendChild(el('div', `adjust-line ${l.op === '+' ? 'plus' : 'minus'}`, `${l.op === '+' ? '+ ' : '− '}${l.text}`));
+  }
+  return box;
+}
+
+/** What an answered card says it did, in words that fit it. */
+function thinkDoneLabel(data, good) {
+  if (data.draft) return good ? (data.edited ? '已发送（你改过）' : '已发送') : '不发了';
+  if (data.adjust) return good ? '已修改' : '没改';
+  if (data.handoff) return good ? '已交过去' : '没交';
+  return '';
+}
+
+/** The buttons' words on a card that is a draft, a change or a hand-off. */
+function thinkButtons(data) {
+  if (data.draft) return { yes: '发送', yesTip: '把框里的字发出去', no: '不发了', noTip: '不发，把「不发了」告诉它' };
+  if (data.adjust) return { yes: '同意修改', yesTip: '马上生效，之后可以撤销', no: '不改了', noTip: '不改，把「不改了」告诉它' };
+  if (data.handoff) return { yes: '同意，交过去', yesTip: '以后交给这台不再问你', no: '先别交', noTip: '不交，把「不行」告诉它' };
+  return null;
+}
+
+/** 「已改「策略」的规则 · 撤销」 after a change made by talking. */
+function adjustDoneCard(item) {
+  const out = item.output && typeof item.output === 'object' ? item.output : {};
+  const wrap = el('div', 'adjust-done');
+  const who = `「${out.bot || '助手'}」${out.machine ? `（${out.machine}）` : ''}`;
+  wrap.appendChild(el('div', 'adjust-done-title', `已改${who}`));
+  if ((out.lines || []).length || out.role) wrap.appendChild(adjustDiff({ lines: out.lines || [], ...(out.role ? { roleChange: { from: '', to: out.role } } : {}) }));
+  if (out.adjustmentId) {
+    const undo = el('button', 'btn tiny', '撤销');
+    // Undone already (another time, another device): said so after a reload.
+    api('/api/adjustments').then((r) => { if ((r.items || []).some((a) => a.id === out.adjustmentId && a.undoneAt) && undo.isConnected) { undo.replaceWith(el('span', 'tiny muted', '已撤销，改回原样了')); wrap.classList.add('undone'); } }).catch(() => {});
+    undo.type = 'button';
+    undo.title = '把这个助手改回改之前的样子';
+    undo.addEventListener('click', async () => {
+      if (!(await askConfirm({ title: `把${who}改回原样？`, text: '这次改的每一项都改回改之前的样子。', confirmLabel: '撤销' }))) return;
+      undo.disabled = true;
+      try {
+        await api(`/api/adjustments/${encodeURIComponent(out.adjustmentId)}/undo`, { method: 'POST', body: {} });
+        undo.replaceWith(el('span', 'tiny muted', '已撤销，改回原样了'));
+        wrap.classList.add('undone');
+        toast(`已把${who}改回原样`);
+      } catch (err) {
+        undo.disabled = false;
+        if (err.code === 'ADJUST_ALREADY_UNDONE') undo.replaceWith(el('span', 'tiny muted', '已经撤销过了'));
+        else if (!err.quiet) toast(err.message, true);
+      }
+    });
+    wrap.appendChild(undo);
+  }
+  return wrap;
+}
+
+/* --- X (Settings → 连接应用) ------------------------------------------- */
+const xUi = { view: null };
+
+async function loadXCard() {
+  const box = $('x-card');
+  if (!box) return;
+  try { xUi.view = await api('/api/x'); } catch { box.hidden = true; return; }
+  box.hidden = false;
+  renderXCard();
+}
+
+function renderXCard() {
+  const box = $('x-card');
+  const v = xUi.view;
+  if (!box || !v) return;
+  box.innerHTML = '';
+  const head = el('div', 'x-card-head');
+  head.appendChild(el('span', 'mcp-badge x-badge', 'X'));
+  const t = el('div', 'x-card-title');
+  t.appendChild(el('div', null, 'X（推特）发帖和回复'));
+  t.appendChild(el('div', 'tiny muted', v.connected ? `已连接：@${v.username || '你的账号'}` : v.configured ? '应用已填好，还没登录授权' : '用你自己的 X 开发者应用，助手发的每一条都先给你看草稿'));
+  head.appendChild(t);
+  box.appendChild(head);
+  if (!v.configured || box.dataset.editing === '1') {
+    const step1 = el('div', 'row-note');
+    step1.appendChild(document.createTextNode('1. 在 '));
+    const dev = el('a', null, 'X 开发者后台');
+    dev.href = v.developerUrl;
+    dev.target = '_blank';
+    dev.rel = 'noopener noreferrer';
+    dev.addEventListener('click', (e) => { e.preventDefault(); openSignInPage(v.developerUrl); });
+    step1.appendChild(dev);
+    step1.appendChild(document.createTextNode(' 打开你的应用 → 「User authentication settings」：类型选「Web App」，权限选「Read and write」，回调地址填下面这一行。'));
+    box.appendChild(step1);
+    box.appendChild(el('div', 'row-note', '还没有开发者应用：在上面的网址用你的 X 账号登录，建一个项目和应用（Project → App）就有了。X 的接口要不要付费、每月能发多少，按 X 当时的规定。'));
+    const cb = el('input', 'field mono');
+    cb.readOnly = true;
+    cb.value = v.callback;
+    cb.setAttribute('aria-label', '回调地址');
+    cb.addEventListener('focus', () => cb.select());
+    box.appendChild(cb);
+    box.appendChild(el('div', 'row-note', '2. 在应用的「Keys and tokens」里复制「OAuth 2.0 Client ID」和「Client Secret」，填在这里。它们加密存在这台电脑上，不进聊天，也不会发给别的机器。'));
+    const id = el('input', 'field mono');
+    id.placeholder = v.clientIdHint ? `Client ID（现在是 ${v.clientIdHint}，不改就留空）` : 'Client ID';
+    id.autocomplete = 'off';
+    id.setAttribute('aria-label', 'X 的 Client ID');
+    const secret = el('input', 'field mono');
+    secret.type = 'password';
+    secret.placeholder = v.hasClientSecret ? 'Client Secret（已保存，不改就留空）' : 'Client Secret';
+    secret.autocomplete = 'off';
+    secret.setAttribute('aria-label', 'X 的 Client Secret');
+    box.appendChild(id);
+    box.appendChild(secret);
+    const save = el('button', 'btn primary', '保存');
+    save.type = 'button';
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      try {
+        xUi.view = await api('/api/x/app', { method: 'PUT', body: { ...(id.value.trim() ? { clientId: id.value.trim() } : {}), ...(secret.value.trim() ? { clientSecret: secret.value.trim() } : {}) } });
+        delete box.dataset.editing;
+        renderXCard();
+        toast('保存好了：下一步点「去 X 登录授权」');
+      } catch (err) { save.disabled = false; if (!err.quiet) toast(err.message, true); }
+    });
+    const row = el('div', 'btn-row');
+    row.appendChild(save);
+    if (v.configured) {
+      const cancel = el('button', 'btn', '取消');
+      cancel.type = 'button';
+      cancel.addEventListener('click', () => { delete box.dataset.editing; renderXCard(); });
+      row.appendChild(cancel);
+    }
+    box.appendChild(row);
+    return;
+  }
+  const row = el('div', 'btn-row');
+  const login = el('button', `btn${v.connected ? '' : ' primary'}`, v.connected ? '重新登录授权' : '去 X 登录授权');
+  login.type = 'button';
+  login.title = '在 X 自己的网页上登录并点「允许」。Lamplit 看不到你的 X 密码';
+  login.addEventListener('click', async () => {
+    login.disabled = true;
+    try {
+      const r = await api('/api/x/login', { method: 'POST', body: {} });
+      await openSignInPage(r.url);
+      toast('在打开的 X 页面上登录并点「允许」，完成后回到这里');
+    } catch (err) { if (!err.quiet) toast(err.message, true); } finally { login.disabled = false; }
+  });
+  row.appendChild(login);
+  const edit = el('button', 'btn', '改应用');
+  edit.type = 'button';
+  edit.addEventListener('click', () => { box.dataset.editing = '1'; renderXCard(); });
+  row.appendChild(edit);
+  if (v.connected) {
+    const out = el('button', 'btn', '断开');
+    out.type = 'button';
+    out.addEventListener('click', async () => {
+      if (!(await askConfirm({ title: '断开 X？', text: '助手就不能再发帖了（已经发的不受影响）。要再用时重新登录授权就行。', confirmLabel: '断开' }))) return;
+      try { xUi.view = await api('/api/x', { method: 'DELETE' }); renderXCard(); } catch (err) { if (!err.quiet) toast(err.message, true); }
+    });
+    row.appendChild(out);
+  }
+  box.appendChild(row);
+  box.appendChild(el('div', 'row-note', '要在这台电脑上的 Lamplit 里点登录：X 会把你送回这台电脑的地址。'));
+  if (v.connected) {
+    box.appendChild(el('div', 'lbl', '哪些助手能在 X 上发帖（每一条都先给你看草稿）'));
+    const picks = el('div', 'x-bots');
+    for (const bot of state.bots || []) {
+      const lab = el('label', 'switch-row');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.checked = (v.bots || []).includes(bot.id);
+      cb.addEventListener('change', async () => {
+        const next = new Set(xUi.view.bots || []);
+        if (cb.checked) next.add(bot.id); else next.delete(bot.id);
+        try { xUi.view = await api('/api/x/bots', { method: 'PUT', body: { bots: [...next] } }); toast(cb.checked ? `「${bot.name}」可以在 X 上发帖了（先给你看草稿）` : `「${bot.name}」不能再在 X 上发帖`); } catch (err) { cb.checked = !cb.checked; if (!err.quiet) toast(err.message, true); }
+      });
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(` ${bot.name}`));
+      picks.appendChild(lab);
+    }
+    box.appendChild(picks);
+  }
+}
+
+/* --- what each machine is for (设置 → 机器) ----------------------------- */
+const machineNotesUi = { notes: {}, at: 0 };
+
+async function loadMachineNotes() {
+  try {
+    const r = await api('/api/machine-notes');
+    machineNotesUi.notes = r.notes || {};
+    machineNotesUi.at = Date.now();
+  } catch { /* older server */ }
+  return machineNotesUi.notes;
+}
+
+/** 「适合：…」 under a machine, editable in place. */
+function machineNoteLine(name) {
+  const line = el('div', 'machine-note tiny');
+  const n = machineNotesUi.notes[name];
+  const show = () => {
+    line.innerHTML = '';
+    line.classList.remove('editing');
+    line.closest('.machine-row')?.classList.remove('noting');
+    const cur = machineNotesUi.notes[name]?.note || '';
+    line.appendChild(el('span', 'muted', `适合：${cur || '还没写（主助理会按上面的助手自己写一句）'}`));
+    const edit = el('button', 'link-btn tiny', '改');
+    edit.type = 'button';
+    edit.title = '主助理按这一句挑机器干活';
+    edit.addEventListener('click', () => {
+      line.innerHTML = '';
+      const input = el('input', 'field');
+      input.value = cur;
+      input.maxLength = 200;
+      input.placeholder = '比如：一直开着，跑发布和筛岗';
+      input.setAttribute('aria-label', `「${name}」适合干什么`);
+      const ok = el('button', 'btn tiny primary', '保存');
+      ok.type = 'button';
+      ok.addEventListener('click', async () => {
+        try {
+          const r = await api('/api/machine-notes', { method: 'PUT', body: { machine: name, note: input.value } });
+          machineNotesUi.notes = r.notes || machineNotesUi.notes;
+          show();
+          toast('记下了：主助理以后按这一句挑机器');
+        } catch (err) { if (!err.quiet) toast(err.message, true); }
+      });
+      const no = el('button', 'btn tiny', '取消');
+      no.type = 'button';
+      no.addEventListener('click', show);
+      line.classList.add('editing');
+      line.closest('.machine-row')?.classList.add('noting');
+      line.appendChild(input);
+      line.appendChild(ok);
+      line.appendChild(no);
+      input.focus();
+    });
+    line.appendChild(edit);
+  };
+  if (n !== undefined || machineNotesUi.at) show();
+  else loadMachineNotes().then(show);
+  return line;
+}
+
+/* --- 「有什么在等你」 (右边「任务」) ------------------------------------- */
+async function loadNudge() {
+  if (!$('nudge-on')) return;
+  try {
+    const n = await api('/api/nudge');
+    $('nudge-on').checked = Boolean(n.enabled);
+    $('nudge-time').value = n.time || '09:00';
+  } catch { $('nudge-card')?.setAttribute('hidden', ''); }
+}
+
+async function saveNudge() {
+  const n = await api('/api/nudge', { method: 'PUT', body: { enabled: $('nudge-on').checked, time: $('nudge-time').value || '09:00' } });
+  toast(n.enabled ? `好的，每天 ${n.time} 告诉你有什么在等你（没有就不说）` : '每天的提醒关掉了');
+  return n;
+}
+
+/** 「适合：…」 under each machine in 设置 → 机器 (1.5.45): what the main assistant picks it for. */
+async function addMachineNotes(box) {
+  let here = '';
+  try { here = (await api('/api/machine-notes')).here || ''; } catch { return; }
+  await loadMachineNotes();
+  for (const row of box.querySelectorAll('.machine-row')) {
+    const meta = row.querySelector('.machine-meta');
+    let name = row.querySelector('.machine-name')?.textContent || '';
+    if (name === '本机') name = here;
+    if (meta && name && !meta.querySelector('.machine-note')) meta.appendChild(machineNoteLine(name));
+  }
+}
+
+/* --- 设置 → 主动: the initiative layer, all in one place (1.5.45) ------------------ */
+const initiativeUi = { view: null };
+const INITIATIVE_EVENTS = [
+  ['card_waiting', '一张卡等了很久还没人点'],
+  ['machine_back', '一台机器重新连上了'],
+  ['outbox_sent', '排队等别的机器的消息交过去了'],
+  ['routine_failed', '定时任务没跑成（由那个助手自己说）'],
+];
+
+async function loadInitiative() {
+  if (!$('initiative-box')) return;
+  try { initiativeUi.view = await api('/api/initiative'); } catch { return; }
+  const v = initiativeUi.view;
+  if ($('nudge-on')) $('nudge-on').checked = Boolean(v.daily?.enabled);
+  if ($('nudge-time')) $('nudge-time').value = v.daily?.time || '09:00';
+  renderInitiative();
+}
+
+async function saveInitiative(patch, okText = '已保存') {
+  try {
+    initiativeUi.view = await api('/api/initiative', { method: 'PUT', body: patch });
+    if (okText) toast(okText);
+    renderInitiative();
+  } catch (err) { if (!err.quiet) toast(err.message, true); loadInitiative(); }
+}
+
+function renderInitiative() {
+  const box = $('initiative-box');
+  const v = initiativeUi.view;
+  if (!box || !v) return;
+  box.innerHTML = '';
+  const card = (title) => { const c = el('div', 'card initiative-card'); c.appendChild(el('div', 'lbl', title)); box.appendChild(c); return c; };
+  const sw = (parent, text, on, change) => {
+    const lab = el('label', 'switch-row');
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = Boolean(on);
+    cb.addEventListener('change', () => change(cb.checked));
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(` ${text}`));
+    parent.appendChild(lab);
+    return cb;
+  };
+
+  const rules = card('什么时候开口');
+  const maxRow = el('div', 'row-2');
+  maxRow.appendChild(el('span', null, '每个助手每天最多'));
+  const max = el('input', 'field initiative-max');
+  max.type = 'number';
+  max.min = '1';
+  max.max = '20';
+  max.value = String(v.maxPerDay || 3);
+  max.setAttribute('aria-label', '每个助手每天最多几条');
+  max.addEventListener('change', () => saveInitiative({ maxPerDay: Number(max.value) }, `好的，每个助手每天最多主动说 ${max.value} 条`));
+  maxRow.appendChild(max);
+  maxRow.appendChild(el('span', null, '条，多的攒到下一条一起说'));
+  rules.appendChild(maxRow);
+  sw(rules, '窗口不在前面时，在电脑/手机上弹通知', v.notify, (on) => saveInitiative({ notify: on }));
+  sw(rules, '安静时段（这段时间不说，过了合成一条）', v.quiet?.on, (on) => saveInitiative({ quiet: { on } }));
+  if (v.quiet?.on) {
+    const q = el('div', 'row-2');
+    for (const k of ['from', 'to']) {
+      const t = el('input', 'field');
+      t.type = 'time';
+      t.value = v.quiet[k];
+      t.setAttribute('aria-label', k === 'from' ? '安静时段从' : '安静时段到');
+      t.addEventListener('change', () => saveInitiative({ quiet: { [k]: t.value } }));
+      q.appendChild(t);
+      if (k === 'from') q.appendChild(el('span', null, '到'));
+    }
+    rules.appendChild(q);
+  }
+
+  const ev = card('出了这些事，主助理告诉你');
+  for (const [k, words] of INITIATIVE_EVENTS) sw(ev, words, v.events?.[k] !== false, (on) => saveInitiative({ events: { [k]: on } }));
+  const waitRow = el('div', 'row-2');
+  waitRow.appendChild(el('span', 'tiny muted', '「等了很久」指超过'));
+  const wait = el('input', 'field initiative-max');
+  wait.type = 'number';
+  wait.min = '5';
+  wait.value = String(v.cardWaitMinutes || 60);
+  wait.setAttribute('aria-label', '卡片等多久算很久（分钟）');
+  wait.addEventListener('change', () => saveInitiative({ cardWaitMinutes: Number(wait.value) }));
+  waitRow.appendChild(wait);
+  waitRow.appendChild(el('span', 'tiny muted', '分钟'));
+  ev.appendChild(waitRow);
+
+  const who = card('哪些助手可以主动找你（这台机器上的）');
+  for (const bot of (state.bots || []).filter((b) => !b.machine)) {
+    sw(who, `${bot.name}${bot.primary ? '（主助理）' : ''}`, v.bots?.[bot.id] !== false, (on) => saveInitiative({ bots: { [bot.id]: on } }, on ? `「${bot.name}」可以主动找你了` : `「${bot.name}」不会再主动找你`));
+  }
+
+  const later = card('助手约好的回头看、盯着的文件夹');
+  const items = [
+    ...(v.followUps || []).map((f) => ({ kind: 'followups', id: f.id, text: `${botById(f.botId)?.name || f.botId} · ${new Date(f.at).toLocaleString()}：${f.about}` })),
+    ...(v.watches || []).map((w) => ({ kind: 'watches', id: w.id, text: `${botById(w.botId)?.name || w.botId} 盯着「${w.path}」：${w.about}` })),
+  ];
+  if (!items.length) later.appendChild(el('div', 'tiny muted', '现在没有。对助手说「明天提醒我看结果」「新文件放进 inbox 就处理」，它会记在这里。'));
+  for (const it of items) {
+    const row = el('div', 'initiative-item');
+    row.appendChild(el('span', 'tiny', it.text));
+    const x = el('button', 'btn tiny', '取消');
+    x.type = 'button';
+    x.addEventListener('click', async () => {
+      try { initiativeUi.view = await api(`/api/initiative/${it.kind}/${encodeURIComponent(it.id)}`, { method: 'DELETE' }); renderInitiative(); toast('取消了'); } catch (err) { if (!err.quiet) toast(err.message, true); }
+    });
+    row.appendChild(x);
+    later.appendChild(row);
+  }
+}
+
+/** A bot waking itself (a follow-up it set, a new file in a folder it watches): one line, not the system's note (1.5.45). */
+function initiativeLine(text, source) {
+  const first = String(text || '').split('\n')[0];
+  if (source === 'watch') {
+    const m = /^（你盯着的文件夹「(.+?)」里出现了新文件：(.+?)）(.*)$/.exec(first);
+    return m ? `盯着的文件夹「${m[1]}」有新文件：${m[2]}` : '盯着的文件夹里有新文件';
+  }
+  return `约好的回头看：${first.replace(/^（[^）]*）/, '').trim() || '到时间了'}`;
 }

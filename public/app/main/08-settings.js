@@ -595,6 +595,7 @@ function showSettingsHome() {
 const SETNAV_ICONS = {
   'sec-model': '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>',
   'sec-run': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  'sec-initiative': '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
   'sec-bounds': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
   'sec-usage': '<circle cx="12" cy="12" r="9"/><path d="M14.5 9.5a3 3 0 0 0-2.5-1.2c-1.7 0-2.8.9-2.8 2s1 1.6 2.8 1.9 2.8.9 2.8 2-1.2 2-2.8 2a3 3 0 0 1-2.6-1.3M12 6.5v1.8M12 15.8v1.7"/>',
   'sec-feishu': '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
@@ -738,6 +739,7 @@ function openSettings(section) {
   loadFunnel().catch(() => {});
   loadVault().catch(() => {});
   loadMcp().catch(() => {});
+  loadInitiative().catch(() => {});
   loadPages().catch(() => {});
   loadFeishu().catch(() => {});
   loadModels().catch(() => {});

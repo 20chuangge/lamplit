@@ -425,6 +425,7 @@ function renderItem(item) {
       if (item.fromBot) return botMessageRow(item);
       // A scheduled run: one line naming the task, the instruction folded (1.5.11).
       if (item.source === 'routine') return routineRunRow(item);
+      if (item.source === 'followup' || item.source === 'watch') return el('div', 'status-line', initiativeLine(item.text, item.source)); // a bot waking itself (1.5.45)
       return userRow(item);
     case 'assistant':
       // A run that found nothing new already says so on its line.
@@ -1623,7 +1624,13 @@ const TOOL_TEXT = {
   phone: { label: '操作手机', title: '想在你的手机上做一步', impact: '会在手机上点、滑或输入；付款、发送、发布、删除每次都会先问你。手机锁着时不会去解锁。' },
   desktop_ui: { label: '操作桌面程序', title: '想在后台操作一个桌面程序', impact: '会在那个窗口里按按钮或填文字，不动你的鼠标。' },
   fs_write: { label: '写入文件', title: '想写入一个文件', impact: '如果同名文件已经存在，里面的内容会被覆盖。' },
-  machine_switch: { label: '把任务交给另一台机器', title: '想切到另一台机器，把任务交给那里的助理', impact: '窗口会切到那台机器，那里的助理接着做。' },
+  machine_switch: { label: '交给另一台机器', title: '想把一件事交给另一台机器', impact: '窗口不动，那台上的助手接着做。' },
+  machine_note: { label: '记下机器适合干什么', title: '想记下一台机器适合干什么', impact: '主助理以后按这一句挑机器。' },
+  x_post: { label: '在 X 上发帖', title: '想在 X 上发一条帖子', impact: '先给你看草稿，你点「发送」才发。' },
+  post_draft: { label: '给你看草稿', title: '想先给你看要发出去的草稿', impact: '你点「发送」后，它照你定的稿去发。' },
+  follow_up: { label: '约好回头看', title: '想约个时间回头看一眼', impact: '到时候它自己回来看，有新情况才告诉你。' },
+  watch_folder: { label: '盯着一个文件夹', title: '想盯着一个文件夹', impact: '里面出现新文件时，它会自己来处理。' },
+  bot_adjust: { label: '改助手', title: '想改一个助手', impact: '同意后马上生效，可以撤销。' },
   machine_list: { label: '查看机器', title: '想看看有哪些机器', impact: '只读取名单。' },
   fs_delete: { label: '删除文件', title: '想删除一个文件或文件夹', impact: '删掉之后，Lamplit 里没有撤销按钮。' },
   fs_mkdir: { label: '新建文件夹', title: '想新建一个文件夹', impact: '只会在工作区里加一个目录，不改动已有文件。' },
@@ -1911,10 +1918,12 @@ function bridgeClipboard(frame) {
 
 /** Tool calls that put something in front of the human to act on. */
 function isActionCard(name) {
-  return name === 'request_takeover' || name === 'request_login';
+  return name === 'request_takeover' || name === 'request_login' || name === 'bot_adjust';
 }
 
 function toolChip(item) {
+  // A change made to a bot by talking (1.5.45): what changed, and 「撤销」.
+  if (item.name === 'bot_adjust' && !item.pending && item.ok && item.output?.changed) return adjustDoneCard(item);
   if (item.name === 'request_takeover' && !item.pending) return takeoverCard(item);
   if (item.name === 'request_login' && !item.pending) return loginCard(item);
   const info = describeTool(item.name, item.args);

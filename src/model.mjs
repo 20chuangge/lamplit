@@ -882,6 +882,17 @@ function mockGroupPlan(group, botName, text) {
   ];
 }
 
+/**
+ * What the demo answers (1.5.45): a message another machine wrapped for a group
+ * member (the group's recent lines, then 「现在要你回答的话：…」) is only its last line.
+ * The recent lines set off a scripted demo (「@管家 你好」 ran a command, 1.5.44 test).
+ */
+export function demoAsk(text) {
+  const t = String(text ?? '');
+  const m = /现在要你回答的话?[：:]\s*([\s\S]*)$/.exec(t);
+  return m ? m[1].trim() : t;
+}
+
 /** The scripted run for a message in demo mode (tests read it). */
 export const demoPlan = (text, botName = '助理') => mockPlan(text, botName);
 
@@ -890,7 +901,7 @@ function mockComplete(messages) {
     (acc, m, i) => (m.role === 'user' ? i : acc),
     -1,
   );
-  const userText = lastUserIndex >= 0 ? String(messages[lastUserIndex].content ?? '') : '';
+  const userText = lastUserIndex >= 0 ? demoAsk(messages[lastUserIndex].content) : '';
   const toolResultsSinceUser =
     lastUserIndex >= 0 ? messages.slice(lastUserIndex + 1).filter((m) => m.role === 'tool').length : 0;
 

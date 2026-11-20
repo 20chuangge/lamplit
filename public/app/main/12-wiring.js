@@ -529,6 +529,8 @@ function wireChrome() {
     closeMenus();
   });
 
+  // 「有什么在等你」 once a day (1.5.45)
+  for (const id of ['nudge-on', 'nudge-time']) $(id)?.addEventListener('change', () => saveNudge().catch((err) => { if (!err.quiet) toast(err.message, true); }));
   // daily briefing
   for (const id of ['brief-on', 'brief-time', 'brief-feishu']) {
     $(id)?.addEventListener('change', () => saveBriefing()

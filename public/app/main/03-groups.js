@@ -661,6 +661,7 @@ function renderGroupItem(item) {
       args: safeParse(item.args),
       decision: item.decision,
       note: item.note,
+      ...cardExtras(item),
     }));
   }
   const bubble = el('div', `bubble${item.system ? ' system' : ''}`);

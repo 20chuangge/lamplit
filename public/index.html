@@ -294,6 +294,7 @@
         <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
         <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
         <button class="setnav" type="button" data-set-target="sec-memory">记忆</button>
+        <button class="setnav" type="button" data-set-target="sec-initiative">主动</button>
       </div>
       <div class="setnav-sec">
         <div class="setnav-group">安全</div>
@@ -704,6 +705,7 @@
         <div class="dsec-head">连接应用</div>
         <div class="row-note">把别的应用（MCP 服务器）接进来，它提供的工具就成了机器人能用的工具，比如飞书、GitHub、Notion。连接跑在这台机器上。</div>
         <div class="row-note">默认每次调用前先问你；应用自己声明「只读」的工具不问。信得过的应用可以设成「始终允许」。</div>
+        <div class="card x-card" id="x-card" hidden></div>
         <input class="field" id="mcp-search" type="search" placeholder="搜索应用" autocomplete="off" />
         <div class="mcp-catalog" id="mcp-catalog"></div>
         <details class="vault-add" id="mcp-add">
@@ -840,6 +842,17 @@
         <div class="dsec-hint">所有助手共用的做事方法。助手学会新做法时会自己存进来。</div>
         <div class="section-head"><span>技能库</span><span id="skills-count" class="mono">0</span></div>
         <div id="skills-list"></div>
+      </section>
+
+      <section class="dsec" id="sec-initiative">
+        <div class="dsec-head">主动</div>
+        <div class="row-note">助手什么时候不用你问、自己来找你，都在这一页。默认只有主助理主动说；别的助手只在它自己约好的回头看、它盯着的文件夹有新文件、它的定时任务没跑成时开口。</div>
+        <div class="card" id="nudge-card">
+          <label class="switch-row"><input type="checkbox" id="nudge-on" /> 每天告诉我有什么在等你</label>
+          <div class="row-2" style="margin-top:6px"><input class="field" id="nudge-time" type="time" value="09:00" aria-label="每天几点提醒" /></div>
+          <div class="tiny muted" style="margin-top:6px">主助理每天说一次：哪些卡在等你点头、哪些做完了你还没看、哪些消息在等别的机器开机。什么都没有的那天不说。</div>
+        </div>
+        <div id="initiative-box"></div>
       </section>
 
       <section class="dsec" id="sec-memory">

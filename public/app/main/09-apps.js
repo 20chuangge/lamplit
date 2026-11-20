@@ -21,6 +21,7 @@ async function loadMcp() {
   mcpUi.apps = cat.apps || [];
   renderMcp();
   fillMcpPresets();
+  loadXCard().catch(() => { /* older server: no X card */ });
 }
 
 function mcpLines(text) {

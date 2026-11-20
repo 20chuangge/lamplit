@@ -38,6 +38,7 @@ export const MAX_PASS_HOPS = 8;
 const SELF_TAG = os.hostname();
 import { listVault, revealVault } from './vault.mjs';
 import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
+import { planAdjust, botPatchOf } from './adjust.mjs';
 import { runWinUi, WINUI_ACTIONS } from './winui.mjs';
 import { createPhone, findAdb, appLabel, PHONE_ACTIONS, PHONE_LOOK_ACTIONS, SENSITIVE_TAP, phoneStepKind, PHONE_KIND_LABEL } from './phone.mjs';
 import { CLI_AGENTS, CLI_AGENT_IDS, newTaskDir, runCliAgent } from './cliagents.mjs';
@@ -931,8 +932,18 @@ export function createRegistry(deps) {
   add({
     name: 'http_fetch',
     description:
-      'HTTP GET/POST a public URL. Private networks (localhost, 10/8, 192.168/16, 172.16/12, link-local) are blocked unless ALLOW_PRIVATE=1.',
+      'HTTP GET/POST a public URL. Private networks (localhost, 10/8, 192.168/16, 172.16/12, link-local) are blocked unless ALLOW_PRIVATE=1. A POST to the internet sends something out: the human sees it as a draft first.',
     risk: RISK.MEDIUM,
+    // The outgoing gate (1.5.45): a POST to an address on the internet (a webhook, a form) goes out.
+    outgoing: {
+      channel: (a) => { try { return new URL(String(a.url)).hostname; } catch { return '网址'; } },
+      when: (a) => {
+        if (String(a.method || 'GET').toUpperCase() === 'GET') return false;
+        try { return !isPrivateHost(new URL(String(a.url)).hostname); } catch { return false; }
+      },
+      kind: 'webhook',
+      fields: [{ key: 'body', label: '发出去的内容', multiline: true }],
+    },
     parameters: {
       type: 'object',
       properties: {
@@ -1530,6 +1541,8 @@ export function createRegistry(deps) {
       || list.find((b) => String(b.name).toLowerCase().includes(want));
     if (!target) throw toolError('BOT_NOT_FOUND', `「${peer.name}」上没有「${args.botId}」；那台机器上有：${list.map((b) => `${b.name}（${b.id}）`).join('、')}`);
     budget.left -= 1;
+    // The machine's profile learns what runs there (1.5.45).
+    await deps.getMachineNotes?.()?.noteRan?.(peer.name, { bot: target.name, task: String(args.text || '') }).catch?.(() => {});
     // Chain entries from this machine carry this machine's tag, so the other
     // side can tell its own bots from ours.
     const chain = (Array.isArray(ctx.chain) && ctx.chain.length ? ctx.chain : [ctx.bot.id]).map((c) => (c.includes('@') ? c : `${c}@${SELF_TAG}`));
@@ -2442,13 +2455,31 @@ export function createRegistry(deps) {
   // the task when it is back.
   add({
     name: 'machine_switch',
-    description: 'Hand a task to another of the human\'s machines: its main assistant does it there. The window stays where it is - the human sees that assistant in the sidebar under the machine\'s name and can open its chat from here; tell them in one sentence where it went. Use this instead of SSH when the human asks for something on another of their machines. machine is a name from machine_list; task is the full instruction for the assistant over there (it does not see this conversation). If that machine is off, the task waits and is sent when it is back.',
+    description: 'Hand a task to another of the human\'s machines: its main assistant does it there, or the bot you name there (bot: its name or id from the machine list in your instructions or bot_list). The window stays where it is - the human sees that bot in the sidebar under the machine\'s name and can open its chat from here; tell them in one sentence where it went and why. Use this instead of SSH. machine is a name from machine_list; task is the full instruction (it does not see this conversation). If that machine is off, the task waits and is sent when it is back. The first hand-off to a machine shows the human a card; after their yes the next ones go without one.',
     risk: RISK.MEDIUM,
+    // The first hand-off to a machine (1.5.45): the human says yes once (their choice, 2026-11-20).
+    escalate: async (args) => {
+      const notes = deps.getMachineNotes?.();
+      const peer = deps.getPeers?.()?.find?.(String(args?.machine || '').trim());
+      if (!notes || !peer || !String(args?.task || '').trim()) return null;
+      await notes.load?.();
+      if (notes.get(peer.name)?.confirmed) return null;
+      const who = String(args?.bot || '').trim();
+      const why = String(args?.why || '').trim().replace(/[。.]+$/, '').slice(0, 120);
+      return {
+        risk: RISK.HIGH,
+        alwaysAsk: true,
+        reason: `第一次把事情交给「${peer.name}」${who ? `上的「${who}」` : '上的主助理'}${why ? `（${why}）` : ''}`,
+        handoff: { machine: peer.name, bot: who, task: String(args.task).slice(0, 300) },
+      };
+    },
     parameters: {
       type: 'object',
       properties: {
         machine: { type: 'string', description: 'Machine name or address from machine_list.' },
-        task: { type: 'string', description: 'Complete instruction for that machine\'s assistant.' },
+        bot: { type: 'string', description: 'Optional: the bot on that machine to give it to (name or id). Default: its main assistant.' },
+        task: { type: 'string', description: 'Complete instruction for that bot.' },
+        why: { type: 'string', description: 'One short reason this machine and bot fit (shown to the human the first time).' },
       },
       required: ['machine'],
       additionalProperties: false,
@@ -2469,16 +2500,295 @@ export function createRegistry(deps) {
       }
       const task = String(args?.task || '').trim();
       if (!task) return { ok: true, machine: peer.name, handedOff: false, note: 'Nothing handed over (no task). The window stays where it is; the human finds that machine\'s assistants in the sidebar under its name.' };
+      // A bot over there by name or id (1.5.45); else its main assistant.
+      let target = null;
+      const wantBot = String(args?.bot || '').trim().toLowerCase();
+      if (wantBot) {
+        const there = ((await roster.list?.().catch(() => [])) || []).find((m) => m.machine === peer.name)?.bots || [];
+        target = there.find((b) => String(b.id).toLowerCase() === wantBot) || there.find((b) => String(b.name).toLowerCase() === wantBot)
+          || there.find((b) => String(b.name).toLowerCase().includes(wantBot)) || null;
+        if (!target && there.length) throw toolError('BOT_NOT_FOUND', `「${peer.name}」上没有「${args.bot}」；那台上有：${there.map((b) => `${b.name}（${b.id}）`).join('、')}`);
+      }
       let out;
       try {
-        out = await roster.deliver({ machine: peer.name, botId: roster.primaryOf(peer.name), text: task, from: { botId: ctx.bot?.id || '', name: ctx.bot?.name || '' } });
+        out = await roster.deliver({ machine: peer.name, botId: target?.id || roster.primaryOf(peer.name), text: task, from: { botId: ctx.bot?.id || '', name: ctx.bot?.name || '' } });
       } catch (err) {
         throw toolError(err.code || 'PEER_ERROR', err.message);
       }
+      // A hand-off that went through (asked about once, or already agreed): that machine is agreed, and it ran this.
+      await deps.getMachineNotes?.()?.confirm?.(peer.name).catch?.(() => {});
+      await deps.getMachineNotes?.()?.noteRan?.(peer.name, { bot: target?.name || '', task }).catch?.(() => {});
+      const whom = target ? `「${target.name}」 on "${peer.name}"` : `the main assistant on "${peer.name}"`;
       if (out.queued) {
-        return { ok: true, machine: peer.name, handedOff: false, queued: true, note: `That machine is off. The task waits here and is sent when it is back. Tell the human in their words: ${out.message}` };
+        return { ok: true, machine: peer.name, ...(target ? { bot: target.name } : {}), handedOff: false, queued: true, note: `That machine is off. The task waits here and is sent when it is back. Tell the human in their words: ${out.message}` };
       }
-      return { ok: true, machine: peer.name, handedOff: true, note: `Handed to the main assistant on "${peer.name}". The window stays here: the human sees it in the sidebar under "${peer.name}". Say so in one sentence; do not do the task yourself.` };
+      return { ok: true, machine: peer.name, ...(target ? { bot: target.name } : {}), handedOff: true, note: `Handed to ${whom}. The window stays here: the human sees it in the sidebar under "${peer.name}". Tell them in one sentence where it went and why; do not do the task yourself.` };
+    },
+  });
+
+  // 1.5.45 the initiative layer: a bot comes back by itself, or watches a folder.
+  add({
+    name: 'follow_up',
+    description: 'Come back to something later by yourself: at that time you get a short turn of your own with this note, look at how it is, and tell the human only if there is something new (「明天提醒他看结果」「两小时后看看部署好了没有」). Give the time as inMinutes or at (local "YYYY-MM-DD HH:MM"). Say in one line when you will look again.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        inMinutes: { type: 'number', description: 'Minutes from now.' },
+        at: { type: 'string', description: 'Local time "YYYY-MM-DD HH:MM" (instead of inMinutes).' },
+        about: { type: 'string', description: 'What to look at then, in a sentence - you will read it then without this conversation. The human sees it as 「约好的回头看：…」: write it to them, in their language (「看看筛岗结果出来没有，出来了告诉你前三名」).' },
+      },
+      required: ['about'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const layer = deps.getInitiative?.();
+      if (!layer) throw toolError('INITIATIVE_UNAVAILABLE', 'follow-ups are not available here');
+      let when = NaN;
+      if (args?.inMinutes !== undefined) when = Date.now() + Math.max(1, Number(args.inMinutes)) * 60000;
+      else if (args?.at) {
+        const m = /^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})$/.exec(String(args.at).trim());
+        if (m) when = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime();
+      }
+      if (!Number.isFinite(when)) throw toolError('FOLLOWUP_BAD_TIME', 'give inMinutes, or at as "YYYY-MM-DD HH:MM"');
+      if (when > Date.now() + 90 * 24 * 3600 * 1000) throw toolError('FOLLOWUP_TOO_FAR', 'at most 90 days ahead; for something regular make a routine');
+      const f = await deps.getInitiative().addFollowUp({ botId: ctx.bot?.id, at: when, about: String(args?.about || ''), by: ctx.bot?.id || '' });
+      const d = new Date(when);
+      return { ok: true, id: f.id, at: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`, tell: 'Say in one line when you will look again.' };
+    },
+  });
+
+  add({
+    name: 'watch_folder',
+    description: 'Watch a folder in the workspace: when a new file appears there you get a short turn of your own with the file names and this note (「新的简历放进 inbox/ 就打分」). Files already there do not count. At most 5 folders per bot.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Folder relative to the workspace.' },
+        about: { type: 'string', description: 'What to do with a new file there.' },
+      },
+      required: ['path', 'about'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const layer = deps.getInitiative?.();
+      if (!layer) throw toolError('INITIATIVE_UNAVAILABLE', 'watching folders is not available here');
+      const r = resolvePath(ctx.workspaceDir, args?.path);
+      if (!r.inWorkspace) throw toolError('WATCH_OUTSIDE', 'only folders inside the workspace can be watched');
+      const w = await layer.addWatch({ botId: ctx.bot?.id, path: r.rel || '.', about: String(args?.about || '') });
+      return { ok: true, id: w.id, path: w.path, tell: 'Say in one line which folder you watch and what you will do.' };
+    },
+  });
+
+  // 1.5.45 第四步「替你想」: what each machine is good for.
+  add({
+    name: 'machine_note',
+    description: 'Save what one of the human\'s machines is good for, in one short line (「一直开着，跑发布和筛岗」). Use it when the human says what a machine is for, or corrects your pick. The line is in your machine list from then on, and the human sees it under that machine in 设置 → 机器.',
+    risk: RISK.LOW,
+    parameters: {
+      type: 'object',
+      properties: {
+        machine: { type: 'string', description: 'Machine name (this one too).' },
+        note: { type: 'string', description: 'One short line in the human\'s language: what it is good for.' },
+      },
+      required: ['machine', 'note'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const notes = deps.getMachineNotes?.();
+      if (!notes) throw toolError('NOTES_UNAVAILABLE', 'machine notes are not available here');
+      const here = String(deps.getRoster?.()?.selfName?.() || '').trim();
+      const wanted = String(args?.machine || '').trim();
+      const peer = deps.getPeers?.()?.find?.(wanted);
+      const name = peer?.name || (here && (wanted === here || wanted === '本机' || wanted === '这台') ? here : '');
+      if (!name) throw toolError('MACHINE_NOT_FOUND', `no machine "${wanted}"; known: ${[here, ...(deps.getPeers?.()?.list?.() || []).map((p) => p.name)].filter(Boolean).join(', ') || 'none'}`);
+      const saved = await notes.set(name, args?.note, 'assistant');
+      return { ok: true, machine: name, note: saved?.note || '', tell: 'Say in one sentence what you noted for which machine.' };
+    },
+  });
+
+  // 1.5.45: posting on X with the human's own developer app; every post is a draft card first.
+  add({
+    name: 'x_post',
+    description: 'Post on X (Twitter) as the human, or reply to a post (replyTo: its link or id). The human sees it first as a draft card they can edit; it goes out only when they press 「发送」, and what goes out is what they left in the box. One call per post or reply; at most 280 characters. If they turned it down, do not post it another way.',
+    risk: RISK.HIGH,
+    // The first channel on the outgoing gate, marked like any other.
+    outgoing: {
+      channel: 'X',
+      replyKey: 'replyTo',
+      replyUrl: (id) => `https://x.com/i/status/${id}`,
+      contextKey: 'context',
+      fields: [{ key: 'text', label: '正文', multiline: true, max: 280 }],
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The post (or reply), as it should appear.' },
+        replyTo: { type: 'string', description: 'Optional: the post this answers - its x.com link or id.' },
+        context: { type: 'string', description: 'Optional, for a reply: one line on what the other post said, so the human sees what is answered.' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const x = deps.getXAccount?.();
+      if (!x) throw toolError('X_NOT_CONNECTED', '还没有连上 X：到「设置 → 连接应用 → X」连一下。');
+      try {
+        const posted = await x.post({ text: args?.text, replyTo: args?.replyTo });
+        return { posted: true, url: posted.url, id: posted.id, tell: 'Tell the human it is posted and give the link as [打开这条](url).' };
+      } catch (err) {
+        throw toolError(err.code || 'X_POST_FAILED', err.message);
+      }
+    },
+  });
+
+  add({
+    name: 'post_draft',
+    // Publishing through the browser or the phone: the same gate.
+    outgoing: {
+      channel: (a) => String(a.channel || '外部平台'),
+      filesKey: 'files',
+      fields: [{ key: 'title', label: '标题', optional: true }, { key: 'body', label: '正文', multiline: true }],
+    },
+    description: 'Before you publish or send anything outside through the browser or the phone (小红书, 抖音, B站, 公众号, 微博, a comment, a message to someone), show the human the draft: a card where they can edit the title and text. Wait for it. When they press 「发送」 you get back the final text: publish exactly that, word for word. When they turn it down, do not publish it. (Mail, X and connected apps already show their own draft card: no need there.)',
+    risk: RISK.HIGH,
+    parameters: {
+      type: 'object',
+      properties: {
+        channel: { type: 'string', description: 'Where it goes, in the human\'s words: 小红书, 抖音, 公众号, 微博, 某人的微信 …' },
+        title: { type: 'string', description: 'Optional title.' },
+        body: { type: 'string', description: 'The text as it will be published.' },
+        files: { type: 'array', items: { type: 'string' }, description: 'Optional: workspace paths of the pictures or video that go with it (shown on the card).' },
+      },
+      required: ['channel', 'body'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      return {
+        approved: true,
+        channel: String(args?.channel || ''),
+        ...(args?.title ? { title: String(args.title) } : {}),
+        body: String(args?.body || ''),
+        ...(Array.isArray(args?.files) && args.files.length ? { files: args.files } : {}),
+        instruction: 'The human approved this draft (maybe after editing it). Publish exactly this title and text, word for word - 一字不改 - and nothing else. If publishing fails, say so; do not change the text to make it go.',
+      };
+    },
+  });
+
+  // 1.5.45: one path to change a bot by talking - rules, job, skills, avatar, a routine's time.
+  // Always a card with the change; can be undone. Works on the human's other machines too.
+  async function findAdjustTarget(args, ctx) {
+    const want = String(args?.bot || '').trim();
+    const machine = String(args?.machine || '').trim();
+    const here = String(deps.getRoster?.()?.selfName?.() || '').trim();
+    const peers = deps.getPeers?.();
+    const peer = machine && !(here && machine === here) && machine !== '本机' ? peers?.find?.(machine) : null;
+    if (machine && !peer && !(here && machine === here) && machine !== '本机') throw toolError('MACHINE_NOT_FOUND', `no machine "${machine}"`);
+    const pick = (list) => {
+      const w = want.toLowerCase();
+      return list.find((b) => String(b.id).toLowerCase() === w) || list.find((b) => String(b.name).toLowerCase() === w) || list.find((b) => String(b.name).toLowerCase().includes(w)) || null;
+    };
+    if (peer) {
+      const via = { 'x-lamplit-via': '1' };
+      let list;
+      try { list = await peers.json(peer, 'GET', '/api/bots', { timeoutMs: 8000 }); } catch (err) { throw toolError(err.code || 'PEER_UNREACHABLE', `「${peer.name}」现在连不上，改不了它上面的助手：${err.message}`); }
+      const found = pick((Array.isArray(list) ? list : list?.bots || []).filter((b) => b?.id));
+      if (!found) throw toolError('BOT_NOT_FOUND', `「${peer.name}」上没有「${want}」`);
+      return {
+        machine: peer.name, peer, bot: found,
+        listRoutines: async (botId) => ((await peers.json(peer, 'GET', '/api/routines', { timeoutMs: 8000, headers: via })) || []).filter((r) => r.botId === botId),
+        updateRoutine: async (id, p) => (await peers.json(peer, 'PATCH', `/api/routines/${encodeURIComponent(id)}`, { body: p, headers: via, timeoutMs: 15000 }))?.routine,
+        updateBot: (id, p) => peers.json(peer, 'PATCH', `/api/bots/${encodeURIComponent(id)}`, { body: p, headers: via, timeoutMs: 15000 }),
+      };
+    }
+    const local = (await ctx.bots?.getBot?.(want)) || pick((await ctx.bots?.listBots?.()) || []);
+    if (!local) throw toolError('BOT_NOT_FOUND', `no bot "${want}" on this machine; bot_list shows them (and the other machines' ones)`);
+    const rs = () => { try { return deps.getRoutines?.(); } catch { return null; } };
+    return {
+      machine: '', bot: local,
+      listRoutines: async (botId) => (rs()?.list?.() || []).filter((r) => r.botId === botId),
+      updateRoutine: async (id, p) => rs()?.update?.(id, p),
+      updateBot: (id, p) => {
+        if (typeof ctx.bots?.updateBot !== 'function') throw toolError('BOTS_API_UNAVAILABLE', 'this runtime cannot update bots');
+        return ctx.bots.updateBot(id, p);
+      },
+    };
+  }
+  const adjustChanges = (args) => ({
+    role: args?.role, addRules: args?.addRules, removeRules: args?.removeRules,
+    addSkills: args?.addSkills, removeSkills: args?.removeSkills, avatar: args?.avatar, routine: args?.routine,
+  });
+  async function planFor(t, args) {
+    const routines = args?.routine ? await t.listRoutines(t.bot.id).catch(() => []) : [];
+    return planAdjust(t.bot, adjustChanges(args), { routines });
+  }
+  add({
+    name: 'bot_adjust',
+    description: 'Change a bot because the human said so in words: its job line (role), its rules (addRules / removeRules - read the current ones first with bot_list or from the error), its skills (addSkills / removeSkills), its avatar ({color, shape}) or one of its routines (routine: {name, schedule like "每天 9:00", enabled}). 「让策略以后只看北京的岗位」「文案换成绿色头像」「早报改成 9 点」. Works for bots on the human\'s other machines too (machine). The human always sees a card with the change and can undo it later. For tools / abilities use tool_request.',
+    risk: RISK.HIGH,
+    escalate: async (args, ctx) => {
+      try {
+        const t = await findAdjustTarget(args, ctx);
+        const plan = await planFor(t, args);
+        const name = t.bot.name || t.bot.id;
+        return {
+          risk: RISK.HIGH,
+          alwaysAsk: true,
+          reason: `你说要改「${name}」${t.machine ? `（${t.machine}）` : ''}${args?.summary ? `：${String(args.summary).slice(0, 80)}` : ''}；改助手每次都先问你`,
+          adjust: {
+            machine: t.machine, botId: t.bot.id, botName: name, lines: plan.lines, ...(plan.roleChange ? { roleChange: plan.roleChange } : {}), summary: String(args?.summary || '').slice(0, 200),
+            // The rules as they are now, when rules change: the human sees whether the new one clashes with an old one.
+            ...(plan.lines.some((l) => (l.op === '+' || l.op === '-') && !/^技能：/.test(l.text || '')) ? { rulesNow: String(t.bot.persona || '').replace(/\r/g, '').split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 12).map((x) => x.slice(0, 120)) } : {}),
+          },
+        };
+      } catch {
+        // Nothing to change, no such bot, rule or routine: the run says so in words, without a card.
+        return { risk: RISK.LOW };
+      }
+    },
+    parameters: {
+      type: 'object',
+      properties: {
+        bot: { type: 'string', description: 'The bot: name or id.' },
+        machine: { type: 'string', description: 'Optional: the machine it is on, when not this one.' },
+        role: { type: 'string', description: 'Optional: the new one-line job.' },
+        addRules: { type: 'array', items: { type: 'string' }, description: 'Rules to add, one short line each, in the human\'s language.' },
+        removeRules: { type: 'array', items: { type: 'string' }, description: 'Existing rule lines to remove (exactly as they are now).' },
+        addSkills: { type: 'array', items: { type: 'string' }, description: 'Skills to give it, by name.' },
+        removeSkills: { type: 'array', items: { type: 'string' }, description: 'Skills to take away, by name.' },
+        avatar: { type: 'object', properties: { color: { type: 'string', description: 'Six-digit hex, e.g. "#22c55e".' }, shape: { type: 'string' } }, additionalProperties: false },
+        routine: { type: 'object', description: 'One of its routines, by name: a new time and/or on/off.', properties: { name: { type: 'string' }, schedule: { type: 'string', description: 'e.g. "每天 9:00", "工作日 8:30", "每周五 18:00".' }, enabled: { type: 'boolean' } }, required: ['name'], additionalProperties: false },
+        summary: { type: 'string', description: 'One line on the change, in the human\'s words.' },
+      },
+      required: ['bot'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const t = await findAdjustTarget(args, ctx);
+      let plan;
+      try { plan = await planFor(t, args); } catch (err) { throw toolError(err.code || 'ADJUST_FAILED', err.message); }
+      try {
+        await t.updateBot(t.bot.id, botPatchOf(plan.after));
+        for (const r of plan.after.routines || []) {
+          const saved = await t.updateRoutine(r.id, { schedule: r.schedule, enabled: r.enabled });
+          // Kept as the machine stored it, so undo can tell whether it was changed again since.
+          if (saved?.schedule) r.schedule = String(saved.schedule);
+        }
+      } catch (err) {
+        throw toolError(err.code || 'PEER_ERROR', `没改成：${t.machine ? `「${t.machine}」` : ''}${err.message}`);
+      }
+      const store = deps.getAdjustments?.();
+      const id = store ? await store.record({ machine: t.machine, botId: t.bot.id, botName: t.bot.name || t.bot.id, before: plan.before, after: plan.after, summary: args?.summary, lines: plan.lines, roleChange: plan.roleChange, by: ctx.bot?.id || '' }) : '';
+      return {
+        changed: true,
+        bot: t.bot.name || t.bot.id,
+        ...(t.machine ? { machine: t.machine } : {}),
+        lines: plan.lines,
+        ...(plan.roleChange ? { role: plan.roleChange.to } : {}),
+        ...(id ? { adjustmentId: id } : {}),
+        tell: 'Tell the human in one or two lines what changed. The chat shows 「撤销」 under it; they can also ask you to change it back.',
+      };
     },
   });
 
@@ -2612,6 +2922,10 @@ export function createRegistry(deps) {
     },
     isGranted(bot, name) {
       // Read-only and workspace-only: every bot may look at the images it is sent.
+      // A draft before something goes out through the browser or the phone, coming back later, watching a folder (1.5.45): every bot.
+      if (name === 'post_draft' || name === 'follow_up' || name === 'watch_folder') return true;
+      // Posting on X: the bots the human picked on the X card (1.5.45).
+      if (name === 'x_post') return Boolean(deps.getXAccount?.()?.allows?.(bot?.id));
       if (name === 'task_finish' || name === 'tell_human' || name === 'tool_request' || name === 'page_save' || name === 'briefing_collect' || name === 'image_view' || name === 'image_generate' || name === 'video_generate' || name === 'request_takeover' || name === 'request_login' || name === 'vault_list') return true;
       // Tools of connected MCP servers: Settings → 连接应用 says which bots get them.
       if (name.startsWith('mcp__')) return Boolean(api.mcpGate?.(bot, name));
@@ -2625,6 +2939,9 @@ export function createRegistry(deps) {
       if (name === 'phone_allow' && grants.has('phone')) return true;
       // Who may set up a group may give it a job.
       if (name === 'group_handover' && grants.has('group_create')) return true;
+      // Who may change bots may change one by what the human said (1.5.45); who hands work to machines notes what they are for.
+      if (name === 'bot_adjust' && grants.has('bot_update')) return true;
+      if (name === 'machine_note' && (grants.has('machine_switch') || grants.has('bot_message'))) return true;
       // Who may make routines may change and delete them.
       if ((name === 'routine_update' || name === 'routine_delete') && grants.has('routine_create')) return true;
       return false;

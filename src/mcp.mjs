@@ -698,7 +698,7 @@ export function createMcpManager({
         // "Always allow" or a read-only tool: LOW. Otherwise the agent asks.
         risk: () => ({ risk: readOnly || configs.find((c) => c.id === cfg.id)?.trust === 'always' ? 'LOW' : 'MEDIUM' }),
         parameters: cleanSchema(t.inputSchema),
-        mcp: { serverId: cfg.id, tool: t.name, readOnly },
+        mcp: { serverId: cfg.id, server: cfg.name, tool: t.name, readOnly, ...(t.annotations?.lamplitOutgoing && Array.isArray(t.annotations.lamplitOutgoing.fields) ? { outgoing: t.annotations.lamplitOutgoing } : {}) },
         async run(args, ctx) {
           const l = live.get(cfg.id);
           if (!l || l.state !== 'ready') {

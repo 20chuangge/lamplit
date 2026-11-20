@@ -33,6 +33,7 @@ import {
   readAudit,
   readJsonl,
   readJsonSync,
+  writeJsonAtomic,
   writeJsonSyncAtomic,
   appendJsonl,
   sessionFile,
@@ -94,6 +95,11 @@ import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
 import { createRoster, cleanBotId } from './roster.mjs';
+import { createXAccount, X_DEVELOPER_URL } from './xpost.mjs';
+import { createMachineNotes, suggestNote, machinesPrompt } from './machinenotes.mjs';
+import { createAdjustments, undoAdjust } from './adjust.mjs';
+import { buildNudge } from './nudge.mjs';
+import { createInitiative } from './initiative.mjs';
 import { createTailscale, authKeyProblem, safeLoginUrl } from './tailscale.mjs';
 import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
 import { masterKey, sealSecretFiles } from './store.mjs';
@@ -325,6 +331,30 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
 
   // Reports and dashboards bots make as web pages (the page library).
   refs.pages = createPages({ workspaceDir });
+  // 1.5.45 第四步「替你想」: X with the human's own app (sealed), what each machine is
+  // good for, the changes made to bots by talking (for undo).
+  refs.xAccount = createXAccount({ file: path.join(P.dataDir, 'x-account.json') });
+  await refs.xAccount.load().catch(() => {});
+  refs.machineNotes = createMachineNotes({ file: path.join(P.dataDir, 'machine-notes.json') });
+  await refs.machineNotes.load().catch(() => {});
+  refs.adjustments = createAdjustments({ file: path.join(P.dataDir, 'bot-adjustments.json') });
+  await refs.adjustments.load().catch(() => {});
+  // The initiative layer (1.5.45): when a bot speaks up by itself. Its callbacks reach the hub once it is up.
+  refs.initiative = createInitiative({
+    file: path.join(P.dataDir, 'initiative.json'),
+    bus,
+    primaryId: () => refs.primaryId || 'chief',
+    say: (botId, text, meta) => initiativeSay(refs.state, botId, text, meta),
+    runTurn: (o) => initiativeTurn(refs.state, o),
+    waiting: () => collectWaiting(refs.state),
+    listDir: async (rel) => {
+      const abs = path.resolve(workspaceDir, String(rel || '.'));
+      const inside = abs === path.resolve(workspaceDir) || abs.startsWith(path.resolve(workspaceDir) + path.sep);
+      if (!inside) return [];
+      return (await fsp.readdir(abs, { withFileTypes: true }).catch(() => [])).filter((e) => e.isFile()).map((e) => e.name);
+    },
+  });
+  await refs.initiative.load().catch(() => {});
 
   // The human's phone on this computer (1.3.0): adb where they said, else found.
   // ...and, without the cable, the phone whose Lamplit app has 「让机器人用这部手机」 on (1.4.0).
@@ -356,6 +386,10 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getRoster: () => refs.roster || null,
     getPages: () => refs.pages || null,
     getBriefing: () => refs.collectBriefing || null,
+    getXAccount: () => refs.xAccount || null,
+    getMachineNotes: () => refs.machineNotes || null,
+    getAdjustments: () => refs.adjustments || null,
+    getInitiative: () => refs.initiative || null,
   });
 
   const model = settingsModule.createModelFromSettings(settings, apiKey);
@@ -404,6 +438,10 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       } else if (routine.pushFeishu && report && refs.feishu) {
         await refs.feishu.push(`【${routine.name}】\n${report}`).catch((err) => console.error('[routines] feishu push failed:', err.message));
       }
+      // A run that did not go through (1.5.45): its bot says so, through the initiative layer.
+      if (result && !['success', 'needs_approval', 'cancelled'].includes(result.status)) {
+        refs.initiative?.push({ kind: 'routine_failed', botId: routine.botId, text: `定时任务「${routine.name}」这次没跑成：${String(result.summary || result.status || '').slice(0, 120)}`, key: `routine:${routine.id}:${new Date().toDateString()}` });
+      }
       return { ...result, quiet, report };
     },
   });
@@ -444,6 +482,13 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getApp: () => refs.app,
     getPeers: () => refs.peers || null,
     machineName: () => selfMachineName(),
+    // The main assistant's 「你的机器」 (1.5.45): each machine, whether it answers, what it is good for, its bots.
+    machineBrief: async () => {
+      if (!refs.roster || !refs.peers?.list().length) return [];
+      const roster = await refs.roster.list().catch(() => []);
+      await fillMachineNotes(refs.machineNotes, roster, refs.peers);
+      return machinesPrompt({ notes: refs.machineNotes.all(), roster, here: selfMachineName() });
+    },
   });
   refs.runtime = runtime;
   // tell_human also reaches Feishu when it is connected (push returns 0 when it is not).
@@ -682,6 +727,20 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   });
   state.roster = refs.roster;
   setInterval(() => { refs.roster.flush().catch(() => {}); }, 30000).unref?.();
+  state.xAccount = refs.xAccount;
+  state.machineNotes = refs.machineNotes;
+  state.adjustments = refs.adjustments;
+  state.initiative = refs.initiative;
+  refs.state = state;
+  // The initiative layer, once a minute: the hub's own events, then the daily note, follow-ups,
+  // watched folders and what waits to be said (1.5.45).
+  const initiativeTick = async () => {
+    try { refs.primaryId = (await listBots()).find((x) => x.primary)?.id || state.config.primaryBotId || 'chief'; } catch { /* keep */ }
+    await initiativeEvents(state).catch(() => {});
+    await state.initiative.tick().catch((err) => console.error('[initiative]', err.message));
+  };
+  setTimeout(() => { void initiativeTick(); }, 30000).unref?.();
+  setInterval(() => { void initiativeTick(); }, 60000).unref?.();
   state.phone = refs.phone;
   state.phoneLink = refs.phoneLink;
   state.pages = refs.pages;
@@ -2403,6 +2462,8 @@ route('POST', /^\/api\/machines\/(?<name>[^/]+)\/funnel$/, async (_req, _res, { 
 route('DELETE', /^\/api\/devices\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
   const removed = state.devices.remove(params.id);
   if (!removed) throw httpError(404, 'DEVICE_NOT_FOUND', 'no such device');
+  // What it had open stops now: a chat it was showing gets nothing new (1.5.44 test).
+  closeStreamsOf(params.id);
   state.bus.emit({ type: 'settings.changed', section: 'network' });
   return { ok: true };
 });
@@ -3013,7 +3074,7 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
 });
 
 /** Tool rows the chat shows even with its steps hidden: the human acts on them. */
-const ACTION_CARD_TOOLS = new Set(['request_takeover', 'request_login']);
+const ACTION_CARD_TOOLS = new Set(['request_takeover', 'request_login', 'bot_adjust']);
 
 /** A tool row with its long parts cut to a preview (the steps the chat does not show). */
 export function compactToolItem(item) {
@@ -3864,7 +3925,7 @@ route('PUT', /^\/api\/usage$/, async (_req, _res, { body, state }) => {
 //        (isAuthorityRequest), a call another hub passed on is never passed on
 //        again, and a machine that cannot be reached is said so: nothing is
 //        reported answered that was not.
-const INBOX_FIELDS = ['id', 'turnId', 'botId', 'toolName', 'args', 'risk', 'reason', 'status', 'createdAt', 'unattended', 'restored', 'remember', 'batch', 'lookTurn', 'look'];
+const INBOX_FIELDS = ['id', 'turnId', 'botId', 'toolName', 'args', 'risk', 'reason', 'status', 'createdAt', 'unattended', 'restored', 'remember', 'batch', 'lookTurn', 'look', 'draft', 'adjust', 'handoff'];
 const inboxNames = new Map(); // machine -> {at, names:{botId:name}}
 async function peerBotNames(state, peer) {
   const hit = inboxNames.get(peer.name);
@@ -3883,7 +3944,8 @@ function exactPeer(state, raw) {
   try { name = decodeURIComponent(name); } catch { /* as it came */ }
   return state.peers.list().some((p) => p.name === name) ? state.peers.find(name) : null;
 }
-route('GET', /^\/api\/inbox$/, async (_req, _res, { state }) => {
+route('GET', /^\/api\/inbox$/, async (_req, _res, { state }) => collectInbox(state));
+async function collectInbox(state) {
   const items = [];
   const missing = [];
   await Promise.all(state.peers.list().map(async ({ name }) => {
@@ -3902,7 +3964,7 @@ route('GET', /^\/api\/inbox$/, async (_req, _res, { state }) => {
   items.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   missing.sort();
   return { items, missing };
-});
+}
 route('POST', /^\/api\/inbox\/(?<machine>[^/]+)\/(?<id>[^/]+)$/, async (req, _res, { params, body, state }) => {
   if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的批准不会再转给第三台机器');
   const peer = exactPeer(state, params.machine);
@@ -3912,7 +3974,11 @@ route('POST', /^\/api\/inbox\/(?<machine>[^/]+)\/(?<id>[^/]+)$/, async (req, _re
   let id = String(params.id);
   try { id = decodeURIComponent(id); } catch { /* as it came */ }
   const here = selfMachineName();
-  const forward = { decision, note: String(body?.note || '').slice(0, 500), ...(body?.always === true ? { always: true } : {}), via: { machine: here } };
+  // The human's edits to a draft over there (1.5.45): only text, only for the card's own fields (that machine checks them again).
+  const edits = body?.edits && typeof body.edits === 'object' && !Array.isArray(body.edits)
+    ? Object.fromEntries(Object.entries(body.edits).filter(([k, v]) => typeof k === 'string' && k.length <= 80 && typeof v === 'string').slice(0, 8).map(([k, v]) => [k, v.slice(0, 20000)]))
+    : null;
+  const forward = { decision, note: String(body?.note || '').slice(0, 500), ...(body?.always === true ? { always: true } : {}), ...(edits && Object.keys(edits).length ? { edits } : {}), via: { machine: here } };
   let out = null;
   let failure = null;
   try {
@@ -3925,6 +3991,7 @@ route('POST', /^\/api\/inbox\/(?<machine>[^/]+)\/(?<id>[^/]+)$/, async (req, _re
     const code = failure.code || 'PEER_ERROR';
     if (code === 'APPROVAL_CONFLICT') throw httpError(409, code, failure.message);
     if (code === 'APPROVAL_NOT_FOUND') throw httpError(404, code, `「${peer.name}」上已经没有这张卡了（可能已经处理过，或者那台机器重启过）`);
+    if (code === 'DRAFT_INVALID') throw httpError(400, code, failure.message);
     if (code === 'LOCAL_KEY_REQUIRED') throw httpError(502, code, `「${peer.name}」没有接受从这台转过去的批准（那台的 Lamplit 可能需要更新），这一步没有批。`);
     if (code === 'PEER_UNAUTHORIZED') throw httpError(502, code, `「${peer.name}」不认这台机器的凭据，这一步没有批。在 Lamplit 应用的「机器」里重新配对那台机器后再试。`);
     throw httpError(502, 'PEER_UNREACHABLE', `连不上「${peer.name}」，这一步没有批，它那边还在等你。那台机器连上后再点一次。`);
@@ -3932,6 +3999,270 @@ route('POST', /^\/api\/inbox\/(?<machine>[^/]+)\/(?<id>[^/]+)$/, async (req, _re
   state.bus.emit({ type: 'inbox.changed', machine: peer.name, approvalId: id, status: out?.approval?.status || '' });
   return { machine: peer.name, ...out };
 });
+
+// --- 第四步「替你想」 (1.5.45) ------------------------------------------------------
+// Open live streams by the paired device that holds them: removing the device ends them.
+const deviceStreams = new Map(); // deviceId -> Set(res)
+function trackStream(req, res) {
+  const id = req.auth?.deviceId;
+  if (!id) return;
+  if (!deviceStreams.has(id)) deviceStreams.set(id, new Set());
+  deviceStreams.get(id).add(res);
+  res.on('close', () => { deviceStreams.get(id)?.delete(res); if (!deviceStreams.get(id)?.size) deviceStreams.delete(id); });
+}
+export function closeStreamsOf(deviceId) {
+  for (const res of deviceStreams.get(deviceId) || []) { try { res.destroy(); } catch { /* gone */ } }
+  deviceStreams.delete(deviceId);
+}
+
+// X with the human's own developer app.
+//   GET    /api/x            -> {configured, connected, username, bots, callback, developerUrl} (never a key or token)
+//   PUT    /api/x/app        {clientId, clientSecret?}       the human's (isAuthorityRequest)
+//   POST   /api/x/login      -> {url}  X's own sign-in page  the human's
+//   GET    /api/x/callback   X sends the browser back here (no session; the one-time state is the check)
+//   PUT    /api/x/bots       {bots:[id]} who may post        the human's
+//   DELETE /api/x            sign out here (?forget=1 also forgets the app)
+const xCallback = (state) => `http://127.0.0.1:${state.port}/api/x/callback`;
+const xView = (state) => ({ ...state.xAccount.view(), callback: xCallback(state), developerUrl: X_DEVELOPER_URL });
+route('GET', /^\/api\/x$/, async (_req, _res, { state }) => xView(state));
+route('PUT', /^\/api\/x\/app$/, async (_req, _res, { body, state }) => {
+  try { await state.xAccount.setApp({ clientId: body?.clientId, clientSecret: body?.clientSecret }); } catch (err) { throw httpError(err.status || 400, err.code || 'X_BAD_APP', err.message); }
+  await audit({ kind: 'x.app', withSecret: Boolean(body?.clientSecret) });
+  state.bus.emit({ type: 'settings.changed', section: 'x' });
+  return xView(state);
+});
+route('POST', /^\/api\/x\/login$/, async (_req, _res, { state }) => {
+  try { return await state.xAccount.beginLogin({ redirectUri: xCallback(state) }); } catch (err) { throw httpError(err.status || 400, err.code || 'X_LOGIN', err.message); }
+});
+route('GET', /^\/api\/x\/callback$/, async (_req, res, { state, query }) => {
+  let out;
+  try {
+    const r = await state.xAccount.finishLogin({ state: query.get('state'), code: query.get('code'), error: query.get('error') });
+    out = { ok: true, title: r.username ? `已连接 X：@${r.username}` : '已连接 X', text: '可以关掉这个页面，回到 Lamplit。助手要发帖时，会先给你一张能改的草稿卡，你点「发送」才发。' };
+    await audit({ kind: 'x.connected' });
+  } catch (err) {
+    out = { ok: false, title: '没有连上 X', text: err.code && /^X_/.test(err.code) ? err.message : '登录没有完成。回到 Lamplit 重新点「去 X 登录授权」。' };
+  }
+  state.bus.emit({ type: 'settings.changed', section: 'x' });
+  const esc = (t) => String(t || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  res.writeHead(out.ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+  res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/icons/icon-32.png"><title>${esc(out.title)}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;line-height:1.6;color:#222"><h2>${esc(out.title)}</h2><p>${esc(out.text)}</p></body>`);
+  return undefined;
+});
+route('PUT', /^\/api\/x\/bots$/, async (_req, _res, { body, state }) => {
+  const ids = new Set((await listBots()).map((b) => b.id));
+  await state.xAccount.setBots((Array.isArray(body?.bots) ? body.bots : []).filter((id) => ids.has(id)));
+  state.bus.emit({ type: 'settings.changed', section: 'x' });
+  return xView(state);
+});
+route('DELETE', /^\/api\/x$/, async (_req, _res, { query, state }) => {
+  await state.xAccount.disconnect({ forgetApp: query.get('forget') === '1' });
+  await audit({ kind: 'x.disconnected' });
+  state.bus.emit({ type: 'settings.changed', section: 'x' });
+  return xView(state);
+});
+
+// What each machine is good for.
+//   GET /api/machine-notes -> {notes:{machine:{note, by, confirmed?}}, here}
+//   PUT /api/machine-notes {machine, note}   the human's words (empty: written from what is known again)
+/** Machines without a line get one written from their bots (never over the human's). */
+let peersForNotes = null;
+const refsPeerByName = (name) => (peersForNotes?.list?.() || []).find((p) => p.name === name) || null;
+async function fillMachineNotes(notes, roster, peers = null) {
+  if (peers) peersForNotes = peers;
+  if (!notes) return;
+  for (const m of roster || []) {
+    if (notes.get(m.machine)?.by && notes.get(m.machine).by !== 'auto') continue;
+    if (!(m.bots || []).length) continue;
+    await notes.autoFill(m.machine, suggestNote({ bots: m.bots, alwaysOn: /云|服务器|server|cloud|vps|ubuntu|linux|主机/i.test(m.machine) }));
+  }
+  // The facts of each profile: always on (a server's name says so), how it is reached.
+  for (const m of roster || []) {
+    const peer = refsPeerByName(m.machine);
+    await notes.setFacts(m.machine, {
+      ...(/云|服务器|server|cloud|vps|ubuntu|linux|主机/i.test(m.machine) ? { alwaysOn: true, kind: 'bots' } : {}),
+      ...(peer ? { reach: peer.tailnetUrl ? 'Tailscale' : '局域网或直连' } : {}),
+    }).catch(() => {});
+  }
+  // This machine too: the human's own computer has their files; one given to the bots stays on.
+  const here = selfMachineName();
+  if (here && !(notes.get(here)?.by && notes.get(here).by !== 'auto')) {
+    const remote = process.env.DESK_MACHINE_MODE === 'remote';
+    await notes.autoFill(here, suggestNote({ bots: await listBots().catch(() => []), alwaysOn: remote, personal: !remote }));
+  }
+  if (here) await notes.setFacts(here, { alwaysOn: process.env.DESK_MACHINE_MODE === 'remote', kind: process.env.DESK_MACHINE_MODE === 'remote' ? 'bots' : 'yours' }).catch(() => {});
+}
+route('GET', /^\/api\/machine-notes$/, async (_req, _res, { state }) => {
+  await fillMachineNotes(state.machineNotes, await state.roster.list().catch(() => []), state.peers);
+  return { notes: state.machineNotes.all(), here: selfMachineName() };
+});
+route('PUT', /^\/api\/machine-notes$/, async (_req, _res, { body, state }) => {
+  const machine = String(body?.machine || '').trim();
+  if (!machine) throw httpError(400, 'MACHINE_REQUIRED', 'body needs {machine, note}');
+  const saved = await state.machineNotes.set(machine, body?.note, 'human');
+  state.bus.emit({ type: 'settings.changed', section: 'machines' });
+  return { machine, note: saved, notes: state.machineNotes.all() };
+});
+
+// A change made to a bot by talking: the list, and undo (the human's).
+//   GET  /api/adjustments -> {items}
+//   POST /api/adjustments/:id/undo -> {ok, adjustment}
+route('GET', /^\/api\/adjustments$/, async (_req, _res, { state }) => ({ items: state.adjustments.list().slice(0, 20) }));
+route('POST', /^\/api\/adjustments\/(?<id>[^/]+)\/undo$/, async (req, _res, { params, state }) => {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const a = state.adjustments.get(params.id);
+  if (!a) throw httpError(404, 'ADJUST_NOT_FOUND', '找不到这次修改了（只留最近 50 次）。');
+  const peer = a.machine ? exactPeer(state, a.machine) : null;
+  if (a.machine && !peer) throw httpError(404, 'PEER_NOT_FOUND', `没有「${a.machine}」这台机器了，没法撤销。`);
+  const where = peer
+    ? {
+      getBot: async (id) => (await passOn(state, peer, 'GET', `/api/bots/${encodeURIComponent(id)}`))?.bot || null,
+      updateBot: (id, patch) => passOn(state, peer, 'PATCH', `/api/bots/${encodeURIComponent(id)}`, { body: patch }),
+      listRoutines: async (botId) => ((await passOn(state, peer, 'GET', '/api/routines')) || []).filter((r) => r.botId === botId),
+      updateRoutine: (id, patch) => passOn(state, peer, 'PATCH', `/api/routines/${encodeURIComponent(id)}`, { body: patch }),
+    }
+    : {
+      getBot,
+      updateBot,
+      listRoutines: async (botId) => state.routines.list().filter((r) => r.botId === botId),
+      updateRoutine: (id, patch) => state.routines.update(id, patch),
+    };
+  let out;
+  try { out = await undoAdjust(state.adjustments, params.id, where); } catch (err) {
+    if (err.code === 'PEER_UNREACHABLE' || err.code === 'PEER_PROXY_ERROR') throw httpError(502, 'PEER_UNREACHABLE', `「${a.machine}」现在连不上，没有撤销。连上后再点一次。`);
+    throw httpError(err.status || 400, err.code || 'ADJUST_FAILED', err.message);
+  }
+  await audit({ kind: 'bot.adjust_undone', botId: a.botId, machine: a.machine || null, adjustmentId: a.id });
+  if (!peer) state.bus.emit({ type: 'roster.changed', scope: 'bots', action: 'update', botId: a.botId });
+  return out;
+});
+
+// The initiative layer (1.5.45, 「要可复用的呀」): one place for when a bot speaks up.
+//   GET  /api/initiative -> {…settings, followUps, watches}
+//   PUT  /api/initiative {bots?, quiet?, maxPerDay?, notify?, events?, cardWaitMinutes?, daily?}   the human's
+//   GET  /api/nudge, PUT /api/nudge {enabled?, time?}   the daily note's part of it (kept for older pages)
+//   GET  /api/nudge/preview -> {text}  what the daily note would say now ('' when nothing waits)
+const initiativeView = (state) => ({ ...state.initiative.settings(), followUps: state.initiative.followUps().filter((f) => !f.done), watches: state.initiative.watches() });
+route('GET', /^\/api\/initiative$/, async (_req, _res, { state }) => initiativeView(state));
+route('PUT', /^\/api\/initiative$/, async (_req, _res, { body, state }) => {
+  try { await state.initiative.update(body || {}); } catch (err) { throw httpError(err.status || 400, err.code || 'INITIATIVE_BAD', err.message); }
+  state.bus.emit({ type: 'settings.changed', section: 'initiative' });
+  return initiativeView(state);
+});
+route('DELETE', /^\/api\/initiative\/(?<kind>followups|watches)\/(?<id>[^/]+)$/, async (_req, _res, { params, state }) => {
+  if (params.kind === 'followups') await state.initiative.cancelFollowUp(params.id);
+  else await state.initiative.removeWatch(params.id);
+  return initiativeView(state);
+});
+route('GET', /^\/api\/nudge$/, async (_req, _res, { state }) => ({ ...state.initiative.settings().daily }));
+route('PUT', /^\/api\/nudge$/, async (_req, _res, { body, state }) => {
+  const daily = {};
+  if (typeof body?.enabled === 'boolean') daily.enabled = body.enabled;
+  if (body?.time !== undefined) daily.time = body.time;
+  try { await state.initiative.update({ daily }); } catch (err) { throw httpError(400, err.code || 'NUDGE_BAD_TIME', err.message); }
+  state.bus.emit({ type: 'settings.changed', section: 'initiative' });
+  return { ...state.initiative.settings().daily };
+});
+route('GET', /^\/api\/nudge\/preview$/, async (_req, _res, { state }) => ({ text: buildNudge(await collectWaiting(state)) }));
+
+/** One line for a card: what it asks, in plain words. */
+function cardWhat(c) {
+  if (c.draft) return `发${c.draft.channel === '邮件' ? '一封邮件' : `到${c.draft.channel}`}`;
+  if (c.adjust) return `改「${c.adjust.botName}」`;
+  if (c.handoff) return `把事情交给「${c.handoff.machine}」`;
+  if (c.toolName === 'shell') return '运行一条命令';
+  return toolWords(c.toolName) || '一个操作';
+}
+
+/** What is waiting for the human right now, on every machine: the daily note's facts. */
+async function collectWaiting(state) {
+  const byId = new Map((await listBots()).map((b) => [b.id, b]));
+  const primary = [...byId.values()].find((b) => b.primary)?.id || state.config.primaryBotId || 'chief';
+  const cards = state.approvals.list({ status: 'pending' }).map((c) => ({ botName: byId.get(c.botId)?.name || '助手', what: cardWhat(c) }));
+  const inbox = state.peers.list().length ? await collectInbox(state).catch(() => ({ items: [] })) : { items: [] };
+  for (const c of inbox.items) cards.push({ machine: c.machine, botName: c.botName || '助手', what: cardWhat(c) });
+  const unread = [];
+  const snap = state.attention.snapshot();
+  for (const [key, item] of Object.entries(snap.items || {})) {
+    if (!item.unread || item.working || item.needsYou) continue;
+    const m = /^bot:(.+)$/.exec(key);
+    if (m && m[1] !== primary && byId.has(m[1])) unread.push({ name: byId.get(m[1]).name });
+  }
+  const roster = state.peers.list().length ? await state.roster.list().catch(() => []) : [];
+  for (const r of roster) {
+    for (const [key, item] of Object.entries(r.attention || {})) {
+      if (!item.unread || item.working || item.needsYou) continue;
+      const m = /^bot:(.+)@/.exec(key);
+      const b = m && (r.bots || []).find((x) => x.id === m[1]);
+      if (b && !b.primary) unread.push({ machine: r.machine, name: b.name });
+    }
+  }
+  const queued = Object.entries((await state.roster.outbox.list().catch(() => [])).reduce((acc, i) => ({ ...acc, [i.machine]: (acc[i.machine] || 0) + 1 }), {})).map(([machine, count]) => ({ machine, count }));
+  return { cards, unread, queued };
+}
+
+/** A bot speaks up: a message in its chat (the sidebar marks it), and a notification where a window is open. */
+async function initiativeSay(state, botId, text, { kind = '', notify = true } = {}) {
+  const bot = await getBot(botId).catch(() => null);
+  if (!bot) return;
+  const turnId = uid('nudge');
+  const ts = nowIso();
+  await state.runtime.record(bot.id, { kind: 'assistant', text, turnId, source: 'nudge', final: true });
+  state.bus.emit({ type: 'message', botId: bot.id, botName: bot.name, turnId, text, final: true, source: 'nudge', ts });
+  state.bus.emit({ type: 'turn.end', botId: bot.id, botName: bot.name, turnId, status: 'success', source: 'nudge', ts });
+  if (notify) state.bus.emit({ type: 'initiative.say', botId: bot.id, botName: bot.name, text: String(text).split('\n').slice(0, 3).join(' ').slice(0, 200), kind, ts });
+  await audit({ kind: 'initiative.said', botId: bot.id, what: kind, lines: String(text).split('\n').length });
+}
+
+/** A follow-up or a watched folder: a short turn of that bot; nothing new, nothing shown as new. */
+async function initiativeTurn(state, { botId, text, source }) {
+  const NO_CHANGE = /^[「"]?(没有变化|无变化|NO_CHANGE)[」"]?[。.!！]?$/i;
+  const texts = [];
+  const turnId = uid('turn');
+  const off = state.bus.subscribe((ev) => { if (ev.turnId === turnId && ev.type === 'message' && ev.final && ev.text) texts.push(String(ev.text)); });
+  try {
+    const result = await state.runtime.runTurn({ botId, text, source, turnId });
+    if (NO_CHANGE.test(texts.join('\n').trim())) state.attention.quiet(`bot:${botId}`);
+    else if (texts.length && state.initiative.settings().notify) {
+      const bot = await getBot(botId).catch(() => null);
+      state.bus.emit({ type: 'initiative.say', botId, botName: bot?.name || '', text: texts.join(' ').slice(0, 200), kind: source, ts: nowIso() });
+    }
+    return result;
+  } finally { off(); }
+}
+
+/** Events only the hub sees, checked once a minute: cards waiting long, machines back. */
+const machineWasOnline = new Map();
+let lastCardCheck = 0;
+async function initiativeEvents(state) {
+  const s = state.initiative.settings();
+  const now = Date.now();
+  // A card waiting longer than the human set (every 5 minutes; the other machines' too).
+  if (s.events.card_waiting && now - lastCardCheck > 5 * 60 * 1000) {
+    lastCardCheck = now;
+    const byId = new Map((await listBots()).map((b) => [b.id, b]));
+    const old = (c) => now - Date.parse(c.createdAt || 0) > s.cardWaitMinutes * 60 * 1000;
+    const cards = state.approvals.list({ status: 'pending' }).filter(old).map((c) => ({ id: c.id, who: byId.get(c.botId)?.name || '助手', what: cardWhat(c) }));
+    if (state.peers.list().length) {
+      const inbox = await collectInbox(state).catch(() => ({ items: [] }));
+      for (const c of inbox.items.filter(old)) cards.push({ id: `${c.machine}|${c.id}`, who: `${c.machine} · ${c.botName || '助手'}`, what: cardWhat(c) });
+    }
+    for (const c of cards) {
+      if (state.initiative.cardSaid(c.id)) continue;
+      await state.initiative.markCardSaid(c.id);
+      const mins = s.cardWaitMinutes >= 60 ? `${Math.round(s.cardWaitMinutes / 60)} 个多小时` : `${s.cardWaitMinutes} 多分钟`;
+      state.initiative.push({ kind: 'card_waiting', text: `「${c.who}」有一张卡等了${mins}：${c.what}`, key: `card:${c.id}` });
+    }
+  }
+  // A machine that answers again.
+  if (state.peers.list().length) {
+    for (const m of await state.roster.list().catch(() => [])) {
+      const was = machineWasOnline.get(m.machine);
+      machineWasOnline.set(m.machine, m.online);
+      if (was === false && m.online) state.initiative.push({ kind: 'machine_back', text: `「${m.machine}」又连上了`, key: `back:${m.machine}` });
+    }
+  }
+}
 
 // --- one roster (1.5.42 第三步「一个花名册」) ------------------------------------
 //   GET  /api/peers/roster?fresh=1 -> {machines:[{machine, online, bots:[{id, name, role,
@@ -4000,6 +4331,7 @@ route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/message$/, 
 
 route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/stream$/, async (req, res, { params, state }) => {
   const { peer, botId } = remoteTarget(req, state, params);
+  trackStream(req, res);
   await state.roster.pipeStream(peer, botId, req, res);
   return undefined;
 });
@@ -4103,6 +4435,7 @@ route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/message$
 });
 route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/stream$/, async (req, res, { params, state }) => {
   const { peer, groupId } = remoteGroupTarget(req, state, params);
+  trackStream(req, res);
   await state.roster.pipeStream(peer, '', req, res, { groupId });
   return undefined;
 });
@@ -4313,8 +4646,11 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
   // it says where it was answered. Only a call with this hub's own token may say that.
   const viaMachine = body?.via?.machine && isHubCall(req, state.security) ? String(body.via.machine).trim().slice(0, 60) : '';
   const by = viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human';
-  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine });
+  const edits = body?.edits && typeof body.edits === 'object' && !Array.isArray(body.edits) ? body.edits : null;
+  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits });
   if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', '这张卡已经不在了（可能已经处理过，或者那台机器重启过）');
+  // A draft the human made too long (1.5.45): said so, the card stays open.
+  if (record.editError) throw httpError(400, 'DRAFT_INVALID', record.error);
   if (record.error) throw httpError(409, 'APPROVAL_CONFLICT', record.error);
   // A routine's card (1.3.2): "现在跑一次（我看着）" runs that routine now, attended,
   // so the same step asks again and waits for the human; "不用了" just puts it away.
@@ -4820,7 +5156,7 @@ route('GET', /^\/api\/stream$/, async (req, res, { query, state }) => {
   const streamDevice = req.auth?.deviceId || '';
   // Roster edits are global: every window needs them regardless of which bot
   // or group it happens to be looking at.
-  const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed', 'feishu.changed']);
+  const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed', 'feishu.changed', 'initiative.say']);
   const send = (event) => {
     if (closed) return;
     if (event.to && event.to !== streamDevice) return;
@@ -4837,6 +5173,7 @@ route('GET', /^\/api\/stream$/, async (req, res, { query, state }) => {
   };
 
   const unsubscribe = state.bus.subscribe(send);
+  trackStream(req, res);
 
   // Heartbeat keeps proxies and idle TCP connections from dropping the stream.
   const heartbeat = setInterval(() => {
@@ -5207,6 +5544,11 @@ export function toMessageItem(record, index) {
         // One card for several look-only commands (1.5.40): each one in full.
         ...(record.batch?.commands?.length > 1 ? { batch: record.batch } : {}),
         ...(record.look ? { look: true } : {}),
+        // A draft (and the human's edits), a change to a bot, a first hand-off (1.5.45): drawn again from here.
+        ...(record.draft ? { draft: record.draft } : {}),
+        ...(record.edits ? { edits: record.edits, edited: true } : {}),
+        ...(record.adjust ? { adjust: record.adjust } : {}),
+        ...(record.handoff ? { handoff: record.handoff } : {}),
       };
     case 'turn':
       return { ...base, role: 'status', status: record.status, summary: record.summary, steps: record.steps };

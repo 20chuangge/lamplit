@@ -440,8 +440,11 @@ export class DirectSession extends EventEmitter {
     if (type === PT.PROBE_ACK) {
       // The dialing side picks the path: the first of its probes answered.
       if (this.role === 'client' && this.state === 'punching' && body.subarray(0, 8).equals(this.nonce)) {
+        // Tell the other side at once (it takes the path from SELECT), then twice more in case one is lost.
+        this.remote = from;
+        this._raw(PT.SELECT);
         this._up(from);
-        for (let i = 0; i < 3; i += 1) setTimeout(() => this._raw(PT.SELECT), i * 100).unref?.();
+        for (let i = 1; i < 3; i += 1) setTimeout(() => this._raw(PT.SELECT), i * 100).unref?.();
       }
       return;
     }

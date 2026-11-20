@@ -463,7 +463,12 @@ async function directServerChecksInner({ check, api, makePairLink }) {
     check('direct (hub): the relay never sees the addresses or the key half (only TLS ciphertext crossed it)', relayBytes.length > 0 && !relayBytes.includes(Buffer.from(JSON.parse(offeredBody).half)) && !relayBytes.includes(Buffer.from(String(cand.p))) && !relayBytes.includes(Buffer.from('cands')));
 
     // 1.5.48: which device holds a direct session, by name and kind, never by address.
-    const held = (await api('/api/relay-link')).body.direct;
+    // The computer counts a session once the device's SELECT arrives, a moment after the
+    // device itself says "direct" (CI on Linux asked in between): wait for that, briefly.
+    const held = await until(async () => {
+      const d = (await api('/api/relay-link')).body.direct;
+      return d?.holders?.length ? d : null;
+    }, 3000) || (await api('/api/relay-link')).body.direct;
     check('direct (hub): Settings says WHO is connected directly (a named device, no address)', Array.isArray(held?.holders) && held.holders.length >= 1 && held.holders.every((h) => h.name && h.kind && !/\d+\.\d+\.\d+\.\d+|::/.test(JSON.stringify(h))), JSON.stringify(held?.holders));
 
     const viaDirect = (p, init = {}) => relayFetch(desc, p, { ...init, direct: dialer });

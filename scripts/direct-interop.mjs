@@ -104,7 +104,7 @@ async function run(dropRate, classes) {
   try {
     const out = await new Promise((resolve) => {
       import('node:child_process').then(({ spawn }) => {
-        const p = spawn(java, ['-cp', classes, 'com.desk.assistant.DirectInterop', String(relayPort), `http://127.0.0.1:${offerPort}/`, cert.fingerprint, id, String(dropRate)], { windowsHide: true });
+        const p = spawn(java, ['-Dstdout.encoding=UTF-8', '-Dfile.encoding=UTF-8', '-cp', classes, 'com.desk.assistant.DirectInterop', String(relayPort), `http://127.0.0.1:${offerPort}/`, cert.fingerprint, id, String(dropRate)], { windowsHide: true });
         let text = '';
         let err = '';
         p.stdout.on('data', (d) => { text += d; });
@@ -116,8 +116,13 @@ async function run(dropRate, classes) {
     let r = {};
     try { r = JSON.parse(out.text.trim().split(/\r?\n/).pop()); } catch { r = {}; }
     const tag = dropRate ? ` (${Math.round(dropRate * 100)}% loss both ways)` : '';
-    check(`interop${tag}: the Java side asks STUN, offers, punches and is direct`, r.route === 'direct', `${out.text}\n${out.err.slice(0, 2000)}`);
-    if (r.route !== 'direct') return;
+    // 1.5.48: a path to a private / loopback address is the home network: 「局域网」, not just 「直连」.
+    check(`interop${tag}: the Java side asks STUN, offers, punches and is direct (over loopback: said as the local network)`, r.route === 'direct-lan', `${out.text}\n${out.err.slice(0, 2000)}`);
+    if (!dropRate) {
+      check('interop: the login is found through the app\'s machine rows (its main address, then its other addresses)', r.owners === 'http://192.168.1.5:14390 http://100.70.1.2:14390 http://127.0.0.1:14441' && r.owners2 === 'http://127.0.0.1:14442' && r.owners3 === 'http://127.0.0.1:14449', JSON.stringify([r.owners, r.owners2, r.owners3]));
+      check('interop: a debug line without logcat says the route and state, and never an address', /中转/.test(r.debugBefore) && /直连/.test(r.debugUp) && /局域网/.test(r.debugUp) && !/\d+\.\d+\.\d+\.\d+|::/.test(`${r.debugBefore}${r.debugUp}`), JSON.stringify([r.debugBefore, r.debugUp]));
+    }
+    if (!/^direct/.test(r.route || '')) return;
     check(`interop${tag}: pinned TLS over a stream, 2 MB down intact`, r.bigHash === sha(BIG), r.bigHash);
     check(`interop${tag}: 1 MB up intact`, r.upHash && r.upHash === r.sentHash, `${r.upHash} vs ${r.sentHash}`);
     check(`interop${tag}: a wrong fingerprint is refused on the direct path too`, r.wrongFp === 'refused');

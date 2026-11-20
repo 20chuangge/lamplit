@@ -2796,4 +2796,13 @@ window.DESK_I18N_EN = {
   "这个浏览器还没有配对。从这个地址进来不能用 8 位配对码（为了安全）：请用 Lamplit 手机 App 扫二维码，或者在 Lamplit 桌面应用里打开这台机器。": "This browser is not paired yet. The 8-digit code cannot be used from this address (for safety): scan the QR code with the Lamplit phone app, or open this machine in the Lamplit desktop app.",
   "这个浏览器还没有配对：输入配对码，或者用 Lamplit 手机 App 扫码。": "This browser is not paired yet: enter the pairing code, or scan the code with the Lamplit phone app.",
   "从这个地址进来不能用 8 位配对码（为了安全）：请用 Lamplit 手机 App 扫二维码，或者在 Lamplit 桌面应用里打开这台机器。": "The 8-digit code cannot be used from this address (for safety): scan the QR code with the Lamplit phone app, or open this machine in the Lamplit desktop app.",
+  // 1.5.48 who is direct, and the phone app's own view of the road
+  "手机到这台": "Phone to this machine",
+  "直连中：{0}直接连着这台电脑，数据不经过中转。": "Direct: {0} connected straight to this computer, the data skips the relay.",
+  "{0} 台设备": "{0} device(s)",
+  "一台设备": "a device",
+  "另一台机器": "another machine",
+  "经中转（中转就在这台上）": "through the relay (the relay runs on this machine)",
+  "{0} · 经中转（中转就在这台上）": "{0} · through the relay (the relay runs on this machine)",
+  "这部手机已经配对，经 Lamplit App 连到这台机器": "This phone is paired and reaches this machine through the Lamplit app",
 };

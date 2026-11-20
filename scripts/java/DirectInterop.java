@@ -43,11 +43,19 @@ public final class DirectInterop {
         o.dropRate = Double.parseDouble(args[4]);
         DirectChannel.Links links = new DirectChannel.Links(o);
         DirectChannel.Offerer offerer = body -> post(offerUrl, body);
+        String before = links.debug(id);
         links.kick(id, "127.0.0.1", relayPort, offerer);
         long until = System.currentTimeMillis() + 8000;
         while (links.muxFor(id) == null && System.currentTimeMillis() < until) Thread.sleep(20);
         StringBuilder out = new StringBuilder("{");
+        // 1.5.48: the app keeps a machine's login under its main address; the forwarder must find it through the row's other addresses.
+        String rows = "[{\"url\":\"http://192.168.1.5:14390\",\"alt\":[\"http://100.70.1.2:14390\",\"http://127.0.0.1:14441\"],\"name\":\"家里\"},{\"url\":\"http://127.0.0.1:14442\",\"name\":\"云\",\"via\":\"http://192.168.1.5:14390\"}]";
+        out.append("\"owners\":\"").append(String.join(" ", DirectChannel.tokenOwners("http://127.0.0.1:14441", rows))).append("\",");
+        out.append("\"owners2\":\"").append(String.join(" ", DirectChannel.tokenOwners("http://127.0.0.1:14442", rows))).append("\",");
+        out.append("\"owners3\":\"").append(String.join(" ", DirectChannel.tokenOwners("http://127.0.0.1:14449", rows))).append("\",");
+        out.append("\"debugBefore\":\"").append(before.replace("\"", "'")).append("\",");
         out.append("\"route\":\"").append(links.route(id)).append("\"");
+        out.append(",\"debugUp\":\"").append(links.debug(id).replace("\"", "'")).append("\"");
         out.append(",\"reason\":\"").append(String.valueOf(links.link(id).reason).replace("\"", "'")).append("\"");
         DirectChannel.Mux mux = links.muxFor(id);
         if (mux != null) {

@@ -184,6 +184,18 @@ public class ShellBridge {
         return RelayLinks.routeFor(activity, v);
     }
 
+    /**
+     * 1.5.48: one line for 关于 on a machine's page, so the road can be checked
+     * without logcat - route, direct state, the last reason, the next try. No addresses.
+     */
+    @JavascriptInterface
+    public String relayDebug(final String urlOrId) {
+        if ((!fromAppPage() && !fromMachinePage()) || urlOrId == null) return "";
+        String v = urlOrId.trim();
+        if (v.matches("^[a-z0-9]{16,40}$")) return RelayLinks.DIRECT.debug(v);
+        return RelayLinks.debugFor(activity, v);
+    }
+
     @JavascriptInterface
     public void setImmersive(final boolean on) {
         activity.runOnUiThread(() -> {

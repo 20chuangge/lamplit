@@ -1140,6 +1140,53 @@ final class DirectChannel {
         long nextTry = 0;
         int failures = 0;
         volatile String reason = "";
+        volatile long lastTryAt = 0;
+    }
+
+    private static final Pattern HUB_ROW = Pattern.compile("\\{[^{}]*\\}");
+    private static final Pattern HUB_URL = Pattern.compile("\"(https?://[^\"\\\\]{1,300})\"");
+
+    /**
+     * Where the app keeps the login for the computer behind forwarder `base`
+     * (1.5.48): the app stores a machine's token under the row's main address
+     * (desk.hubs rows {url, alt:[…]}), usually its LAN address, and the
+     * forwarder's 127.0.0.1:144xx is one of its alternates. -> the row's
+     * addresses, main first, to try in order; just `base` when no row has it.
+     */
+    static List<String> tokenOwners(String base, String hubsJson) {
+        List<String> out = new ArrayList<>();
+        Matcher row = HUB_ROW.matcher(hubsJson == null ? "" : hubsJson);
+        while (row.find()) {
+            String text = row.group();
+            if (!text.contains("\"" + base + "\"") && !text.contains("\"" + base + "/\"")) continue;
+            // The main address ("url") first, then the others in order; never the via (another machine).
+            Matcher main = Pattern.compile("\"url\"\\s*:\\s*\"(https?://[^\"\\\\]{1,300})\"").matcher(text);
+            if (main.find()) out.add(main.group(1));
+            int alt = text.indexOf("\"alt\"");
+            if (alt >= 0) {
+                int end = text.indexOf(']', alt);
+                Matcher u = HUB_URL.matcher(text.substring(alt, end < 0 ? text.length() : end));
+                while (u.find()) if (!out.contains(u.group(1))) out.add(u.group(1));
+            }
+            break;
+        }
+        if (!out.contains(base)) out.add(base);
+        return out;
+    }
+
+    /** A private, link-local or loopback address: the home network, said as 局域网. */
+    static boolean isLocalNetwork(InetAddress a) {
+        if (a == null) return false;
+        if (a.isSiteLocalAddress() || a.isLinkLocalAddress() || a.isLoopbackAddress()) return true;
+        byte[] b = a.getAddress();
+        return b.length == 16 && (b[0] & 0xfe) == 0xfc; // IPv6 ULA fc00::/7
+    }
+
+    /** No addresses in what the app shows (a reason may carry one from an exception). */
+    static String noAddresses(String text) {
+        return String.valueOf(text == null ? "" : text)
+            .replaceAll("\\b\\d{1,3}(\\.\\d{1,3}){3}(:\\d+)?\\b", "…")
+            .replaceAll("\\[?[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}\\]?(:\\d+)?", "…");
     }
 
     /** The direct links of this phone, one per computer id; retry waits, network changes. */
@@ -1168,8 +1215,38 @@ final class DirectChannel {
             return m != null && !m.closed ? m : null;
         }
 
+        /** 'direct-lan' (straight, inside the home network), 'direct', or 'relay'. */
         String route(String id) {
-            return muxFor(id) != null ? "direct" : "relay";
+            Mux m = muxFor(id);
+            if (m == null) return "relay";
+            InetSocketAddress r = m.session.remote;
+            return r != null && isLocalNetwork(r.getAddress()) ? "direct-lan" : "direct";
+        }
+
+        /** Record why there is no direct try (e.g. no login for that computer), for the debug line. */
+        void note(String id, String reason) {
+            link(id).reason = reason;
+        }
+
+        /**
+         * One line for the app's 关于 (1.5.48: no logcat in a release build):
+         * the road, its state, the last reason, the next try. Never an address.
+         */
+        String debug(String id) {
+            Link l = links.get(id);
+            String route = route(id);
+            long now = System.currentTimeMillis();
+            StringBuilder s = new StringBuilder();
+            if (route.startsWith("direct")) s.append("直连").append("direct-lan".equals(route) ? "（局域网）" : "（经公网）");
+            else s.append("中转");
+            if (l == null || (l.lastTryAt == 0 && l.reason.isEmpty())) return s.append(" · 还没试过直连").toString();
+            if (l.pending) s.append(" · 正在试直连");
+            if (!route.startsWith("direct")) {
+                if (!l.reason.isEmpty()) s.append(" · 上次：").append(noAddresses(l.reason));
+                if (l.lastTryAt > 0) s.append("（").append(Math.max(0, (now - l.lastTryAt) / 60000)).append(" 分钟前）");
+                if (l.nextTry > now) s.append(" · ").append(Math.max(1, (l.nextTry - now) / 1000)).append(" 秒后再试");
+            }
+            return s.toString();
         }
 
         /** Try in the background unless up, trying, or waiting to retry. */
@@ -1178,6 +1255,7 @@ final class DirectChannel {
             synchronized (l) {
                 if (l.pending || muxFor(id) != null || System.currentTimeMillis() < l.nextTry) return;
                 l.pending = true;
+                l.lastTryAt = System.currentTimeMillis();
             }
             Thread t = new Thread(() -> {
                 try {

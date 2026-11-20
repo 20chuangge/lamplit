@@ -585,8 +585,11 @@
           longPressed = false;
           return;
         }
-        void store.set(KEYS.home, entry.url).catch(() => {});
-        void enterMachine(entry, tag, { view: 'all' });
+        // Home is a machine this app paired with itself (1.5.48: tapping the cloud
+        // server, learned from the computer, made it home and 全部机器 came from there).
+        // A machine learned from another one opens as 只看这台.
+        if (!entry.via) void store.set(KEYS.home, entry.url).catch(() => {});
+        void enterMachine(entry, tag, { view: entry.via ? 'one' : 'all' });
       });
 
       dom.machineList.appendChild(row);
@@ -607,9 +610,11 @@
         if (best) { url.textContent = slow ? '中转 · 较慢' : linkLabel(best, entry); url.title = best; }
         // 直连 (1.5.46): the first connection through the relay starts a try at
         // going direct (a few seconds); say so here once it worked.
-        if (best && relayRoute(best) === 'direct') url.textContent = '直连';
+        // 1.5.48: a direct path inside the home network (the same Wi-Fi) is 局域网.
+        const roadWords = () => (relayRoute(best) === 'direct-lan' ? '局域网' : relayRoute(best) === 'direct' ? '直连' : '');
+        if (best && roadWords()) url.textContent = roadWords();
         else if (best && linkKind(best) === '中转') {
-          setTimeout(() => { if (url.isConnected && relayRoute(best) === 'direct') url.textContent = '直连'; }, 10000);
+          setTimeout(() => { if (url.isConnected && roadWords()) url.textContent = roadWords(); }, 10000);
         }
         if (best && best !== entry.best) {
           // Remember it for the next time this list opens.
@@ -880,8 +885,12 @@
    * a cold start: the Back key and 「返回 App 的机器列表」 come here for the list.
    */
   async function homeEntry() {
-    const saved = await readHubs();
-    if (!saved.length) return null;
+    const all = await readHubs();
+    if (!all.length) return null;
+    // Only a machine this app paired with itself (no `via`) is home; an older
+    // install whose home became a learned machine comes back to its own (1.5.48).
+    const own = all.filter((h) => !h.via);
+    const saved = own.length ? own : all;
     const home = (await store.get(KEYS.home).catch(() => '')) || state.hub || '';
     return saved.find((h) => h.url === home) || saved.find((h) => h.url === state.hub) || saved[0];
   }
@@ -1541,7 +1550,7 @@
       }
       if (entry) {
         // The machine whose page asked is home, unless one was picked from the list (1.5.44).
-        if (state.hub && !(await store.get(KEYS.home).catch(() => ''))) await store.set(KEYS.home, state.hub).catch(() => {});
+        if (state.hub && !(await store.get(KEYS.home).catch(() => '')) && !(await readHubs()).find((h) => h.url === state.hub)?.via) await store.set(KEYS.home, state.hub).catch(() => {});
         // Not the list (1.5.39: it flashed on every switch): say where we are going.
         show('booting');
         dom.bootingText.textContent = `正在打开「${entry.name || hostLabel(entry.url)}」…`;

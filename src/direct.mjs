@@ -763,6 +763,8 @@ export function createDirectServer({ acceptStream, relay = () => null, enabled =
         sessions: sessions.length,
         active: sessions.filter((l) => l.session.state === 'up').length,
         remotes: sessions.filter((l) => l.session.remote).map((l) => l.session.remote.address),
+        // Who is connected directly now (1.5.48): the device id / auth mode that asked; named by the caller.
+        holders: sessions.filter((l) => l.session.state === 'up').map((l) => l.who),
         offers: stats.offers,
         up: stats.up,
         failed: stats.failed,

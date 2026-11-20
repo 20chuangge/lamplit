@@ -710,7 +710,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   // while this computer's 「先试直连」 is on.
   refs.peers = createPeers({
     file: path.join(P.dataDir, 'peers.json'),
-    directWanted: () => Boolean(state.relayLink?.view?.().direct?.enabled),
+    // Not on the relay's own server (1.5.48): through its relay it reaches the others just as cheaply, and its direct link showed on the PC as 'a device connected directly'.
+    directWanted: () => Boolean(state.relayLink?.view?.().direct?.enabled && state.relayLink.view().direct.applies),
     directOptions: process.env.LAMPLIT_DIRECT_ALLOW_LOOPBACK === '1' ? { allowLoopback: true, endpointOptions: { bindHost: process.env.LAMPLIT_DIRECT_BIND || '', ipv6: false } } : {},
   });
   await refs.peers.load();
@@ -2395,6 +2396,21 @@ async function shareRelayWithMachines(state, { onlyHost = '' } = {}) {
   return machines;
 }
 
+/**
+ * The relay link's view for Settings, with WHO is connected directly named
+ * (1.5.48: the PC said one device was direct while the phone said 中转 - it
+ * was another machine). By device name and kind, never by address.
+ */
+function namedRelayView(state, view) {
+  const devices = state.devices.list();
+  const holders = (view.direct?.holders || []).map((who) => {
+    const d = devices.find((x) => x.id === who);
+    if (d) return { kind: d.kind || 'device', name: d.name || '一台设备' };
+    return who === 'token' ? { kind: 'machine', name: '另一台机器' } : { kind: 'device', name: '一台设备' };
+  });
+  return { ...view, direct: view.direct ? { ...view.direct, holders } : view.direct, descriptor: state.relayLink.descriptor() };
+}
+
 // 「通过中转连接」 (relaylink.mjs). Off by default; on once a relay is installed from here.
 //   GET /api/relay-link -> {enabled, host, port, relayFingerprint, id, fingerprint, state, error, …, descriptor}
 //   PUT /api/relay-link {enabled?, host?, port?, relayFingerprint?, join?} -> the same (the human only)
@@ -2402,7 +2418,7 @@ route('GET', /^\/api\/relay-link$/, async (_req, _res, { state, query }) => {
   if (!state.relayLink) throw httpError(503, 'RELAY_NOT_READY', 'the relay link starts with the server');
   // ?probe=1 (1.5.47): the card was just opened - ask the relay's STUN again rather than show an old answer.
   if (query.get('probe') === '1') await state.relayLink.probeStun().catch(() => {});
-  return { ...state.relayLink.view(), descriptor: state.relayLink.descriptor() };
+  return namedRelayView(state, state.relayLink.view());
 });
 // Can this computer reach its relay's port right now (第 2 步: after opening it in the cloud console)?
 //   POST /api/relay-link/test -> {ok, ms?, code?, message?, view}
@@ -2413,7 +2429,7 @@ route('POST', /^\/api\/relay-link\/test$/, async (_req, _res, { state }) => {
   // The port just opened: do not wait out the backoff to reconnect.
   const view = state.relayLink.view();
   if (result.ok && view.enabled && view.state !== 'online') state.relayLink.retryNow();
-  return { ...result, view: { ...state.relayLink.view(), descriptor: state.relayLink.descriptor() } };
+  return { ...result, view: namedRelayView(state, state.relayLink.view()) };
 });
 // The same relay for the other machines (3.6): this computer hands its relay
 // settings - join secret included - to each machine it holds a token for, and
@@ -2435,7 +2451,7 @@ route('PUT', /^\/api\/relay-link$/, async (req, _res, { body, state }) => {
   }
   await audit({ kind: 'relay.link', enabled: view.enabled, host: view.host, port: view.port });
   state.bus.emit({ type: 'settings.changed', section: 'network' });
-  return { ...view, descriptor: state.relayLink.descriptor() };
+  return namedRelayView(state, view);
 });
 
 // 直连 (1.5.46, src/direct.mjs). A paired device (its token: the relay cannot
@@ -2456,7 +2472,12 @@ route('POST', /^\/api\/direct\/offer$/, async (req, _res, { body, state }) => {
     throw httpError(503, err.code || 'DIRECT_FAILED', err.message);
   }
 });
-route('GET', /^\/api\/direct\/route$/, async (req) => ({ route: req.viaDirect ? 'direct' : req.viaRelay ? 'relay' : 'other' }));
+// relayHere (1.5.48): this machine is the relay's own server - through the relay is
+// the road on purpose there (direct saves nothing), said so instead of a plain 「中转」.
+route('GET', /^\/api\/direct\/route$/, async (req, _res, { state }) => {
+  const link = state.relayLink?.view?.();
+  return { route: req.viaDirect ? 'direct' : req.viaRelay ? 'relay' : 'other', relayHere: Boolean(link?.enabled && link.direct && link.direct.applies === false) };
+});
 
 route('GET', /^\/api\/devices$/, async (_req, _res, { state }) => ({ devices: state.devices.list() }));
 // Old logins of phones and browsers, not used for a while (1.5.30): the one asking stays.

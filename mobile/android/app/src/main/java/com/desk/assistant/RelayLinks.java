@@ -66,12 +66,23 @@ public final class RelayLinks {
 
     private RelayLinks() {}
 
-    /** 'direct' or 'relay' for the computer behind a forwarder URL (http://127.0.0.1:144xx); '' when it is not one. */
+    /** 'direct-lan', 'direct' or 'relay' for the computer behind a forwarder URL (http://127.0.0.1:144xx); '' when it is not one. */
     static String routeFor(Context context, String url) {
+        String id = idFor(context, url);
+        return id.isEmpty() ? "" : DIRECT.route(id);
+    }
+
+    /** The debug line (1.5.48) for the computer behind a forwarder URL; '' when it is not one. */
+    static String debugFor(Context context, String url) {
+        String id = idFor(context, url);
+        return id.isEmpty() ? "" : DIRECT.debug(id);
+    }
+
+    private static String idFor(Context context, String url) {
         if (!isRelayLocal(url)) return "";
         try {
             JSONObject row = rowFor(context, new java.net.URL(url).getPort());
-            return row == null ? "" : DIRECT.route(row.optString("id", ""));
+            return row == null ? "" : row.optString("id", "");
         } catch (Exception e) {
             return "";
         }
@@ -138,10 +149,20 @@ public final class RelayLinks {
     private static void kickDirect(Context context, final int local, String host, int port, String id) {
         SharedPreferences store = context.getApplicationContext().getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
         final String base = "http://127.0.0.1:" + local;
-        String sealed = store.getString("desk.token:" + base, null);
-        if (sealed == null) sealed = store.getString("desk.token:" + base + "/", null);
-        final String token = sealed == null ? null : TokenBox.open(sealed);
-        if (token == null || token.isEmpty()) return;
+        // The app keeps the login under the machine's main address (1.5.48: on the
+        // user's phone it was never found here, so the phone never went direct).
+        String token = null;
+        for (String owner : DirectChannel.tokenOwners(base, store.getString("desk.hubs", "[]"))) {
+            String sealed = store.getString("desk.token:" + owner, null);
+            if (sealed == null) sealed = store.getString("desk.token:" + owner + "/", null);
+            String open = sealed == null ? null : TokenBox.open(sealed);
+            if (open != null && !open.isEmpty()) { token = open; break; }
+        }
+        if (token == null) {
+            DIRECT.note(id, "这台电脑在手机上没有登录，没法申请直连");
+            return;
+        }
+        final String bearer = token;
         DIRECT.kick(id, host, port, body -> {
             java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(base + "/api/direct/offer").openConnection();
             try {
@@ -150,7 +171,7 @@ public final class RelayLinks {
                 c.setRequestMethod("POST");
                 c.setDoOutput(true);
                 c.setRequestProperty("Content-Type", "application/json");
-                c.setRequestProperty("Authorization", "Bearer " + token);
+                c.setRequestProperty("Authorization", "Bearer " + bearer);
                 c.getOutputStream().write(body.getBytes("UTF-8"));
                 int status = c.getResponseCode();
                 if (status != 200) throw new java.io.IOException("offer: HTTP " + status);

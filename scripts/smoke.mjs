@@ -2703,7 +2703,8 @@ async function scenarioRelay() {
  * direct to this hub over loopback UDP: paired only, still remote, still pinned.
  */
 async function scenarioDirect() {
-  const { directChecks, directServerChecks } = await import('./smoke-direct.mjs');
+  const { directChecks, directServerChecks, phoneLabelChecks } = await import('./smoke-direct.mjs');
+  phoneLabelChecks({ check });
   await directChecks({ check });
   const wrap = async (p, { method = 'GET', body } = {}) => {
     const r = await api(p, { method, body });
@@ -11554,7 +11555,7 @@ async function scenarioRoster1544() {
   check('R44-9 the app opens straight into its home machine in 「全部机器」 on a cold start; the list when it does not answer, on Back, or with nothing paired; a page\'s pick by name opens 「只看这台」',
     launcher.includes("home: 'desk.homeHub'") && /if \(!started && state\.hub && \(await openHome\(\)\)\) return;/.test(launcher)
     && launcher.includes("enterMachine(entry, null, { view: 'all', quiet: true })") && launcher.includes("enterMachine(entry, null, { view: 'one' })")
-    && launcher.includes("if (name === '@home')") && launcher.includes('if (!up && quiet) return false;') && launcher.includes("void enterMachine(entry, tag, { view: 'all' });"));
+    && launcher.includes("if (name === '@home')") && launcher.includes('if (!up && quiet) return false;') && launcher.includes("void enterMachine(entry, tag, { view: entry.via ? 'one' : 'all' });"));
   check('R44-10 settings say whose they are: 「<this machine>的设置」 (the desktop and the app alike)',
     settingsJs.includes('return name ? `${name}的设置` : \'设置\';') && settingsJs.includes("$('settings-title').textContent = settingsTitle();"));
   const botsJs = fsSync.readFileSync(new URL('../public/app/main/04-bots.js', import.meta.url), 'utf8');

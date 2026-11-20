@@ -1742,16 +1742,41 @@ function phoneRelayRoute(urlOrId) {
 }
 
 /**
+ * 关于 → 「手机到这台」 (1.5.48): in the phone app, through its forwarder, one
+ * line from the app itself - the road (直连 · 局域网 / 中转), whether it is trying,
+ * the last reason, the next try. No addresses. Elsewhere the row stays hidden.
+ */
+function renderPhoneRoad() {
+  const row = $('about-road-row');
+  if (!row) return;
+  let line = '';
+  try {
+    const shell = window.NightshiftShell;
+    if (throughPhoneRelay() && typeof shell?.relayDebug === 'function') line = String(shell.relayDebug(location.origin) || '');
+  } catch { line = ''; }
+  row.hidden = !line;
+  if (line && $('about-road')) $('about-road').textContent = line;
+}
+
+/**
  * The desktop window's door to a machine only the relay reaches (127.0.0.N,
  * 1.5.47): its requests go direct when they can. Ask that machine how this
  * page's requests arrive, at most once a minute, so the route says 直连 then.
  */
 function refreshDoorRoute() {
   const h = location.hostname;
-  if (!/^127\.0\.0\.\d+$/.test(h) || h === '127.0.0.1' || Date.now() - (state.doorRouteAt || 0) < 60000) return;
+  // The phone app's forwarder too (1.5.48): whether this machine hosts the relay itself.
+  const door = /^127\.0\.0\.\d+$/.test(h) && h !== '127.0.0.1';
+  if ((!door && !throughPhoneRelay()) || Date.now() - (state.doorRouteAt || 0) < 60000) return;
   state.doorRouteAt = Date.now();
   api('/api/direct/route').then((r) => {
-    if (r?.route && r.route !== state.doorRoute) { state.doorRoute = r.route; syncMachineBranding(); }
+    const route = door ? r?.route : state.doorRoute;
+    if ((route && route !== state.doorRoute) || Boolean(r?.relayHere) !== Boolean(state.relayHere)) {
+      state.doorRoute = route;
+      state.relayHere = Boolean(r?.relayHere);
+      syncMachineBranding();
+      renderMachineMenu();
+    }
   }).catch(() => {});
 }
 
@@ -1778,7 +1803,8 @@ function directWords(d, port) {
   // The relay can answer but UDP does not get through: only the firewall rule is missing (1.5.47 beginner test).
   if (d.stun === 'no' && d.stunCause === 'firewall') return `现在都走中转，能用。想直连，还差一步：到云服务器控制台的「防火墙」（或「安全组」）加一条 UDP ${port} 的规则。`;
   if (d.stun === 'no') return `现在都走中转，能用。想直连，中转要更新一次：点下面的「重装 / 换端口」，装完再到云服务器控制台加一条 UDP ${port} 的规则。`;
-  if (d.active > 0) return `直连中：${d.active} 台设备直接连着这台电脑，数据不经过中转。`;
+  // Who, by name (1.5.48: the PC said a device was direct; it was another machine, not the phone).
+  if (d.active > 0) return `直连中：${(d.holders || []).map((h) => h.name).join('、') || `${d.active} 台设备`}直接连着这台电脑，数据不经过中转。`;
   // The latest try first (1.5.46 beginner test: after one success, a later failure was never said).
   if (d.last === 'failed') return '刚才试过直连，没打通，都走中转（能用）。多半是两边的网络不让直接连，换个网络会再试。';
   if (d.up > 0) return '以前直连成功过，现在没有设备直连。手机在外面连这台电脑时会再试。';

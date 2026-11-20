@@ -34,11 +34,9 @@ async function routeWords(m) {
   const first = await firstReachable(tries, viaRelay ? 1000 : 4000);
   if (first && first === m.url) return lanLike(m.url) ? '局域网' : '外网';
   if (first) return 'Tailscale';
-  if (viaRelay) return phoneRelayRoute(m.relay.id) === 'direct' ? '直连' : '中转';
+  if (viaRelay) return { 'direct-lan': '局域网', direct: '直连' }[phoneRelayRoute(m.relay.id)] || '中转';
   return '连不上';
 }
-
-
 
 /** A page the phone app opened through its relay forwarder (RelayLinks: 127.0.0.1:14440-14499). */
 function throughPhoneRelay(origin = location.origin) {
@@ -62,11 +60,12 @@ function machineDisplayName() {
   return row?.name || selfMachineName || state.computer?.host?.hostname || (throughPhoneRelay() ? '' : location.hostname);
 }
 
-/** How this page reached its machine, in words: 直连 / 中转 (the desktop's door 127.0.0.N or the phone's forwarder), Tailscale (100.x), else the host name. */
+/** How this page reached its machine, in words: 局域网 (1.5.48: a direct path inside the home network too) / 直连 / 中转 (the desktop's door 127.0.0.N or the phone's forwarder), Tailscale (100.x), else the host name. */
 function pageRouteWords() {
   const h = location.hostname;
+  if (throughPhoneRelay() && phoneRelayRoute(location.origin) === 'direct-lan') return '局域网';
   if ((throughPhoneRelay() && phoneRelayRoute(location.origin) === 'direct') || state.doorRoute === 'direct') return '直连';
-  if (throughPhoneRelay() || (/^127\.0\.0\.\d+$/.test(h) && h !== '127.0.0.1')) return '中转';
+  if (throughPhoneRelay() || (/^127\.0\.0\.\d+$/.test(h) && h !== '127.0.0.1')) return state.relayHere ? '经中转（中转就在这台上）' : '中转'; // 1.5.48: on purpose there
   if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return 'Tailscale';
   if (/^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+/.test(h)) return '局域网';
   return h;
@@ -78,11 +77,12 @@ function syncMachineBranding() {
   const name = machineDisplayName();
   const host = state.computer?.host;
   const os = host ? (host.platform === 'win32' ? 'Windows' : host.platform === 'linux' ? 'Linux' : host.platform) : '';
-  const grouped = local && rosterGrouped(); if ($('machine-name')) $('machine-name').textContent = grouped ? '全部机器' : name;
+  // 全部机器 is titled so wherever the page runs (1.5.48: the phone app showed the page's own machine, 腾讯云).
+  const grouped = rosterGrouped() && !singleVisit(); if ($('machine-name')) $('machine-name').textContent = grouped ? '全部机器' : name;
   if ($('pc-title')) $('pc-title').textContent = `${name}的屏幕`;
   if (state.settingsOpen && (!isMobile() || $('settings-drawer')?.classList.contains('set-home'))) $('settings-title').textContent = settingsTitle(); // its name came later
   if ($('machine-sub')) {
-    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(local && !singleVisit() ? (grouped ? `${(state.peerRoster || []).length + 1} 台 · 这台是 ${name}` : '这台电脑') : [os, singleVisit() ? '只看这台' : pageRouteWords()].filter(Boolean).join(' · '))}`;
+    $('machine-sub').innerHTML = `<i class="machine-dot"></i>${escapeHtml(grouped ? `${(state.peerRoster || []).length + 1} 台 · 这台是 ${name}` : local && !singleVisit() ? '这台电脑' : [os, singleVisit() && '只看这台', (!singleVisit() || throughPhoneRelay() || state.doorRoute) && pageRouteWords()].filter(Boolean).join(' · '))}`; // 1.5.48: 只看这台 in the app says the road too
   }
   if ($('about-origin')) $('about-origin').textContent = location.origin;
   if ($('timezone-pill')) $('timezone-pill').textContent = timezoneLabel(effectiveTimezone());
@@ -127,7 +127,7 @@ async function deliverPendingTask() {
 }
 
 async function refreshMachines() {
-  try { machineBridge = (await window.desk?.listMachines?.()) || null; } catch { machineBridge = null; }
+  try { machineBridge = window.NightshiftShell ? null : (await window.desk?.listMachines?.()) || null; } catch { machineBridge = null; } // 1.5.48: never the desktop's menu (「这台电脑」) inside the phone app
   // Its own name first, at once (the desktop app too, 1.5.42: the top left names it); the full list waits for the others to be probed.
   if (!selfMachineName) {
     api('/api/machines?self=1').then((data) => {
@@ -245,7 +245,7 @@ function renderMachineMenu() {
   for (const m of others) {
     // How it is reached, in words (中转 / Tailscale / 局域网) for the one on screen; never an address.
     const route = m.url === machineBridge.current ? pageRouteWords() : '';
-    rows.push({ url: m.url, name: m.name, sub: ['中转', 'Tailscale', '局域网'].includes(route) ? `${route} · 只看这台` : '只看这台', current: m.url === machineBridge.current });
+    rows.push({ url: m.url, name: m.name, sub: /^(中转|经中转|直连|Tailscale|局域网)/.test(route) ?`${route} · 只看这台` : '只看这台', current: m.url === machineBridge.current });
   }
   menu.innerHTML = rows.map((m) => `
     <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" ${m.url !== undefined ? `data-machine="${escapeHtml(m.url)}"` : ''} ${m.view ? `data-view="${m.view}"` : ''}>
@@ -1080,8 +1080,8 @@ function saveMachineFromModal() {
  */
 function selfSub() {
   // Opened by name from another machine (1.5.44 test): the one on screen, not the one in your hand.
-  // 直连 (1.5.46): through the relay's introduction, but the data goes straight.
-  if (throughPhoneRelay() && phoneRelayRoute(location.origin) === 'direct') return singleVisit() ? '现在打开的这台 · 直连' : '你正在用的这台 · 直连';
+  if (throughPhoneRelay() && state.relayHere) return `${singleVisit() ? '现在打开的这台' : '你正在用的这台'} · 经中转（中转就在这台上）`; // 1.5.48
+  if (throughPhoneRelay() && /^direct/.test(phoneRelayRoute(location.origin))) return `${singleVisit() ? '现在打开的这台' : '你正在用的这台'} · ${phoneRelayRoute(location.origin) === 'direct-lan' ? '局域网' : '直连'}`;
   if (singleVisit()) return throughPhoneRelay() ? '现在打开的这台 · 经过中转' : '现在打开的这台';
   return throughPhoneRelay() ? '你正在用的这台 · 经过中转' : '你正在用的这台';
 }

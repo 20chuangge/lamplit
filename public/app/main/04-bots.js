@@ -921,9 +921,16 @@ function updateModelUi() {
   const server = st.server || {};
   $('about-server').textContent = `${server.host || location.hostname}${server.port ? ':' + server.port : (location.port ? ':' + location.port : '')}`;
   refreshDoorRoute();
+  renderPhoneRoad();
   syncMachineBranding();
   const authRequired = state.auth ? Boolean(state.auth.required) : Boolean(server.requireAuth);
   $('about-auth').textContent = authRequired ? '需要配对（本机除外）' : '本机：桌面应用里直接用；在浏览器里批准、改权限，要先把浏览器配对一次';
+  // In the phone app (1.5.48 beginner test): 127.0.0.1:144xx is the app's own way in, not this
+  // machine's address, and 「本机」 talk is about the computer. Say what matters on the phone.
+  if (throughPhoneRelay()) {
+    for (const id of ['about-server', 'about-origin']) { const row = $(id)?.closest('.kv'); if (row) row.hidden = true; }
+    $('about-auth').textContent = '这部手机已经配对，经 Lamplit App 连到这台机器';
+  }
 }
 
 function updateComposerMode() {

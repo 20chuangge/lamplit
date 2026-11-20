@@ -108,6 +108,36 @@ function simPair(net, { pcIp, pcNat, phoneIp, phoneNat, session = {}, dialer = {
   return { server, dialer: d, desc, accepted, pcHost, phoneHost, close: () => { d.close(); server.close(); } };
 }
 
+/**
+ * 1.5.48 (the user's phone): what the app and the page SAY about the road, and
+ * which machine is home. Read from the sources (the phone app is not runnable here).
+ */
+export function phoneLabelChecks({ check }) {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
+  const machines = read('public/app/main/11-machines.js');
+  const launcher = read('mobile/shell/launcher.js');
+  const relayLinks = read('mobile/android/app/src/main/java/com/desk/assistant/RelayLinks.java');
+  check('phone: 「全部机器」 is titled 全部机器 in the app too (not only on the computer itself), with 「N 台 · 这台是 …」',
+    !/const grouped = local && rosterGrouped\(\)/.test(machines) && /const grouped = rosterGrouped\(\) && !singleVisit\(\)/.test(machines) && machines.includes('grouped ? `${(state.peerRoster || []).length + 1} 台 · 这台是 ${name}`'));
+  // The user's phone showed the desktop window's menu rows (「Windows 电脑 — 这台电脑 · 只看这台」): only
+  // window.desk.listMachines (Electron's preload) leads there; the app's shim has none, and the page refuses it in the app anyway.
+  const shim = read('mobile/android/app/src/main/java/com/desk/assistant/MainActivity.java');
+  check('phone: inside the app the page never takes the desktop window\'s machine menu (no 「这台电脑」 rows there)',
+    !/listMachines/.test(shim) && machines.includes('machineBridge = window.NightshiftShell ? null : (await window.desk?.listMachines?.()) || null;')
+    && /rows\.push\(\{ url: '', view: 'local'[^\n]*这台电脑 · 只看这台/.test(machines) && machines.indexOf("这台电脑 · 只看这台") > machines.indexOf('const others = machineBridge.machines'));
+  check('phone: 「只看这台」 in the app says the road too (「Windows · 只看这台 · 局域网」), not just 只看这台 (1.5.48 beginner test)',
+    machines.includes("singleVisit() && '只看这台', (!singleVisit() || throughPhoneRelay() || state.doorRoute) && pageRouteWords()"));
+  check('phone: 关于 in the app hides the app\'s own way in (127.0.0.1:144xx) and says the phone is paired',
+    read('public/app/main/04-bots.js').includes("for (const id of ['about-server', 'about-origin'])") && read('public/app/main/04-bots.js').includes('这部手机已经配对，经 Lamplit App 连到这台机器'));
+  check('phone: a LAN path found by punching is said as 局域网, a direct one as 直连 (the page and the app list)',
+    machines.includes("phoneRelayRoute(location.origin) === 'direct-lan'") && launcher.includes("relayRoute(best) === 'direct-lan' ? '局域网'"));
+  check('phone: only a machine this app paired with itself becomes home (a machine learned from another one opens 只看这台)',
+    launcher.includes('if (!entry.via) void store.set(KEYS.home, entry.url)') && launcher.includes("view: entry.via ? 'one' : 'all'") && launcher.includes('.filter((h) => !h.via)'));
+  check('phone: the forwarder finds the login under the machine\'s main address (desk.hubs rows), not only under 127.0.0.1:144xx',
+    relayLinks.includes('DirectChannel.tokenOwners(base,') && relayLinks.includes('"desk.hubs"'));
+}
+
 export async function directChecks({ check }) {
   // The channel's timers do not hold the process open (the hub does that); a test must.
   const keep = setInterval(() => {}, 1000);
@@ -432,6 +462,10 @@ async function directServerChecksInner({ check, api, makePairLink }) {
     const cand = JSON.parse(offeredBody).cands[0];
     check('direct (hub): the relay never sees the addresses or the key half (only TLS ciphertext crossed it)', relayBytes.length > 0 && !relayBytes.includes(Buffer.from(JSON.parse(offeredBody).half)) && !relayBytes.includes(Buffer.from(String(cand.p))) && !relayBytes.includes(Buffer.from('cands')));
 
+    // 1.5.48: which device holds a direct session, by name and kind, never by address.
+    const held = (await api('/api/relay-link')).body.direct;
+    check('direct (hub): Settings says WHO is connected directly (a named device, no address)', Array.isArray(held?.holders) && held.holders.length >= 1 && held.holders.every((h) => h.name && h.kind && !/\d+\.\d+\.\d+\.\d+|::/.test(JSON.stringify(h))), JSON.stringify(held?.holders));
+
     const viaDirect = (p, init = {}) => relayFetch(desc, p, { ...init, direct: dialer });
     seen.length = 0;
     const r1 = await viaDirect('/api/direct/route', { headers: { authorization: `Bearer ${token}` } }).then((r) => r.json());
@@ -484,6 +518,14 @@ async function directServerChecksInner({ check, api, makePairLink }) {
       peers.resetDirect();
       fs.rmSync(peersFile, { force: true });
     }
+
+    // 1.5.48: on the relay's own server (its tunnel dials 127.0.0.1) 「中转」 is the road on purpose: the page is told so.
+    const notHere = (await api('/api/direct/route')).body;
+    await api('/api/relay-link', { method: 'PUT', body: { dial: '127.0.0.1' } });
+    const here = (await api('/api/direct/route')).body;
+    await api('/api/relay-link', { method: 'PUT', body: { dial: '' } });
+    await until(async () => (await api('/api/relay-link')).body.state === 'online', 8000);
+    check('relay host: a machine that is the relay\'s own server tells its pages so (「经中转（中转就在这台上）」), others do not', here?.relayHere === true && notHere?.relayHere === false, JSON.stringify({ here, notHere }));
 
     // The desktop window on a machine only the relay reaches (1.5.47): its loopback door goes direct too.
     await api('/api/peers', { method: 'PUT', body: { peers: [{ name: 'far', url: 'http://127.0.0.1:9', token, relay: desc }] } });

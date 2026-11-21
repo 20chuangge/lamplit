@@ -3,6 +3,7 @@
   "versions": [
     { "version": "1.5.47", "sha256": "a7807d94e1eed411f4e549ad79e1b221a03a2feb8852b500c6803c02c78f4790" },
     { "version": "1.5.49", "sha256": "93e5a432d0d8d7f4408c590921cccd55724af96ab4b22aaf91968d47bfeb7b8c" },
-    { "version": "1.5.50", "sha256": "fc12a23904303b157693e7c17cc6a9da9f2152faa1e30cbdefdf7a00fc60a174" }
+    { "version": "1.5.50", "sha256": "fc12a23904303b157693e7c17cc6a9da9f2152faa1e30cbdefdf7a00fc60a174" },
+    { "version": "1.5.51", "sha256": "56b567731705f16a68518a785e105f24c877651b1987b48b2fd3d856a8d9ca2b" }
   ]
 }

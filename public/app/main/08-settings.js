@@ -1820,10 +1820,14 @@ function relayUpdateWords(view) {
   if ((!r && view?.relayOld) || (r && !r.auto)) return '这个中转还不会自己更新：再点一次下面的「重装 / 换端口」（最后一次手动），以后它会跟着 Lamplit 自己更新。';
   if (!r) return '';
   const offer = view.relayUpdate?.version;
+  // A failure counts only for a version newer than what runs (1.5.51: 「1.5.49 没能正常启动」
+  // stayed while 1.5.50 ran). An older one means the relay moved on: say it updated.
+  const failed = r.last && !r.last.ok && newer(r.last.version, r.version) ? r.last : null;
+  const movedOn = r.last && (r.last.ok ? r.last.version === r.version : !failed);
   // A failed version, unless a newer one is on its way (1.5.50: 1.5.49 failed, 1.5.50 fixes it - say that one).
-  if (r.last && !r.last.ok && !(offer && newer(offer, r.last.version) && newer(offer, r.version))) return `中转这次没有更新：${r.last.reason}。现在用的是 ${r.version}，照常能用。`;
+  if (failed && !(offer && newer(offer, failed.version))) return `中转这次没有更新：${failed.reason}。现在用的是 ${r.version}，照常能用。`;
   if (offer && newer(offer, r.version)) return r.fetching ? `中转正在更新到 ${offer}…` : `中转会自己更新到 ${offer}（几分钟内）。`;
-  if (r.last?.ok && r.last.version === r.version) return `中转已更新到 ${r.version}，以后也会自己更新。`;
+  if (movedOn) return `中转已更新到 ${r.version}，以后也会自己更新。`;
   return `中转是最新的（${r.version}），以后会自己更新。`;
 }
 

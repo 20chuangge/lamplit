@@ -9,7 +9,7 @@
 // then on hand-offs go without a card (the human's choice, 2026-11-20).
 //
 //   createMachineNotes({file}) -> {load, all, get, set, autoFill, confirm, remove}
-//   suggestNote({name, bots, alwaysOn}) -> one line
+//   suggestNote({alwaysOn, personal}) -> one short line (no bot list, 1.5.51)
 //   machinesPrompt({notes, roster, here}) -> lines for the main assistant's prompt
 
 import { readJson, writeJsonAtomic } from './store.mjs';
@@ -17,16 +17,16 @@ import { readJson, writeJsonAtomic } from './store.mjs';
 const MAX_NOTE = 200;
 const clean = (s, n = MAX_NOTE) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
 
-/** A first line for a machine, from its bots and whether it stays on. */
-export function suggestNote({ bots = [], alwaysOn = false, personal = false } = {}) {
+/**
+ * A first line for a machine: whether it stays on, whether it has the human's files.
+ * Its bots are not listed (1.5.51): the sidebar shows them, and the prompt lists them
+ * by machine anyway. Nothing known: '' (the page says 「还没写」).
+ */
+export function suggestNote({ alwaysOn = false, personal = false } = {}) {
   const parts = [];
   if (alwaysOn) parts.push('一直开着，适合定时任务和长时间跑的活');
-  if (personal) parts.push('有你的个人文件');
-  const jobs = (Array.isArray(bots) ? bots : []).filter((b) => b && !b.primary && b.name).slice(0, 8)
-    // The first part of each job is enough here (「求职策略与筛岗：维护…」 -> 「求职策略与筛岗」).
-    .map((b) => `${clean(b.name, 20)}（${clean(String(b.role || '').split(/[：:；;。.，,（(]/)[0], 24) || '没写职责'}）`);
-  if (jobs.length) parts.push(`上面的助手：${jobs.join('、')}`);
-  return clean(parts.join('；') || '还不知道适合干什么');
+  if (personal) parts.push('你的电脑，有你的个人文件');
+  return clean(parts.join('；'));
 }
 
 export function createMachineNotes({ file } = {}) {
@@ -68,7 +68,12 @@ export function createMachineNotes({ file } = {}) {
       const cur = notes[k];
       if (cur && cur.by !== 'auto') return cur;
       const text = clean(note);
-      if (!text || cur?.note === text) return cur || null;
+      // An older automatic line (1.5.45 listed the bots) is replaced, or cleared when nothing is known now.
+      if (!text) {
+        if (cur?.note) { notes[k] = { ...cur, note: '', at: new Date().toISOString() }; await save(); }
+        return notes[k] || null;
+      }
+      if (cur?.note === text) return cur;
       notes[k] = { ...(cur || {}), note: text, by: 'auto', at: new Date().toISOString() };
       await save();
       return notes[k];

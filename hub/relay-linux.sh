@@ -8,7 +8,7 @@
 #  电脑。中转只看 TLS 握手里的电脑编号（SNI），不解密：对话、文件、屏幕、
 #  令牌它都看不到。加解密只在手机和电脑上做。
 #
-#  做的事：找到 Node.js 20+ → 装 hub/relay/relay.mjs 到 /opt/lamplit-relay →
+#  做的事：找到 Node.js 20+（没有就从系统软件源或 NodeSource 装上）→ 装 hub/relay/relay.mjs 到 /opt/lamplit-relay →
 #  注册成 lamplit-relay 服务（独立的临时账号，只能写自己的数据目录）→ 等它
 #  生成自己的证书和「加入密码」→ 把证书指纹和加入密码交回给装它的电脑。
 #  可以重复运行：数据目录（证书、加入密码、已登记的电脑）保留不变；换端口就是
@@ -59,13 +59,100 @@ fi
 [[ "$PORT" =~ ^[0-9]{4,5}$ ]] && [ "$PORT" -ge 1024 ] && [ "$PORT" -le 65535 ] || fail "端口不对：$PORT（要 1024–65535）"
 command -v systemctl >/dev/null 2>&1 || fail "这台服务器没有 systemd，暂时没法装成服务"
 
-# 1. Node.js 20+：Lamplit 装过的那份优先，其次系统自带的。
+# 1. Node.js 20+：Lamplit 装过的那份优先，其次系统里已有的；都没有（或太旧）就自己装（1.5.51）。
 node_ok() { [ -x "$1" ] && [ "$("$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -ge 20 ]; }
-NODE=""
-for c in /opt/desk-hub/runtime/bin/node "$(command -v node 2>/dev/null || true)"; do
-  if [ -n "$c" ] && node_ok "$c"; then NODE="$c"; break; fi
-done
-[ -n "$NODE" ] || fail "这台服务器上没有 Node.js 20 以上（先用「添加机器」把 Lamplit 装上，它会带上 Node.js）"
+find_node() {
+  NODE=""
+  for c in /opt/desk-hub/runtime/bin/node "$(command -v node 2>/dev/null || true)" /usr/bin/node; do
+    if [ -n "$c" ] && node_ok "$c"; then NODE="$c"; return 0; fi
+  done
+  return 1
+}
+
+# 从可信的地方装 Node.js：系统自己的软件源（版本够 20 就用它），否则 NodeSource
+# （Node.js 官网列出的 Linux 软件源）固定的大版本 NODE_MAJOR。NodeSource 的软件包
+# 有签名，apt 用 signed-by、dnf/yum 用 gpgcheck=1 来验，不运行网上下载的脚本。
+NODE_MAJOR=22
+NODE_LOG=/tmp/lamplit-node-install.log
+install_node() {
+  [ -r /etc/os-release ] || fail "不认识这个系统（没有 /etc/os-release），没法自动装 Node.js。最省事的是把这台云服务器重装成 Ubuntu 24.04 再装中转；或者先自己装好 Node.js 20 或更新。说明：https://20chuangge.github.io/lamplit/docs.html#outside"
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  local ids=" ${ID:-} ${ID_LIKE:-} " arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64|aarch64|arm64) ;;
+    *) fail "这台服务器的处理器（$arch）没有现成的 Node.js 软件包：请先自己装好 Node.js 20 或更新，再装中转" ;;
+  esac
+  : > "$NODE_LOG"
+  if command -v apt-get >/dev/null 2>&1 && [[ "$ids" =~ \ (debian|ubuntu)\  ]]; then
+    say "正在安装 Node.js（中转要用它运行；这台服务器上没有 20 或更新的版本）…"
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update >>"$NODE_LOG" 2>&1 || true
+    local cand
+    cand="$(apt-cache policy nodejs 2>/dev/null | sed -n 's/^ *Candidate: *\([0-9]*\).*/\1/p' | head -1)"
+    if [ "${cand:-0}" -ge 20 ] 2>/dev/null; then
+      say "用系统软件源里的 Node.js $cand（${PRETTY_NAME:-$ID}）"
+      apt-get install -y nodejs >>"$NODE_LOG" 2>&1 || fail "安装系统自带的 Node.js 失败（细节在服务器的 $NODE_LOG）"
+    else
+      say "系统软件源里的 Node.js 太旧，改用 Node.js 官网推荐的软件源（NodeSource）装 Node.js $NODE_MAJOR：软件包有签名，会先验证再装"
+      apt-get install -y ca-certificates curl gnupg >>"$NODE_LOG" 2>&1 || fail "安装 curl / gnupg 失败（细节在服务器的 $NODE_LOG）"
+      mkdir -p /usr/share/keyrings
+      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /usr/share/keyrings/nodesource.gpg 2>>"$NODE_LOG" \
+        || fail "下载 NodeSource 的签名钥匙失败（这台服务器连不上 deb.nodesource.com？）"
+      chmod 644 /usr/share/keyrings/nodesource.gpg
+      rm -f /etc/apt/sources.list.d/nodesource.list
+      cat > /etc/apt/sources.list.d/nodesource.sources <<EOF
+Types: deb
+URIs: https://deb.nodesource.com/node_${NODE_MAJOR}.x
+Suites: nodistro
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /usr/share/keyrings/nodesource.gpg
+EOF
+      printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' > /etc/apt/preferences.d/nodejs
+      apt-get update >>"$NODE_LOG" 2>&1 || fail "读取 NodeSource 软件源失败（细节在服务器的 $NODE_LOG）"
+      apt-get install -y nodejs >>"$NODE_LOG" 2>&1 || fail "从 NodeSource 安装 Node.js 失败（细节在服务器的 $NODE_LOG）"
+    fi
+  elif [[ "$ids" =~ \ (rhel|centos|fedora|rocky|almalinux|ol|tencentos|opencloudos|anolis|alinux|amzn)\  ]] && { command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; }; then
+    local pm=yum avail
+    command -v dnf >/dev/null 2>&1 && pm=dnf
+    say "正在安装 Node.js（中转要用它运行；这台服务器上没有 20 或更新的版本）…"
+    # 系统自己的：Rocky / Alma / RHEL 8–9 的 AppStream 里有 nodejs:$NODE_MAJOR 这个模块流，新系统直接有新版本。
+    if $pm -y module install "nodejs:$NODE_MAJOR/common" >>"$NODE_LOG" 2>&1 && find_node; then
+      say "用系统软件源里的 Node.js $NODE_MAJOR（${PRETTY_NAME:-$ID}）"
+    else
+      avail="$($pm -q list available nodejs 2>/dev/null | awk '/^nodejs\./ {print $2}' | sed 's/^[0-9]*://' | cut -d. -f1 | sort -n | tail -1)"
+      if [ "${avail:-0}" -ge 20 ] 2>/dev/null; then
+        say "用系统软件源里的 Node.js $avail（${PRETTY_NAME:-$ID}）"
+        $pm install -y nodejs >>"$NODE_LOG" 2>&1 || fail "安装系统自带的 Node.js 失败（细节在服务器的 $NODE_LOG）"
+      else
+        say "系统软件源里的 Node.js 太旧，改用 Node.js 官网推荐的软件源（NodeSource）装 Node.js $NODE_MAJOR：软件包有签名，会先验证再装"
+        rm -f /etc/yum.repos.d/nodesource*.repo
+        cat > /etc/yum.repos.d/nodesource-nodejs.repo <<EOF
+[nodesource-nodejs]
+name=Node.js Packages for Linux RPM based distros - \$basearch
+baseurl=https://rpm.nodesource.com/pub_${NODE_MAJOR}.x/nodistro/nodejs/\$basearch
+priority=9
+enabled=1
+gpgcheck=1
+gpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+module_hotfixes=1
+EOF
+        # 已有一个旧的 nodejs 时是升级，没有时是安装。
+        if rpm -q nodejs >/dev/null 2>&1; then $pm upgrade -y nodejs >>"$NODE_LOG" 2>&1; else $pm install -y nodejs >>"$NODE_LOG" 2>&1; fi \
+          || fail "从 NodeSource 安装 Node.js 失败（细节在服务器的 $NODE_LOG）"
+      fi
+    fi
+  else
+    fail "不认识这个系统（${PRETTY_NAME:-${ID:-未知}}），没法自动装 Node.js。最省事的是在云服务器控制台把系统重装成 Ubuntu 24.04 再装中转；或者先自己装好 Node.js 20 或更新。能自动装的：Ubuntu、Debian、Rocky、AlmaLinux、CentOS、RHEL、TencentOS、OpenCloudOS、Alibaba Cloud Linux。说明：https://20chuangge.github.io/lamplit/docs.html#outside"
+  fi
+  hash -r
+  find_node || fail "装了 Node.js，但还是找不到 20 或更新的版本（细节在服务器的 $NODE_LOG）"
+  say "Node.js $("$NODE" -v) 装好了（$NODE）"
+}
+
+find_node || install_node
 mkdir -p "$BASE"
 # 服务用的临时账号进不了 /root 和 /home：Node 在那里就复制一份过来。
 case "$NODE" in

@@ -702,7 +702,8 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       await uploadFile(client, TUNNEL_PROGRAM, '/tmp/lamplit-relay.mjs');
       await uploadFile(client, TUNNEL_SCRIPT, '/tmp/lamplit-relay-setup.sh');
       setProgress(job, '安装并启动中转服务…');
-      const ran = await execStream(client, `${sudoPrefix}/bin/bash /tmp/lamplit-relay-setup.sh /tmp/lamplit-relay.mjs ${Number(port)}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 180000 });
+      // 1.5.51: the script may install Node.js first (minutes on a slow server); its 「[desk] …」 lines are the progress.
+      const ran = await execStream(client, `${sudoPrefix}/bin/bash /tmp/lamplit-relay-setup.sh /tmp/lamplit-relay.mjs ${Number(port)}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 600000, onLine: (line) => { const m = /^\[desk\] (.+)/.exec(line); if (m) setProgress(job, m[1]); } });
       await execStream(client, 'rm -f /tmp/lamplit-relay.mjs /tmp/lamplit-relay-setup.sh', { timeoutMs: 15000 }).catch(() => {});
       const out = ran.output;
       const field = (k) => (new RegExp(`^${k}=(.*)$`, 'm').exec(out)?.[1] || '').trim();

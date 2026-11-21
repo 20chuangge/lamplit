@@ -2875,7 +2875,15 @@ function relayUpdateCheckupItem(state) {
   const toPair = { kind: 'settings', target: 'sec-pair', label: '去设置' };
   if ((!r && link.relayOld) || (r && !r.auto)) return checkupItem('relay-update', '中转更新', 'info', '这个中转还不会自己更新：在「设置 → 手机和外网」再点一次「重装 / 换端口」（最后一次手动），以后它会跟着 Lamplit 自己更新。', toPair);
   if (!r) return null;
-  if (r.last && !r.last.ok) return checkupItem('relay-update', '中转更新', 'info', `中转这次没有更新：${r.last.reason}。现在用的是 ${r.version}，照常能用。`);
+  // As the relay card (1.5.51): a failure counts only for a version newer than what runs -
+  // 11-21 this line said 「1.5.49 没能正常启动」 while 1.5.50 ran, and the user could not tell it worked.
+  const newer = (a, b) => { const x = String(a).split('.').map(Number); const y = String(b).split('.').map(Number); for (let i = 0; i < 3; i += 1) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+  const offer = link.relayUpdate?.version;
+  const failed = r.last && !r.last.ok && newer(r.last.version, r.version) ? r.last : null;
+  const movedOn = r.last && (r.last.ok ? r.last.version === r.version : !failed);
+  if (failed && !(offer && newer(offer, failed.version))) return checkupItem('relay-update', '中转更新', 'info', `中转这次没有更新：${failed.reason}。现在用的是 ${r.version}，照常能用。`);
+  if (offer && newer(offer, r.version)) return checkupItem('relay-update', '中转更新', 'ok', r.fetching ? `中转正在更新到 ${offer}…` : `中转会自己更新到 ${offer}（几分钟内）。`);
+  if (movedOn) return checkupItem('relay-update', '中转更新', 'ok', `中转已更新到 ${r.version}，以后也会自己更新。`);
   return checkupItem('relay-update', '中转更新', 'ok', `中转会跟着 Lamplit 自己更新，现在是 ${r.version}。`);
 }
 
@@ -4237,6 +4245,14 @@ route('DELETE', /^\/api\/x$/, async (_req, _res, { query, state }) => {
 //   GET /api/machine-notes -> {notes:{machine:{note, by, confirmed?}}, here}
 //   PUT /api/machine-notes {machine, note}   the human's words (empty: written from what is known again)
 /** Machines without a line get one written from their bots (never over the human's). */
+/**
+ * Is this machine a server rather than the human's own computer (1.5.51 test: a cloud
+ * server called itself 「你的电脑，有你的个人文件」)? Set up for the bots, a Linux box,
+ * or a name that says so.
+ */
+function selfIsServer(name) {
+  return process.env.DESK_MACHINE_MODE === 'remote' || process.platform === 'linux' || /云|服务器|server|cloud|vps|ubuntu|linux|主机/i.test(String(name || ''));
+}
 let peersForNotes = null;
 const refsPeerByName = (name) => (peersForNotes?.list?.() || []).find((p) => p.name === name) || null;
 async function fillMachineNotes(notes, roster, peers = null) {
@@ -4244,8 +4260,7 @@ async function fillMachineNotes(notes, roster, peers = null) {
   if (!notes) return;
   for (const m of roster || []) {
     if (notes.get(m.machine)?.by && notes.get(m.machine).by !== 'auto') continue;
-    if (!(m.bots || []).length) continue;
-    await notes.autoFill(m.machine, suggestNote({ bots: m.bots, alwaysOn: /云|服务器|server|cloud|vps|ubuntu|linux|主机/i.test(m.machine) }));
+    await notes.autoFill(m.machine, suggestNote({ alwaysOn: /云|服务器|server|cloud|vps|ubuntu|linux|主机/i.test(m.machine) }));
   }
   // The facts of each profile: always on (a server's name says so), how it is reached.
   for (const m of roster || []) {
@@ -4258,10 +4273,9 @@ async function fillMachineNotes(notes, roster, peers = null) {
   // This machine too: the human's own computer has their files; one given to the bots stays on.
   const here = selfMachineName();
   if (here && !(notes.get(here)?.by && notes.get(here).by !== 'auto')) {
-    const remote = process.env.DESK_MACHINE_MODE === 'remote';
-    await notes.autoFill(here, suggestNote({ bots: await listBots().catch(() => []), alwaysOn: remote, personal: !remote }));
+    await notes.autoFill(here, suggestNote({ alwaysOn: selfIsServer(here), personal: !selfIsServer(here) }));
   }
-  if (here) await notes.setFacts(here, { alwaysOn: process.env.DESK_MACHINE_MODE === 'remote', kind: process.env.DESK_MACHINE_MODE === 'remote' ? 'bots' : 'yours' }).catch(() => {});
+  if (here) await notes.setFacts(here, { alwaysOn: selfIsServer(here), kind: selfIsServer(here) ? 'bots' : 'yours' }).catch(() => {});
 }
 route('GET', /^\/api\/machine-notes$/, async (_req, _res, { state }) => {
   await fillMachineNotes(state.machineNotes, await state.roster.list().catch(() => []), state.peers);

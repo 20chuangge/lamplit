@@ -132,6 +132,11 @@ async function patchMcp(id, body, okText) {
 }
 
 /** What a connected server's row says on the right. */
+/** Connected means switched on (1.5.51): a switched-off app reads 「已停用」 and is not counted, filtered or listed first as connected. */
+function mcpIsOn(srv) {
+  return Boolean(srv) && srv.enabled !== false && srv.state !== 'off';
+}
+
 function mcpStateLabel(srv) {
   if (!srv) return '';
   if (srv.state === 'ready') return `✓ 已连接`;
@@ -513,29 +518,47 @@ function mcpTile(app) {
   return card;
 }
 
+/**
+ * The X card above follows the search and the chips: shown for x / 推特 / twitter,
+ * 全部, 通信, and 已连接 only when a part of it is switched on. -> shown or not.
+ * Also called when the card itself has loaded, so it never unhides itself past a filter.
+ */
+function syncXCardShown() {
+  const q = String($('mcp-search')?.value || '').trim().toLowerCase();
+  const shown = (!q || /^(x|推特|twitter)/i.test(q)) && (mcpUi.cat === '全部' || mcpUi.cat === '通信' || (mcpUi.cat === '已连接' && xConnectedCount() > 0));
+  const xCard = $('x-card');
+  if (xCard && xUi.view) xCard.hidden = !shown;
+  return shown;
+}
+
 function renderMcp() {
   const list = $('mcp-catalog');
   if (!list) return;
   list.innerHTML = '';
   const q = String($('mcp-search')?.value || '').trim().toLowerCase();
   const custom = mcpUi.servers.filter((s) => !s.catalogId).map((s) => ({ id: `custom-${s.id}`, name: s.name, category: '自己添加的', badge: s.name.slice(0, 1).toUpperCase(), color: '#7a5af8', desc: s.transport !== 'stdio' ? hostOfUrl(s.url) : s.command, auth: 'custom', server: s }));
-  const all = [...(mcpUi.apps || []), ...custom];
-  const connected = all.filter((a) => a.server);
-  const cats = ['全部', ...(connected.length ? ['已连接'] : []), ...new Set(all.map((a) => a.category))];
+  // An app that lives in a card of its own (X, 1.5.51) is not listed again in the grid or its search.
+  const all = [...(mcpUi.apps || []).filter((a) => !a.inCard), ...custom];
+  const connected = all.filter((a) => mcpIsOn(a.server));
+  const cats = ['全部', ...(connected.length + xConnectedCount() ? ['已连接'] : []), ...new Set(all.map((a) => a.category))];
   if (!cats.includes(mcpUi.cat)) mcpUi.cat = '全部';
   const chips = el('div', 'mcp-chips');
   for (const cat of cats) {
-    const chip = el('button', `chip-btn${mcpUi.cat === cat ? ' on' : ''}`, cat === '已连接' ? `已连接 ${connected.length}` : cat);
+    const chip = el('button', `chip-btn${mcpUi.cat === cat ? ' on' : ''}`, cat === '已连接' ? `已连接 ${connected.length + xConnectedCount()}` : cat);
     chip.type = 'button';
     chip.addEventListener('click', () => { mcpUi.cat = cat; renderMcp(); });
     chips.appendChild(chip);
   }
   list.appendChild(chips);
-  const apps = all.filter((a) => (mcpUi.cat === '全部' || (mcpUi.cat === '已连接' ? a.server : a.category === mcpUi.cat))
+  const apps = all.filter((a) => (mcpUi.cat === '全部' || (mcpUi.cat === '已连接' ? mcpIsOn(a.server) : a.category === mcpUi.cat))
     && (!q || `${a.name} ${a.desc} ${a.category}`.toLowerCase().includes(q)));
-  if (!apps.length) { list.appendChild(el('div', 'row-note', q ? '没有找到。目录里没有的，可以在下面自己添加。' : '还没有接任何应用。')); return; }
+  const xShown = syncXCardShown();
+  if (q && xShown && /^(x|推特|twitter)/i.test(q)) list.appendChild(el('div', 'row-note', 'X 在上面的「X（推特）」卡里：发帖和搜帖子都在那里。'));
+  if (!apps.length) { if (!xShown) list.appendChild(el('div', 'row-note', q ? '没有找到。目录里没有的，可以在下面自己添加。' : '还没有接任何应用。')); return; }
   // Connected first, then the rest in catalog order.
-  apps.sort((x, y) => Number(Boolean(y.server)) - Number(Boolean(x.server)));
+  // Switched on first, then the ones switched off, then the rest.
+  const rank = (a) => (mcpIsOn(a.server) ? 0 : a.server ? 1 : 2);
+  apps.sort((x, y) => rank(x) - rank(y));
   const grid = el('div', 'mcp-grid');
   apps.forEach((app) => grid.appendChild(mcpTile(app)));
   list.appendChild(grid);

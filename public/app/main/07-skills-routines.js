@@ -872,10 +872,17 @@ async function loadXCard() {
   const box = $('x-card');
   if (!box) return;
   try { xUi.view = await api('/api/x'); } catch { box.hidden = true; return; }
-  box.hidden = false;
   renderXCard();
+  // Shown or not as the search and the chips say (1.5.51 test: it showed under 已连接 with only a switched-off part).
+  syncXCardShown();
 }
 
+/**
+ * One X card (1.5.51; X was here twice). Two parts on the same X developer app:
+ *   发帖和回复              sign in on X's own page (OAuth 2.0), every post a draft first
+ *   搜帖子、看用户（可选）  X's hosted app (read-only) with the app's Bearer Token -
+ *                           the catalog entry marked inCard: 'x', not shown in the grid
+ */
 function renderXCard() {
   const box = $('x-card');
   const v = xUi.view;
@@ -884,11 +891,47 @@ function renderXCard() {
   const head = el('div', 'x-card-head');
   head.appendChild(el('span', 'mcp-badge x-badge', 'X'));
   const t = el('div', 'x-card-title');
-  t.appendChild(el('div', null, 'X（推特）发帖和回复'));
-  t.appendChild(el('div', 'tiny muted', v.connected ? `已连接：@${v.username || '你的账号'}` : v.configured ? '应用已填好，还没登录授权' : '用你自己的 X 开发者应用，助手发的每一条都先给你看草稿'));
+  t.appendChild(el('div', null, 'X（推特）'));
+  t.appendChild(el('div', 'tiny muted', '两部分用的是同一个 X 开发者应用：发帖要在 X 的网页上登录授权，搜帖子只要它的 Bearer Token。'));
   head.appendChild(t);
   box.appendChild(head);
-  if (!v.configured || box.dataset.editing === '1') {
+  const post = el('div', 'x-part');
+  post.appendChild(el('div', 'x-part-title', '发帖和回复'));
+  post.appendChild(el('div', 'tiny muted', v.connected ? `已连接：@${v.username || '你的账号'}` : v.configured ? '应用已填好，还没登录授权' : '助手发的每一条都先给你看草稿，你点「发送」才发'));
+  renderXPost(post, v, box);
+  box.appendChild(post);
+  const read = el('div', 'x-part');
+  read.appendChild(el('div', 'x-part-title', '搜帖子、看用户（可选）'));
+  renderXRead(read);
+  box.appendChild(read);
+}
+
+/** 搜帖子、看用户: X's hosted app, with the same panels as any connected app. */
+function renderXRead(part) {
+  const inCard = (mcpUi.apps || []).filter((a) => a.inCard === 'x');
+  const app = inCard[0];
+  if (!app) { part.appendChild(el('div', 'tiny muted', '这台机器的 Lamplit 还不支持。')); return; }
+  const srv = app.server || (mcpUi.servers || []).find((s) => s.catalogId === 'x') || null;
+  part.appendChild(el('div', 'tiny muted', srv ? mcpStateLabel(srv) : '只读：让助手搜 X 上的帖子、看用户和话题。用不着就不用接。'));
+  if (srv) { part.appendChild(mcpServerPanel(srv)); return; }
+  if (!xUi.readOpen) {
+    const open = el('button', 'btn tiny', '接上');
+    open.type = 'button';
+    open.addEventListener('click', () => { xUi.readOpen = true; renderXCard(); });
+    part.appendChild(open);
+    return;
+  }
+  part.appendChild(mcpConnectForm(app));
+}
+
+/** How many of the X card's parts are connected (for 「已连接 N」): 0 or 1. */
+function xConnectedCount() {
+  return xUi.view?.connected || (mcpUi.servers || []).some((s) => s.catalogId === 'x' && mcpIsOn(s)) ? 1 : 0;
+}
+
+/** 发帖和回复: the human's developer app, signing in on X, who may post. */
+function renderXPost(box, v, card) {
+  if (!v.configured || card.dataset.editing === '1') {
     const step1 = el('div', 'row-note');
     step1.appendChild(document.createTextNode('1. 在 '));
     const dev = el('a', null, 'X 开发者后台');
@@ -924,7 +967,7 @@ function renderXCard() {
       save.disabled = true;
       try {
         xUi.view = await api('/api/x/app', { method: 'PUT', body: { ...(id.value.trim() ? { clientId: id.value.trim() } : {}), ...(secret.value.trim() ? { clientSecret: secret.value.trim() } : {}) } });
-        delete box.dataset.editing;
+        delete card.dataset.editing;
         renderXCard();
         toast('保存好了：下一步点「去 X 登录授权」');
       } catch (err) { save.disabled = false; if (!err.quiet) toast(err.message, true); }
@@ -934,7 +977,7 @@ function renderXCard() {
     if (v.configured) {
       const cancel = el('button', 'btn', '取消');
       cancel.type = 'button';
-      cancel.addEventListener('click', () => { delete box.dataset.editing; renderXCard(); });
+      cancel.addEventListener('click', () => { delete card.dataset.editing; renderXCard(); });
       row.appendChild(cancel);
     }
     box.appendChild(row);
@@ -955,7 +998,7 @@ function renderXCard() {
   row.appendChild(login);
   const edit = el('button', 'btn', '改应用');
   edit.type = 'button';
-  edit.addEventListener('click', () => { box.dataset.editing = '1'; renderXCard(); });
+  edit.addEventListener('click', () => { card.dataset.editing = '1'; renderXCard(); });
   row.appendChild(edit);
   if (v.connected) {
     const out = el('button', 'btn', '断开');
@@ -1010,7 +1053,13 @@ function machineNoteLine(name) {
     line.classList.remove('editing');
     line.closest('.machine-row')?.classList.remove('noting');
     const cur = machineNotesUi.notes[name]?.note || '';
-    line.appendChild(el('span', 'muted', `适合：${cur || '还没写（主助理会按上面的助手自己写一句）'}`));
+    const shown = el('span', 'muted machine-note-text', `适合：${cur ? shortNote(cur, 30) : '还没写'}`);
+    if (cur) {
+      shown.title = cur;
+      // No hover on a phone: a tap shows the whole line, another tap folds it.
+      shown.addEventListener('click', () => { const full = shown.classList.toggle('full'); shown.textContent = `适合：${full ? cur : shortNote(cur, 30)}`; });
+    }
+    line.appendChild(shown);
     const edit = el('button', 'link-btn tiny', '改');
     edit.type = 'button';
     edit.title = '主助理按这一句挑机器干活';
@@ -1039,6 +1088,7 @@ function machineNoteLine(name) {
       line.appendChild(input);
       line.appendChild(ok);
       line.appendChild(no);
+      line.appendChild(el('div', 'tiny muted machine-note-where', '只记在这台电脑的 Lamplit 里：这台上的主助理按这一句挑机器。'));
       input.focus();
     });
     line.appendChild(edit);
@@ -1064,19 +1114,59 @@ async function saveNudge() {
   return n;
 }
 
-/** 「适合：…」 under each machine in 设置 → 机器 (1.5.45): what the main assistant picks it for. */
+/** At most n characters, then 「…」. */
+function shortNote(s, n = 30) {
+  const chars = [...String(s || '')];
+  return chars.length > n ? `${chars.slice(0, n).join('')}…` : chars.join('');
+}
+
+/** How a machine is reached, in a few words: its address, Tailscale, or the relay. */
+function machineRoute(m) {
+  const hostPort = (u) => { try { return new URL(u).host; } catch { return String(u || ''); } };
+  if (m.self) return m.url ? hostPort(m.url) : '只在这台电脑上用';
+  if (m.relay) return '经中转';
+  if (m.tailnetUrl) return ['Tailscale', hostPort(m.tailnetUrl)].join(' · ');
+  return m.url ? hostPort(m.url) : '';
+}
+
+/**
+ * 设置 → 机器 (1.5.51, the human: just the name and the address): each row is
+ * the machine's name (this one by its own name, tagged 「这台」), where it is
+ * reached and whether it answers, and one short 「适合」 line behind 「改」. The
+ * bots are not listed here: the sidebar shows them.
+ */
 async function addMachineNotes(box) {
   let here = '';
   try { here = (await api('/api/machine-notes')).here || ''; } catch { return; }
   await loadMachineNotes();
+  let list = [];
+  try { list = (await api('/api/machines')).machines || []; } catch { /* the rows keep what they had */ }
   for (const row of box.querySelectorAll('.machine-row')) {
     const meta = row.querySelector('.machine-meta');
-    let name = row.querySelector('.machine-name')?.textContent || '';
-    if (name === '本机') name = here;
-    if (meta && name && !meta.querySelector('.machine-note')) meta.appendChild(machineNoteLine(name));
+    const nameEl = row.querySelector('.machine-name');
+    if (!meta || !nameEl) continue;
+    const self = row.dataset.self === '1';
+    const name = self ? (here || nameEl.textContent) : nameEl.textContent;
+    if (self && !nameEl.querySelector('.machine-tag')) {
+      nameEl.textContent = name;
+      nameEl.appendChild(el('span', 'machine-tag here', '这台'));
+      // 「这台」 already says it; 「当前」 next to it said the same again (1.5.51 test).
+      for (const t of row.querySelectorAll('.machine-actions .machine-tag')) if (t.textContent === '当前') t.remove();
+    }
+    const m = self ? list.find((x) => x.self) : list.find((x) => !x.self && x.name === name);
+    const sub = row.querySelector('.machine-sub');
+    if (m && sub) {
+      const funnel = sub.querySelector('.funnel-state');
+      sub.innerHTML = '';
+      sub.appendChild(el('span', `dot ${m.online ? 'on' : ''}`));
+      sub.appendChild(document.createTextNode(m.online ? '在线' : '离线'));
+      const route = machineRoute(m);
+      if (route) sub.appendChild(el('span', 'machine-route', ` · ${route}`));
+      if (funnel) sub.appendChild(funnel);
+    }
+    if (!meta.querySelector('.machine-note')) meta.appendChild(machineNoteLine(name));
   }
 }
-
 /* --- 设置 → 主动: the initiative layer, all in one place (1.5.45) ------------------ */
 const initiativeUi = { view: null };
 const INITIATIVE_EVENTS = [

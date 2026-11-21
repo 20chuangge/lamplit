@@ -12,14 +12,23 @@
 ## 1. 装
 
 要一台有公网 IP 的 Linux 云服务器（腾讯云轻量、CVM、阿里云 ECS 等都行），和它的 SSH 账号
-（root，或能 sudo 的账号）。服务器上要有 **Node.js 20 或更新**（中转用它运行）：用「添加机器」装过 Lamplit
-的服务器已经有了；没有的话安装会停下并提示「这台服务器上没有 Node.js 20 以上」。
+（root，或能 sudo 的账号）。中转用 **Node.js 20 或更新** 运行，不用你先装：用「添加机器」装过 Lamplit
+的服务器已经有了；没有（或太旧）的话，安装时会自动装上（1.5.51）。
+
+- 先用系统自己的软件源：版本够 20 就直接装它（例如 Debian 13；Rocky / AlmaLinux / RHEL 8–9 用
+  AppStream 里的 `nodejs:22` 模块）。
+- 系统自带的太旧（例如 Ubuntu 22.04 / 24.04、Debian 12）就加 [NodeSource](https://github.com/nodesource/distributions)
+  的 Node.js 22 软件源（Node.js 官网列出的 Linux 软件源）。软件包有 NodeSource 的签名：apt 用 `Signed-By`、
+  dnf / yum 用 `gpgcheck=1` 先验证再装，不运行网上下载的脚本。
+- 支持自动装的系统：Ubuntu、Debian、Rocky、AlmaLinux、CentOS、RHEL、TencentOS、OpenCloudOS、Alibaba Cloud Linux
+  （x86_64 或 arm64）。别的系统会停下，建议在云服务器控制台重装成 Ubuntu 24.04，或者先自己装好 Node.js 20 或更新。装的细节记在服务器的 `/tmp/lamplit-node-install.log`。
+- 装的过程会显示在 Lamplit 的进度里（「正在安装 Node.js…」→「Node.js v22.x 装好了」），慢的服务器可能要几分钟。
 
 > 给小白的版本（三种方式怎么选、一步步怎么做、直连没打通查什么）在官网文档的
 > [「在外面也能用」](https://20chuangge.github.io/lamplit/docs.html#outside)。这里是完整说明。
 
 1. 在家里那台电脑的 Lamplit 里打开 **设置 → 手机和外网**，找到「出门在外：用你的云服务器中转」。
-2. 填服务器的公网 IP、SSH 用户名和密码，点「在这台服务器上装中转」。约 10 秒装好。
+2. 填服务器的公网 IP、SSH 用户名和密码，点「在这台服务器上装中转」。一般约 10 秒装好；要先装 Node.js 的话要几分钟（进度里会写「正在安装 Node.js…」）。
    - SSH 密码只用这一次，不保存。
    - 中转装成一个独立的 systemd 服务 `lamplit-relay`，用临时账号运行，只能写自己的数据目录
      （`/var/lib/private/lamplit-relay`），程序在 `/opt/lamplit-relay`。

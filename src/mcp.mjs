@@ -126,7 +126,9 @@ export const MCP_CATALOG = [
     id: 'x', icon: true, name: 'X（推特）', category: '通信', badge: 'X', color: '#000000',
     desc: '搜帖子、看用户和话题（X 官方托管 MCP，只读）', auth: 'token', transport: 'http', url: 'https://api.x.com/mcp',
     headers: { Authorization: 'Bearer ${TOKEN}' }, secret: 'TOKEN',
-    help: '在 X 开发者后台建一个 App，在它的「Keys and Tokens」里复制 Bearer Token 贴到下面。用这个 token 只能读，不能发帖；按 X API 的用量计费。',
+    help: '用和「发帖和回复」同一个 X 开发者应用：在它的「Keys and Tokens」里复制 Bearer Token 贴到下面。这个 token 只能读，不能发帖；按 X API 的用量计费。',
+    // Shown inside the one X card (1.5.51), not as a second X in the grid: posting and searching are one app.
+    inCard: 'x',
     tokenUrl: 'https://developer.x.com/en/portal/dashboard', tokenLabel: '去 X 开发者后台 ↗',
   },
   {
@@ -941,6 +943,7 @@ export function createMcpManager({
           auth: e.auth, help: e.help, tokenUrl: e.tokenUrl || '', tokenLabel: e.tokenLabel || '',
           fields: (e.fields || []).map((f) => ({ key: f.key, label: f.label, secret: Boolean(f.secret), placeholder: f.placeholder || '', options: f.options || null })),
           local: Boolean(e.local),
+          ...(e.inCard ? { inCard: e.inCard } : {}),
           server: pub,
         };
       });

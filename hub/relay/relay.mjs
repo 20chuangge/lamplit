@@ -753,7 +753,7 @@ export const DEFAULT_LIMITS = {
 // Settings, join secret and registered computers live in the data folder and
 // are never touched. Anything needing root (the service file) still needs 「重装」.
 
-export const RELAY_VERSION = '1.5.50';
+export const RELAY_VERSION = '1.5.51';
 /** Lamplit's release key (Ed25519, SPKI DER, base64) - equal to UPDATE_PUBLIC_KEYS in src/selfupdate.mjs. */
 export const RELAY_UPDATE_KEYS = ['MCowBQYDK2VwAyEA4GZ8GzzbeRaLOSrj9YgUcZ7JKoIbczSLfVv5XSot9ms='];
 const MAX_RELAY_CODE = 2 * 1024 * 1024;
@@ -864,6 +864,7 @@ function fetchViaTunnel(entry, urlPath, maxBytes) {
  * createRelayUpdater({running:{version, sha256}, stateDir, keys?, onStaged(version), minIntervalMs?, log?})
  *   offer(from, {version, sha256})  a computer's nudge; from = {id, fetch(path, max), tell?()}
  *   install(manifest, bytes)        check and stage (also used by the tests)
+ *   confirmRunning()                this version is up: last = {ok:true} if it is the newest tried (1.5.51)
  *   status()                        {version, sha256, auto, fetching, last}
  */
 export function createRelayUpdater({ running, stateDir, keys = RELAY_UPDATE_KEYS, onStaged = () => {}, minIntervalMs = 10 * 60 * 1000, log = () => {} }) {
@@ -939,10 +940,30 @@ export function createRelayUpdater({ running, stateDir, keys = RELAY_UPDATE_KEYS
     })();
   }
 
+  /**
+   * This version is up (1.5.51): a newer-or-same version than the last result's
+   * replaces it with {ok:true}. 11-21: the 1.5.50 relay kept saying "1.5.49 did
+   * not start" - the book was read once, before the supervisor's "runs fine".
+   * A version rolled back to (older than the failed one) leaves the failure.
+   * A fresh install that never updated says nothing.
+   */
+  function confirmRunning() {
+    const book = readBook(stateDir);
+    const prior = book.last;
+    const updated = book.current?.version === running.version;
+    if (prior ? (prior.ok && prior.version === running.version) || compareRelayVersions(running.version, prior.version) < 0 : !updated) return;
+    book.last = { ok: true, version: running.version, at: new Date().toISOString() };
+    writeBook(stateDir, book);
+    last = book.last;
+    log(`relay ${running.version} is up; the last update result says so`);
+  }
+
   return {
     offer,
     install,
-    status: () => ({ version: running.version, sha256: running.sha256, auto: true, fetching, last }),
+    confirmRunning,
+    // The book as it is now (1.5.51), not as it was at start: the supervisor writes it too.
+    status: () => ({ version: running.version, sha256: running.sha256, auto: true, fetching, last: readBook(stateDir).last ?? last }),
   };
 }
 
@@ -1479,6 +1500,8 @@ async function main() {
     try { await relay.listenStun(bound, host); stun = true; } catch (err) { log(`STUN (UDP ${bound}) not started: ${err.message}`); }
     console.log(JSON.stringify({ event: 'ready', port: bound, fingerprint: identity.fingerprint, stun }));
     startedFine();
+    // Said at once (1.5.51): computers connecting from now on hear "updated to x", not an older failure.
+    try { updater?.confirmRunning(); } catch (err) { log(`could not note the update result: ${err.message}`); }
     log(`listening on ${host}:${bound} (TCP${stun ? ' + UDP for STUN' : ''}); certificate ${identity.fingerprint}`);
   });
   setInterval(() => {

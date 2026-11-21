@@ -161,6 +161,7 @@ async function main() {
     await stage('relay version raised when relay.mjs changes (1.5.49)', async () => (await import('./smoke-1549.mjs')).relayVersionChecks({ check }));
     await stage('a 1.5.47 relay with this hub (1.5.49)', async () => (await import('./smoke-1549.mjs')).oldRelayChecks({ check }));
     await stage('relay updating itself in the server layout (1.5.50)', async () => (await import('./smoke-relay-layout.mjs')).relayLayoutChecks({ check }));
+    await stage('the relay says it updated; the installer brings Node.js (1.5.51)', async () => { const m = await import('./smoke-1551.mjs'); await m.lastResultChecks({ check }); await m.installerChecks({ check }); });
     await stage('bots', scenarioBots);
     await stage('bot avatars', scenarioBotAvatars);
     await stage('chief turn', scenarioChiefTurn);
@@ -234,6 +235,7 @@ async function main() {
     await stage('1.5.45: 替你想 - the machine picked for you, drafts before anything goes out, bots changed by saying so, what waits for you', scenarioThink1545);
     await stage('1.5.45: the four building blocks - initiative, the outgoing gate, adjust by talking, the machine profile', scenarioBlocks1545);
     await stage('1.5.50: what the money really is, and spending less of it', async () => (await import('./smoke-cost.mjs')).costChecks({ check, readText, api, home, toolsMod }));
+    await stage('1.5.51: one X card, and machines by name and address', scenarioUi1551);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -5693,7 +5695,7 @@ async function scenarioApps1512() {
   const apps = await readText('../public/app/main/09-apps.js');
   const serverSrc = await readText('../src/server.mjs');
   check('A2 page: a grid of tiles with category chips (全部 / 已连接 / each category), connected first, an open tile spans the row; fields form; local apps connect here only',
-    apps.includes('function mcpTile(app)') && apps.includes("const grid = el('div', 'mcp-grid');") && apps.includes("const cats = ['全部', ...(connected.length ? ['已连接'] : [])")
+    apps.includes('function mcpTile(app)') && apps.includes("const grid = el('div', 'mcp-grid');") && apps.includes("const cats = ['全部', ...(connected.length + xConnectedCount() ? ['已连接'] : [])")
     && apps.includes("} else if (app.auth === 'fields') {") && apps.includes('{ here: app.local }')
     && serverSrc.includes("if (body?.everywhere && !local) out.peers = await syncMcpToPeers("));
   const B = await import('../src/boundary.mjs');
@@ -11744,8 +11746,8 @@ async function scenarioThink1545() {
     await notes.autoFill('腾讯云', auto);
     await notes.set('书房电脑', '处理文件，有你的照片', 'human');
     await notes.autoFill('书房电脑', '别的');
-    check('T45-9 each machine has a line on what it is good for: written from its bots when it is new, the human\'s (or the assistant\'s) words win and are not overwritten',
-      /一直开着/.test(auto) && /发布/.test(auto) && /策略/.test(auto) && notes.get('腾讯云').note === auto && notes.get('腾讯云').by === 'auto'
+    check('T45-9 each machine has a line on what it is good for: written from what is known when it is new (1.5.51: not its bots), the human\'s (or the assistant\'s) words win and are not overwritten',
+      /一直开着/.test(auto) && !/发布|策略/.test(auto) && notes.get('腾讯云').note === auto && notes.get('腾讯云').by === 'auto'
       && notes.get('书房电脑').note === '处理文件，有你的照片' && notes.get('书房电脑').by === 'human');
     const lines = MN.machinesPrompt({ notes: notes.all(), roster: [{ machine: '腾讯云', online: true, bots: [{ id: 'b1', name: '策略', role: '求职策略与筛岗' }] }, { machine: '书房电脑', online: false, bots: [] }], here: '客厅电脑' }).join('\n');
     check('T45-10 the main assistant\'s prompt names each machine, whether it answers, what it is good for and its bots - names only, no addresses - and how to pick (said > fits > personal files stay > ask)',
@@ -12136,7 +12138,7 @@ async function scenarioBlocks1545() {
       && page.includes("${ev.botName || botById(ev.botId)?.name || ev.botId} 结束") && page.includes('setTimeout(() => loadRoster({ fresh: true }), 600);'));
     const MN2 = await import('../src/machinenotes.mjs');
     const line = MN2.suggestNote({ bots: [{ name: '发布', role: '后台登录、上传、定时发布与数据抓取（B站/抖音/小红书/公众号），只在人类点头后发' }] });
-    check('BT45-4 the automatic 「适合」 line cuts a job at a clause, never inside brackets', line.includes('发布（后台登录、上传、定时发布与数据抓取）') && !line.includes('B站'), line);
+    check('BT45-4 the automatic 「适合」 line never carries a bot or its job (1.5.51: the sidebar shows the bots)', !line.includes('发布') && !line.includes('B站'), line);
   }
 
   // --- the retest (11-20) ------------------------------------------------------------------
@@ -12158,4 +12160,62 @@ async function scenarioBlocks1545() {
       && page.includes('initiative.say'));
   }
   await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// 1.5.51: one X card (posting and, optionally, searching), and a machines page
+// that shows each machine by its name, address and whether it answers.
+// ---------------------------------------------------------------------------
+async function scenarioUi1551() {
+  const MCP = await import('../src/mcp.mjs');
+  const MN = await import('../src/machinenotes.mjs');
+  const page = await readText('../public/index.html');
+
+  // --- 1. one X card -------------------------------------------------------------------------
+  const xApp = MCP.MCP_CATALOG.find((a) => a.id === 'x');
+  check('U51-1 the hosted X app stays in the catalog (a connection made with it keeps working) but is marked as living in the X card; it says it uses the same developer app',
+    xApp && xApp.url === 'https://api.x.com/mcp' && xApp.inCard === 'x' && /同一个/.test(xApp.help || ''), JSON.stringify(xApp));
+  check('U51-2 the catalog grid and its search leave out apps that live in a card of their own (X is shown once)',
+    page.includes('.filter((a) => !a.inCard)') && page.includes("const inCard = (mcpUi.apps || []).filter((a) => a.inCard === 'x')"));
+  check('U51-3 the X card has two parts - 「发帖和回复」 (sign-in on X) and 「搜帖子、看用户（可选）」 (the hosted app with a Bearer Token) - and one line saying both use the same X developer app',
+    page.includes("'发帖和回复'") && page.includes("'搜帖子、看用户（可选）'") && page.includes('两部分用的是同一个 X 开发者应用') && page.includes('mcpServerPanel(srv)') && page.includes('mcpConnectForm(app)'));
+  check('U51-4 the X card counts in 「已连接」 when either part is connected, and searching for X / 推特 / twitter shows the card',
+    page.includes('xConnectedCount()') && page.includes('/^(x|推特|twitter)/i'));
+
+  // --- 2. the machines page --------------------------------------------------------------------
+  const auto = MN.suggestNote({ name: '腾讯云', bots: [{ name: '发布', role: '后台登录、上传' }, { name: '策略', role: '筛岗' }], alwaysOn: true });
+  const none = MN.suggestNote({ bots: [{ name: '发布', role: '后台登录' }] });
+  check('U51-5 the automatic 「适合」 line no longer lists the bots (the sidebar shows them): a short line or nothing',
+    !/发布|策略|助手/.test(auto) && /一直开着/.test(auto) && none === '', JSON.stringify({ auto, none }));
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-ui51-'));
+  const notes = MN.createMachineNotes({ file: path.join(tmp, 'mn.json') });
+  await notes.autoFill('腾讯云', '一直开着，适合定时任务和长时间跑的活；上面的助手：发布（后台登录）、策略（筛岗）');
+  await notes.set('书房电脑', '处理照片', 'human');
+  await notes.autoFill('腾讯云', MN.suggestNote({ bots: [{ name: '发布' }], alwaysOn: true }));
+  await notes.autoFill('书房电脑', '');
+  const old = MN.createMachineNotes({ file: path.join(tmp, 'mn2.json') });
+  await old.autoFill('旧机器', '上面的助手：发布（后台登录）');
+  await old.autoFill('旧机器', '');
+  check('U51-6 an old automatic line with the bot list is replaced quietly (or cleared); the human\'s own words are never touched',
+    !/上面的助手/.test(notes.get('腾讯云').note) && notes.get('书房电脑').note === '处理照片' && old.get('旧机器').note === '');
+  await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+
+  const machinesJs = await readText('../public/app/main/11-machines.js');
+  check('U51-7 this machine is listed by its own name with a 「这台」 tag, not as 「本机」',
+    !machinesJs.includes("name: '本机'") && page.includes("el('span', 'machine-tag here', '这台')"));
+  check('U51-8 each row: the name, the address or the way it is reached, online or not; 「适合」 one short line (about 30 characters, the whole line on hover), edited behind 「改」',
+    page.includes('function machineRoute(m)') && page.includes('function shortNote(') && page.includes('shortNote(cur, 30)') && page.includes("'经中转'") && page.includes("'Tailscale'")
+    && page.includes("'在线'") && page.includes("'离线'") && !page.includes('还没写（主助理会按上面的助手自己写一句）'));
+  const serverSrc = await readText('../src/server.mjs');
+  check('U51-9 (beginner test) a server never calls itself 「你的电脑」: set up for the bots, Linux, or a server\'s name -> 「一直开着」',
+    serverSrc.includes('function selfIsServer(name)') && serverSrc.includes("suggestNote({ alwaysOn: selfIsServer(here), personal: !selfIsServer(here) })") && serverSrc.includes("process.platform === 'linux'"));
+  check('U51-10 (beginner test) editing 「适合」 says it is this machine\'s record; the line stays one line with 「改」 at its end and a tap shows it all; 「这台」 is not repeated as 「当前」; a search for X says the card above has it; a switched-off X does not count as connected',
+    page.includes('只记在这台电脑的 Lamplit 里') && page.includes("shown.classList.toggle('full')") && page.includes("if (t.textContent === '当前') t.remove();")
+    && page.includes('X 在上面的「X（推特）」卡里') && page.includes("s.catalogId === 'x' && mcpIsOn(s)"));
+  check('U51-12 (recheck) the X card never unhides itself after it loads: the same rule decides it then (under 已连接 it shows only when a part is on)',
+    page.includes('function syncXCardShown()') && page.includes('  const xShown = syncXCardShown();') && /renderXCard\(\);\n\s+\/\/ Shown or not[^\n]*\n\s+syncXCardShown\(\);/.test(page) && !/box\.hidden = false;\n\s+renderXCard\(\);/.test(page));
+  check('U51-11 every app, not only X: switched off is 「已停用」, never 「已连接」 - not counted in 已连接 N, not under the 已连接 chip, listed after the ones switched on',
+    page.includes("return Boolean(srv) && srv.enabled !== false && srv.state !== 'off';") && page.includes('const connected = all.filter((a) => mcpIsOn(a.server));')
+    && page.includes("(mcpUi.cat === '已连接' ? mcpIsOn(a.server) : a.category === mcpUi.cat)") && page.includes('const rank = (a) => (mcpIsOn(a.server) ? 0 : a.server ? 1 : 2);')
+    && page.includes("if (srv.state === 'off') return '已停用';"));
 }

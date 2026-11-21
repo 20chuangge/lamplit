@@ -362,7 +362,7 @@ function renderMachinesList() {
     return;
   }
   const row = (m) => `
-    <div class="machine-row ${m.current ? 'current' : ''}">
+    <div class="machine-row ${m.current ? 'current' : ''}"${m.self ? ' data-self="1"' : ''}>
       <div class="machine-avatar">${escapeHtml((m.name || '?').slice(0, 1).toUpperCase())}</div>
       <div class="machine-meta">
         <div class="machine-name">${escapeHtml(m.name)}</div>
@@ -373,7 +373,7 @@ function renderMachinesList() {
         ${m.url ? `<button class="btn tiny" data-rename="${escapeHtml(m.url)}">改名</button><button class="btn tiny" data-remove="${escapeHtml(m.url)}">移除</button>` : ''}
       </div>
     </div>`;
-  const rows = [row({ url: '', name: '本机', sub: '助手和浏览器都在这台电脑上', current: machineBridge.local })];
+  const rows = [row({ url: '', name: machineDisplayName() || '这台电脑', self: true, sub: '', current: machineBridge.local })];
   for (const m of machineBridge.machines || []) {
     rows.push(row({ url: m.url, name: m.name, sub: m.url, current: m.url === machineBridge.current }));
   }
@@ -397,7 +397,7 @@ async function renderBrowserMachines() {
   const mine = machines.find((m) => m.self);
   const others = machines.filter((m) => !m.self);
   const row = (m) => `
-    <div class="machine-row ${m.self ? 'current' : ''}">
+    <div class="machine-row ${m.self ? 'current' : ''}"${m.self ? ' data-self="1"' : ''}>
       <div class="machine-avatar">${escapeHtml((m.name || '?').slice(0, 1).toUpperCase())}</div>
       <div class="machine-meta">
         <div class="machine-name">${escapeHtml(m.name)}</div>

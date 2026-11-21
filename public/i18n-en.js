@@ -2869,4 +2869,18 @@ window.DESK_I18N_EN = {
   "不到 1% 的输出": "under 1% of the output",
   "成本设置已保存。{0} 没勾峰谷价：闲时本来是半价，现在也按全价估算": "Cost settings saved. {0} has no peak/off-peak box ticked: off-peak hours are half price, but they are now estimated at the full price",
   "看原因（中转最后打印的几行）": "Why (the last lines the relay printed)",
+  // 1.5.51 one X card, machine rows
+  "两部分用的是同一个 X 开发者应用：发帖要在 X 的网页上登录授权，搜帖子只要它的 Bearer Token。": "Both parts use the same X developer app: posting needs you to sign in on X's own page; searching only needs the app's Bearer Token.",
+  "发帖和回复": "Posts and replies",
+  "助手发的每一条都先给你看草稿，你点「发送」才发": "Every post an assistant writes is shown to you as a draft; it goes out only when you press Send",
+  "搜帖子、看用户（可选）": "Search posts, look up users (optional)",
+  "这台机器的 Lamplit 还不支持。": "Lamplit on this machine does not support it yet.",
+  "只读：让助手搜 X 上的帖子、看用户和话题。用不着就不用接。": "Read-only: lets assistants search posts, users and topics on X. Skip it if you don't need it.",
+  "接上": "Connect",
+  "还没写": "Not written yet",
+  "只在这台电脑上用": "Only used on this computer",
+  "经中转": "Through the relay",
+  // 1.5.51 test fixes
+  "只记在这台电脑的 Lamplit 里：这台上的主助理按这一句挑机器。": "Kept in this computer's Lamplit only: the main assistant here picks machines by this line.",
+  "X 在上面的「X（推特）」卡里：发帖和搜帖子都在那里。": "X is in the “X (Twitter)” card above: posting and searching are both there.",
 };

@@ -162,8 +162,8 @@
     <h3 id="outside-relay">用自己的云服务器中转（试验）</h3>
     <p>家里的电脑主动连到你的一台云服务器上，手机在外面也连这台服务器，服务器把<strong>加密的数据</strong>原样转给电脑。不用装 Tailscale，也不用改路由器。</p>
     <ol>
-      <li><strong>准备一台云服务器</strong>：有公网 IP 的 Linux（腾讯云轻量、CVM、阿里云 ECS 等都行），能用 SSH 登录（<code>root</code>，或能 sudo 的账号）。服务器上要有 Node.js 20 或更新：用「添加机器」装过 Lamplit 的服务器已经有了，没有的话安装时会提示你。</li>
-      <li><strong>装中转</strong>：在家里那台电脑上打开 <strong>设置 → 手机和外网</strong>，找到「出门在外：用你的云服务器中转」，填服务器的公网 IP、SSH 用户名和密码，点 <strong>在这台服务器上装中转</strong>。大约 10 秒。SSH 密码只用这一次，不保存。</li>
+      <li><strong>准备一台云服务器</strong>：有公网 IP 的 Linux（腾讯云轻量、CVM、阿里云 ECS 等都行），能用 SSH 登录（<code>root</code>，或能 sudo 的账号）。不用先装别的：中转要用的 Node.js（20 或更新）没有的话，安装时会自动装上（Ubuntu、Debian、Rocky、CentOS、TencentOS、Alibaba Cloud Linux 等常见系统；用系统自己的软件源，或 Node.js 官网推荐的软件源，软件包有签名，会先验证）。别的系统会提示你，最省事的是在控制台把系统重装成 Ubuntu 24.04。</li>
+      <li><strong>装中转</strong>：在家里那台电脑上打开 <strong>设置 → 手机和外网</strong>，找到「出门在外：用你的云服务器中转」，填服务器的公网 IP、SSH 用户名和密码，点 <strong>在这台服务器上装中转</strong>。一般 10 秒左右；要先装 Node.js 的话要几分钟，进度里会写「正在安装 Node.js…」。SSH 密码只用这一次，不保存。</li>
       <li><strong>在云服务器控制台放行端口</strong>（只有你能做）：加两条规则，<strong>TCP 34443</strong> 和 <strong>UDP 34443</strong>，来源都填 <code>0.0.0.0/0</code>。UDP 那条是给<a href="#outside-direct">直连</a>用的。
         <ul>
           <li>腾讯云轻量应用服务器：实例详情 →「防火墙」→ 添加规则。</li>

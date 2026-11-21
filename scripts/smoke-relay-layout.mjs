@@ -34,7 +34,7 @@ const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'hub', 'relay', 'relay.mjs'), 'utf8').replace(/\r\n/g, '\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
-async function until(cond, ms = 5000) {
+export async function until(cond, ms = 5000) {
   const end = Date.now() + ms;
   for (;;) {
     let v;
@@ -48,8 +48,8 @@ async function until(cond, ms = 5000) {
 const OLD_GUARD = 'if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {';
 
 /** relay.mjs as a test build: our key instead of the release key, a given version, LF or CRLF, optionally the old guard. */
-function build(pub, version, { crlf = false, oldGuard = false, extra = '' } = {}) {
-  let s = SOURCE.replace(/export const RELAY_UPDATE_KEYS = \[[^\]]*\];/, `export const RELAY_UPDATE_KEYS = ['${pub}'];`)
+export function build(pub, version, { crlf = false, oldGuard = false, extra = '', source = SOURCE } = {}) {
+  let s = String(source).replace(/\r\n/g, '\n').replace(/export const RELAY_UPDATE_KEYS = \[[^\]]*\];/, `export const RELAY_UPDATE_KEYS = ['${pub}'];`)
     .replace(/export const RELAY_VERSION = '[^']+';/, `export const RELAY_VERSION = '${version}';`);
   if (oldGuard) s = s.replace(/\nif \(isMainModule\(\)\) \{/, `\n${OLD_GUARD}`);
   const after = "  const startedFine = running ? noteStartFailure(dataDir, running.version) : () => {};\n";
@@ -61,7 +61,7 @@ function build(pub, version, { crlf = false, oldGuard = false, extra = '' } = {}
 }
 
 /** The server's folders: /opt (supervisor), /var/lib/private/<x> and a link to it, a cwd elsewhere. */
-function layout(tmp, name) {
+export function layout(tmp, name) {
   const opt = path.join(tmp, name, 'opt', 'lamplit-relay');
   const priv = path.join(tmp, name, 'var', 'lib', 'private', 'lamplit-relay');
   const link = path.join(tmp, name, 'var', 'lib', 'lamplit-relay');
@@ -72,13 +72,13 @@ function layout(tmp, name) {
 }
 
 /** Stage `bytes` as `version` the way a running relay does (signature checked), into the state folder through the link. */
-async function stage(dirs, privateKey, pub, version, bytes, runningVersion = '1.5.47') {
+export async function stage(dirs, privateKey, pub, version, bytes, runningVersion = '1.5.47') {
   const u = createRelayUpdater({ running: { version: runningVersion, sha256: '0'.repeat(64) }, stateDir: dirs.link, keys: [pub], minIntervalMs: 0 });
   return u.install(makeRelayManifest({ version, bytes, privateKey }), bytes);
 }
 
 /** Start the service as systemd does: node /opt/.../relay.mjs --port --data <link>, from another cwd. */
-function startService(dirs) {
+export function startService(dirs) {
   const proc = spawn(process.execPath, [path.join(dirs.opt, 'relay.mjs'), '--port', '0', '--host', '127.0.0.1', '--data', dirs.link], { cwd: dirs.cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   const run = { proc, out: '', err: '' };
   proc.stdout.on('data', (d) => { run.out += d; });
@@ -86,15 +86,15 @@ function startService(dirs) {
   return run;
 }
 
-async function stopService(run) {
+export async function stopService(run) {
   if (run.proc.exitCode !== null) return;
   const gone = new Promise((r) => run.proc.once('exit', r));
   run.proc.kill();
   await Promise.race([gone, sleep(5000)]);
 }
 
-const book = (dirs) => { try { return JSON.parse(fs.readFileSync(path.join(dirs.priv, 'updates.json'), 'utf8')); } catch { return null; } };
-const readyLine = (run) => { try { return JSON.parse(run.out.split('\n').find((l) => l.includes('"ready"')) || 'null'); } catch { return null; } };
+export const book = (dirs) => { try { return JSON.parse(fs.readFileSync(path.join(dirs.priv, 'updates.json'), 'utf8')); } catch { return null; } };
+export const readyLine = (run) => { try { return JSON.parse(run.out.split('\n').find((l) => l.includes('"ready"')) || 'null'); } catch { return null; } };
 const startedAs = (run, v) => run.err.includes(`starting relay ${v} (updated`);
 
 export async function relayLayoutChecks({ check }) {

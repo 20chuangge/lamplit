@@ -753,7 +753,7 @@ export const DEFAULT_LIMITS = {
 // Settings, join secret and registered computers live in the data folder and
 // are never touched. Anything needing root (the service file) still needs 「重装」.
 
-export const RELAY_VERSION = '1.5.49';
+export const RELAY_VERSION = '1.5.50';
 /** Lamplit's release key (Ed25519, SPKI DER, base64) - equal to UPDATE_PUBLIC_KEYS in src/selfupdate.mjs. */
 export const RELAY_UPDATE_KEYS = ['MCowBQYDK2VwAyEA4GZ8GzzbeRaLOSrj9YgUcZ7JKoIbczSLfVv5XSot9ms='];
 const MAX_RELAY_CODE = 2 * 1024 * 1024;
@@ -811,6 +811,24 @@ function writeBook(stateDir, book) {
 }
 
 const stagedFile = (stateDir, version) => path.join(stateDir, 'updates', version, 'relay.mjs');
+/** What a staged version that ended before it was ready printed last (1.5.50): written by the child itself. */
+const failureNote = (stateDir, version) => path.join(stateDir, 'updates', version, 'start-failure.txt');
+
+/**
+ * Why a version did not start, fit to show on the computer (1.5.50): the last
+ * ~20 lines of what it printed, at most 2000 characters, addresses taken out
+ * (the relay's log names the computers' IPs). Times and versions stay.
+ */
+export function relayFailureDetail(text) {
+  const scrubbed = String(text || '')
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, '<ip>')
+    .replace(/(?:::ffff:)?<ip>/gi, '<ip>')
+    .replace(/[0-9a-fA-F:]*:[0-9a-fA-F:]*:[0-9a-fA-F:]*/g, (m) => (net.isIPv6(m) ? '<ip>' : m));
+  const lines = scrubbed.split(/\r?\n/).map((l) => l.trimEnd()).filter(Boolean).slice(-20);
+  let out = lines.join('\n');
+  if (out.length > 2000) out = `…${out.slice(-1999)}`;
+  return out;
+}
 
 /**
  * A GET to the computer behind `entry` through its own tunnel: a stream the
@@ -852,6 +870,19 @@ export function createRelayUpdater({ running, stateDir, keys = RELAY_UPDATE_KEYS
   let fetching = false;
   let lastFetchAt = 0;
   let last = readBook(stateDir).last;
+  // A version that failed to start may have left its own note (1.5.50) - the supervisor
+  // in /opt may be one from before it kept the child's last lines. Kept in the book:
+  // the folder goes when the next version is staged.
+  if (last && !last.ok && !last.detail && /^\d+\.\d+\.\d+$/.test(String(last.version))) {
+    try {
+      const detail = relayFailureDetail(fs.readFileSync(failureNote(stateDir, last.version), 'utf8'));
+      if (detail) {
+        last = { ...last, detail };
+        const book = readBook(stateDir);
+        if (book.last && book.last.version === last.version && !book.last.ok) { book.last = last; writeBook(stateDir, book); }
+      }
+    } catch { /* no note */ }
+  }
 
   const remember = (result) => {
     last = { ...result, at: new Date().toISOString() };
@@ -939,14 +970,15 @@ export function runSupervisor({ stateDir, builtin, keys = RELAY_UPDATE_KEYS, spa
   let child = null;
   let timer = null;
 
-  function rollback(pick, why) {
+  function rollback(pick, why, tail = '') {
     const book = readBook(stateDir);
     book.bad = [...new Set([...book.bad, pick.version])];
     const back = book.previous && book.previous.version !== pick.version ? book.previous : null;
     book.current = back;
     book.previous = null;
     // Said plainly on the computer (1.5.47 beginner test: the technical cause read like programmer talk); the cause goes to the log.
-    book.last = { ok: false, version: pick.version, at: new Date().toISOString(), reason: `新版本 ${pick.version} 没能正常启动，已退回 ${back ? back.version : builtin.version}` };
+    // What it printed last goes along (1.5.50: 11-21 the real failure said nothing), addresses taken out.
+    book.last = { ok: false, version: pick.version, at: new Date().toISOString(), reason: `新版本 ${pick.version} 没能正常启动，已退回 ${back ? back.version : builtin.version}`, detail: relayFailureDetail(tail || why), };
     writeBook(stateDir, book);
     log(`${book.last.reason} (${why})`);
   }
@@ -957,9 +989,13 @@ export function runSupervisor({ stateDir, builtin, keys = RELAY_UPDATE_KEYS, spa
     let ready = false;
     let settled = false;
     let out = '';
+    let tail = ''; // the end of everything it printed, for the reason when it fails (1.5.50)
     let settleTimer = null;
     const c = spawnChild(pick);
     child = c;
+    const keepTail = (d) => { tail = (tail + d).slice(-6000); };
+    c.stdout?.on('data', keepTail);
+    c.stderr?.on('data', keepTail);
     const readyTimer = setTimeout(() => { if (!ready) { log(`relay ${pick.version} did not say ready`); c.kill(); } }, readyMs);
     c.stdout?.on('data', (d) => {
       if (ready) return;
@@ -983,7 +1019,11 @@ export function runSupervisor({ stateDir, builtin, keys = RELAY_UPDATE_KEYS, spa
       child = null;
       if (stopped) return;
       if (code === 75) { timer = setTimeout(start, 10); return; }
-      if (pick.updated && !settled) rollback(pick, ready ? 'exited soon after starting' : 'never said ready');
+      if (pick.updated && !settled) {
+        const why = ready ? 'exited soon after starting' : 'never said ready';
+        rollback(pick, why, `${tail}
+(${why}, exit code ${code})`);
+      }
       timer = setTimeout(start, restartDelayMs);
     });
   }
@@ -1368,9 +1408,10 @@ function supervise(dataDir) {
       // stdin is a pipe the child watches: when this process dies (even killed hard), the child goes too.
       const c = spawn(process.execPath, [pick.file, '--serve', ...passArgs], {
         env: { ...process.env, LAMPLIT_RELAY_RUNNING: JSON.stringify({ version: pick.version, sha256: pick.sha256 }) },
-        stdio: ['pipe', 'pipe', 'inherit'],
+        stdio: ['pipe', 'pipe', 'pipe'],
       });
       c.stdout.on('data', (d) => process.stdout.write(d));
+      c.stderr.on('data', (d) => process.stderr.write(d));
       c.on('error', (err) => log(`could not start: ${err.message}`));
       return c;
     },
@@ -1378,6 +1419,26 @@ function supervise(dataDir) {
   const stop = () => { sup.stop(); setTimeout(() => process.exit(0), 300); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
+}
+
+/**
+ * Under the supervisor (1.5.50): if this run ends before it says ready, leave the
+ * end of what it printed next to the staged file. The supervisor in /opt may be
+ * one that keeps nothing (1.5.47-1.5.49); the next relay that runs reads the note
+ * (createRelayUpdater) and the computer shows it. The builtin has no folder there:
+ * nothing is written. Returns "it is up": stop keeping and noting.
+ */
+function noteStartFailure(dataDir, version) {
+  if (!/^\d+\.\d+\.\d+$/.test(String(version))) return () => {};
+  let tail = '';
+  let up = false;
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk, ...rest) => { tail = (tail + chunk).slice(-6000); return write(chunk, ...rest); };
+  process.on('exit', (code) => {
+    if (up) return;
+    try { fs.writeFileSync(failureNote(dataDir, version), relayFailureDetail(`${tail}\n(exited before it was ready, code ${code})`), { mode: 0o600 }); } catch { /* the builtin, or no room */ }
+  });
+  return () => { up = true; process.stderr.write = write; tail = ''; };
 }
 
 async function main() {
@@ -1394,6 +1455,7 @@ async function main() {
     process.stdin.on('close', () => process.exit(0));
     process.stdin.resume();
   }
+  const startedFine = running ? noteStartFailure(dataDir, running.version) : () => {};
   const identity = loadOrMakeIdentity(path.join(dataDir, 'tls'), 'lamplit-relay');
   const joinFile = path.join(dataDir, 'join-secret');
   let joinSecret = '';
@@ -1416,6 +1478,7 @@ async function main() {
     let stun = false;
     try { await relay.listenStun(bound, host); stun = true; } catch (err) { log(`STUN (UDP ${bound}) not started: ${err.message}`); }
     console.log(JSON.stringify({ event: 'ready', port: bound, fingerprint: identity.fingerprint, stun }));
+    startedFine();
     log(`listening on ${host}:${bound} (TCP${stun ? ' + UDP for STUN' : ''}); certificate ${identity.fingerprint}`);
   });
   setInterval(() => {
@@ -1427,6 +1490,23 @@ async function main() {
   process.on('SIGINT', stop);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/**
+ * Is this file what node was asked to run? Both sides with links resolved (1.5.50):
+ * node resolves them for the main file, and with DynamicUser the data folder
+ * /var/lib/lamplit-relay is a link to /var/lib/private/lamplit-relay - a staged
+ * version started from there compared unequal, never ran main() and exited at
+ * once (11-21: the first real update, 1.5.47 -> 1.5.49, rolled back).
+ */
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  const me = fileURLToPath(import.meta.url);
+  try {
+    return fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(me);
+  } catch {
+    return path.resolve(process.argv[1]) === me;
+  }
+}
+
+if (isMainModule()) {
   main().catch((err) => { console.error(err); process.exit(1); });
 }

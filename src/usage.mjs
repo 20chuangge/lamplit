@@ -33,12 +33,23 @@ function cleanSettings(raw) {
     const inPrice = Number(value?.in);
     const outPrice = Number(value?.out);
     if (!Number.isFinite(inPrice) || !Number.isFinite(outPrice) || inPrice < 0 || outPrice < 0) continue;
-    const cachedPrice = value?.cached === '' || value?.cached == null ? NaN : Number(value.cached);
+    let cachedPrice = value?.cached === '' || value?.cached == null ? NaN : Number(value.cached);
+    let peak = value?.peak === true;
+    // 1.5.50 (B1): a price saved by hand before 1.5.29 that is the site's own
+    // (same input and output price) had no peak flag, so every call on that
+    // machine was counted at the peak price (the cloud read ¥6.18 for ¥3.3).
+    // The site's price is the site's rule: its cached price and peak hours.
+    const known = knownPrice(name);
+    // Only when the price never said (peak absent): the human may untick it on purpose (peak: false, kept).
+    if (known && value?.peak === undefined && inPrice === known.in && outPrice === known.out && (!Number.isFinite(cachedPrice) || cachedPrice === known.cached)) {
+      cachedPrice = known.cached;
+      peak = Boolean(known.peak);
+    }
     prices[name] = {
       in: round(inPrice), out: round(outPrice),
       ...(Number.isFinite(cachedPrice) && cachedPrice >= 0 ? { cached: round(cachedPrice) } : {}),
       // 1.5.29: the prices are peak prices; outside the peak hours they are half (DeepSeek's rule).
-      ...(value?.peak ? { peak: true } : {}),
+      ...(peak ? { peak: true } : value?.peak === false ? { peak: false } : {}),
     };
   }
   const limit = Number(raw?.dailyAlert);
@@ -60,6 +71,25 @@ export function readUsageSettings() {
 export function readUsageAlert() {
   const alert = readJsonSync(alertFile(), null);
   return alert && alert.day === localDay() ? alert : null;
+}
+
+/**
+ * Write the corrected prices back once (1.5.50, B1), so the file says what is
+ * counted. Called when the server starts; changes nothing when nothing is off.
+ * -> true when the file was rewritten.
+ */
+export async function fixHandPrices() {
+  const raw = readJsonSync(settingsFile(), null);
+  if (!raw?.prices) return false;
+  const clean = cleanSettings(raw);
+  const changed = Object.entries(clean.prices).some(([model, p]) => {
+    const was = raw.prices[model] || {};
+    return Boolean(was.peak) !== Boolean(p.peak) || (p.cached != null && (was.cached == null || was.cached === ''));
+  });
+  if (!changed) return false;
+  writeJsonSyncAtomic(settingsFile(), { ...raw, prices: { ...raw.prices, ...clean.prices } });
+  forgetSpent();
+  return true;
 }
 
 export async function saveUsageSettings(patch = {}) {
@@ -90,7 +120,11 @@ function normalizeUsage(usage) {
   const completion = Math.max(0, Number(usage.completion_tokens) || 0);
   const total = Math.max(prompt + completion, Number(usage.total_tokens) || 0);
   const cached = Math.min(prompt, cachedTokensOf(usage));
-  return total ? { prompt, completion, total, cached } : null;
+  // 1.5.50 (S5): the part of the output spent thinking (DeepSeek and OpenAI-style gateways).
+  // null when the provider does not say (then the call is left out of the thinking share).
+  const said = usage.completion_tokens_details?.reasoning_tokens ?? usage.reasoning_tokens;
+  const reasoning = said == null ? null : Math.min(completion, Math.max(0, Number(said) || 0));
+  return total ? { prompt, completion, total, cached, reasoning } : null;
 }
 
 /**
@@ -125,6 +159,13 @@ export function priceOf(settings, model) {
 
 /** Demo mode's scripted answers cost nothing and are not counted (1.5.33: 326K "tokens" looked like money spent). */
 // The self-test runs on the demo model and counts it on purpose (ASSIST_COUNT_DEMO_USAGE=1).
+/**
+ * An evaluation run (1.5.50, B2): its bot was made with eval: true, or - older
+ * lines - is named 评测-… or has a task id for an id (h1-venue-ask). Real money,
+ * but not the human's own use: the daily pace and the checkup leave it out.
+ */
+export const isEvalRecord = (r) => r?.eval === true || /^评测-/.test(String(r?.botName || '')) || /^[a-z]\d{1,2}-[a-z0-9-]+$/.test(String(r?.botId || ''));
+
 export const isDemoRecord = (r) => process.env.ASSIST_COUNT_DEMO_USAGE !== '1' && (r?.provider === 'mock' || r?.model === 'scripted-planner');
 
 /** Money for one record at a price; cached input at its own price (the input price when none is set). */
@@ -142,7 +183,7 @@ export function recordCost(r, price) {
  * null tokens: the call happened, but inventing a token count would make the
  * estimate a lie. Returns the record.
  */
-export async function recordUsage({ botId = '', botName = '', provider = '', model = '', usage = null, source = '', routineId = '' } = {}) {
+export async function recordUsage({ botId = '', botName = '', provider = '', model = '', usage = null, source = '', routineId = '', eval: isEval = false } = {}) {
   const counts = normalizeUsage(usage);
   const record = {
     ts: nowIso(),
@@ -156,8 +197,10 @@ export async function recordUsage({ botId = '', botName = '', provider = '', mod
     completion: counts ? counts.completion : null,
     total: counts ? counts.total : null,
     cached: counts ? counts.cached : null,
+    ...(counts && counts.reasoning != null ? { reasoning: counts.reasoning } : {}),
     source: String(source || '').slice(0, 20),
     ...(routineId ? { routineId: String(routineId).slice(0, 40) } : {}),
+    ...(isEval ? { eval: true } : {}),
   };
   await appendJsonl(ledgerFile(), record);
   return record;
@@ -181,11 +224,16 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
   const byDay = new Map();
   const byModel = new Map();
   const byRoutine = new Map();
-  const totals = { tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
+  const bySource = new Map();
+  const evalSum = new Map();
+  // reasoningOf: the output of the calls that said how much of it was thinking (the share's denominator).
+  const totals = { tokens: 0, prompt: 0, completion: 0, cached: 0, reasoning: 0, reasoningOf: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
   const bump = (map, key, r, cost, tokens) => {
     const entry = map.get(key) || {
-      key, tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0,
+      key, tokens: 0, prompt: 0, completion: 0, cached: 0, reasoning: 0, reasoningOf: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0,
     };
+    // An evaluation bot's row says so (the cost page folds it into 评测, 1.5.50).
+    if (map === byBot && isEvalRecord(r)) entry.eval = true;
     entry.calls += 1;
     if (r.botName && map === byBot) entry.name = r.botName;
     if (tokens == null) entry.callsWithoutUsage += 1;
@@ -194,6 +242,8 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
       entry.prompt += Number(r.prompt) || 0;
       entry.cached += Number(r.cached) || 0;
       entry.completion += Number(r.completion) || 0;
+      entry.reasoning += Number(r.reasoning) || 0;
+      if (r.reasoning != null) entry.reasoningOf += Number(r.completion) || 0;
       if (cost == null) entry.unpricedTokens += tokens;
       else entry.cost += cost;
     }
@@ -211,6 +261,8 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
       totals.prompt += Number(r.prompt) || 0;
       totals.cached += Number(r.cached) || 0;
       totals.completion += Number(r.completion) || 0;
+      totals.reasoning += Number(r.reasoning) || 0;
+      if (r.reasoning != null) totals.reasoningOf += Number(r.completion) || 0;
       if (cost == null) totals.unpricedTokens += tokens;
       else totals.cost += cost;
     }
@@ -218,6 +270,9 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
     bump(byDay, r.day, r, cost, tokens);
     bump(byModel, r.model || '(未知)', r, cost, tokens);
     if (r.routineId) bump(byRoutine, r.routineId, r, cost, tokens);
+    // 1.5.50: what kind of call (chat, routine, vision, rule, translate, check …), and evaluation apart.
+    bump(bySource, r.source || 'chat', r, cost, tokens);
+    if (isEvalRecord(r)) bump(evalSum, 'eval', r, cost, tokens);
   }
   // hitRate: the share of input served from the prompt cache (null before 1.5.28 records).
   const finish = (entry) => ({ ...entry, cost: round(entry.cost), hitRate: entry.prompt && entry.cached ? round(entry.cached / entry.prompt, 3) : 0 });
@@ -227,6 +282,8 @@ export function summarizeUsage(records, settings = readUsageSettings()) {
     byDay: [...byDay.values()].map(finish).sort((a, b) => (a.key < b.key ? -1 : 1)),
     byModel: [...byModel.values()].map(finish).sort((a, b) => b.tokens - a.tokens),
     byRoutine: [...byRoutine.values()].map(finish).sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
+    bySource: [...bySource.values()].map(finish).sort((a, b) => b.cost - a.cost || b.tokens - a.tokens),
+    eval: finish(evalSum.get('eval') || { key: 'eval', tokens: 0, prompt: 0, completion: 0, cached: 0, reasoning: 0, reasoningOf: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 }),
   };
 }
 
@@ -260,24 +317,76 @@ export function forgetSpent() { spent = { day: '', byBot: null }; }
  * What a day costs at the recent pace (1.5.30), from records that say how much
  * input hit the cache - older ones priced every input token at the full price
  * and read twice the bill. Whole days first (their average); with only today,
- * today so far scaled to 24 hours once 3 hours have passed. -> {perDay, basis}
+ * today so far scaled to 24 hours once 3 hours have passed. -> {perDay, basis, days}
+ *
+ * 1.5.50: evaluation runs are left out (B2); every calendar day from the first
+ * one counted to yesterday counts, spent or not (B3: a quiet day is a cheap day,
+ * not a missing one); the day the cache data began - half of it without - is
+ * not taken as a whole day when later days are there (B4).
  */
 export function spendRate(records, settings = readUsageSettings(), now = new Date()) {
   const today = localDay(now);
   const byDay = new Map();
+  const startedMidDay = new Set();
   for (const r of records) {
-    if (r.cached == null) continue;
+    if (isDemoRecord(r) || isEvalRecord(r)) continue;
+    if (r.cached == null) { startedMidDay.add(r.day); continue; }
     const cost = recordCost(r, priceOf(settings, r.model));
     if (cost == null) continue;
     byDay.set(r.day, (byDay.get(r.day) || 0) + cost);
   }
-  const whole = [...byDay.entries()].filter(([day, cost]) => day !== today && cost > 0).map(([, cost]) => cost);
-  if (whole.length) return { perDay: round(whole.reduce((a, b) => a + b, 0) / whole.length, 2), basis: 'days', days: whole.length };
+  const days = [...byDay.keys()].filter((day) => day < today).sort();
+  if (days.length) {
+    const first = startedMidDay.has(days[0]) && days.length > 1 ? days[1] : days[0];
+    const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+    const span = (x, y) => Math.round((Date.parse(`${y}T00:00:00Z`) - Date.parse(`${x}T00:00:00Z`)) / 86400000) + 1;
+    const n = Math.max(1, span(first, localDay(yesterday)));
+    const total = days.filter((day) => day >= first).reduce((sum, day) => sum + byDay.get(day), 0);
+    if (total > 0) return { perDay: round(total / n, 2), basis: 'days', days: n };
+  }
   const midnight = new Date(now); midnight.setHours(0, 0, 0, 0);
   const hours = (now - midnight) / 3600000;
   const spentToday = byDay.get(today) || 0;
   if (hours >= 3 && spentToday > 0) return { perDay: round((spentToday / hours) * 24, 2), basis: 'today', days: 0 };
   return { perDay: 0, basis: 'none', days: 0 };
+}
+
+/**
+ * The balance as the provider says it, kept per reading (1.5.50). The 11-14..20
+ * bill showed spend Lamplit cannot see: other keys on the same account (another
+ * app, a test key) and evaluation runs. The drop of the balance itself is what
+ * makes it run out, so 「还能用几天」 uses it once two readings are a day apart.
+ */
+const balanceFile = () => path.join(P.dataDir, 'balance-history.json');
+export function readBalanceHistory() {
+  const raw = readJsonSync(balanceFile(), null);
+  return Array.isArray(raw?.readings) ? raw.readings.filter((r) => Number.isFinite(r?.at) && Number.isFinite(r?.amount)) : [];
+}
+/** Note a reading; one per hour is enough (a newer one in the same hour replaces it). */
+export function noteBalance(amount, now = Date.now(), history = readBalanceHistory()) {
+  if (!Number.isFinite(Number(amount))) return history;
+  const list = history.slice();
+  if (list.length && now - list[list.length - 1].at < 3600 * 1000) list.pop();
+  list.push({ at: now, amount: round(Number(amount), 4) });
+  const kept = list.slice(-120);
+  try { writeJsonSyncAtomic(balanceFile(), { readings: kept }); } catch { /* optional */ }
+  return kept;
+}
+/**
+ * What a day costs by the balance's own drop: from the newest reading back to
+ * the oldest one since the last top-up (a reading higher than the one before),
+ * within 7 days, at least 20 hours apart. -> {perDay, hours} or null.
+ */
+export function balancePace(history = readBalanceHistory(), now = Date.now()) {
+  const list = history.filter((r) => r.at <= now && now - r.at <= 7 * 24 * 3600 * 1000).sort((a, b) => a.at - b.at);
+  if (list.length < 2) return null;
+  let start = list.length - 1;
+  while (start > 0 && list[start - 1].amount >= list[start].amount - 0.005) start -= 1;
+  const first = list[start];
+  const last = list[list.length - 1];
+  const hours = (last.at - first.at) / 3600000;
+  if (hours < 20 || first.amount <= last.amount) return null;
+  return { perDay: round(((first.amount - last.amount) / hours) * 24, 2), hours: Math.round(hours) };
 }
 
 /** One assistant's estimated spend today (priced models only). */

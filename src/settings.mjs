@@ -26,6 +26,7 @@ import { explainModelError } from './modelerrors.mjs';
 import fsp from 'node:fs/promises';
 import { P, readJson, writeJsonAtomic } from './store.mjs';
 import { createModel } from './model.mjs';
+import { noteUsage } from './usage.mjs';
 import { PROVIDER_NAMES, isKnownProvider, providerNeedsKey, providerPreset } from './providers.mjs';
 
 /** Every provider the catalogue knows, in the order the UI lists them. */
@@ -226,6 +227,8 @@ export async function testConnection({ settings, apiKey, timeoutMs = 20000 } = {
       temperature: 0,
       timeoutMs,
     });
+    // A few tokens, but on the ledger like every other call (1.5.50, B5).
+    noteUsage({ botId: '_app', botName: '应用本身', provider: model.provider || provider, model: model.model || settings?.model || '', usage: result?.usage, source: 'check' }).catch(() => {});
     return {
       ok: true,
       latencyMs: Date.now() - started,

@@ -3647,3 +3647,8 @@ button.roster-head:hover { color: var(--text); }
 .machine-row.noting { flex-wrap: wrap; }
 .machine-row.noting .machine-meta { flex: 1 1 0; min-width: 0; }
 .machine-row.noting .machine-actions { flex-basis: 100%; justify-content: flex-end; order: 3; }
+
+/* 1.5.50: why the relay's new version did not start, folded in the relay card */
+.relay-why { margin-top: 6px; }
+.relay-why summary { cursor: pointer; color: var(--muted, #666); }
+.relay-why pre { margin: 6px 0 0; padding: 8px; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; background: var(--soft, rgba(127,127,127,.08)); border-radius: 6px; }

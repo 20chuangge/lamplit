@@ -1770,6 +1770,7 @@ async function renderTunnel(probe = true) {
   else lines.push('正在连接中转…');
   if (view.enabled && view.state === 'online' && relayUpdateWords(view)) lines.push(relayUpdateWords(view)); // 1.5.47: it updates itself
   for (const line of lines) box.appendChild(el('div', '', line));
+  { const whyNode = relayFailureNode(view); if (whyNode) box.appendChild(whyNode); } // 1.5.50: why a new version did not start
   // 「先试直连」 (1.5.46): with the relay on; not on the relay's own server (nothing to save there).
   const direct = view.direct || {};
   const showDirect = configured && view.enabled && direct.applies !== false;

@@ -112,6 +112,9 @@ function renderRoutines() {
   const list = $('routines-list');
   list.innerHTML = '';
   renderRoutineBotOptions();
+  // 「闲时再跑」 only where the model has peak hours (1.5.50).
+  const offPeakRow = $('rt-off-peak')?.closest('label');
+  if (offPeakRow) offPeakRow.hidden = !peakPriced();
 
   for (const rt of routinesInView()) {
     const bot = state.bots.find((b) => b.id === rt.botId);
@@ -125,7 +128,8 @@ function renderRoutines() {
     card.appendChild(el('div', 'card-sub', `${bot ? bot.name : orphan ? '助手已删除' : rt.botId} · ${scheduleText(rt.schedule)}`));
 
     const meta = el('div', 'routine-meta');
-    meta.appendChild(el('span', 'tag', `下次 ${fmtWhen(rt.nextRun)}`));
+    // Waiting for the off-peak hours: the time it really runs (1.5.50: 「下次 3天后」 hid 12:00).
+    meta.appendChild(el('span', 'tag', rt.offPeak && rt.nextRun ? `下次 ${fmtRunAt(rt.nextRun)}（闲时）` : `下次 ${fmtWhen(rt.nextRun)}`));
     if (rt.lastStatus) {
       const cls = rt.lastStatus === 'success' ? 'good' : rt.lastStatus === 'needs_approval' ? 'warn' : 'bad';
       meta.appendChild(el('span', `tag ${cls}`, `上次 ${runStatusLabel(rt.lastStatus)}`));
@@ -133,6 +137,8 @@ function renderRoutines() {
     if (rt.preset === 'briefing') meta.appendChild(el('span', 'tag', '每日简报'));
     if (rt.onlyChanges) meta.appendChild(el('span', 'tag', '有变化才提醒'));
     if (rt.pushFeishu) meta.appendChild(el('span', 'tag', '发到飞书'));
+    // 1.5.50: waits for the off-peak hours (half the model price).
+    if (rt.offPeak) meta.appendChild(el('span', 'tag', '闲时再跑'));
     if (rt.timezone) meta.appendChild(el('span', 'tag', rt.timezone));
     card.appendChild(meta);
 
@@ -187,6 +193,19 @@ function renderRoutines() {
         toast(err.message, true);
       }
     });
+    // 闲时再跑 on or off for a routine that exists (1.5.50, S2).
+    const cheap = el('button', 'btn tiny', rt.offPeak ? '改成到点就跑' : '改成闲时再跑');
+    cheap.type = 'button';
+    cheap.title = rt.offPeak ? '不再等闲时：到点就跑' : OFF_PEAK_WORDS;
+    cheap.addEventListener('click', async () => {
+      try {
+        await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { offPeak: !rt.offPeak } });
+        await loadRoutines();
+        toast(rt.offPeak ? '改好了：到点就跑' : `改好了：${OFF_PEAK_WORDS}`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
     // Its time can be changed here (1.5.33: there was no way to).
     const when = el('button', 'btn tiny', '改时间');
     when.type = 'button';
@@ -223,6 +242,8 @@ function renderRoutines() {
       actions.appendChild(test);
       actions.appendChild(toggle);
       actions.appendChild(when);
+      // Only where the model has peak hours (DeepSeek), or to switch it off again.
+      if (rt.offPeak || peakPriced()) actions.appendChild(cheap);
       actions.appendChild(del);
     }
     card.appendChild(actions);
@@ -233,6 +254,28 @@ function renderRoutines() {
     const who = isGroupMode() ? (groupById(state.groupId)?.name || '这个群') : (botById(state.botId)?.name || '它');
     list.appendChild(el('div', 'muted tiny', `${who}名下没有定时任务（这台机器上一共 ${state.routines.length} 条，勾选「全部」查看）。`));
   }
+}
+
+/** What 「闲时再跑」 does, in words (1.5.50, S2). */
+const OFF_PEAK_WORDS = '到点时如果正好是高峰时段（工作日 9–12、14–18 点），就推到 12:00 或 18:00 再跑，模型费省一半';
+
+/** Does this machine's model have peak hours (DeepSeek)? The off-peak option is shown only then. */
+function peakPriced() {
+  const m = (state.settings && state.settings.model) || {};
+  return /deepseek/i.test(`${m.provider || ''} ${m.model || ''} ${m.baseUrl || ''}`);
+}
+
+/** 「今天 12:00」「明天 18:00」「周一 12:00」「11-30 12:00」 */
+function fmtRunAt(iso) {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return '—';
+  const hm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  const day0 = new Date(); day0.setHours(0, 0, 0, 0);
+  const days = Math.floor((at.getTime() - day0.getTime()) / 86400000);
+  if (days === 0) return `今天 ${hm}`;
+  if (days === 1) return `明天 ${hm}`;
+  if (days > 1 && days < 7) return `${['周日', '周一', '周二', '周三', '周四', '周五', '周六'][at.getDay()]} ${hm}`;
+  return `${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')} ${hm}`;
 }
 
 async function createRoutine() {
@@ -248,6 +291,7 @@ async function createRoutine() {
         schedule: $('rt-schedule').value.trim() || '每天 9:00',
         onlyChanges: $('rt-only-changes').checked,
         pushFeishu: $('rt-feishu').checked,
+        offPeak: $('rt-off-peak').checked,
       },
     });
     $('rt-name').value = '';

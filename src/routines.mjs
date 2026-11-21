@@ -16,6 +16,7 @@
  */
 
 import { P, readJson, writeJsonAtomic, uid, nowIso } from './store.mjs';
+import { isPeakTime } from './usage.mjs';
 
 // ---------------------------------------------------------------------------
 // Cron parsing
@@ -341,6 +342,25 @@ function dayMatches(schedule, day, weekday) {
   return true;
 }
 
+/**
+ * The off-peak option (1.5.50, S2): DeepSeek's peak hours are weekdays 9-12 and
+ * 14-18 Beijing time (usage.mjs isPeakTime); the rest is half price. A run due
+ * in them moves to the next off-peak start - 12:00 or 18:00 the same day. ms -> ms.
+ */
+export function offPeakAfter(ms) {
+  if (!Number.isFinite(ms) || !isPeakTime(new Date(ms).toISOString())) return ms;
+  const bj = new Date(ms + 8 * 3600 * 1000);
+  const minutes = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+  const target = minutes < 720 ? 12 : 18;
+  return Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate(), target, 0) - 8 * 3600 * 1000;
+}
+
+/** The next run of a schedule, moved out of the peak hours when it asks for that (schedule.offPeak). */
+export function nextRunAt(schedule, fromTs, timeZone = 'UTC') {
+  const next = nextRunFor(schedule, fromTs, timeZone);
+  return next && schedule?.offPeak ? offPeakAfter(next) : next;
+}
+
 export function describeSchedule(schedule) {
   if (schedule.kind === 'interval' || schedule.kind === 'once') return schedule.expression;
   return `cron ${schedule.expression}`;
@@ -408,7 +428,7 @@ export class RoutineStore {
       lastReport: raw.lastReport ? String(raw.lastReport).slice(0, 2000) : '',
     };
     if (routine.enabled && !routine.nextRun) {
-      const next = nextRunFor(parsed, Date.now(), timezone);
+      const next = nextRunAt({ ...parsed, offPeak: routine.offPeak }, Date.now(), timezone);
       routine.nextRun = next ? new Date(next).toISOString() : null;
     }
     return routine;
@@ -432,7 +452,7 @@ export class RoutineStore {
     }
     const parsed = parseSchedule(input.schedule || 'every 60 minutes');
     const timezone = isValidTimeZone(input.timezone) ? input.timezone : this.defaultTimezone();
-    const next = nextRunFor(parsed, Date.now(), timezone);
+    const next = nextRunAt({ ...parsed, offPeak: Boolean(input.offPeak) }, Date.now(), timezone);
 
     const routine = {
       id: uid('rt'),
@@ -480,11 +500,12 @@ export class RoutineStore {
     if (patch.enabled !== undefined) routine.enabled = Boolean(patch.enabled);
     if (patch.onlyChanges !== undefined) routine.onlyChanges = Boolean(patch.onlyChanges);
     if (patch.pushFeishu !== undefined) routine.pushFeishu = Boolean(patch.pushFeishu);
+    if (patch.offPeak !== undefined) routine.offPeak = Boolean(patch.offPeak);
 
     // Recompute the next fire time whenever the timing or the enabled flag moves.
     const parsed = parseSchedule(routine.schedule);
     routine.updatedAt = nowIso();
-    routine.nextRun = routine.enabled ? isoOrNull(nextRunFor(parsed, Date.now(), routine.timezone)) : null;
+    routine.nextRun = routine.enabled ? isoOrNull(nextRunAt({ ...parsed, offPeak: routine.offPeak }, Date.now(), routine.timezone)) : null;
 
     await this.persist();
     return routine;
@@ -530,7 +551,7 @@ export class RoutineStore {
     routine.lastRun = run.startedAt;
     // Anchor on "now" rather than the missed slot so a sleeping machine does not
     // queue up a burst of catch-up runs.
-    routine.nextRun = routine.enabled ? isoOrNull(nextRunFor(parsed, Date.now(), routine.timezone)) : null;
+    routine.nextRun = routine.enabled ? isoOrNull(nextRunAt({ ...parsed, offPeak: routine.offPeak }, Date.now(), routine.timezone)) : null;
 
     try {
       // "现在跑一次（我看着）" (1.3.2): the human is there, so its asks wait for them.
@@ -587,7 +608,7 @@ export class RoutineStore {
         const due = routine.nextRun ? Date.parse(routine.nextRun) : NaN;
         if (!Number.isFinite(due)) {
           const parsed = parseSchedule(routine.schedule);
-          routine.nextRun = isoOrNull(nextRunFor(parsed, now, routine.timezone));
+          routine.nextRun = isoOrNull(nextRunAt({ ...parsed, offPeak: routine.offPeak }, now, routine.timezone));
           // A single run whose time has passed has nothing left to do.
           if (!routine.nextRun && parsed.kind === 'once') routine.enabled = false;
           continue;
@@ -613,6 +634,8 @@ function routineOptions(raw = {}) {
   return {
     onlyChanges: Boolean(raw.onlyChanges),
     pushFeishu: Boolean(raw.pushFeishu),
+    // Wait for the off-peak hours (1.5.50, S2): off unless the human turns it on.
+    offPeak: Boolean(raw.offPeak),
     ...(raw.preset === 'briefing' ? { preset: 'briefing' } : {}),
   };
 }

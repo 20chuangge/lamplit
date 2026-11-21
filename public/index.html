@@ -215,6 +215,7 @@
               </div>
               <label class="switch-row"><input type="checkbox" id="rt-only-changes" /> 只在有变化时提醒我</label>
               <label class="switch-row"><input type="checkbox" id="rt-feishu" /> 结果同时发到飞书</label>
+              <label class="switch-row" title="DeepSeek 等分峰谷计价的模型"><input type="checkbox" id="rt-off-peak" /> 闲时再跑：到点正好是高峰时段（工作日 9–12、14–18 点）就推到 12:00 或 18:00，模型费省一半</label>
               <div class="tiny muted">时间可以这样写：每天 9:00、工作日 8:30、每周五 18:00、每月 1 号 10:00、每 30 分钟。</div>
             </div>
           </div>
@@ -630,6 +631,15 @@
             <thead></thead>
             <tbody></tbody>
           </table>
+        </div>
+        <div id="usage-sources-wrap" hidden>
+          <div class="dsec-head" style="font-size:13px;margin:16px 0 6px">按用途</div>
+          <div class="perm-table-wrap">
+            <table class="perm-table usage-table" id="usage-sources" aria-label="按用途用量">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
         <div id="usage-routines-wrap" hidden>
           <div class="dsec-head" style="font-size:13px;margin:16px 0 6px">按定时任务</div>

@@ -29,7 +29,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import tls from 'node:tls';
 
-import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, shieldStream } from '../hub/relay/relay.mjs';
+import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, relayFailureDetail, shieldStream } from '../hub/relay/relay.mjs';
 import { createDirectServer } from './direct.mjs';
 import { readRelayUpdate } from './relayupdate.mjs';
 
@@ -37,7 +37,8 @@ import { readRelayUpdate } from './relayupdate.mjs';
 function cleanRelayInfo(msg) {
   const text = (v, n) => String(v ?? '').slice(0, n);
   const last = msg.last && typeof msg.last === 'object'
-    ? { ok: Boolean(msg.last.ok), version: text(msg.last.version, 20), at: text(msg.last.at, 40), reason: text(msg.last.reason, 300) }
+    // detail (1.5.50): what a version that did not start printed last - scrubbed of addresses on the relay, and again here.
+    ? { ok: Boolean(msg.last.ok), version: text(msg.last.version, 20), at: text(msg.last.at, 40), reason: text(msg.last.reason, 300), detail: msg.last.ok ? '' : relayFailureDetail(text(msg.last.detail, 4000)) }
     : null;
   return { version: text(msg.version, 20), auto: Boolean(msg.auto), fetching: Boolean(msg.fetching), last, seenIp: net.isIP(String(msg.seenIp || '')) ? String(msg.seenIp) : '' };
 }

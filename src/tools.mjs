@@ -25,6 +25,7 @@ import { spawn } from 'node:child_process';
 import { RISK, machineMode } from './approvals.mjs';
 import { childEnv } from './childenv.mjs';
 import { describeImage, imageMime } from './vision.mjs';
+import { noteUsage } from './usage.mjs';
 import { fitForVision } from './imagefit.mjs';
 import { generateImages, generateVideo, submitVideo } from './media.mjs';
 
@@ -527,6 +528,8 @@ export function createRegistry(deps) {
       const fit = fitForVision(bytes, mime);
       try {
         const seen = await describeImage(service, fit.bytes, fit.mime, args.question);
+        // The vision model's own tokens, under this bot (1.5.50, B5: they never reached the cost page).
+        noteUsage({ botId: ctx.bot?.id || '', botName: ctx.bot?.name || '', provider: 'vision', model: seen.model || '', usage: seen.usage || null, source: 'vision', ...(ctx.bot?.eval ? { eval: true } : {}) }).catch(() => {});
         const size = (s) => (s.w ? `${s.w}x${s.h} ` : '') + `${Math.round(s.bytes / 1024)} KB`;
         return {
           path: r.rel,
@@ -1067,20 +1070,40 @@ export function createRegistry(deps) {
     name: 'browser_type',
     description:
       'Focus a field (ref from the snapshot, or a CSS selector), clear it, type the text, and optionally press Enter to submit. Returns the value the field actually holds, so you can check it took. ' +
-      'MEDIUM risk because typing into a form can change real state.',
+      'Works in rich editors too (a post body, any contenteditable): several paragraphs go in as they are (each new line is an Enter); append: true writes at the end and keeps what is there - e.g. a topic "#秋招", then browser_press Enter to pick it from the list. ' +
+      'Do not write scripts to type into a page: this does it. MEDIUM risk because typing into a form can change real state.',
     risk: RISK.MEDIUM,
     parameters: {
       type: 'object',
       properties: {
         ref: { type: 'string', description: 'Element ref from browser_snapshot, e.g. "@e2".' },
         selector: { type: 'string', description: 'CSS selector, used when you have no ref.' },
-        text: { type: 'string', description: 'Text to type into the field.' },
+        text: { type: 'string', description: 'Text to type into the field. New lines are kept (Enter in a rich editor).' },
+        append: { type: 'boolean', description: 'Type at the end of what the field holds, without clearing it (default false).' },
         submit: { type: 'boolean', description: 'Press Enter after typing (default false).' },
       },
       required: ['text'],
       additionalProperties: false,
     },
     run: (args, ctx) => browserManager(ctx).type(args),
+  });
+
+  add({
+    name: 'browser_press',
+    description:
+      'Press keys on the page, on whatever has the focus (after browser_type, that field): "Enter", "Escape", "Tab", "Backspace", "Delete", "ArrowDown", "Home", "End", "PageDown", "Space", with Ctrl+ / Shift+ / Alt+ ("Ctrl+End", "Ctrl+A"), several separated by spaces ("ArrowDown ArrowDown Enter"), times to repeat. ' +
+      'Use it to pick a suggestion (a topic, a place) after typing, close a pop-up, move to the end of an editor - instead of writing a script. MEDIUM risk: Enter can submit a form.',
+    risk: RISK.MEDIUM,
+    parameters: {
+      type: 'object',
+      properties: {
+        keys: { type: 'string', description: 'e.g. "Enter", "Ctrl+End", "ArrowDown ArrowDown Enter".' },
+        times: { type: 'integer', description: 'How many times to press the whole sequence (1-20, default 1).' },
+      },
+      required: ['keys'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => browserManager(ctx).press(args),
   });
 
   add({
@@ -1151,7 +1174,7 @@ export function createRegistry(deps) {
     name: 'browser_screenshot',
     description:
       'Save a PNG of the current page to workspace/artifacts/<timestamp>.png (or a path you pass, inside the workspace) and return its relative path. ' +
-      'Use it to show the human what the page looks like. LOW risk: it only reads the screen.',
+      'Use it to show the human what the page looks like. To know what is on the page, read it with browser_snapshot (its text and refs): take a screenshot and look at it with image_view only when the look itself matters (a picture, the layout, a canvas) or the snapshot did not show it. Do not look at the same page state twice (snapshot, then screenshot, then image_view): each look is a step and costs money. LOW risk: it only reads the screen.',
     risk: RISK.LOW,
     parameters: {
       type: 'object',
@@ -1351,6 +1374,7 @@ export function createRegistry(deps) {
         enabled: { type: 'boolean' },
         onlyChanges: { type: 'boolean', description: 'Tell the human only when the result changed since the last run.' },
         pushFeishu: { type: 'boolean', description: 'Also send each (non-quiet) result to the human on Feishu.' },
+        offPeak: { type: 'boolean', description: 'Wait for the off-peak hours: a run due in DeepSeek\'s peak hours (weekdays 9-12, 14-18 Beijing time) starts at 12:00 or 18:00 instead, at half the model price. Only when the human wants it, or the task is not urgent and they asked to save.' },
       },
       required: ['instruction', 'schedule'],
       additionalProperties: false,
@@ -1376,6 +1400,7 @@ export function createRegistry(deps) {
         enabled: args?.enabled !== false,
         onlyChanges: Boolean(args?.onlyChanges),
         pushFeishu: Boolean(args?.pushFeishu),
+        offPeak: Boolean(args?.offPeak),
       });
       return { created: true, routine: publicRoutine(routine) };
     },
@@ -1446,7 +1471,7 @@ export function createRegistry(deps) {
 
   add({
     name: 'routine_update',
-    description: 'Change a routine: its name, instruction, schedule, timezone, on/off (enabled), onlyChanges or pushFeishu. Fields you leave out stay as they are. Your own routines change at once; another bot\'s asks the human on their own computer, and is an ordinary step on a machine given to the bots.',
+    description: 'Change a routine: its name, instruction, schedule, timezone, on/off (enabled), onlyChanges, pushFeishu or offPeak (wait for the off-peak hours, half price). Fields you leave out stay as they are. Your own routines change at once; another bot\'s asks the human on their own computer, and is an ordinary step on a machine given to the bots.',
     risk: routineRisk('改'),
     parameters: {
       type: 'object',
@@ -1459,6 +1484,7 @@ export function createRegistry(deps) {
         enabled: { type: 'boolean', description: 'false pauses it without deleting it.' },
         onlyChanges: { type: 'boolean' },
         pushFeishu: { type: 'boolean' },
+        offPeak: { type: 'boolean', description: 'Wait for the off-peak hours (weekdays 12:00 / 18:00 instead of 9-12, 14-18 Beijing time): half the model price.' },
       },
       required: ['id'],
       additionalProperties: false,
@@ -1468,7 +1494,7 @@ export function createRegistry(deps) {
       const id = String(args?.id || '');
       if (!routines.get(id)) throw toolError('ROUTINE_NOT_FOUND', `no routine with id "${id}"`);
       const patch = {};
-      for (const k of ['name', 'instruction', 'schedule', 'timezone', 'enabled', 'onlyChanges', 'pushFeishu']) if (args?.[k] !== undefined) patch[k] = args[k];
+      for (const k of ['name', 'instruction', 'schedule', 'timezone', 'enabled', 'onlyChanges', 'pushFeishu', 'offPeak']) if (args?.[k] !== undefined) patch[k] = args[k];
       const routine = await routines.update(id, patch);
       return { updated: true, routine: publicRoutine(routine) };
     },
@@ -2996,6 +3022,7 @@ function publicRoutine(routine) {
     runs: (routine.runs || []).slice(-5),
     onlyChanges: Boolean(routine.onlyChanges),
     pushFeishu: Boolean(routine.pushFeishu),
+    offPeak: Boolean(routine.offPeak),
   };
 }
 

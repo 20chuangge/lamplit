@@ -39,6 +39,45 @@ import { assertPublicUrl } from './netguard.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Keys browser_press and browser_type send as real key events (1.5.50, S1).
+const KEYS = {
+  Enter: { code: 'Enter', vk: 13, text: '\r' }, Tab: { code: 'Tab', vk: 9 }, Escape: { code: 'Escape', vk: 27 },
+  Backspace: { code: 'Backspace', vk: 8 }, Delete: { code: 'Delete', vk: 46 }, Space: { key: ' ', code: 'Space', vk: 32, text: ' ' },
+  ArrowUp: { code: 'ArrowUp', vk: 38 }, ArrowDown: { code: 'ArrowDown', vk: 40 }, ArrowLeft: { code: 'ArrowLeft', vk: 37 }, ArrowRight: { code: 'ArrowRight', vk: 39 },
+  Home: { code: 'Home', vk: 36 }, End: { code: 'End', vk: 35 }, PageUp: { code: 'PageUp', vk: 33 }, PageDown: { code: 'PageDown', vk: 34 },
+};
+const KEY_NAMES = Object.keys(KEYS);
+const MODIFIERS = { alt: 1, ctrl: 2, control: 2, meta: 4, cmd: 4, shift: 8 };
+/** "Ctrl+End" -> {key, code, vk, text, modifiers}, or null for a key it does not know. */
+export function parseKey(spec) {
+  const parts = String(spec || '').split('+').map((p) => p.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  let modifiers = 0;
+  for (const m of parts.slice(0, -1)) {
+    const bit = MODIFIERS[m.toLowerCase()];
+    if (!bit) return null;
+    modifiers |= bit;
+  }
+  const last = parts[parts.length - 1];
+  const name = KEY_NAMES.find((k) => k.toLowerCase() === last.toLowerCase()) || (last.toLowerCase() === 'esc' ? 'Escape' : '');
+  if (name) {
+    const k = KEYS[name];
+    return { key: k.key || name, code: k.code, vk: k.vk, text: modifiers & (1 | 2 | 4) ? '' : (k.text || ''), modifiers };
+  }
+  // One letter or digit, only with a modifier (Ctrl+A): plain text goes through browser_type.
+  if (/^[a-z0-9]$/i.test(last) && modifiers) {
+    const up = last.toUpperCase();
+    return { key: last.toLowerCase(), code: /\d/.test(up) ? `Digit${up}` : `Key${up}`, vk: up.charCodeAt(0), text: '', modifiers };
+  }
+  return null;
+}
+async function pressKey(page, k) {
+  if (!k) return;
+  const base = { key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk, modifiers: k.modifiers || 0 };
+  await page.send('Input.dispatchKeyEvent', { type: k.text ? 'keyDown' : 'rawKeyDown', ...base, ...(k.text ? { text: k.text, unmodifiedText: k.text } : {}) });
+  await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+}
+
 function errorResult(code, message, extra = {}) {
   return { ok: false, error: { code, message }, ...extra };
 }
@@ -1214,20 +1253,59 @@ class BrowserManager {
       // modern frameworks listen for.
       await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
       await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
-      await this.evaluateRaw(`(() => {
+      // 1.5.50 (S1): a rich editor (小红书's body, any contenteditable) keeps its
+      // own model of the text: it is cleared with a real key, paragraphs are
+      // typed with Enter between them, and append: true writes at the end. The
+      // 发布 bot wrote a CDP script for each of these, every post.
+      const probe = await this.evaluateRaw(`(() => {
         const el = document.activeElement;
-        if (!el) return false;
-        if ('value' in el) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); return true; }
-        if (el.isContentEditable) { el.textContent = ''; return true; }
-        return false;
+        return Boolean(el && el.isContentEditable && !('value' in el && typeof el.value === 'string'));
       })()`);
+      const rich = probe.ok && probe.value === true;
+      const append = Boolean(args?.append);
+      if (append) {
+        await this.evaluateRaw(`(() => {
+          const el = document.activeElement;
+          if (!el) return false;
+          if ('value' in el && typeof el.value === 'string') { const n = el.value.length; try { el.setSelectionRange(n, n); } catch { /* not a text box */ } return true; }
+          if (el.isContentEditable) { const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); const s = getSelection(); s.removeAllRanges(); s.addRange(r); return true; }
+          return false;
+        })()`);
+      } else if (rich) {
+        await this.evaluateRaw(`(() => {
+          const el = document.activeElement;
+          const r = document.createRange(); r.selectNodeContents(el);
+          const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+          return true;
+        })()`);
+        await pressKey(page, parseKey('Backspace'));
+      } else {
+        await this.evaluateRaw(`(() => {
+          const el = document.activeElement;
+          if (!el) return false;
+          if ('value' in el) { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); return true; }
+          if (el.isContentEditable) { el.textContent = ''; return true; }
+          return false;
+        })()`);
+      }
+      const before = append ? String((await this.readFieldValue()) ?? '') : '';
 
-      await page.send('Input.insertText', { text });
+      if (rich && text.includes('\n')) {
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i += 1) {
+          if (lines[i]) await page.send('Input.insertText', { text: lines[i] });
+          if (i < lines.length - 1) await pressKey(page, parseKey('Enter'));
+        }
+      } else {
+        await page.send('Input.insertText', { text });
+      }
 
       // Verify, and fall back to per-character key events if the field ignored
-      // insertText (some custom editors do).
+      // insertText (some custom editors do). A rich editor's text has its own
+      // line breaks, so it is compared without white space; append keeps what was there.
       let actual = await this.readFieldValue();
-      if (actual !== text) {
+      const squeeze = (v) => String(v ?? '').replace(/\s+/g, '');
+      if (!rich && !append && actual !== text) {
         await this.evaluateRaw(`(() => {
           const el = document.activeElement;
           if (!el) return false;
@@ -1239,7 +1317,7 @@ class BrowserManager {
         }
         actual = await this.readFieldValue();
       }
-
+      const matched = rich || append ? squeeze(actual) === squeeze(before + text) : actual === text;
       let submitted = false;
       if (args?.submit) {
         await page.send('Input.dispatchKeyEvent', {
@@ -1257,12 +1335,37 @@ class BrowserManager {
       const location = await this.currentLocation();
       return {
         ok: true,
-        typed: { tag, name, text },
+        typed: { tag, name, text, ...(append ? { append: true } : {}) },
         value: actual ?? '',
-        matched: actual === text,
+        matched,
         submitted,
         url: location?.url || '',
       };
+    } catch (err) {
+      return browserFailure(err);
+    }
+  }
+
+  /**
+   * Press keys on the page (1.5.50, S1): "Enter", "Ctrl+End", or several
+   * separated by spaces ("ArrowDown ArrowDown Enter"), `times` over. Goes to
+   * whatever has the focus - after browser_type, that field.
+   */
+  async press(args) {
+    const spec = String(args?.keys || '').trim();
+    if (!spec) return errorResult('BAD_ARGS', `browser_press needs "keys", e.g. "Enter" or "Ctrl+End"; known keys: ${KEY_NAMES.join(', ')}`);
+    const parsed = spec.split(/\s+/).map(parseKey);
+    const bad = spec.split(/\s+/).filter((_, i) => !parsed[i]);
+    if (bad.length) return errorResult('BAD_ARGS', `unknown key "${bad[0]}"; known keys: ${KEY_NAMES.join(', ')} (with Ctrl+ / Shift+ / Alt+ / Meta+), or one letter or digit with a modifier`);
+    const times = Math.min(Math.max(Number(args?.times) || 1, 1), 20);
+    try {
+      await this.ensureSession();
+      const page = await this.ensurePage();
+      for (let t = 0; t < times; t += 1) for (const k of parsed) await pressKey(page, k);
+      await sleep(150);
+      await this.waitForIdle({ timeoutMs: 4000 }).catch(() => {});
+      const location = await this.currentLocation();
+      return { ok: true, pressed: spec, times, url: location?.url || '' };
     } catch (err) {
       return browserFailure(err);
     }

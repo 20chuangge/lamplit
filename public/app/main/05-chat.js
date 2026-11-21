@@ -1609,6 +1609,7 @@ const TOOL_TEXT = {
   browser_open: { label: '打开网页', title: '想打开一个网页', impact: '只是打开，不会提交任何表单。' },
   browser_click: { label: '点击网页', title: '想点击网页上的一个位置', impact: '可能触发页面上的操作，例如提交或下载。' },
   browser_type: { label: '填写网页', title: '想在网页里输入文字', impact: '会填进当前页面获得焦点的输入框。' },
+  browser_press: { label: '在网页上按键', title: '想在网页上按一个键', impact: '按回车可能会提交表单或选中一个选项。' },
   budget_extend: { label: '超出今天的预算', title: '今天花到了每日预算，想接着做', impact: '同意后这个助手今天再放行一份预算；不同意它就停在这里。' },
   phone_allow: { label: '申请手机操作不用问', title: '想在手机上的这个 App 里自己发送、发布', impact: '你同意后，这个机器人在这个 App 上做这类操作不再问你；付款仍然每次问。' },
   browser_upload: { label: '往网页上传文件', title: '想把工作区里的文件传到网页上', impact: '文件会交给当前网页，比如发笔记的配图。' },
@@ -1741,6 +1742,10 @@ function describeTool(name, rawArgs) {
     case 'browser_type':
       out.detail = args.text ? `输入「${truncate(args.text, 60)}」` : '';
       set('内容', '输入内容', args.text ? truncate(args.text, 160) : '');
+      break;
+    case 'browser_press':
+      out.detail = args.keys ? `按「${truncate(args.keys, 40)}」` : '';
+      set('按键', '按键', args.keys || '');
       break;
     case 'browser_eval':
       out.detail = args.script || args.code || '';

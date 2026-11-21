@@ -32,7 +32,7 @@ function cacheKey(rules, toolName, args) {
  * Which rules this action falls under.
  * @returns {Promise<Array<{id, text, action}>>}
  */
-export async function judgeRules({ rules, toolName, args, model }) {
+export async function judgeRules({ rules, toolName, args, model, onUsage = null }) {
   if (!rules?.length || !model) return [];
   const key = cacheKey(rules, toolName, args);
   if (cache.has(key)) return cache.get(key);
@@ -53,6 +53,8 @@ export async function judgeRules({ rules, toolName, args, model }) {
     { role: 'user', content: `Rules:\n${list}\n\nAction: ${toolName} ${argText.slice(0, 2000)}` },
   ];
   const res = await model.complete(messages, { temperature: 0, maxTokens: 120 });
+  // The caller puts the check on the ledger (1.5.50, B5: one per new action while rules exist).
+  try { onUsage?.({ provider: model.provider || '', model: model.model || '', usage: res?.usage || null }); } catch { /* a side ledger */ }
   const text = String(res?.content || '');
   const m = /"rules"\s*:\s*\[([^\]]*)\]/.exec(text);
   const nums = m ? m[1].split(/[^\d]+/).filter(Boolean).map(Number) : [];

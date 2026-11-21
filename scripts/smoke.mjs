@@ -160,6 +160,7 @@ async function main() {
     await stage('video cards (1.5.49)', async () => (await import('./smoke-1549.mjs')).videoChecks({ check, base, keyDir: keyDir || process.env.ASSIST_DATA_DIR }));
     await stage('relay version raised when relay.mjs changes (1.5.49)', async () => (await import('./smoke-1549.mjs')).relayVersionChecks({ check }));
     await stage('a 1.5.47 relay with this hub (1.5.49)', async () => (await import('./smoke-1549.mjs')).oldRelayChecks({ check }));
+    await stage('relay updating itself in the server layout (1.5.50)', async () => (await import('./smoke-relay-layout.mjs')).relayLayoutChecks({ check }));
     await stage('bots', scenarioBots);
     await stage('bot avatars', scenarioBotAvatars);
     await stage('chief turn', scenarioChiefTurn);
@@ -232,6 +233,7 @@ async function main() {
     await stage('1.5.44: 建在哪台, a machine picked by name, the app opens on its home machine, whose settings', scenarioRoster1544);
     await stage('1.5.45: 替你想 - the machine picked for you, drafts before anything goes out, bots changed by saying so, what waits for you', scenarioThink1545);
     await stage('1.5.45: the four building blocks - initiative, the outgoing gate, adjust by talking, the machine profile', scenarioBlocks1545);
+    await stage('1.5.50: what the money really is, and spending less of it', async () => (await import('./smoke-cost.mjs')).costChecks({ check, readText, api, home, toolsMod }));
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.

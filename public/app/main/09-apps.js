@@ -1020,7 +1020,7 @@ async function loadUsage(days = state.usageDays || 7) {
 function mergeUsage(own, peers = { machines: [] }) {
   const others = (peers.machines || []).filter((m) => m.totals);
   const sumRows = (rows) => {
-    const out = { tokens: 0, prompt: 0, completion: 0, cached: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
+    const out = { tokens: 0, prompt: 0, completion: 0, cached: 0, reasoning: 0, reasoningOf: 0, cost: 0, calls: 0, unpricedTokens: 0, callsWithoutUsage: 0 };
     for (const r of rows) for (const k of Object.keys(out)) out[k] += Number(r?.[k]) || 0;
     out.cost = Math.round(out.cost * 10000) / 10000;
     return out;
@@ -1040,6 +1040,10 @@ function mergeUsage(own, peers = { machines: [] }) {
     byBot: [...(own.byBot || []), ...others.flatMap((m) => (m.byBot || []).map((b) => ({ ...b, machine: m.machine })))].sort((a, b) => b.tokens - a.tokens),
     byRoutine: [...(own.byRoutine || []), ...others.flatMap((m) => (m.byRoutine || []).map((b) => ({ ...b, machine: m.machine })))].sort((a, b) => b.cost - a.cost),
     byMachine: others.length ? [{ key: here, ...sumRows([own.totals]) }, ...others.map((m) => ({ key: m.machine, ...sumRows([m.totals]) }))] : [],
+    // 1.5.50: the kinds of call, evaluation apart, and the recent pace of every machine together.
+    bySource: byKey([own.bySource || [], ...others.map((m) => m.bySource || [])]),
+    eval: sumRows([own.eval, ...others.map((m) => m.eval)]),
+    spendRate: { perDay: Math.round(((Number(own.spendRate?.perDay) || 0) + others.reduce((s, m) => s + (Number(m.spendRate?.perDay) || 0), 0)) * 100) / 100 },
     otherCurrencies: [...new Set(others.map((m) => m.currency).filter((c) => c && c !== own.currency))],
   };
 }
@@ -1083,6 +1087,12 @@ function renderUsageTable(table, rows, currency, nameOf, emptyText) {
   }
 }
 
+/** The kinds of model call, by name (1.5.50). */
+const USAGE_SOURCE_NAMES = {
+  chat: '聊天', routine: '定时任务', bot: '同事转交', group: '群聊', task: '自动接着做', feishu: '飞书', aside: '干活时插话',
+  vision: '看图', rule: '规则判断', translate: '翻译', check: '连通测试',
+};
+
 function renderUsage(data) {
   state.usage = data;
   const days = data.days || state.usageDays || 7;
@@ -1098,9 +1108,20 @@ function renderUsage(data) {
     ['未设单价 tokens', fmtTokens(totals.unpricedTokens), Boolean(totals.unpricedTokens)],
     ['调用', `${totals.calls || 0} 次${totals.callsWithoutUsage ? ` · ${totals.callsWithoutUsage} 次无用量` : ''}`, false],
     ['缓存命中', totals.prompt && totals.cached ? `${Math.round((totals.cached / totals.prompt) * 100)}% 的输入` : '还没有记录', false],
+    // 1.5.50: the pace the checkup's 「还能用几天」 uses; evaluation is not in it.
+    ['最近每天约', data.spendRate?.perDay > 0 ? `${moneyText(data.spendRate.perDay, currency)}（不含评测）` : '还算不出来', false],
+  ];
+  // S5: the share of the output spent thinking, of the calls that say so (older ones did not).
+  if (totals.reasoningOf > 0) {
+    const share = totals.reasoning / totals.reasoningOf;
+    chips.push(['其中思考', share > 0 && share < 0.01 ? '不到 1% 的输出' : `${Math.round(share * 100)}% 的输出`, false]);
+  }
+  // B2: evaluation runs, apart.
+  if (data.eval?.calls) chips.push(['评测', `${usageCostText(data.eval, currency)}（不算进每天的花费）`, false]);
+  chips.push(
     ['每日提醒', settings.dailyAlert ? moneyText(settings.dailyAlert, currency) : '关闭', false],
     ['每个助手每日预算', settings.botDailyBudget ? moneyText(settings.botDailyBudget, currency) : '不限', false],
-  ];
+  );
   if (data.alert) chips.push(['今日已超提醒线', moneyText(data.alert.cost, currency), true]);
   summary.innerHTML = '';
   for (const [key, value, warn] of chips) {
@@ -1120,7 +1141,7 @@ function renderUsage(data) {
   }
   // By name (1.5.29); assistants that are gone and nameless fold into one row, evaluation runs into another.
   const nameOfBot = (row) => (row.machine ? state.peerBots?.[row.machine]?.[row.key] : botById(row.key)?.name) || row.name || '';
-  const isEval = (row) => /^评测-/.test(nameOfBot(row)) || /^[a-z]\d{1,2}-[a-z0-9-]+$/.test(row.key);
+  const isEval = (row) => Boolean(row.eval) || /^评测-/.test(nameOfBot(row)) || /^[a-z]\d{1,2}-[a-z0-9-]+$/.test(row.key);
   const folded = new Map();
   const botRows = [];
   for (const row of data.byBot || []) {
@@ -1152,6 +1173,10 @@ function renderUsage(data) {
     }).catch(() => {});
   }
   renderUsageTable($('usage-models'), data.byModel, currency, (row) => row.key || '—', '还没有用量。');
+  // What kind of call (1.5.50): chats, routines … and the small ones that were not counted before (看图, 规则判断, 翻译, 连通测试).
+  const sourceWrap = $('usage-sources-wrap');
+  if (sourceWrap) sourceWrap.hidden = !(data.bySource || []).length;
+  renderUsageTable($('usage-sources'), data.bySource, currency, (row) => USAGE_SOURCE_NAMES[row.key] || row.key || '—', '');
   // What each scheduled task cost (1.5.28): a task that runs every hour adds up.
   const routineWrap = $('usage-routines-wrap');
   if (routineWrap) routineWrap.hidden = !(data.byRoutine || []).length;
@@ -1240,6 +1265,7 @@ function renderUsage(data) {
 
 async function saveUsageForm() {
   const prices = {};
+  const noPeak = [];
   document.querySelectorAll('#usage-prices .usage-price-row').forEach((row) => {
     const name = row.querySelector('.name-input')?.value.trim();
     const inRaw = row.querySelector('.in-input')?.value.trim();
@@ -1248,7 +1274,10 @@ async function saveUsageForm() {
     // An untouched row (name only, no numbers) is not a price: saving it as
     // 0/0 would silently turn "no price" into "free".
     if (!name || (!inRaw && !outRaw)) return;
-    prices[name] = { in: Number(inRaw) || 0, out: Number(outRaw) || 0, ...(cachedRaw ? { cached: Number(cachedRaw) || 0 } : {}), ...(row.querySelector('.peak-input')?.checked ? { peak: true } : {}) };
+    // peak: false is said too (1.5.50): an unticked box stays unticked, not filled in again from the site's price.
+    const peak = Boolean(row.querySelector('.peak-input')?.checked);
+    prices[name] = { in: Number(inRaw) || 0, out: Number(outRaw) || 0, ...(cachedRaw ? { cached: Number(cachedRaw) || 0 } : {}), peak };
+    if (!peak && state.usage?.suggested?.[name]?.peak) noPeak.push(name);
   });
   const dailyAlert = Number($('usage-alert')?.value) || 0;
   const botDailyBudget = Number($('usage-budget')?.value) || 0;
@@ -1257,7 +1286,7 @@ async function saveUsageForm() {
       method: 'PUT',
       body: { currency: $('usage-currency')?.value || 'CNY', prices, dailyAlert, botDailyBudget },
     });
-    toast('成本设置已保存');
+    toast(noPeak.length ? `成本设置已保存。${noPeak.join('、')} 没勾峰谷价：闲时本来是半价，现在也按全价估算` : '成本设置已保存');
     loadUsage();
   } catch (err) {
     toast(`保存失败：${err.message}`, true);

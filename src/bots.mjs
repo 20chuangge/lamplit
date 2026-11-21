@@ -424,6 +424,8 @@ function normalizeBot(raw, index) {
     model: String(raw.model || '').slice(0, 40),
     // Its own voice for replies read aloud (a voice id of the speech service), or '' for the machine's.
     voice: String(raw.voice || '').trim().slice(0, 120),
+    // An evaluation bot (1.5.50, B2/S4): its calls are counted apart, not as the human's daily spend.
+    ...(raw.eval ? { eval: true } : {}),
     // Kept through edits: without it, renaming a built-in bot re-ran the
     // grant migration on the next start.
     ...(raw.seedGrantsVersion ? { seedGrantsVersion: Number(raw.seedGrantsVersion) } : {}),

@@ -1819,11 +1819,30 @@ function relayUpdateWords(view) {
   const newer = (a, b) => { const x = String(a).split('.').map(Number); const y = String(b).split('.').map(Number); for (let i = 0; i < 3; i += 1) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
   if ((!r && view?.relayOld) || (r && !r.auto)) return '这个中转还不会自己更新：再点一次下面的「重装 / 换端口」（最后一次手动），以后它会跟着 Lamplit 自己更新。';
   if (!r) return '';
-  if (r.last && !r.last.ok) return `中转这次没有更新：${r.last.reason}。现在用的是 ${r.version}，照常能用。`;
   const offer = view.relayUpdate?.version;
+  // A failed version, unless a newer one is on its way (1.5.50: 1.5.49 failed, 1.5.50 fixes it - say that one).
+  if (r.last && !r.last.ok && !(offer && newer(offer, r.last.version) && newer(offer, r.version))) return `中转这次没有更新：${r.last.reason}。现在用的是 ${r.version}，照常能用。`;
   if (offer && newer(offer, r.version)) return r.fetching ? `中转正在更新到 ${offer}…` : `中转会自己更新到 ${offer}（几分钟内）。`;
   if (r.last?.ok && r.last.version === r.version) return `中转已更新到 ${r.version}，以后也会自己更新。`;
   return `中转是最新的（${r.version}），以后会自己更新。`;
+}
+
+/**
+ * Why the relay's new version did not start (1.5.50), folded under the card's
+ * update line: the last lines it printed, addresses already taken out. Stays
+ * open across the card's refreshes once opened.
+ */
+function relayFailureNode(view) {
+  const last = view?.relay?.last;
+  if (!view?.enabled || view.state !== 'online' || !last || last.ok || !last.detail) return null;
+  if (!/没有更新/.test(relayUpdateWords(view))) return null;
+  const box = document.createElement('details');
+  box.className = 'relay-why';
+  box.open = Boolean(state.relayWhyOpen);
+  box.addEventListener('toggle', () => { state.relayWhyOpen = box.open; });
+  box.appendChild(el('summary', '', '看原因（中转最后打印的几行）'));
+  box.appendChild(el('pre', '', last.detail));
+  return box;
 }
 
 /** 直连 (1.5.46) in the relay card, in words: on or off, working or why not. */

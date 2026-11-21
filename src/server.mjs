@@ -66,7 +66,7 @@ import {
 import { computerSnapshot, captureScreen } from './computer.mjs';
 import { createRegistry } from './tools.mjs';
 import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern, invalidDenyPatterns } from './approvals.mjs';
-import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay, forgetSpent, knownPrice, spendRate } from './usage.mjs';
+import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay, forgetSpent, knownPrice, spendRate, fixHandPrices, noteUsage, noteBalance, balancePace } from './usage.mjs';
 import { normalizeRule } from './rules.mjs';
 import { RoutineStore } from './routines.mjs';
 import { AgentRuntime, recoverInterruptedTurns } from './agent.mjs';
@@ -529,6 +529,10 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   if (recoveredTurns.length) {
     console.error(`[assistant] marked ${recoveredTurns.length} interrupted turn(s) as needs_attention`);
   }
+
+  // A price saved by hand before 1.5.29 that is the site's own gets the site's
+  // peak rule, in the file too (1.5.50, B1: the cloud counted every call at the peak price).
+  try { if (await fixHandPrices()) console.error('[assistant] usage prices: the site\'s peak rule added to a hand-saved price'); } catch { /* the ledger is optional */ }
 
   await routines.load();
   routines.start();
@@ -1523,7 +1527,9 @@ async function fromEveryPeer(state, apiPath) {
 route('GET', /^\/api\/peers\/usage$/, async (_req, _res, { state, query }) => {
   const days = Math.min(Math.max(Number(query.get('days')) || 7, 1), 365);
   const { machines, missing } = await fromEveryPeer(state, `/api/usage?days=${days}`);
-  return { machines: machines.map((m) => ({ machine: m.machine, currency: m.currency, totals: m.totals, byBot: m.byBot, byModel: m.byModel, byDay: m.byDay, byRoutine: m.byRoutine || [] })), missing };
+  return { machines: machines.map((m) => ({ machine: m.machine, currency: m.currency, totals: m.totals, byBot: m.byBot, byModel: m.byModel, byDay: m.byDay, byRoutine: m.byRoutine || [],
+    // 1.5.50: the kinds of call, evaluation apart, and that machine's recent pace.
+    bySource: m.bySource || [], eval: m.eval || null, spendRate: m.spendRate || null })), missing };
 });
 // The names of the other machines' groups, bots and scheduled tasks (1.5.19):
 // a reply here may name one by its id ("交给了 g-ab12cd"), and the page shows
@@ -1840,6 +1846,7 @@ route('POST', /^\/api\/models\/test$/, async (_req, _res, { body }) => {
     const client = await modelsModule.testClient(body || {});
     if (client.provider === 'mock') return { ok: false, error: { message: '没有密钥' } };
     const r = await client.complete([{ role: 'user', content: 'Reply with the single word: ok' }], { maxTokens: 8, temperature: 0, timeoutMs: 20000 });
+    noteUsage({ botId: '_app', botName: '应用本身', provider: client.provider || '', model: client.model || '', usage: r?.usage, source: 'check' }).catch(() => {});
     return { ok: true, latencyMs: Date.now() - started, reply: String(r?.content || '').slice(0, 80) };
   } catch (err) {
     const why = explainModelError(err);
@@ -2166,6 +2173,8 @@ route('POST', /^\/api\/translate$/, async (_req, _res, { body, state }) => {
   if (text.length > 6000) throw httpError(413, 'TEXT_TOO_LONG', 'select less text (6000 characters at most)');
   const { target, messages } = translatePrompt(text, String(body?.to || ''));
   const r = await state.model.complete(messages, { temperature: 0, maxTokens: 2000, timeoutMs: 60000 });
+  // On the ledger like every other call (1.5.50, B5).
+  noteUsage({ botId: '_app', botName: '应用本身', provider: state.model.provider || '', model: state.model.model || '', usage: r?.usage, source: 'translate' }, { audit, bus: state.bus }).catch(() => {});
   return { target, text: String(r?.content || '').trim() };
 });
 
@@ -2746,13 +2755,21 @@ async function dailySpend(state) {
   const { machines } = await fromEveryPeer(state, '/api/usage?days=7').catch(() => ({ machines: [] }));
   return own + machines.reduce((sum, m) => sum + (Number(m.spendRate?.perDay) || 0), 0);
 }
-/** The balance said with how long it lasts at that pace (1.5.30: ¥14 read as fine while a day cost ¥25). */
-export function balanceVerdict(amount, perDay) {
+/**
+ * The balance said with how long it lasts at that pace (1.5.30: ¥14 read as fine while a day cost ¥25).
+ * basis 'balance' (1.5.50): the pace is the account balance's own drop - every key and app on it.
+ */
+export function balanceVerdict(amount, perDay, basis = 'ledger', ledgerPerDay = 0) {
   const money = (n) => `¥${Number(n).toFixed(2)}`;
   if (amount == null) return { state: 'ok', text: 'DeepSeek 账户可用。' };
   if (!(perDay > 0)) return amount < 5 ? { state: 'warn', text: `DeepSeek 余额只剩 ${money(amount)}，快用完了。` } : { state: 'ok', text: `DeepSeek 余额 ${money(amount)}。` };
   const days = amount / perDay;
-  const pace = `按最近每天约 ${money(perDay)} 的花费`;
+  // 1.5.50: evaluation runs are not the human's own use (B2): the ledger's pace leaves them out, and says so;
+  // the balance's own drop counts everything that spends from the account (other apps and keys too).
+  // The cost page says Lamplit's own number: when the balance drops faster, say what the rest is.
+  const gap = basis === 'balance' && ledgerPerDay > 0 && perDay > ledgerPerDay * 1.15 + 0.1
+    ? `（Lamplit 自己记的是每天约 ${money(ledgerPerDay)}，多出来的是同一个账户上别的应用、别的密钥或评测花的）` : '';
+  const pace = basis === 'balance' ? `按账户余额最近每天约 ${money(perDay)} 的下降${gap}` : `按最近每天约 ${money(perDay)} 的花费（不含评测）`;
   if (days < 1) return { state: 'bad', text: `DeepSeek 余额 ${money(amount)}，${pace}，今天就可能用完：用完后机器人都会停下。` };
   if (days < 3) return { state: 'warn', text: `DeepSeek 余额 ${money(amount)}，${pace}，大约还能用 ${Math.floor(days)} 天。` };
   return { state: 'ok', text: `DeepSeek 余额 ${money(amount)}，${pace}，大约还能用 ${days >= 60 ? '两个月以上' : `${Math.floor(days)} 天`}。` };
@@ -2776,7 +2793,14 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
         if (!b.available) {
           items.push(checkupItem('balance', '余额', 'bad', `DeepSeek 账户不能用了${b.amount != null ? `（余额 ¥${b.amount.toFixed(2)}）` : ''}：到 DeepSeek 开放平台充值。`, topUp));
         } else {
-          const v = balanceVerdict(b.currency === 'CNY' ? b.amount : null, await dailySpend(state).catch(() => 0));
+          // The balance's own drop once two readings are a day apart (1.5.50: the bill had other keys
+          // and evaluation runs the ledger leaves out); before that, the ledger's pace.
+          const cny = b.currency === 'CNY' ? b.amount : null;
+          const byBalance = cny != null ? balancePace(noteBalance(cny)) : null;
+          const ledgerPace = await dailySpend(state).catch(() => 0);
+          const v = byBalance
+            ? balanceVerdict(cny, byBalance.perDay, 'balance', ledgerPace)
+            : balanceVerdict(cny, ledgerPace);
           items.push(checkupItem('balance', '余额', v.state, v.text, v.state === 'ok' ? null : topUp));
         }
       } catch { /* the balance API is optional */ }
@@ -4041,11 +4065,13 @@ route('POST', /^\/api\/runner\/setup$/, async (req, _res, { state }) => {
 route('GET', /^\/api\/usage$/, async (_req, _res, { query }) => {
   const days = Math.min(Math.max(Number(query.get('days')) || 30, 1), 365);
   const settings = readUsageSettings();
-  const records = recentRecords(await readUsageRecords(), days);
+  const all = await readUsageRecords();
+  const records = recentRecords(all, days);
   const summary = summarizeUsage(records, settings);
   const today = summarizeUsage(records.filter((r) => r.day === localDay()), settings).totals;
   // The recent pace from the last 7 days with cache data (1.5.30, for the checkup's "how long the balance lasts").
-  summary.spendRate = spendRate(recentRecords(records, 7), settings);
+  // 1.5.50: from the last 7 days whatever range the page shows (「今天」 read ¥0.03 for ¥0.98), the checkup's number.
+  summary.spendRate = spendRate(recentRecords(all, 7), settings);
   // The site's prices for models it knows (offered on the cost page, saved only by the human).
   const suggested = Object.fromEntries(summary.byModel.map((m) => [m.key, knownPrice(m.key)]).filter(([, p]) => p));
   return { currency: settings.currency, days, today, alert: settings.dailyAlert ? readUsageAlert() : null, settings, suggested, ...summary };
@@ -5630,6 +5656,7 @@ function publicBot(bot) {
     policy: bot.policy,
     model: bot.model || '',
     voice: bot.voice || '',
+    ...(bot.eval ? { eval: true } : {}),
     createdAt: bot.createdAt,
   };
 }
@@ -5650,6 +5677,7 @@ function publicRoutine(routine) {
     runs: routine.runs.slice(-10),
     onlyChanges: Boolean(routine.onlyChanges),
     pushFeishu: Boolean(routine.pushFeishu),
+    offPeak: Boolean(routine.offPeak),
     preset: routine.preset || null,
   };
 }

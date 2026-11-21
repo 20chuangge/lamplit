@@ -82,7 +82,15 @@ export function trimOldToolOutputs(messages, { keep = 6, head = 600, batch = 5, 
   for (let i = 0; i < messages.length; i += 1) if (messages[i]?.role === 'tool') toolIdx.push(i);
   const stale = new Set(toolIdx.slice(0, Math.max(0, toolIdx.length - keep)));
   const screens = toolIdx.filter((i) => isScreen(messages[i]));
-  for (const i of screens.slice(0, Math.max(0, screens.length - keepScreens))) stale.add(i);
+  // 1.5.50 (S3): a page read (snapshot, screenshot, picture) is stale once the
+  // page was read again: only the latest stays whole - and the latest snapshot,
+  // whose refs the next click needs. A phone or desktop look keeps two (before / after).
+  const nameOf = (i) => calls.get(messages[i].tool_call_id)?.name || '';
+  const pageReads = screens.filter((i) => SCREEN_TOOLS.has(nameOf(i)));
+  const looks = screens.filter((i) => !SCREEN_TOOLS.has(nameOf(i)));
+  const lastSnapshot = pageReads.filter((i) => nameOf(i) === 'browser_snapshot').pop();
+  for (const i of pageReads.slice(0, -1)) if (i !== lastSnapshot) stale.add(i);
+  for (const i of looks.slice(0, Math.max(0, looks.length - keepScreens))) stale.add(i);
   const due = [...stale].filter(whole);
   if (due.length < batch) return messages;
   for (const i of due) {
@@ -276,6 +284,44 @@ export function continuationText({ n, what, actions = [] }) {
   return `（系统自动发起，用户没有发新消息；第 ${n} 次自动接着做）${what}，上一轮做到单轮步数上限被打断了。先看清楚做到了哪一步（工作区的文件、你的笔记、刚才的结果），不要重做已经做完的事，也不用开场白：\n- 如果已经做完：用几句话告诉用户结果（做成了什么、在哪里、多少、有没有没做成的），不要再调用工具；\n- 如果还没做完：接着做，做完再给结果。批量的活尽量用一次能处理很多的工具，少走步数。`
     + (actions.length ? `\n\n上一轮实际做过的操作（系统记录，可信；这些都已经做了，算在你名下，不要否认，也不要重做）：\n- ${actions.join('\n- ')}` : '');
 }
+
+/**
+ * 1.5.50 (S1): the 发布 bot wrote d12_type_body.py, body2, body3, body4, tags,
+ * keys … for one 小红书 post - a new throw-away program each time the editor
+ * did not take the text, 100-150 steps a post. On the third such script in a
+ * turn it is told once what to do instead. -> '' or the note.
+ */
+const SCRIPT_FILE = /\.(py|js|mjs|cjs|sh|ps1)$/i;
+export function scriptRewriteNote(receipts = []) {
+  const written = new Set();
+  for (const r of receipts) {
+    if (r?.name !== 'fs_write' || r.ok === false) continue;
+    const p = String(r.args?.path || '');
+    if (SCRIPT_FILE.test(p)) written.add(p.split(/[\\/]/).pop());
+  }
+  const ran = [...written].filter((file) => receipts.some((r) => r?.name === 'shell' && String(r.args?.command || '').includes(file)));
+  if (ran.length < 3) return '';
+  return `（系统）你这一轮已经新写了 ${ran.length} 个一次性小程序来操作（${ran.slice(-3).join('、')}）。每写一个都要多走好几步、多花钱。接下来：`
+    + '网页里打字用 browser_type（多段文字直接带换行；append: true 在末尾接着写，不清空），按键用 browser_press（Enter、Escape、Tab、方向键、Ctrl+End 等），话题、联想词：browser_type 打出来再 browser_press Enter 选中；'
+    + '真要用脚本，就只留一个带参数的脚本（放在 tools/ 下，别再复制出 2、3、4 号），做完用 skill_save 记下怎么调用，下次直接用，不要再重写。';
+}
+
+/** 「继续」「我弄好了，继续」「接着做」「好了」: a go-on, not a new request (1.5.50, S1). */
+export function isGoOn(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 30) return false;
+  return /^(好了|好的|行了|可以了|搞定了?|弄好了|我弄好了|登录好了|登好了|继续|接着|接着做|go on|continue|done)([，,。.!！\s]|继续|接着|吧|做|$)/i.test(t);
+}
+
+/** What a go-on is told about the turn that stopped (1.5.50, S1): what it already did; go on from there. */
+export function resumeNote({ text = '', status = '', waitingFor = '', actions = [] } = {}) {
+  const why = waitingFor === 'takeover' ? '等用户接管屏幕' : waitingFor === 'login' ? '等用户填登录信息'
+    : status === 'cancelled' ? '被用户停下' : status === 'timeout' ? '超时' : status === 'max_steps' ? '到了单轮步数上限' : status === 'budget' ? '到了今天的预算' : '出错';
+  return `（系统）上一轮在做「${String(text).slice(0, 200)}」时停下了（${why}）。用户说继续，就是从断点接着做：先看一眼现在停在哪一步（看一次就够），然后接着做没做完的；不要从头再核对、重做已经做完的步骤。`
+    + (actions.length ? `\n上一轮已经做过的操作（系统记录，可信）：\n- ${actions.join('\n- ')}` : '');
+}
+/** How long a stopped turn waits for 「继续」. */
+const RESUME_MS = 6 * 60 * 60 * 1000;
 
 /** Steps per turn: 150 for a bot that works a browser, the desktop or the phone (a publish, a job board read screen by screen), else 80; its own setting up to 200. */
 export function stepLimitFor(bot) {
@@ -916,7 +962,7 @@ export class AgentRuntime {
         ...history,
         { role: 'user', content: said },
       ], { tools: [] });
-      noteUsage({ botId: bot.id, botName: bot.name, provider: model.provider || '', model: model.model || '', usage: response.usage, source }, { audit, bus: this.bus }).catch(() => {});
+      noteUsage({ botId: bot.id, botName: bot.name, provider: model.provider || '', model: model.model || '', usage: response.usage, source, ...(bot.eval ? { eval: true } : {}) }, { audit, bus: this.bus }).catch(() => {});
       answer = String(response.content || '').trim() || plain();
     } catch (err) {
       answer = busy ? plain() : `没能回答：${err.message}`;
@@ -1346,6 +1392,9 @@ export class AgentRuntime {
     let stoppedByHuman = false;
     // A new message closed this turn's approval card: the checklist's done steps at that moment (null: it did not happen).
     let redirectedAt = null;
+    // What this turn did, for a 「继续」 after it stopped (1.5.50, S1), and the request a go-on carried on.
+    let turnReceipts = [];
+    let resumedText = '';
 
     try {
       // The human's words come in while a task waits on them: they are the answer.
@@ -1360,6 +1409,16 @@ export class AgentRuntime {
       if (task && source !== 'task') {
         const waiting = task.tasks.find((t) => t.status === 'waiting_human');
         if (waiting && !waiting.answer) { waiting.answer = String(text).slice(0, 1000); await this.taskChanged(task); }
+      }
+      // 「继续」 after a turn that stopped (a takeover, a login, the stop button, an
+      // error): go on from where it stopped, with what it already did (1.5.50, S1:
+      // 「我弄好了，继续」 started a 小红书 post from the top again).
+      const kept = !groupContext && source !== 'task' ? this.unfinished?.get(bot.id) : null;
+      if (kept && Date.now() - kept.at < RESUME_MS && isGoOn(text)) {
+        this.unfinished.delete(bot.id);
+        resumedText = kept.text;
+        hiddenNote = [hiddenNote, resumeNote({ text: kept.text, status: kept.status, waitingFor: kept.waitingFor, actions: describeActions(kept.receipts) })].filter(Boolean).join('\n\n');
+        if (!priorReceipts.length) priorReceipts = kept.receipts || [];
       }
       const systemPrompt = (await this.buildSystemPrompt(bot, { unattended, group: groupContext, groupRole, depth, task }))
         + (source === 'routine' ? `\n\n${ROUTINE_TURN_LINE}` : '');
@@ -1409,6 +1468,9 @@ export class AgentRuntime {
       let fabricationNudged = false;
       // What this turn really did, for checking the final answer's claims.
       const receipts = priorReceipts.map((r) => ({ ...r, carried: true }));
+      turnReceipts = receipts;
+      // Said once a turn: a third throw-away script to drive a page (1.5.50, S1).
+      let scriptNoted = false;
       // One send-back per turn, shared by the final answer and a task_finish summary.
       const claimState = { nudged: false };
       ctx.receipts = receipts;
@@ -1495,7 +1557,7 @@ export class AgentRuntime {
 
         // Cost accounting is a side ledger: a write failure must not fail a turn.
         noteUsage(
-          { botId: bot.id, botName: bot.name, provider: turnModel.provider || '', model: turnModel.model || '', usage: response.usage, source: baseEvent.source, routineId },
+          { botId: bot.id, botName: bot.name, provider: turnModel.provider || '', model: turnModel.model || '', usage: response.usage, source: baseEvent.source, routineId, ...(bot.eval ? { eval: true } : {}) },
           { audit, bus: this.bus },
         ).catch(() => {});
 
@@ -1682,6 +1744,11 @@ export class AgentRuntime {
           }
         }
 
+        if (!scriptNoted && !finished) {
+          const note = scriptRewriteNote(receipts.filter((r) => !r.carried));
+          if (note) { scriptNoted = true; messages.push({ role: 'user', content: note }); }
+        }
+
         steps += 1;
         live.steps = steps;
         if (finished) break;
@@ -1751,6 +1818,20 @@ export class AgentRuntime {
     } finally {
       this.active.delete(turnId);
       this.wakeBot(bot.id);
+      // Stopped before the work was done: kept for a 「继续」 (1.5.50, S1); done: forgotten.
+      if (!groupContext) {
+        this.unfinished = this.unfinished || new Map();
+        const waitedFor = waitingFor || live.waitingFor || '';
+        if (waitedFor === 'takeover' || waitedFor === 'login' || !['success', 'needs_approval'].includes(status)) {
+          const was = this.unfinished.get(bot.id);
+          this.unfinished.set(bot.id, {
+            at: Date.now(), status, waitingFor: waitedFor,
+            // A go-on that stopped again keeps the request it carried on, not 「继续」.
+            text: resumedText || (source === 'task' && was ? was.text : String(text).slice(0, 300)),
+            receipts: turnReceipts.filter((r) => r.ok !== false).slice(-60),
+          });
+        } else if (status === 'success') this.unfinished.delete(bot.id);
+      }
       const endedAt = nowIso();
       await this.record(bot.id, {
         kind: 'turn',
@@ -2603,7 +2684,9 @@ export class AgentRuntime {
     if (rules.length && verdict.decision !== DECISION.DENY && !RULE_EXEMPT.has(name)) {
       try {
         const before = verdict.decision;
-        verdict = applyRules(verdict, await judgeRules({ rules, toolName: name, args, model: this.model }), DECISION);
+        // The check is a model call too: on the ledger under this bot (1.5.50, B5).
+        const onUsage = (u) => noteUsage({ botId: bot.id, botName: bot.name, ...u, source: 'rule', ...(bot.eval ? { eval: true } : {}) }, { audit, bus: this.bus }).catch(() => {});
+        verdict = applyRules(verdict, await judgeRules({ rules, toolName: name, args, model: this.model, onUsage }), DECISION);
         if (before !== DECISION.ASK && verdict.decision === DECISION.ASK) sticky = true;
       } catch (err) {
         // Could not check: with any "ask first" rule on the books, ask.

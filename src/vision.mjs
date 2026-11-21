@@ -154,7 +154,13 @@ export async function describeImage(service, bytes, mime, question, { timeoutMs 
     throw visionError(502, 'VISION_FAILED', `看图失败（${hint}）：${detail}`);
   }
   let text = '';
-  try { text = String(JSON.parse(raw).choices?.[0]?.message?.content || ''); } catch { text = ''; }
+  let usage = null;
+  try {
+    const json = JSON.parse(raw);
+    text = String(json.choices?.[0]?.message?.content || '');
+    // Its tokens, for the cost page (1.5.50, B5).
+    usage = json.usage && typeof json.usage === 'object' ? json.usage : null;
+  } catch { text = ''; }
   if (!text.trim()) throw visionError(502, 'VISION_EMPTY', '看图模型没有返回内容');
-  return { text: text.trim(), model: service.model, latencyMs: Date.now() - started };
+  return { text: text.trim(), model: service.model, latencyMs: Date.now() - started, usage };
 }

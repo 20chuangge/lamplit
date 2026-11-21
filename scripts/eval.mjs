@@ -9,6 +9,13 @@
  *   npm run eval -- --verbose        print each round's reply of a task that failed
  *   npm run eval -- --record         also write the result into docs/EVAL.md
  *   npm run eval -- --keep           leave the task folders for a look
+ *   npm run eval -- --model <id>     the evaluation bots use this model (Settings → 模型 → 其他模型),
+ *                                    e.g. one with a separate key, so the runs are not paid
+ *                                    from the everyday key (also EVAL_MODEL=<id>; 1.5.50)
+ *
+ * The bots are made as evaluation bots (eval: true): their calls show on the
+ * cost page as 评测, apart, and are not counted in the daily pace or the
+ * checkup's 「还能用几天」 (1.5.50).
  *
  * Each task gets a fresh bot (its own memory, its own line in the usage
  * ledger) with the everyday tools in EVAL_TOOLS, a fresh folder under
@@ -39,6 +46,8 @@ const argv = process.argv.slice(2);
 const flag = (name) => argv.includes(name);
 const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : ''; };
 const TURN_LIMIT_MS = Number(process.env.EVAL_TURN_SECONDS || 360) * 1000;
+// A model of its own for the evaluation bots (a profile id from Settings → 模型), so a separate key pays (1.5.50).
+const EVAL_MODEL = String(opt('--model') || process.env.EVAL_MODEL || '').trim();
 
 function hubUrl() {
   if (process.env.EVAL_HUB) return process.env.EVAL_HUB.replace(/\/+$/, '');
@@ -102,7 +111,7 @@ async function runTask(task, { runDir, wsRoot }) {
     // A bot's id comes from its name, so an earlier run's bot had the same one:
     // count only what this run adds.
     const usageOf = async (id) => listOf(await api('/api/usage?days=2').catch(() => null), 'byBot').find((b) => b.key === id) || { tokens: 0, cost: 0 };
-    const made = await api('/api/bots', { method: 'POST', body: { name: `评测-${task.id}`, role: '评测用的临时机器人，跑完就删', tools: EVAL_TOOLS } });
+    const made = await api('/api/bots', { method: 'POST', body: { name: `评测-${task.id}`, role: '评测用的临时机器人，跑完就删', tools: EVAL_TOOLS, eval: true, ...(EVAL_MODEL ? { model: EVAL_MODEL } : {}) } });
     bot = made.bot || made;
     usageBefore = await usageOf(bot.id);
     usageAfter = () => usageOf(bot.id);

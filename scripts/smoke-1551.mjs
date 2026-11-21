@@ -196,15 +196,19 @@ async function runInstallerCases({ check, sh }) {
   const to = sh.indexOf('\nfind_node || install_node\n');
   const lib = sh.slice(from, to);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lamplit-nodeinst-'));
-  const P = (p) => p.replace(/\\/g, '/');
+  // Every path is bash's own (R = the case's folder, as bash names it): no Windows drive
+  // letter in PATH, and one replacing pass, so an inserted path is never replaced again
+  // (CI 11-21: on Linux the temp folder itself is under /tmp/, and a second /tmp/ pass doubled it).
+  const SYS = /\/etc\/|\/usr\/share\/keyrings|\/tmp\/|\/opt\/desk-hub\/runtime\/bin\/node| \/usr\/bin\/node;/g;
+  const fake = { '/etc/': '$R/etc/', '/usr/share/keyrings': '$R/usr/share/keyrings', '/tmp/': '$R/tmp/', '/opt/desk-hub/runtime/bin/node': '$R/none/node', ' /usr/bin/node;': ' $R/none/node2;' };
   const run = (name, { osRelease, env = {} }) => {
-    const root = P(path.join(tmp, name));
-    const bin = `${root}/bin`;
-    for (const d of ['bin', 'etc/apt/sources.list.d', 'etc/apt/preferences.d', 'etc/yum.repos.d', 'usr/share/keyrings', 'tmp']) fs.mkdirSync(path.join(tmp, name, d), { recursive: true });
-    if (osRelease !== null) fs.writeFileSync(path.join(tmp, name, 'etc', 'os-release'), osRelease);
-    const tool = (n, body) => fs.writeFileSync(path.join(tmp, name, 'bin', n), `#!/bin/bash\necho "${n} $*" >> "${root}/calls"\n${body}\n`, { mode: 0o755 });
-    const installed = `touch "${root}/installed"`;
-    tool('node', `if [ -f "${root}/installed" ]; then [ "$1" = -v ] && echo v22.11.0 || echo 22; else [ "$1" = -v ] && echo v18.19.0 || echo 18; fi`);
+    const dir = path.join(tmp, name);
+    for (const d of ['bin', 'etc/apt/sources.list.d', 'etc/apt/preferences.d', 'etc/yum.repos.d', 'usr/share/keyrings', 'tmp']) fs.mkdirSync(path.join(dir, d), { recursive: true });
+    if (osRelease !== null) fs.writeFileSync(path.join(dir, 'etc', 'os-release'), osRelease);
+    // A stand-in finds the case's folder from where it lives: bin/..
+    const tool = (n, body) => fs.writeFileSync(path.join(dir, 'bin', n), `#!/bin/bash\nR="$(cd "$(dirname "$0")/.." && pwd)"\necho "${n} $*" >> "$R/calls"\n${body}\n`, { mode: 0o755 });
+    const installed = 'touch "$R/installed"';
+    tool('node', 'if [ -f "$R/installed" ]; then [ "$1" = -v ] && echo v22.11.0 || echo 22; else [ "$1" = -v ] && echo v18.19.0 || echo 18; fi');
     tool('apt-get', `case "$*" in *"install -y nodejs"*) ${installed} ;; esac; exit 0`);
     tool('apt-cache', `echo "nodejs:"; echo "  Installed: (none)"; echo "  Candidate: ${env.APT_CANDIDATE || '18.19.1+dfsg-6ubuntu5'}"`);
     tool('curl', 'echo FAKEKEY');
@@ -212,16 +216,15 @@ async function runInstallerCases({ check, sh }) {
     tool('dpkg', 'echo amd64');
     tool('dnf', `case "$*" in *"module install"*) ${env.DNF_MODULE_OK ? installed : 'exit 1'} ;; *"list available nodejs"*) echo "nodejs.x86_64   ${env.DNF_AVAIL || '1:16.20.2-8.el9_4'}   appstream" ;; *"install -y nodejs"*|*"upgrade -y nodejs"*) ${installed} ;; esac; exit 0`);
     tool('rpm', `exit ${env.RPM_HAS ? 0 : 1}`);
-    const body = lib.replace(/\/etc\//g, `${root}/etc/`).replace(/\/usr\/share\/keyrings/g, `${root}/usr/share/keyrings`).replace(/\/tmp\//g, `${root}/tmp/`)
-      .replace('/opt/desk-hub/runtime/bin/node', `${root}/none/node`).replace(' /usr/bin/node;', ` ${root}/none/node2;`);
-    const script = ['set -u', 'say() { echo "[desk] $*"; }', 'fail() { echo "DESK_RELAY_ERROR=$1"; exit 1; }', body, 'find_node || install_node', 'echo "NODE_AT=$NODE"'].join('\n');
-    fs.writeFileSync(path.join(tmp, name, 'run.sh'), script);
+    const body = lib.replace(SYS, (m) => fake[m]);
+    const script = ['set -u', 'R="$(cd "$(dirname "$0")" && pwd)"', 'PATH="$R/bin:/usr/bin:/bin"', 'say() { echo "[desk] $*"; }', 'fail() { echo "DESK_RELAY_ERROR=$1"; exit 1; }', body, 'find_node || install_node', 'echo "NODE_AT=$NODE"'].join('\n');
+    fs.writeFileSync(path.join(dir, 'run.sh'), script);
     let out = '';
     let code = 0;
     try {
-      out = execFileSync(bash, [`${root}/run.sh`], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:/usr/bin:/bin` }, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (err) { out = String(err.stdout || ''); code = err.status || 1; }
-    const file = (p) => { try { return fs.readFileSync(path.join(tmp, name, p), 'utf8'); } catch { return ''; } };
+      out = execFileSync(bash, ['run.sh'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000 });
+    } catch (err) { out = `${err.stdout || ''}${err.stderr ? `\n[stderr] ${err.stderr}` : ''}`; code = err.status || 1; }
+    const file = (p) => { try { return fs.readFileSync(path.join(dir, p), 'utf8'); } catch { return ''; } };
     return { out, code, calls: file('calls'), file };
   };
   try {

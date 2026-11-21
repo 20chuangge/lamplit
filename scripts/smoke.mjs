@@ -239,6 +239,10 @@ async function main() {
     await stage('1.5.52: what the real-model test found, X as a tile, X sign-in from another machine', scenarioBatch1552);
     await stage('1.5.53: security - what only the human may do is the default', async () => (await import('./smoke-sec1553.mjs')).secChecks({ check, api, rawFetch, base, readText, startServerChild, stopProcess, seedHome }));
     await stage('1.5.53: the Windows screen asks for a password, the hub signs in for the page', async () => { const v = await import('./smoke-vnc1553.mjs'); await v.vncUnitChecks({ check }); await v.vncHubChecks({ check }); });
+    await stage('1.5.54: one-click backup and restore', async () => (await import('./smoke-backup.mjs')).backupChecks({ check, readText }));
+    await stage('1.5.54: what a newcomer tripped over, and three queued items', async () => (await import('./smoke-ux1554.mjs')).uxChecks({ check, readText, api, home, toolsMod }));
+    await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
+    await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4232,7 +4236,7 @@ async function scenarioMcp({ home, toolsMod }) {
     const mach = await readText('../public/app/main/11-machines.js');
     const check1 = (await api('/api/checkup')).json;
     check('K32 isolation: the checkup has 「命令隔离」 on Windows (warn with 「设置单独账户」 until it is on); getting started asks once (on this computer, skippable)',
-      srv.includes("checkupItem('isolation', '命令隔离', 'warn', '没开：机器人执行的命令和你用同一个账户") && mach.includes("else if (action.kind === 'runner') setupRunnerAccount()")
+      srv.includes("checkupItem('isolation', '命令隔离', 'warn', '机器人跑命令时用的是你的账户") && mach.includes("else if (action.kind === 'runner') setupRunnerAccount()")
       && bots.includes("appendIsolationAsk().catch(() => {});") && bots.includes("const ISOLATION_ASKED = 'lamplit.isolationAsked';") && bots.includes("'以后再说'")
       && (process.platform !== 'win32' || (check1?.items || []).some((i) => i.id === 'isolation')), JSON.stringify((check1?.items || []).map((i) => i.id)));
   }
@@ -4260,7 +4264,7 @@ async function scenarioMcp({ home, toolsMod }) {
     check('K33 A1 「以后都允许」 stays by program (a bot finishes a job on its own); what a command does still asks: the danger list, a place outside the workspace, Lamplit\'s keys; the card and the toast say so; without command isolation a program that runs code gets a warning; a chain needs every program allowed; a reloaded card keeps the button',
       AP.permissionKey('shell', { command: 'node --version' }).key === AP.permissionKey('shell', { command: 'node -e "x"' }).key
       && ag.includes("if (name === 'shell') sticky = true;") && ag.includes("let sticky = verdict.decision === DECISION.ASK && /danger denylist/.test(verdict.reason || '');")
-      && ag.includes("&& (remember.also || []).every((k) => isRemembered(bot, k))") && ag.includes("if (remember?.runsCode && sandboxStatus(this.config.policy).state !== 'on') remember.warn =")
+      && ag.includes("&& (remember.also || []).every((k) => isRemembered(bot, k))") && ag.includes("if (remember?.runsCode && this.model?.provider !== 'mock' && sandboxStatus(this.config.policy).state !== 'on') remember.warn =")
       && live.includes("'（危险操作和工作区外的改动照样会问）'") && live.includes("...(approval.remember?.key ? { remember: approval.remember } : {}),"));
     const look = (c) => BD.lookOnly(c).look;
     check('K33 A5 「看看这台电脑」 on Windows: systeminfo | findstr, wmic … get, Get-CimInstance inside powershell, cmd /c ipconfig are just looking; wmic … call, powershell -File, -EncodedCommand, Remove-Item, > file are not',
@@ -5960,7 +5964,7 @@ async function scenarioDist158() {
   const serverSrc = await readText('../src/server.mjs');
   const chat = await readText('../public/app/main/05-chat.js');
   check('U3 wiring: fs_write and fs_delete snapshot first and return the undo id; fs_list hides .trash; POST /api/undo; the turn\'s changes line with 撤销 under the reply',
-    tools.includes("const undo = r.inWorkspace ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: args?.mode === 'append' ? 'append' : 'write' }) : null;")
+    tools.includes("const undo = r.named ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: args?.mode === 'append' ? 'append' : 'write' }) : null;")
     && tools.includes("await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: 'delete' })") && tools.includes("e.name !== TRASH_DIR")
     && serverSrc.includes("route('POST', /^\\/api\\/undo$/") && chat.includes('function changesLine(')
     && (chat.includes("'/api/undo'") || ((chat + await readText('../public/app/main/03-groups.js')).includes('api(chatUndoUrl(),') && (await readText('../public/app/main/03-groups.js')).includes("return '/api/undo';"))));
@@ -7355,12 +7359,13 @@ async function scenarioV163() {
   const raw = (await fsp.readFile(path.join(pub, 'index.html'), 'utf8')).replace(/\r\n/g, '\n');
   const tags = [...raw.matchAll(/<script defer src="(app\/main\/[\w-]+\.js)"><\/script>/g)].map((m) => m[1]);
   const sizes = PS.MAIN_PARTS.map((rel) => fsx.readFileSync(path.join(pub, rel), 'utf8').split('\n').length);
-  check('ENG-04b split: the page script is 12 files by feature (core, avatars, groups, bots, chat, live, skills, settings, apps, computer, machines, wiring), none over 2 000 lines; the old main.js is gone',
-    PS.MAIN_PARTS.length === 12 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
+  // 1.5.54: a 13th part, 13-backup.js (设置 → 备份), after wiring.
+  check('ENG-04b split: the page script is 13 files by feature (core, avatars, groups, bots, chat, live, skills, settings, apps, computer, machines, wiring, backup), none over 2 000 lines; the old main.js is gone',
+    PS.MAIN_PARTS.length === 13 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
     && !fsx.existsSync(path.join(pub, 'app', 'main.js')) && !raw.includes('type="module"'), JSON.stringify(sizes));
   const order = (await import('./check-page-parts.mjs')).checkPageParts(pub);
   check('ENG-04b split: load-time code never needs a later part, no name is declared twice, nothing clashes with the browser (scripts/check-page-parts.mjs)',
-    !order.skipped && order.problems.length === 0 && order.parts === 12, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
+    !order.skipped && order.problems.length === 0 && order.parts === 13, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
   const auth = await import('../src/auth.mjs');
   const part = await fetch(`${base}/app/main/05-chat.js`);
   const body = await part.text();
@@ -7568,7 +7573,7 @@ async function scenarioV160() {
   const whole = PS.pageSource(path.join(REPO, 'public'));
   const i18n = await readText('../scripts/check-i18n.mjs');
   check('ENG-04 checks: the self-tests and the English check read the split page as one text (every part present, in page order)',
-    PS.PAGE_PARTS.length === 16 && whole.includes('<style>') && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
+    PS.PAGE_PARTS.length === 17 && whole.includes('<style>') && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
     && i18n.includes("import { pageSource } from './page-source.mjs';") && (await readText('../public/index.html')) === whole);
 
   const auth = await import('../src/auth.mjs');
@@ -7697,7 +7702,7 @@ async function scenarioV158() {
       && render.includes("if (last && last.status !== 'success' && last.status !== 'needs_attention' && !newer && !working) messagesEl.appendChild(statusLine(last));"));
     check('X3 chat: after a reload, a bot that is still working shows "正在处理…" again (also when the sidebar learns it is working)',
       render.includes("const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);")
-      && render.includes("if (working) showTyping(typingBotId(), '正在处理…');")
+      && render.includes("if (working) showTyping(typingBotId(), att?.needsYou || att?.asking ? '等你点头…' : '正在处理…');") // 1.5.54: a waiting card says so
       && page.includes('function syncTypingWithAttention()') && /state\.attention = await api\('\/api\/attention'\);[\s\S]{0,900}syncTypingWithAttention\(\);/.test(page));
   }
 }
@@ -7746,7 +7751,8 @@ async function scenarioV156() {
         ['助理', 'sec-model,sec-skills,sec-memory,sec-initiative'],
         ['安全', 'sec-run,sec-bounds,sec-vault,sec-audit'],
         ['连接', 'sec-machines,sec-pair,sec-feishu,sec-mcp'],
-        ['通用', 'sec-checkup,sec-appearance,sec-usage,sec-pages,sec-about'],
+        // 1.5.54: 备份 joins 通用, after 成本.
+        ['通用', 'sec-checkup,sec-appearance,sec-usage,sec-backup,sec-pages,sec-about'],
       ]), JSON.stringify(groups));
     const sec = (id) => (page.match(new RegExp(`<section class="dsec" id="${id}">[\\s\\S]*?</section>`)) || [''])[0];
     const run = sec('sec-run');
@@ -11900,8 +11906,8 @@ async function scenarioThink1545() {
   {
     const page = await readText('../public/index.html');
     const en = await readText('../public/i18n-en.js');
-    check('T45-23 the draft card: the text in boxes that can be edited, 「发送」 and 「不发了」, the edits sent with the answer; after it, 「已发送（你改过）」',
-      page.includes("'approval-draft'") && page.includes("'发送'") && page.includes("'不发了'") && page.includes('edits') && page.includes('已发送（你改过）') && en.includes('"不发了"'));
+    check('T45-23 the draft card: the text in boxes that can be edited, 「发送」 and 「不发了」, the edits sent with the answer; after it, 「已定稿（你改过）」 (1.5.54: it is posted after that)',
+      page.includes("'approval-draft'") && page.includes("'发送'") && page.includes("'不发了'") && page.includes('edits') && page.includes('已定稿（你改过）') && en.includes('"不发了"'));
     check('T45-24 a change to a bot is shown before and after, line by line; 「撤销」 under it; X in 连接应用 with the callback to paste and 「去 X 登录授权」; 「适合」 on each machine; the daily note\'s switch and time',
       page.includes("'adjust-diff'") && page.includes('/api/adjustments/') && page.includes('去 X 登录授权') && page.includes('/api/x/login') && page.includes('适合：')
       && page.includes('id="nudge-on"') && page.includes('每天告诉我有什么在等你'));
@@ -12009,6 +12015,7 @@ async function scenarioBlocks1545() {
     // The daily note is one time trigger of the main assistant on this layer.
     await layer.update({ daily: { enabled: true, time: '09:00' } });
     clock = at(9, 0, 23);
+    await layer.seenHere(); // 1.5.54: only from a machine whose page you opened (UX7)
     await layer.tick();
     const daily = said.filter((x) => x.kind === 'daily').pop();
     check('B45-5 「有什么在等你」 is the main assistant\'s daily trigger on the same layer (once a day, only when something waits)',

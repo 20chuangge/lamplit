@@ -128,10 +128,15 @@ export function createInitiative({ file, bus = null, now = () => Date.now(), pri
     return true;
   }
 
+  // When your page was last open here, not through another machine (1.5.54, walkthrough 3.7: a cloud
+  // machine just linked sent its own 「有什么在等你」 about the study's assistant). The daily note comes
+  // from a machine you opened in the last week; once you open one, it comes that day.
+  const SEEN_FOR_MS = 7 * 24 * 3600 * 1000;
   async function dailyTick() {
     const d = data.settings.daily;
     if (!d?.enabled || !waiting) return;
     const t = now();
+    if (!data.seenAt || t - data.seenAt > SEEN_FOR_MS) return;
     const today = dayKey(t);
     if (data.lastDaily === today) return;
     const at = new Date(t);
@@ -268,6 +273,15 @@ export function createInitiative({ file, bus = null, now = () => Date.now(), pri
     /** A card answered or gone: it may be mentioned again if it ever waits again (it will not). */
     cardSaid(id) { return Boolean(data?.cardsSaid?.[id]); },
     async markCardSaid(id) { data.cardsSaid[id] = now(); const keep = Object.entries(data.cardsSaid).sort((a, b) => b[1] - a[1]).slice(0, 300); data.cardsSaid = Object.fromEntries(keep); await save(); },
+
+    /** Your page opened here (not through another machine): this machine may say the daily note. */
+    async seenHere() {
+      await load();
+      const t = now();
+      if (data.seenAt && t - data.seenAt < 3600 * 1000) { data.seenAt = t; return; }
+      data.seenAt = t;
+      await save();
+    },
 
     /** Once a minute: the daily note, follow-ups, watched folders, then what waits to be said. */
     async tick() {

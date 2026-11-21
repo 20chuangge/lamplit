@@ -24,6 +24,7 @@
     --accent-soft: rgba(255, 255, 255, 0.08);
     --green: #2fbf71;
     --amber: #f0a72c;
+    --notice-text: #fde68a; /* text on the yellow notice bar; the light theme has its own (1.5.54) */
     --red: #ef5350;
     --cyan: #38bdf8;
     /* type */
@@ -143,6 +144,9 @@
     flex: 0 1 auto; min-width: 0;
   }
 
+  .icon-btn.with-label { width: auto; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; }
+  .work-label { font-size: 12.5px; white-space: nowrap; }
+  .rt-peak-hint { color: var(--amber); }
   .icon-btn {
     flex: none;
     width: 38px; height: 38px;
@@ -791,7 +795,7 @@
   body.panel-max .pc-done.show { display: inline-flex; }
   .conn-banner {
     display: flex; align-items: center; gap: 10px; margin: 8px 16px 0; padding: 8px 12px;
-    border-radius: 10px; font-size: 12.5px; color: #fde68a;
+    border-radius: 10px; font-size: 12.5px; color: var(--notice-text, #fde68a);
     background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35);
   }
   .conn-banner[hidden] { display: none; }
@@ -1211,6 +1215,12 @@
     padding: var(--s4);
   }
   .pair-label { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+  /* A part's own name, in normal case (1.5.54: 「TAILSCALE」 shouted). */
+  .pair-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .usage-headline { font-size: 15px; font-weight: 600; color: var(--text); margin: 10px 0 6px; line-height: 1.5; }
+  .usage-more > summary { cursor: pointer; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+  .switch-row.nowrap { white-space: nowrap; flex: none; }
+  .soon-card { opacity: 0.6; }
   .pair-row { display: flex; align-items: center; gap: var(--s2); margin-top: 4px; }
   .pair-value {
     flex: 1; min-width: 0; font-size: 13px; color: var(--text);
@@ -1979,6 +1989,7 @@
     --accent-soft: rgba(0, 0, 0, 0.05);
     --green: #149a57;
     --amber: #b26a00;
+    --notice-text: #7a4a00;
     --red: #d13232;
     --cyan: #0b7aa8;
     --shadow-1: 0 8px 24px rgba(20, 28, 50, 0.10);
@@ -2380,6 +2391,12 @@
     background: var(--bg-2); border: 1px solid var(--border-soft);
   }
   .approval-detail-k { font-size: 10.5px; color: var(--dim); margin-bottom: 3px; }
+  .approval-command { margin: 0 0 10px; font-size: 12px; color: var(--dim); }
+  .approval-command summary { cursor: pointer; }
+  .approval-command code {
+    display: block; margin-top: 6px; padding: 9px 11px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: 12px; line-height: 1.55; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 132px; overflow: auto;
+  }
   .approval-detail code {
     display: block; font-family: var(--mono); font-size: 12px; line-height: 1.55;
     color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 132px; overflow: auto;
@@ -2638,6 +2655,8 @@
     .chat-head .sub { max-width: 42vw; }
     .chat-head .icon-btn { width: var(--touch); height: var(--touch); }
     #nav-toggle, #panel-toggle { width: 36px; height: 36px; }
+    #panel-toggle .work-label { display: none; } /* narrow: the icon alone (1.5.54) */
+    #panel-toggle.with-label { padding: 0; justify-content: center; }
     .chat-head-actions { gap: 2px; }
     .pill.soft { display: none; }
 
@@ -3130,6 +3149,8 @@
   .perm-chip b { color: var(--text); font-weight: 600; }
   .perm-chip.warn { border-color: rgba(240, 167, 44, .4); color: #e6c48b; }
   .perm-table-wrap { overflow-x: auto; }
+  .perm-table-wrap.scrolls { -webkit-mask-image: linear-gradient(to right, #000 82%, transparent); mask-image: linear-gradient(to right, #000 82%, transparent); }
+  .perm-table-wrap.scrolls.at-end { -webkit-mask-image: none; mask-image: none; }
   .perm-table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 12px; }
   .perm-table th, .perm-table td {
     border-bottom: 1px solid var(--border-soft); padding: 7px 8px;
@@ -3666,3 +3687,14 @@ button.roster-head:hover { color: var(--text); }
 .machine-note-text.full { white-space: normal; }
 .machine-note .link-btn { flex: none; }
 .machine-note-where { flex-basis: 100%; }
+
+/* 设置 → 备份 (1.5.54) */
+#backup-status { white-space: pre-line; }
+.backup-ws-size { color: var(--dim); font-size: 12px; margin-left: 6px; }
+.backup-out summary { cursor: pointer; font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+.backup-out-list { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.restore-panel { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border-soft); border-radius: 10px; }
+.restore-mode { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; }
+.restore-mode b { display: block; font-size: 13px; margin-bottom: 2px; }
+.restore-panel .lbl { display: block; margin-top: 14px; }
+.restore-panel .warn-note { margin-top: 10px; }

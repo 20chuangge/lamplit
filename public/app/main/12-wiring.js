@@ -202,10 +202,12 @@ function wireChrome() {
     if (item.dataset.view || item.dataset.machine !== undefined) pickMachineRow(item);
   });
   $('set-machines-list')?.addEventListener('click', onMachineListClick);
-  $('set-add-machine')?.addEventListener('click', () => { closeSettings(); openMachineModal(); });
-  $('vnc-modal-close').addEventListener('click', closeMachineModal);
-  $('vnc-cancel').addEventListener('click', closeMachineModal);
-  $('vnc-scrim').addEventListener('click', closeMachineModal);
+  // Opened from 设置 → 机器: Cancel goes back there (1.5.54, walkthrough 5.3).
+  $('set-add-machine')?.addEventListener('click', () => { closeSettings(); openMachineModal(); state.machineFromSettings = true; });
+  document.querySelector('[data-open-machines]')?.addEventListener('click', (event) => { event.preventDefault(); openSettings('sec-machines'); });
+  $('vnc-modal-close').addEventListener('click', cancelMachineModal);
+  $('vnc-cancel').addEventListener('click', cancelMachineModal);
+  $('vnc-scrim').addEventListener('click', cancelMachineModal);
   $('about-update-btn')?.addEventListener('click', () => checkForUpdate({ fresh: true, manual: true }));
   $('vnc-save').addEventListener('click', saveMachineFromModal);
   // 「它是哪台？」 (1.5.42): a tap fills the name; 「自己写」 puts the cursor there.
@@ -215,6 +217,10 @@ function wireChrome() {
     for (const c of document.querySelectorAll('#vnc-name-chips [data-name]')) c.classList.toggle('on', c === chip);
     if (chip.dataset.name === '*') { $('vnc-name').value = ''; $('vnc-name').focus(); return; }
     $('vnc-name').value = chip.dataset.name;
+    // A cloud server usually logs in as ubuntu; a computer at home as you (1.5.54, walkthrough 5.1).
+    const kind = chip.dataset.name === '云服务器' ? 'cloud' : 'home';
+    $('vnc-ssh-user').value = kind === 'cloud' ? 'ubuntu' : '';
+    $('vnc-ssh-user').placeholder = kind === 'cloud' ? 'ubuntu 或 root' : '你登录那台电脑用的用户名';
   });
   $('vnc-modal').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && event.target.matches('input')) {
@@ -226,7 +232,7 @@ function wireChrome() {
   // Esc closes the machine dialog first, then the full-window desktop view.
   window.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
-    if ($('vnc-modal')?.classList.contains('open')) { closeMachineModal(); return; }
+    if ($('vnc-modal')?.classList.contains('open')) { cancelMachineModal(); return; }
     if (document.body.classList.contains('panel-max')) togglePanelMax(false);
   });
   document.querySelectorAll('input[name="approval-level"]').forEach((radio) => {
@@ -297,6 +303,12 @@ function wireChrome() {
   $('rule-add-btn')?.addEventListener('click', addRule);
   $('rule-input')?.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addRule(); } });
   $('deny-input')?.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); addDeny(); } });
+  // A table wider than its box fades at the right edge until scrolled to the end (1.5.54, walkthrough 4.3).
+  const markScroll = (w) => { w.classList.toggle('scrolls', w.scrollWidth > w.clientWidth + 4); w.classList.toggle('at-end', w.scrollLeft + w.clientWidth >= w.scrollWidth - 4); };
+  document.addEventListener('scroll', (event) => { const w = event.target?.closest?.('.perm-table-wrap'); if (w) markScroll(w); }, true);
+  let markQueued = false;
+  new MutationObserver(() => { if (markQueued) return; markQueued = true; requestAnimationFrame(() => { markQueued = false; document.querySelectorAll('.perm-table-wrap').forEach(markScroll); }); }).observe(document.body, { childList: true, subtree: true });
+  window.addEventListener('resize', () => document.querySelectorAll('.perm-table-wrap').forEach(markScroll));
   $('panel-toggle').addEventListener('click', () => {
     if (state.panelOpen) { closePanel(); return; }
     state.panelOpen = true;
@@ -464,6 +476,9 @@ function wireChrome() {
       renderRoutines();
       $('new-bot-cancel').click();
       toast('助手已创建');
+      // Opened at once, like a new group (1.5.54, walkthrough 3.2).
+      const made = res?.bot;
+      if (made?.id) selectBot(made.id);
     } catch (err) {
       // The pairing box says it, and makes it once paired: then the form closes and it opens (1.5.44 test).
       if (err.code === 'LOCAL_KEY_REQUIRED') { if (where && state.afterPair) state.afterPair.then = (res) => botMadeThere(where, res); return; }
@@ -557,6 +572,11 @@ function wireChrome() {
   // routines
   // 全部: every routine on the machine instead of the chat's own.
   $('rt-scope')?.addEventListener('change', () => renderRoutines());
+  // The routine form's peak-hour hint follows the time and the box (1.5.54).
+  $('rt-schedule')?.addEventListener('input', routinePeakHint);
+  $('rt-off-peak')?.addEventListener('change', routinePeakHint);
+  // 「设置 → 主动」 from the task panel (1.5.54: one daily note, said where it lives).
+  document.querySelector('[data-open-initiative]')?.addEventListener('click', (event) => { event.preventDefault(); openSettings('sec-initiative'); });
   $('new-routine-btn').addEventListener('click', () => {
     const card = $('routine-form-card');
     const hidden = card.style.display === 'none' || !card.style.display;
@@ -727,3 +747,10 @@ window.__desk = {
   faceSvg,
   renderMessages,
 };
+
+/** Closed without adding: back to 设置 → 机器 when it was opened from there. */
+function cancelMachineModal() {
+  closeMachineModal();
+  if (state.machineFromSettings) openSettings('sec-machines');
+  state.machineFromSettings = false;
+}

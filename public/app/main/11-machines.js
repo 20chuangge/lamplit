@@ -216,7 +216,8 @@ function renderMachineMenu() {
           : row(m.name, '检测中…', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"` }),
       );
     }
-    menu.innerHTML = rows.join('') + appList;
+    const add = /* 添加 from here too (1.5.54) */ onLocalMachine() && !window.NightshiftShell ? '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加一台机器…</button>' : '';
+    menu.innerHTML = rows.join('') + add + appList;
     // How this phone or browser would get there, in words (局域网 / Tailscale /
     // 中转), not an address: 127.x, 100.x and IP:port meant nothing (1.5.37).
     for (const m of list.filter((x) => !x.self)) {
@@ -251,7 +252,7 @@ function renderMachineMenu() {
     <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" ${m.url !== undefined ? `data-machine="${escapeHtml(m.url)}"` : ''} ${m.view ? `data-view="${m.view}"` : ''}>
       <b>${escapeHtml(m.name)}</b>${m.url !== undefined ? machineAttLabel(m.url) : ''}<small>${escapeHtml(m.sub)}</small>
     </button>`).join('')
-    + '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加机器…</button>';
+    + '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加一台机器…</button>';
 }
 
 /** Settings → 机器: one row each, switch / rename / remove. */
@@ -412,7 +413,7 @@ async function renderBrowserMachines() {
     </div>`;
   const rows = machines.map(row);
   if (!others.length) {
-    rows.push('<div class="machine-empty">还没有别的机器。在 Lamplit 客户端里「添加机器」，它们就会出现在这里。</div>');
+    rows.push('<div class="machine-empty">还没有别的机器。点下面「添加机器」把旧电脑或云服务器接进来。</div>');
   }
   if (mine && !mine.url) {
     rows.push('<div class="machine-empty">这台电脑现在只在局域网/本机可用（没有打开「允许手机连接」），所以别的设备跳不过来。</div>');
@@ -1015,10 +1016,10 @@ function fillZoneSelect(select, current) {
 }
 
 function openMachineModal() {
-  $('vnc-name').value = ''; resetOutsideChoice();
+  state.machineFromSettings = false; $('vnc-name').value = ''; resetOutsideChoice();
   for (const chip of document.querySelectorAll('#vnc-name-chips [data-name]')) chip.classList.remove('on');
   $('vnc-addr').value = '';
-  $('vnc-ssh-user').value = 'ubuntu';
+  $('vnc-ssh-user').value = ''; // no 「ubuntu」 for a computer at home; 「云服务器」 fills it (1.5.54)
   $('vnc-ssh-port').value = '22';
   $('vnc-ssh-pass').value = '';
   $('vnc-progress').hidden = true;
@@ -1047,6 +1048,7 @@ function saveMachineFromModal() {
   if (!hostInput) return fail('先填那台机器的 IP，例如 192.168.1.20');
   const address = parseTargetAddress(hostInput);
   if (!address) return fail('IP 地址看起来不对，例子：192.168.1.20');
+  if (!$('vnc-ssh-user').value.trim()) { $('vnc-ssh-user').focus(); return fail('填一下用户名：你登录那台电脑用的那个（云服务器一般是 ubuntu 或 root）。'); }
   const password = $('vnc-ssh-pass').value;
   if (!password) return fail('还需要那台机器的 SSH 密码，才能自动配置。');
   const reach = outsideChoice(); // 只在家里用 / Tailscale / 自建中转 (1.5.43)
@@ -1057,7 +1059,7 @@ function saveMachineFromModal() {
     name: $('vnc-name').value.trim(),
     host: address.host,
     sshPort: Number($('vnc-ssh-port').value) || 22,
-    username: $('vnc-ssh-user').value.trim() || 'ubuntu',
+    username: $('vnc-ssh-user').value.trim(),
     password,
     desktop: $('vnc-desktop')?.value === 'full' ? 'full' : 'light',
     ...reach.options,
@@ -1543,7 +1545,7 @@ async function runNetCheck() {
   if (cn) rows.push(line(isMobile() ? '这部手机' : '这台设备', '国内中转（Tailscale）', cn.ms, '直连打不通时走它'));
   else if (ts?.ok && (ts.regions || []).length) {
     const best = [...ts.regions].sort((a, b) => a.ms - b.ms)[0];
-    rows.push(`<div class="row-note">Tailscale 直连打不通时走的中转：${escapeHtml(best.name)}，${best.ms} 毫秒${best.ms >= NET_SLOW_MS ? '（在国外；可以把一台国内云服务器做成中转，见下面「国内中转」）' : ''}。</div>`);
+    rows.push(`<div class="row-note">Tailscale 直连打不通时走的中转：${escapeHtml(best.name)}，${best.ms} 毫秒${best.ms >= NET_SLOW_MS ? '（在国外；可以把一台国内云服务器做成加速站，见 设置 → 手机和外网 →「Tailscale 加速」）' : ''}。</div>`);
   }
   const fw = window.desk?.firewallStatus && onLocalMachine() ? await window.desk.firewallStatus().catch(() => null) : null;
   if (fw?.applies && fw.known && !fw.ok) rows.push('<div class="row-note warn-note">Windows 防火墙没有放行局域网里的手机：在「设置 → 手机和外网」里点「修复防火墙」。</div>');
@@ -1916,7 +1918,7 @@ async function gatherCheckup() {
     const best = [...ts.regions].sort((a, b) => a.ms - b.ms)[0];
     items.push(best.ms < NET_SLOW_MS
       ? { id: 'relay', title: 'Tailscale 中转', state: 'ok', text: `直连打不通时走「${best.name}」，${best.ms} 毫秒。` }
-      : { id: 'relay', title: 'Tailscale 中转', state: 'info', text: `直连打不通时要绕到国外的「${best.name}」（${best.ms} 毫秒）。在家用影响不大；常在外面用，可以把一台国内云服务器做成中转。`, action: { kind: 'settings', target: 'sec-machines', label: '国内中转' } });
+      : { id: 'relay', title: 'Tailscale 中转', state: 'info', text: `直连打不通时要绕到国外的「${best.name}」（${best.ms} 毫秒）。在家用影响不大；常在外面用，可以把一台国内云服务器做成 Tailscale 加速站。`, action: { kind: 'settings', target: 'sec-pair', label: 'Tailscale 加速' } });
   }
   items.sort((a, b) => (CHECKUP_ORDER[a.state] ?? 9) - (CHECKUP_ORDER[b.state] ?? 9));
   return items;
@@ -1956,7 +1958,7 @@ function checkupAction(action) {
   else if (action.kind === 'link') openSignInPage(action.url);
   else if (action.kind === 'firewall') fixFirewall().then(() => runCheckup());
   else if (action.kind === 'runner') setupRunnerAccount().then(() => setTimeout(() => runCheckup(), 8000));
-  else if (action.kind === 'vnc') secureScreen().then(() => runCheckup());
+  else if (action.kind === 'vnc') secureScreen(action.replace).then(() => runCheckup());
 }
 
 /** Above the chat, once a day: the check found something to fix. */

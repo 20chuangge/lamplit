@@ -384,7 +384,9 @@ async function apiRequest(path, options = {}) {
           ? '和别的机器上的助手说话、看它的文件，只能在 Lamplit 应用里，或者在配对过的设备上：这样机器人自己跑的程序没法借这台电脑去指挥别的机器。'
           : /^\/api\/tailscale\//.test(path)
             ? '装软件、改这台电脑怎么连网，只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你装、替你卸。'
-            : '批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。';
+            : /^\/api\/(backup|restore)(\/|$)/.test(path)
+              ? '备份和恢复只能在 Lamplit 应用里，或者在配对过的设备上做：备份里有这台机器的全部数据和钥匙，机器人自己跑的程序碰不到。'
+              : '批准、改权限只能在 Lamplit 应用里，或者在配对过的设备上做：这样机器人自己跑的程序没法替你点「同意」。';
       }
       localPairOpen(true);
       // Said whole where the page shows it (1.5.33: 「保存失败：」 and nothing after).
@@ -424,6 +426,8 @@ async function pairThisBrowser() {
     await api('/api/pair', { method: 'POST', body: { code, deviceName: '这台电脑上的浏览器' } });
     if (state.auth) state.auth.authority = true;
     localPairOpen(false);
+    // The page never loaded (「连不上 Lamplit」 behind the box): load it now, nothing to do by hand.
+    if (state.fatal) { location.reload(); return; }
     const again = state.afterPair;
     state.afterPair = null;
     if (again) {
@@ -596,7 +600,21 @@ function enterAuth(reason) {
   // command that shows this machine's code on the machine itself.
   $('auth-back').hidden = !(window.desk?.useLocal && !onLocalMachine());
   setAuthMsg(reason || '');
-  if (!isMobile()) setTimeout(() => $('auth-code').focus(), 80);
+  authCodeMode();
+  if (!isMobile() && codeAllowedHere) setTimeout(() => $('auth-code').focus(), 80);
+}
+
+/**
+ * Where the 8-digit code cannot be used (through the relay, the public door), the page offers no
+ * code box: it said 「输入配对码」 and then 「不能用」 (1.5.54, walkthrough 4.4).
+ */
+function authCodeMode() {
+  const off = !codeAllowedHere;
+  for (const id of ['auth-code', 'auth-connect', 'auth-help']) if ($(id)) $(id).hidden = off;
+  const label = document.querySelector('label[for="auth-code"]');
+  if (label) label.hidden = off;
+  const sub = document.querySelector('#auth-screen .auth-sub');
+  if (sub && off) sub.textContent = '从这个地址进来，要用 Lamplit 手机 App 扫二维码配对：在电脑上的 Lamplit 里打开 设置 → 手机和外网，点「显示二维码」，用 App 扫一下。';
 }
 
 /** Can the 8-digit code be used at this address? (no through the relay, direct or the public door; /api/auth says, 1.5.47) */
@@ -610,7 +628,7 @@ function pairedHereBefore() {
 async function checkAuth() {
   try {
     const auth = await api('/api/auth');
-    if (auth && auth.codeAllowed === false) codeAllowedHere = false;
+    if (auth && auth.codeAllowed === false) { codeAllowedHere = false; if (authShown) authCodeMode(); }
     if (auth?.authorized) { try { localStorage.setItem('lamplit.pairedHere', '1'); } catch { /* no storage */ } }
     return auth;
   } catch (err) {
@@ -863,6 +881,7 @@ function whenVisible(fn) {
 }
 
 function showFatal(err) {
+  state.fatal = true; // pairing from the confirm box reloads then (1.5.54 beginner test)
   $('app').classList.remove('is-hidden');
   messagesEl.innerHTML = '';
   const wrap = el('div', 'empty');
@@ -945,7 +964,7 @@ function updateComposerMode() {
     const coordinator = groupCoordinator(group);
     input.placeholder = `发到「${group ? group.name : '群组'}」· 输入 @ 指定谁来回答，不指定就由 ${coordinator ? coordinator.name : '协调者'} 先答…`;
   } else {
-    const title = $('chat-title').textContent || '你的助手';
+    const title = botById(state.botId)?.name || $('chat-title').textContent || '你的助手';
     const pad = padName(title);
     input.placeholder = `给${pad}${title}${pad}发消息…`;
   }
@@ -1053,9 +1072,11 @@ async function setupRunnerAccount() {
 }
 
 /** 体检's 「设好密码」 (1.5.53): TightVNC gets a random password; Lamplit signs in for you from then on. */
-async function secureScreen() {
+async function secureScreen(replace = false) {
+  // Your own TightVNC password is replaced only when you say so (1.5.54).
+  if (replace && !(await askConfirm({ title: '换成 Lamplit 管的密码？', text: '会换掉你现在给 TightVNC 设的密码。以后看屏幕时由 Lamplit 替你输入，你自己的 VNC 软件也要用新密码（Lamplit 不会把它显示出来）。', confirmLabel: '换' }))) return;
   toast('如果弹出管理员确认，点「是」。');
-  const r = await api('/api/desktop/secure-vnc', { method: 'POST', body: {} }).catch((err) => ({ reason: err.message }));
+  const r = await api('/api/desktop/secure-vnc', { method: 'POST', body: { replace: Boolean(replace) } }).catch((err) => ({ reason: err.message }));
   toast(r?.state === 'secured' ? '屏幕密码设好了。' : `没设好：${r?.reason || r?.state || ''}`, r?.state !== 'secured');
 }
 
@@ -1083,7 +1104,7 @@ function onboardingCard() {
       const p = preset(name);
       if (!p && providers.length) return;
       const label = p?.label || name;
-      const desc = name === 'deepseek' ? '推荐：中文好、便宜；新账号先充几块钱就能用' : (p?.models?.[0] ? `默认模型 ${p.models[0]}` : '');
+      const desc = name === 'deepseek' ? '推荐：中文好、便宜；新账号先充几块钱就能用' : (p?.blurb || '');
       choices.appendChild(choiceButton(String.fromCharCode(65 + i), label, desc, () => { onboard.provider = name; onboard.step = 2; onboard.error = ''; renderMessages(); }));
     });
     choices.appendChild(choiceButton('·', '先用演示模式看看', '不填任何东西，先熟悉界面和审批流程', () => {
@@ -1334,6 +1355,18 @@ function botRow(bot) {
   }
 }
 
+/**
+ * The open chat's title: another machine's bot with its machine's name, and this machine's too once
+ * there are others (1.5.54, walkthrough 3.4: two 「助理」). Again when the machines are known.
+ */
+function refreshChatTitle() {
+  if (isGroupMode()) return;
+  const bot = botById(state.botId);
+  if (!bot) return;
+  const far = remoteOf(state.botId);
+  $('chat-title').textContent = far ? `${bot.name} · ${far.machine}` : rosterChats().length > 1 ? `${bot.name} · ${machineDisplayName()}` : bot.name;
+}
+
 async function selectBot(id, { keepHome = false } = {}) {
   if (id !== state.botId) stopSpeaking();
   // A different bot means a different screen: always start in preview.
@@ -1356,7 +1389,7 @@ async function selectBot(id, { keepHome = false } = {}) {
   renderBotHead(bot);
   // A bot on another machine: its name with the machine's (「助理 · 云服务器」, 1.5.42).
   const far = remoteOf(id);
-  $('chat-title').textContent = far ? `${bot.name} · ${far.machine}` : bot.name;
+  refreshChatTitle();
   $('chat-sub').textContent = far ? remoteChatSub(bot) : (bot.role || '还没有设定职责');
   $('bot-memory-title').textContent = `${bot.name} 的记忆`;
   state.liveTurn = null;

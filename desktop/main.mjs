@@ -1227,6 +1227,28 @@ handle('desk:install-update', async (_event, url) => {
     return { ok: false, error: err.message };
   }
 });
+// 设置 → 备份 (1.5.54): where to save a backup, which one to restore, the
+// folder for automatic backups - the system's own dialogs; the hub of this
+// computer reads and writes the path (this computer's page only, guard.mjs).
+const BACKUP_FILTERS = [{ name: L('Lamplit 备份', 'Lamplit backup'), extensions: ['lamplit'] }];
+handle('desk:pick-backup-save', async (_event, name) => {
+  const base = String(name || 'Lamplit-backup.lamplit').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '').slice(0, 120) || 'Lamplit-backup.lamplit';
+  const r = await dialog.showSaveDialog(win && !win.isDestroyed() ? win : undefined, {
+    title: L('备份到文件', 'Back up to a file'),
+    defaultPath: path.join(app.getPath('documents'), base.endsWith('.lamplit') ? base : `${base}.lamplit`),
+    filters: BACKUP_FILTERS,
+  });
+  if (r.canceled || !r.filePath) return { ok: false };
+  return { ok: true, path: r.filePath.toLowerCase().endsWith('.lamplit') ? r.filePath : `${r.filePath}.lamplit` };
+});
+handle('desk:pick-backup-open', async () => {
+  const r = await dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, { title: L('从备份恢复', 'Restore from a backup'), properties: ['openFile'], filters: BACKUP_FILTERS });
+  return r.canceled || !r.filePaths?.[0] ? { ok: false } : { ok: true, path: r.filePaths[0] };
+});
+handle('desk:pick-folder', async () => {
+  const r = await dialog.showOpenDialog(win && !win.isDestroyed() ? win : undefined, { title: L('选一个文件夹', 'Pick a folder'), properties: ['openDirectory', 'createDirectory'] });
+  return r.canceled || !r.filePaths?.[0] ? { ok: false } : { ok: true, path: r.filePaths[0] };
+});
 handle('desk:clipboard-write', (_event, text) => { clipboard.writeText(String(text ?? '').slice(0, 100000)); return true; });
 
 handle('desk:notify', (_event, { title = '', body = '', tag = '' } = {}) => {
@@ -1272,6 +1294,8 @@ const FIREWALL_RULE = 'Lamplit phone access (local network + Tailscale)';
 // 直连 (1.5.49): UDP from anywhere, for the direct channel - it takes only packets sealed with a paired device's key.
 const FIREWALL_UDP_RULE = 'Lamplit direct (UDP)';
 const psQuote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+// Windows' own PowerShell by its full path (1.5.54, review L7): not whatever a PATH finds first.
+const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 function runPowerShell(script, { timeoutMs = 30000 } = {}) {
   return new Promise((resolve) => {
     // Progress bars go to stderr as XML when nobody watches: off, and only stdout is the answer.
@@ -1280,7 +1304,7 @@ function runPowerShell(script, { timeoutMs = 30000 } = {}) {
     let err = '';
     let child;
     try {
-      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { windowsHide: true });
+      child = spawn(POWERSHELL, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { windowsHide: true });
     } catch (err) {
       resolve({ code: -1, out: err.message });
       return;
@@ -1322,7 +1346,7 @@ async function firewallFix() {
   if (process.platform !== 'win32') return { ok: false, error: 'only on Windows' };
   const inner = `$ProgressPreference = 'SilentlyContinue'
 ${FIREWALL_RULES_OF_THIS_APP(process.execPath)}
-$mine | Where-Object { $_.Action -eq 'Block' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+$mine | Where-Object { $_.Action -eq 'Block' -and $_.DisplayName -match '^(Lamplit|Evenlight|Nightshift)' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 Get-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 Get-NetFirewallRule -DisplayName 'Nightshift phone access*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName ${psQuote(FIREWALL_RULE)} -Direction Inbound -Action Allow -Program $exe -Protocol TCP -Profile Any -RemoteAddress LocalSubnet,100.64.0.0/10 | Out-Null
@@ -1330,7 +1354,7 @@ Get-NetFirewallRule -DisplayName ${psQuote(FIREWALL_UDP_RULE)} -ErrorAction Sile
 New-NetFirewallRule -DisplayName ${psQuote(FIREWALL_UDP_RULE)} -Direction Inbound -Action Allow -Program $exe -Protocol UDP -Profile Any | Out-Null`;
   const encoded = Buffer.from(inner, 'utf16le').toString('base64');
   // The elevated copy runs the rules; this one waits for it (a "No" on the prompt is an error here).
-  const res = await runPowerShell(`try { $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}'; exit $p.ExitCode } catch { Write-Output 'DECLINED'; exit 5 }`, { timeoutMs: 180000 });
+  const res = await runPowerShell(`try { $p = Start-Process (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${encoded}'; exit $p.ExitCode } catch { Write-Output 'DECLINED'; exit 5 }`, { timeoutMs: 180000 });
   if (/DECLINED/.test(res.out)) return { ok: false, declined: true };
   const after = await firewallStatus();
   bootLog(`firewall fix: exit ${res.code}, now TCP ${after.ok ? 'open to the LAN' : 'still closed'}, UDP ${after.udp?.ok ? 'open' : 'still closed'}`);

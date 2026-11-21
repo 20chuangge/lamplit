@@ -38,7 +38,7 @@ import { checkBoundary, DEVTOOLS, lookOnly } from './boundary.mjs';
 import { sandboxStatus } from './sandbox.mjs';
 import { PHONE_KIND_LABEL } from './phone.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
-import { draftFor, applyEdits, fieldValue as getField } from './drafts.mjs';
+import { draftFor, applyEdits, fieldValue as getField, outgoingAsk, rememberMayCover } from './drafts.mjs';
 import { historyStart } from './groups.mjs';
 import { explainModelError } from './modelerrors.mjs';
 import { noteUsage, overBudget, allowMore } from './usage.mjs';
@@ -2790,8 +2790,10 @@ export class AgentRuntime {
     // "以后都允许": the human said yes to this kind of step for this bot for good.
     const remember = sticky ? null : permissionKey(name, args, { workspaceDir: this.config.workspaceDir, phoneApp: riskInfo.app });
     // A program that runs any code, with the bots' commands not isolated: the card says what that means.
-    if (remember?.runsCode && sandboxStatus(this.config.policy).state !== 'on') remember.warn = '没开命令隔离：选「以后都允许」后，它用这个程序跑的脚本也能读到你个人文件夹里的东西。到 设置 → 通用 → 体检 → 命令隔离 打开更安全。';
-    if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key) && (remember.also || []).every((k) => isRemembered(bot, k))) {
+    // Not in the demo: nothing real runs there (1.5.54, walkthrough 2.2).
+    if (remember?.runsCode && this.model?.provider !== 'mock' && sandboxStatus(this.config.policy).state !== 'on') remember.warn = '机器人跑命令时用的是你的账户：选「以后都允许」后，它用这个程序跑的脚本也能读到你个人文件夹里的东西。到 设置 → 体检 → 命令隔离，让它用一个单独的账户，更安全。';
+    // Not for a network program used with an address (1.5.54): one yes for "curl" is not a yes to post anything.
+    if (verdict.decision === DECISION.ASK && remember && !sticky && isRemembered(bot, remember.key) && (remember.also || []).every((k) => isRemembered(bot, k)) && rememberMayCover(name, args)) {
       verdict = { ...verdict, decision: DECISION.AUTO, reason: `你之前选了「以后都允许」：${remember.label}` };
     }
 
@@ -2814,6 +2816,14 @@ export class AgentRuntime {
     if (draft) {
       lookCommand = '';
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: '往外发的东西，每次都先给你看草稿' };
+    }
+    // Sent out with no draft to show (1.5.54, review M6): a connected app's send without a
+    // text field, a command that posts or mails, a form sent to a website. Asked every time.
+    const sendsWithoutDraft = !draft && verdict.decision !== DECISION.DENY ? outgoingAsk(name, args, { mcp: tool.mcp || null }) : '';
+    if (sendsWithoutDraft) {
+      lookCommand = '';
+      sticky = true;
+      verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: sendsWithoutDraft };
     }
 
     // What was read is not an instruction (1.5.2): after a web page, an email
@@ -2867,7 +2877,7 @@ export class AgentRuntime {
       // Whoever shows this card shows every command on it (the page, Feishu, the phone).
       const askArgs = batch ? { ...args, commands: lookBatch } : args;
       // 「以后都允许」 is about one program: a card for several commands does not offer it; nor a draft.
-      const offered = batch || draft ? null : remember;
+      const offered = batch || draft || sendsWithoutDraft ? null : remember; // a send asks every time: no 「以后都允许」
       const pending = this.approvals.request({
         turnId,
         botId: bot.id,

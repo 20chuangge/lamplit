@@ -81,6 +81,16 @@ function renderProviderHints(provider) {
     link.hidden = !preset?.keyUrl;
   }
   if (preset?.note) $('key-state').textContent = preset.note;
+  // The demo needs no address, model or key: they are not shown (1.5.54, walkthrough 6.6).
+  const demo = provider === 'mock';
+  for (const id of ['set-baseurl', 'set-model', 'set-apikey']) {
+    if ($(id)) $(id).hidden = demo;
+    const box = $(id)?.closest('.pw-wrap');
+    if (box) box.hidden = demo;
+    const label = document.querySelector(`label[for="${id}"]`);
+    if (label) label.hidden = demo;
+  }
+  if ($('model-list-note')) $('model-list-note').hidden = demo;
 }
 
 function renderSettingsForm() {
@@ -215,7 +225,7 @@ function renderPairing() {
       ? `这台机器已经在 Tailscale 上：电脑和手机装好 Tailscale 后，在外面也能用 ${tailnet} 连上它。`
       : (s.server && s.server.lanUrl)
         ? '这台机器还没装 Tailscale：现在只能在同一个局域网里连上它。'
-        : '这是本机的 Lamplit，只在这台电脑上用。出门在外想直接连：装 Tailscale，或者试试上面的「云服务器中转」（试验）；只想让它干活，用飞书给助理发消息。';
+        : '这是本机的 Lamplit，只在这台电脑上用。出门在外想直接连：装 Tailscale，或者试试下面的「自建中转」（试验）；只想让它干活，用飞书给助理发消息。';
   }
   // A public address: say the connection is not encrypted.
   try {
@@ -356,7 +366,10 @@ function showQrError(err) {
   const code = err && err.code;
   let text = (err && err.message) || '生成二维码失败';
   if (code === 'REMOTE_DISABLED') {
-    text = '这台电脑的 Lamplit 现在只监听本机。先在设置里打开「允许手机连接」，手机才连得进来。';
+    // In a browser there is no switch to show: say where it is (1.5.54, walkthrough 4.2).
+    text = window.desk?.setRemote
+      ? '这台电脑的 Lamplit 现在只监听本机。点下面打开「允许手机连接」，手机才连得进来。'
+      : '这台电脑的 Lamplit 现在只监听本机。这个开关在电脑上的 Lamplit 应用里：设置 → 手机和外网 →「允许手机连接」。打开后再点「显示二维码」。';
   }
   box.textContent = text;
   if (code === 'REMOTE_DISABLED' && window.desk?.setRemote) {
@@ -398,7 +411,7 @@ async function requestPairLink(preferredKind = '') {
       if ($('pair-tabs')) $('pair-tabs').hidden = true;
       drawQr(made.qr, '手机扫这个码连接 Lamplit');
       $('qr-url').textContent = made.qr;
-      $('qr-copy').disabled = false;
+      $('qr-copy').disabled = false; $('qr-refresh').disabled = false;
       $('qr-iphone').hidden = false;
       $('qr-tailnet-note').hidden = true;
       const note = $('qr-auto-note');
@@ -409,6 +422,7 @@ async function requestPairLink(preferredKind = '') {
     }
   } catch (err) {
     setQrBox('<div class="qr-hint">还没有二维码</div>');
+    $('qr-copy').disabled = true; $('qr-refresh').disabled = true; // nothing to copy or change yet (1.5.54)
     showQrError(err);
   }
 }
@@ -637,6 +651,7 @@ const SETNAV_ICONS = {
   'sec-memory': '<path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V5a3 3 0 0 0-3-1zM15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/>',
   'sec-appearance': '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
   'sec-pair': '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
+  'sec-backup': '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/>',
   'sec-about': '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
   'sec-checkup': '<path d="M3 12h4l2-5 4 10 2-5h6"/>',
 };
@@ -799,7 +814,7 @@ async function loadDesktopMode() {
     const why = r.support?.backend === 'wayland'
       ? '这台机器的屏幕只显示机器人的浏览器（Rocky / RHEL 10 没有 X11，也就没有 XFCE），没有桌面可选。'
       : r.support?.shared || state.computer?.host?.platform === 'win32'
-        ? '这台是 Windows：机器人用的就是这台电脑自己的桌面，没有轻量 / 完整之分。'
+        ? '' // Windows: there is no choice to explain (1.5.54, walkthrough 5.4)
         : '';
     none.textContent = why;
     none.hidden = !box.hidden || !why;
@@ -1126,9 +1141,12 @@ function renderDecisionStrip() {
  */
 function syncTypingWithAttention() {
   if (isGroupMode() || !state.botId || !messagesEl) return;
-  const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);
+  const att = state.attention?.items?.[currentChatKey()];
+  const working = Boolean(att?.working);
+  // A card waiting: 「等你点头…」 (1.5.54 recheck: after a reload it stayed 「正在处理…」, drawn before this data came).
+  const label = att?.needsYou || att?.asking ? '等你点头…' : '正在处理…';
   const row = messagesEl.querySelector('.typing-row');
-  if (working && !row && !state.liveTurn?.bubble) showTyping(typingBotId(), '正在处理…');
+  if (working && !state.liveTurn?.bubble && row?.querySelector('.typing-label')?.textContent !== label) showTyping(typingBotId(), label);
   else if (!working && row && !state.liveTurn) hideTyping();
 }
 

@@ -443,6 +443,8 @@ function handleEvent(ev) {
 
     case 'approval.request':
       appendApprovalCard(ev, sender);
+      // The step waits for you, it is not running yet (1.5.54, walkthrough 2.3).
+      showTyping(typingBotId(), '等你点头…');
       refreshPendingApprovals();
       toast('有一个操作在等你批准');
       // In a call: said aloud, but given only on the screen (1.5.22).
@@ -750,6 +752,13 @@ function buildApprovalCard(data) {
     for (const command of many) list.appendChild(el('code', null, String(command)));
     card.appendChild(list);
   }
+  // A command with its purpose said (1.5.54): the code folded under the headline, one click away.
+  if (info.command) {
+    const cmd = el('details', 'approval-command');
+    cmd.appendChild(el('summary', null, '看要运行的命令'));
+    cmd.appendChild(el('code', null, info.command));
+    card.appendChild(cmd);
+  }
   if (data.draft) { card.dataset.draft = '1'; card.appendChild(draftBox(data, { resolved: resolved || parked })); }
   if (data.adjust) card.appendChild(adjustDiff(data.adjust));
 
@@ -823,7 +832,8 @@ function buildApprovalCard(data) {
   }
   // What 「以后都允许」 covers, said before the click (1.5.33: it read as "allow everything").
   const still = String(data.remember?.key || '').startsWith('shell:') ? '（危险操作和工作区外的改动照样会问）' : '';
-  const scope = data.remember?.key ? el('div', 'approval-scope muted tiny', `「以后都允许」：以后${data.remember.label}都不再问${still}。${data.remember.warn ? ` ${data.remember.warn}` : ''}`) : null;
+  // The isolation warning is asked about when 「以后都允许」 is clicked, not printed on every card (1.5.54).
+  const scope = data.remember?.key ? el('div', 'approval-scope muted tiny', `「以后都允许」：以后${data.remember.label}都不再问${still}。`) : null;
   // Allowing a look-only command covers the turn's later ones: said before the click (1.5.40).
   const lookNote = data.lookTurn
     ? el('div', 'approval-scope muted tiny', many ? '允许后这几条都会运行；这一轮后面只是查看的命令也不再问你，会改动东西的照样先问。' : '允许后，这一轮后面只是查看的命令不再问你；会改动东西的照样先问。')
@@ -840,7 +850,12 @@ function buildApprovalCard(data) {
 
   // A draft goes with what the human left in its boxes (1.5.45).
   allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject, null, data.draft ? draftEdits(card, data) : null));
-  if (always) always.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject, data.remember));
+  if (always) {
+    always.addEventListener('click', async () => {
+      if (data.remember.warn && !(await askConfirm({ title: '以后都允许？', text: data.remember.warn, confirmLabel: '以后都允许' }))) return;
+      decide(data.approvalId, 'approve', note.value, card, allow, reject, data.remember);
+    });
+  }
   reject.addEventListener('click', () => decide(data.approvalId, 'deny', note.value, card, allow, reject));
 
   choose.appendChild(allow);
@@ -890,10 +905,10 @@ function settleApprovalCard(card, decision, note) {
     // Closed by Lamplit (stopped, the bot deleted), not refused by you (1.5.33).
     const cancelled = !good && /^已取消/.test(String(note || ''));
     const done = el('div', 'approval-done');
-    // A draft says 已发送 / 已发送（你改过） / 不发了 (1.5.45); its boxes stay, read-only.
+    // A draft says 已定稿 / 已定稿（你改过） / 不发了 (1.5.54: 「已发送」 read as posted, it is only agreed); its boxes stay, read-only.
     const draft = card.dataset.draft === '1';
     card.querySelectorAll('.draft-field').forEach((f) => { f.readOnly = true; });
-    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : draft ? (good ? (card.dataset.edited === '1' ? '已发送（你改过）' : '已发送') : '不发了') : decisionLabel(decision)));
+    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : draft ? (good ? (card.dataset.edited === '1' ? '已定稿（你改过）' : '已定稿') : '不发了') : decisionLabel(decision)));
     if (draft) card.querySelector('.approval-impact')?.remove();
     done.appendChild(el('span', 'muted tiny', good ? '这一轮会继续跑。' : cancelled ? String(note).replace(/^已取消[：:]\s*/, '') + '。' : draft ? '没有发出去，已经告诉它了。' : '已经告诉它不要做。'));
     actions.appendChild(done);

@@ -73,7 +73,15 @@ find_node() {
 # （Node.js 官网列出的 Linux 软件源）固定的大版本 NODE_MAJOR。NodeSource 的软件包
 # 有签名，apt 用 signed-by、dnf/yum 用 gpgcheck=1 来验，不运行网上下载的脚本。
 NODE_MAJOR=22
-NODE_LOG=/tmp/lamplit-node-install.log
+# 安装日志放在只有 root 能写的地方（1.5.54，检查报告 L8：/tmp 里固定的文件名可能被别人先放一个链接）。
+NODE_LOG=/var/log/lamplit-node-install.log
+# NodeSource 的签名钥匙（1.5.54，L8）：下载后先核对指纹，对不上就不装。指纹取自 2026-11-21 经 HTTPS 下载的钥匙
+# （NodeSource 没有用文字公布指纹），以后钥匙被换掉就能发现。
+NODESOURCE_DEB_FPR=6F71F525282841EEDAF851B42F59B5F99B1BE0B4
+NODESOURCE_RPM_FPR=242B813831AF09562B6C46F76B88DA4E3AF28A14
+# 一个钥匙文件的主钥匙指纹（新旧 gpg 都能用的写法）。文件里必须正好一把主钥匙：多夹一把别的钥匙，
+# 它也会被系统信任（1.5.54 复查，L8），那样就什么都不输出，指纹对不上。
+key_fpr() { { gpg --show-keys --with-colons "$1" 2>/dev/null || gpg --with-colons --with-fingerprint "$1" 2>/dev/null; } | awk -F: '/^pub/ {n++; want=1; next} /^fpr/ && want {if (!f) f=$10; want=0} END {if (n == 1) print f}'; }
 install_node() {
   [ -r /etc/os-release ] || fail "不认识这个系统（没有 /etc/os-release），没法自动装 Node.js。最省事的是把这台云服务器重装成 Ubuntu 24.04 再装中转；或者先自己装好 Node.js 20 或更新。说明：https://20chuangge.github.io/lamplit/docs.html#outside"
   # shellcheck disable=SC1091
@@ -98,8 +106,13 @@ install_node() {
       say "系统软件源里的 Node.js 太旧，改用 Node.js 官网推荐的软件源（NodeSource）装 Node.js $NODE_MAJOR：软件包有签名，会先验证再装"
       apt-get install -y ca-certificates curl gnupg >>"$NODE_LOG" 2>&1 || fail "安装 curl / gnupg 失败（细节在服务器的 $NODE_LOG）"
       mkdir -p /usr/share/keyrings
-      curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /usr/share/keyrings/nodesource.gpg 2>>"$NODE_LOG" \
-        || fail "下载 NodeSource 的签名钥匙失败（这台服务器连不上 deb.nodesource.com？）"
+      local asc
+      asc="$(mktemp)"
+      curl -fsSL -o "$asc" https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key 2>>"$NODE_LOG" \
+        || { rm -f "$asc"; fail "下载 NodeSource 的签名钥匙失败（这台服务器连不上 deb.nodesource.com？）"; }
+      [ "$(key_fpr "$asc")" = "$NODESOURCE_DEB_FPR" ] || { rm -f "$asc"; fail "NodeSource 的签名钥匙和记下的指纹对不上，没有装（请先自己装好 Node.js 20 或更新，再装中转）"; }
+      gpg --dearmor --yes -o /usr/share/keyrings/nodesource.gpg "$asc" 2>>"$NODE_LOG" || { rm -f "$asc"; fail "处理 NodeSource 的签名钥匙失败"; }
+      rm -f "$asc"
       chmod 644 /usr/share/keyrings/nodesource.gpg
       rm -f /etc/apt/sources.list.d/nodesource.list
       cat > /etc/apt/sources.list.d/nodesource.sources <<EOF
@@ -129,6 +142,14 @@ EOF
       else
         say "系统软件源里的 Node.js 太旧，改用 Node.js 官网推荐的软件源（NodeSource）装 Node.js $NODE_MAJOR：软件包有签名，会先验证再装"
         rm -f /etc/yum.repos.d/nodesource*.repo
+        # 钥匙先下到本机、核对指纹，软件源再指向这个本地文件（1.5.54，L8）。
+        mkdir -p /etc/pki/rpm-gpg
+        curl -fsSL -o /etc/pki/rpm-gpg/RPM-GPG-KEY-nodesource https://rpm.nodesource.com/gpgkey/ns-operations-public.key 2>>"$NODE_LOG" \
+          || fail "下载 NodeSource 的签名钥匙失败（这台服务器连不上 rpm.nodesource.com？）"
+        if [ "$(key_fpr /etc/pki/rpm-gpg/RPM-GPG-KEY-nodesource)" != "$NODESOURCE_RPM_FPR" ]; then
+          rm -f /etc/pki/rpm-gpg/RPM-GPG-KEY-nodesource
+          fail "NodeSource 的签名钥匙和记下的指纹对不上，没有装（请先自己装好 Node.js 20 或更新，再装中转）"
+        fi
         cat > /etc/yum.repos.d/nodesource-nodejs.repo <<EOF
 [nodesource-nodejs]
 name=Node.js Packages for Linux RPM based distros - \$basearch
@@ -136,7 +157,7 @@ baseurl=https://rpm.nodesource.com/pub_${NODE_MAJOR}.x/nodistro/nodejs/\$basearc
 priority=9
 enabled=1
 gpgcheck=1
-gpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-nodesource
 module_hotfixes=1
 EOF
         # 已有一个旧的 nodejs 时是升级，没有时是安装。

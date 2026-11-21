@@ -81,24 +81,24 @@ export const MCP_CATALOG = [
   },
   {
     id: 'gitlab', icon: true, name: 'GitLab', category: '开发', badge: 'GL', color: '#fc6d26',
-    desc: '项目、Issue、合并请求、流水线（GitLab 官方 MCP）', auth: 'oauth', transport: 'http', url: 'https://gitlab.com/api/v4/mcp',
+    desc: '项目、Issue、合并请求、流水线（GitLab 官方接口）', auth: 'oauth', transport: 'http', url: 'https://gitlab.com/api/v4/mcp',
     help: '会打开 GitLab 的授权页，点「Authorize」（会提示这是未验证的动态应用，属正常）。用不了时，请顶层群组的所有者在群组设置里打开「允许访问 MCP 服务器」。自建的 GitLab 用下面「自己添加」，地址填 https://你的GitLab地址/api/v4/mcp。',
   },
   {
     id: 'baidu-pan', name: '百度网盘', category: '存储', badge: '百', color: '#06a7ff',
-    desc: '查找、整理、分享网盘里的文件（百度网盘官方 MCP）', auth: 'token', transport: 'sse', url: 'https://mcp-pan.baidu.com/sse?access_token=${TOKEN}', secret: 'TOKEN',
+    desc: '查找、整理、分享网盘里的文件（百度网盘官方接口）', auth: 'token', transport: 'sse', url: 'https://mcp-pan.baidu.com/sse?access_token=${TOKEN}', secret: 'TOKEN',
     help: '点「去获取」会打开百度的授权页，登录后点「授权」；跳转后的网址里 access_token= 后面那一串就是，复制贴到下面。它大约一个月过期，过期后重新获取一次。从本机上传文件到网盘这一项官方只在本地模式提供，这里没有。',
     tokenLabel: '去获取 token ↗',
     tokenUrl: 'https://openapi.baidu.com/oauth/2.0/authorize?response_type=token&client_id=QHOuRXiepJBMjtk0esLhrPoNlQyYd0mF&redirect_uri=oob&scope=basic,netdisk',
   },
   {
     id: 'runway', name: 'Runway', category: '创作', badge: 'R', color: '#0b0b0b',
-    desc: '生成图片和视频（Runway 官方 MCP，用你账户里的额度）', auth: 'oauth', transport: 'http', url: 'https://mcp.runwayml.com/mcp',
+    desc: '生成图片和视频（Runway 官方接口，用你账户里的额度）', auth: 'oauth', transport: 'http', url: 'https://mcp.runwayml.com/mcp',
     help: '会打开 Runway 的登录授权页，登录后点允许。生成会用掉你 Runway 账户里的额度。',
   },
   {
     id: 'suno', icon: true, name: 'Suno', category: '创作', badge: 'S', color: '#1a1a1a',
-    desc: '写歌、生成音乐（Suno 官方 MCP，测试版）', auth: 'oauth', transport: 'http', url: 'https://api.suno.com/mcp',
+    desc: '写歌、生成音乐（Suno 官方接口，测试版）', auth: 'oauth', transport: 'http', url: 'https://api.suno.com/mcp',
     help: 'Suno 的 MCP 还在内测：先在 suno.com/mcp 申请开通，通过后再点「连接」，在 Suno 的页面登录授权。生成的歌用你 Suno 套餐里的额度。',
   },
   {
@@ -109,7 +109,7 @@ export const MCP_CATALOG = [
   },
   {
     id: 'feishu', name: '飞书', category: '通信', badge: '飞', color: '#3370ff',
-    desc: '消息、文档、多维表格、日历（飞书官方 MCP，测试版）', auth: 'feishu', transport: 'stdio', command: 'npx',
+    desc: '消息、文档、多维表格、日历（飞书官方接口，测试版）', auth: 'feishu', transport: 'stdio', command: 'npx',
     args: ['-y', '@larksuiteoapi/lark-mcp', 'mcp', '-a', '${APP_ID}', '-s', '${APP_SECRET}'],
     help: '用「设置 → 飞书」里那个应用的 App ID 和 App Secret。能用哪些功能取决于你在飞书开放平台给这个应用开的权限。',
   },
@@ -133,7 +133,7 @@ export const MCP_CATALOG = [
   },
   {
     id: 'dingtalk', name: '钉钉', category: '通信', badge: '钉', color: '#1677ff',
-    desc: '通讯录、日程、待办、机器人发消息、工作通知（钉钉官方 MCP）', auth: 'fields', transport: 'stdio', command: 'npx',
+    desc: '通讯录、日程、待办、机器人发消息、工作通知（钉钉官方接口）', auth: 'fields', transport: 'stdio', command: 'npx',
     args: ['-y', 'dingtalk-mcp@latest'], env: { DINGTALK_Client_ID: '${CLIENT_ID}', DINGTALK_Client_Secret: '${CLIENT_SECRET}', ACTIVE_PROFILES: 'ALL' },
     fields: [
       { key: 'CLIENT_ID', label: 'Client ID（AppKey）' },
@@ -144,14 +144,14 @@ export const MCP_CATALOG = [
   },
   {
     id: 'amap', name: '高德地图', category: '生活', badge: '高', color: '#1a7cf2',
-    desc: '地点搜索、地理编码、天气、驾车 / 步行 / 骑行路线（高德官方 MCP）', auth: 'token', transport: 'stdio', command: 'npx',
+    desc: '地点搜索、地理编码、天气、驾车 / 步行 / 骑行路线（高德官方接口）', auth: 'token', transport: 'stdio', command: 'npx',
     args: ['-y', '@amap/amap-maps-mcp-server'], env: { AMAP_MAPS_API_KEY: '${TOKEN}' }, secret: 'TOKEN',
     help: '在高德开放平台「应用管理」里建一个应用，添加 Key（服务平台选「Web 服务」），把 Key 贴到下面。第一次连接会用 npx 下载高德官方的 @amap/amap-maps-mcp-server。',
     tokenUrl: 'https://console.amap.com/dev/key/app', tokenLabel: '去高德开放平台拿 Key ↗',
   },
   {
     id: 'minimax', icon: true, name: 'MiniMax', category: '创作', badge: 'MM', color: '#e2457a',
-    desc: '文字转语音、声音克隆、生图、生视频（MiniMax 官方 MCP）', auth: 'fields', transport: 'stdio', command: 'npx',
+    desc: '文字转语音、声音克隆、生图、生视频（MiniMax 官方接口）', auth: 'fields', transport: 'stdio', command: 'npx',
     args: ['-y', 'minimax-mcp-js'], env: { MINIMAX_API_KEY: '${API_KEY}', MINIMAX_API_HOST: '${API_HOST}', MINIMAX_MCP_BASE_PATH: '{workspace}' },
     fields: [
       { key: 'API_KEY', label: 'API Key', secret: true },
@@ -162,7 +162,7 @@ export const MCP_CATALOG = [
   },
   {
     id: 'cloudflare', icon: true, name: 'Cloudflare', category: '开发', badge: 'CF', color: '#f38020',
-    desc: 'Workers、KV、R2、D1 等账户资源（Cloudflare 官方 MCP）', auth: 'oauth', transport: 'http', url: 'https://bindings.mcp.cloudflare.com/mcp',
+    desc: 'Workers、KV、R2、D1 等账户资源（Cloudflare 官方接口）', auth: 'oauth', transport: 'http', url: 'https://bindings.mcp.cloudflare.com/mcp',
     help: '会打开 Cloudflare 的授权页：选账户，点允许。',
   },
   {
@@ -182,6 +182,15 @@ export const MCP_CATALOG = [
     desc: '打开编辑器、运行项目、看调试输出、改场景（Godot 游戏引擎）', auth: 'none', transport: 'stdio', command: 'npx',
     args: ['-y', '@coding-solo/godot-mcp'],
     help: '需要这台电脑装了 Godot（4.x）。它会自己找 Godot 在哪；找不到时，用下面「自己添加」，命令 npx -y @coding-solo/godot-mcp，环境变量 GODOT_PATH=Godot 程序的完整路径。',
+  },
+  // 1.5.54: Blender Lab's own MCP server (projects.blender.org/lab/blender_mcp; its README: pip install from
+  // that repository, the add-on from the Blender Lab extensions repository). It runs the assistant's Python
+  // inside Blender with no guards, so every call asks, even ones that say they only read.
+  {
+    id: 'blender', name: 'Blender', category: '创作', badge: 'Bl', color: '#e87d0d', local: true, askEvery: true,
+    desc: '看场景、改物体和材质、渲染、在 Blender 里运行 Python（Blender Lab 官方接口）', auth: 'none', transport: 'stdio', command: 'blender-mcp', args: [],
+    help: '要 Blender 5.1 或更新。① 在 Blender 的「偏好设置 → 扩展 → 仓库」里加上 Blender Lab 的仓库 https://lab.blender.org/，找到 MCP 插件，安装并启用。② 在这台电脑上运行一次 pip install git+https://projects.blender.org/lab/blender_mcp.git（Blender Lab 官方的 MCP 服务器，装好后有 blender-mcp 这个命令）。③ 打开 Blender，再点「连接」。',
+    warn: '它会在 Blender 里运行助手写的 Python 代码，没有防护：能改、能删你打开的文件。所以它的每一步默认都先问你。动手前先备份你的 .blend 文件。',
   },
   {
     id: 'obsidian', icon: true, name: 'Obsidian', category: '效率', badge: 'Ob', color: '#7c3aed', local: true,
@@ -693,7 +702,9 @@ export function createMcpManager({
     unregister(cfg.id);
     for (const t of tools) {
       const name = mcpToolName(cfg.id, t.name);
-      const readOnly = toolLooksReadOnly(t);
+      // An app whose every call runs code (Blender, 1.5.54): asked each time, whatever the tool says it does.
+      const askEvery = Boolean(catalog.find((e) => e.id === cfg.catalogId)?.askEvery);
+      const readOnly = !askEvery && toolLooksReadOnly(t);
       registry.tools.set(name, {
         name,
         description: `［${cfg.name}］${String(t.description || t.title || t.name).slice(0, 900)}`,
@@ -944,6 +955,7 @@ export function createMcpManager({
           fields: (e.fields || []).map((f) => ({ key: f.key, label: f.label, secret: Boolean(f.secret), placeholder: f.placeholder || '', options: f.options || null })),
           local: Boolean(e.local),
           ...(e.detail ? { detail: e.detail } : {}),
+          ...(e.warn ? { warn: e.warn } : {}),
           server: pub,
         };
       });

@@ -366,9 +366,10 @@ function decisionLabel(decision) {
 function reasonLabel(reason) {
   if (!reason) return '';
   return String(reason)
-    .replace(/\blow-risk tool\b/g, '这是一个低风险操作')
-    .replace(/\bmedium-risk tool\b/g, '这是一个中风险操作')
-    .replace(/\bhigh-risk tool\b/g, '这是一个高风险操作')
+    // What happens, not a risk grade (1.5.54, walkthrough 2.2: 「中风险操作」 scared newcomers).
+    .replace(/\blow-risk tool\b/g, '这一步只是小改动')
+    .replace(/\bmedium-risk tool\b/g, '这一步会改动这台电脑上的东西')
+    .replace(/\bhigh-risk tool\b/g, '这一步影响大（比如删除东西、对外发送）')
     .replace(/;\s*auto-approved \(autonomous mode\)/g, '；完全自主模式已自动通过')
     .replace(/;\s*auto-approved by policy/g, '；按策略自动通过')
     .replace(/(.+?) is not granted to this bot/g, '这个助手没有「$1」的执行权限')

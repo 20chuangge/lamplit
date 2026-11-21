@@ -174,7 +174,19 @@ export async function appendText(file, text) {
 // the command line, a Linux machine) they stay plain, as before.
 
 /** Files that hold a model / voice / app key or a connected app's token. */
-export const SEALED_FILES = new Set(['secrets.json', 'voice.json', 'media.json', 'vision.json', 'feishu.json', 'mcp.json', 'runner.json', 'browser-logins.json', 'x-account.json']);
+export const SEALED_FILES = new Set(['secrets.json', 'voice.json', 'media.json', 'vision.json', 'feishu.json', 'mcp.json', 'runner.json', 'browser-logins.json', 'x-account.json', 'backup-key.json',
+  // 1.5.54 (review L6): this hub's master token and pairing code, the other machines' tokens, the relay's key and join secret.
+  'security.json', 'peers.json', 'relay-link.json', 'tightvnc.json']);
+
+/** Is  sealed with a key this process does not have (started without the desktop app)? Such a file is never overwritten. */
+export function sealedButLocked(file) {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Boolean(value?.lamplitSealed) && openSealed(value) === null;
+  } catch {
+    return false;
+  }
+}
 
 export function masterKey() {
   const hex = String(process.env.ASSIST_MASTER_KEY || '').trim();
@@ -260,17 +272,19 @@ export async function readJson(file, fallback = null) {
   }
 }
 
-export async function writeJsonAtomic(file, value) {
-  // A sealed file this app cannot open is never written over: that would throw
-  // away the keys of the computer it came from (or of the desktop app).
-  if (SEALED_FILES.has(path.basename(file)) && !masterKey()) {
-    try {
-      const raw = await fsp.readFile(file, 'utf8');
-      if (/"lamplitSealed"\s*:\s*1/.test(raw)) throw Object.assign(new Error(`${path.basename(file)} is encrypted; open Lamplit from the desktop app to change it`), { code: 'SEALED_NO_KEY', status: 409 });
-    } catch (err) {
-      if (err.code === 'SEALED_NO_KEY') throw err;
-    }
+/**
+ * A sealed file this app cannot open (no master key, or another computer's or
+ * the desktop app's key) is never written over: that would throw away its keys.
+ * 1.5.54 verifier (L6): with a wrong key it was overwritten too.
+ */
+function refuseLockedSeal(file) {
+  if (SEALED_FILES.has(path.basename(file)) && sealedButLocked(file)) {
+    throw Object.assign(new Error(`${path.basename(file)} is encrypted; open Lamplit from the desktop app to change it`), { code: 'SEALED_NO_KEY', status: 409 });
   }
+}
+
+export async function writeJsonAtomic(file, value) {
+  refuseLockedSeal(file);
   await writeTextAtomic(file, jsonTextFor(file, value));
 }
 
@@ -283,6 +297,7 @@ export async function writeJsonAtomic(file, value) {
  * tiny (a handful of records), so the blocking cost is irrelevant.
  */
 export function writeJsonSyncAtomic(file, value) {
+  refuseLockedSeal(file);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, jsonTextFor(file, value), 'utf8');

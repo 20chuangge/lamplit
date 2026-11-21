@@ -25,7 +25,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import fsp from 'node:fs/promises';
 
-import { P, readJson, writeJsonAtomic } from './store.mjs';
+import { P, readJson, writeJsonAtomic, sealedButLocked } from './store.mjs';
 
 export const SESSION_COOKIE = 'desk_session';
 export const SESSION_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
@@ -190,6 +190,12 @@ export function generatePairingCode() {
  * secret, not configuration.
  */
 export async function loadOrCreateSecurity() {
+  // Sealed with the desktop app's key and started without it (1.5.54): never replaced - the other
+  // machines hold that token. This run gets a token of its own, kept in memory only.
+  if (sealedButLocked(P.securityFile)) {
+    console.error('[auth] security.json is sealed with the desktop app key: start Lamplit from the desktop app; this run uses a temporary token');
+    return { token: generateToken(), code: generatePairingCode(), createdAt: new Date().toISOString(), codeCreatedAt: new Date().toISOString(), temporary: true };
+  }
   const raw = await readJson(P.securityFile, null);
   const token =
     typeof raw?.token === 'string' && raw.token.trim() ? raw.token.trim() : generateToken();
@@ -218,7 +224,7 @@ export async function loadOrCreateSecurity() {
 /** Rotate the pairing code without disturbing paired browsers. */
 export async function rotatePairingCode(security) {
   const next = { ...security, code: generatePairingCode(), codeCreatedAt: new Date().toISOString() };
-  await writeJsonAtomic(P.securityFile, next);
+  if (!security?.temporary) await writeJsonAtomic(P.securityFile, next); // a temporary run never replaces the sealed file
   return next;
 }
 
@@ -236,6 +242,7 @@ export function pairingCodeExpired(security, now = Date.now()) {
 export function renewPairingCode(security) {
   security.code = generatePairingCode();
   security.codeCreatedAt = new Date().toISOString();
+  if (security.temporary) return Promise.resolve(); // a temporary run never replaces the sealed file (1.5.54)
   return writeJsonAtomic(P.securityFile, { ...security }).catch((err) => console.error('[auth] could not save the new pairing code:', err.message));
 }
 

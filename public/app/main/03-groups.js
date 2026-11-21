@@ -1102,6 +1102,7 @@ async function loadRoster({ fresh = false } = {}) {
   else state.outbox = [];
   if (before !== JSON.stringify(state.peerRoster)) {
     renderBots();
+    refreshChatTitle();
     syncMachineBranding();
     // The chat on screen: its machine came back, or went away.
     const far = remoteOf(state.botId);
@@ -1137,6 +1138,8 @@ function remoteChatSub(bot) {
  * chats, a search box finds one on any machine.
  */
 const RECENT_MAX = 5;
+// 最近 only when there are many chats: with a few, it listed the same assistants twice (1.5.54, walkthrough 3.4).
+const RECENT_FROM = 9;
 const SEARCH_FROM = 10;
 const COLLAPSED_KEY = 'lamplit.roster.collapsed';
 function collapsedMachines() {
@@ -1191,7 +1194,7 @@ function renderRosterSidebar(list) {
   const wrap = $('roster-search-wrap');
   if (wrap) wrap.hidden = all.length <= SEARCH_FROM;
   // 最近: the newest five, whichever machine.
-  const recent = all.filter((i) => i.ts).sort((a, b) => b.ts - a.ts).slice(0, RECENT_MAX);
+  const recent = all.length >= RECENT_FROM ? all.filter((i) => i.ts).sort((a, b) => b.ts - a.ts).slice(0, RECENT_MAX) : [];
   if (recent.length) {
     const sec = el('div', 'roster-sec recent');
     sec.appendChild(el('div', 'roster-head recent-head', '最近'));
@@ -1614,6 +1617,16 @@ function resetOutsideChoice() {
 function syncOutsideChoice() {
   const way = document.querySelector('input[name="vnc-outside"]:checked')?.value || 'home';
   if ($('vnc-ts')) $('vnc-ts').hidden = way !== 'tailscale';
+  // This computer needs Tailscale too, or the new machine is out of reach from here (1.5.54, walkthrough 5.2).
+  const here = $('vnc-ts-here');
+  if (!here) return;
+  here.hidden = true;
+  if (way !== 'tailscale') return;
+  api('/api/tailscale').then((t) => {
+    if (t?.state === 'running') return;
+    here.textContent = '这台电脑还没连上 Tailscale：先在 设置 → 手机和外网 里装好并登录，不然加好以后从这里也连不上它。';
+    here.hidden = false;
+  }).catch(() => {});
 }
 /** The choice as the setup takes it: {options} or {error}. */
 function outsideChoice() {

@@ -26,7 +26,7 @@ export const PROVIDER_PRESETS = {
     kind: 'mock',
     baseUrl: '',
     models: [],
-    note: '本地脚本化规划器，完全离线，用来试功能。',
+    note: '回答是写好的脚本，不联网、不花钱，用来先看看它怎么干活。',
   },
   openai: {
     label: 'OpenAI',
@@ -34,6 +34,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://api.openai.com/v1',
     models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o4-mini'],
     keyUrl: 'https://platform.openai.com/api-keys',
+    blurb: 'ChatGPT 那家；国内要能连上它',
   },
   deepseek: {
     label: 'DeepSeek 深度求索',
@@ -49,6 +50,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://api.moonshot.cn/v1',
     models: ['kimi-k2-0905-preview', 'moonshot-v1-128k', 'moonshot-v1-32k', 'moonshot-v1-8k'],
     keyUrl: 'https://platform.moonshot.cn/console/api-keys',
+    blurb: 'Kimi：长文章读得多',
   },
   zhipu: {
     label: '智谱 GLM',
@@ -56,6 +58,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     models: ['glm-4-plus', 'glm-4-air', 'glm-4-flash'],
     keyUrl: 'https://bigmodel.cn/usercenter/apikeys',
+    blurb: '智谱：国内的，中文好',
   },
   qwen: {
     label: '阿里通义千问',
@@ -63,6 +66,19 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     models: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen3-235b-a22b'],
     keyUrl: 'https://bailian.console.aliyun.com/?apiKey=1',
+    blurb: '通义：阿里的，国内稳',
+  },
+  // 1.5.54: the site has always said 豆包 works; Volcengine Ark speaks OpenAI's format (its own docs:
+  // base URL https://ark.cn-beijing.volces.com/api/v3, a model ID such as doubao-seed-1-6-251015, or an
+  // endpoint ID 「ep-…」 from the Ark console).
+  doubao: {
+    label: '字节豆包（火山方舟）',
+    kind: 'openai',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    models: ['doubao-seed-1-6-251015'],
+    keyUrl: 'https://console.volcengine.com/ark',
+    note: '在火山方舟控制台开通模型、建一个 API Key。模型填控制台里的模型 ID，或者接入点 ID（ep- 开头）。',
+    blurb: '豆包：字节的，在火山方舟开通',
   },
   minimax: {
     label: 'MiniMax',
@@ -70,6 +86,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://api.minimax.chat/v1',
     models: ['MiniMax-M1', 'abab6.5s-chat'],
     keyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+    blurb: 'MiniMax：国内的，能读很长的文字',
   },
   hunyuan: {
     label: '腾讯混元',
@@ -77,6 +94,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://api.hunyuan.cloud.tencent.com/v1',
     models: ['hunyuan-turbos-latest', 'hunyuan-large'],
     keyUrl: 'https://console.cloud.tencent.com/hunyuan/api-key',
+    blurb: '混元：腾讯的',
   },
   spark: {
     label: '讯飞星火',
@@ -84,6 +102,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://spark-api-open.xf-yun.com/v1',
     models: ['4.0Ultra', 'generalv3.5', 'lite'],
     keyUrl: 'https://console.xfyun.cn/services/bmx1',
+    blurb: '星火：讯飞的',
   },
   siliconflow: {
     label: '硅基流动 SiliconFlow',
@@ -91,6 +110,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://api.siliconflow.cn/v1',
     models: ['deepseek-ai/DeepSeek-V3', 'Qwen/Qwen2.5-72B-Instruct'],
     keyUrl: 'https://cloud.siliconflow.cn/account/ak',
+    blurb: '硅基流动：一个账号用好几家开源模型',
   },
   openrouter: {
     label: 'OpenRouter（聚合）',
@@ -98,6 +118,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://openrouter.ai/api/v1',
     models: ['anthropic/claude-sonnet-4.5', 'google/gemini-2.5-pro', 'deepseek/deepseek-chat'],
     keyUrl: 'https://openrouter.ai/keys',
+    blurb: '一个账号用国外很多家模型；国内要能连上它',
   },
   groq: {
     label: 'Groq（极快推理）',
@@ -133,6 +154,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     models: ['gemini-2.5-pro', 'gemini-2.5-flash'],
     keyUrl: 'https://aistudio.google.com/apikey',
+    blurb: '谷歌的；国内要能连上它',
   },
   anthropic: {
     label: 'Anthropic Claude',
@@ -140,6 +162,7 @@ export const PROVIDER_PRESETS = {
     baseUrl: 'https://api.anthropic.com/v1',
     models: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
     keyUrl: 'https://console.anthropic.com/settings/keys',
+    blurb: 'Claude 那家；国内要能连上它',
   },
   ollama: {
     label: 'Ollama（本机模型）',
@@ -204,6 +227,8 @@ export function publicProviderCatalogue() {
       models: p.models || [],
       keyUrl: p.keyUrl || '',
       note: p.note || '',
+      // A few plain words for the first screen (1.5.54, walkthrough 2.1): not a model name.
+      blurb: p.blurb || '',
       needsKey: p.needsKey !== false,
     };
   });

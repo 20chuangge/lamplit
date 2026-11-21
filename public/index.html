@@ -130,8 +130,9 @@
           <button class="icon-btn" id="group-delete-btn" type="button" hidden aria-label="删除这个群组" title="删除这个群组">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
           </button>
-          <button class="icon-btn" id="panel-toggle" type="button" aria-label="工作面板" aria-pressed="false" title="工作面板">
+          <button class="icon-btn with-label" id="panel-toggle" type="button" aria-label="工作面板" aria-pressed="false" title="工作面板：定时任务、最近动态、电脑屏幕">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M14 4v16"/></svg>
+            <span class="work-label">任务</span>
           </button>
         </div>
       </div>
@@ -198,6 +199,7 @@
               <label class="switch-row"><input type="checkbox" id="brief-feishu" /> 同时发到飞书</label>
             </div>
             <div class="tiny muted" id="brief-note" style="margin-top:6px">助理会汇总过去 24 小时所有机器上的情况：要你处理的事、每个机器人做完了什么、新做的页面。</div>
+            <div class="tiny muted" id="brief-vs-nudge" style="margin-top:4px">简报是一份长的总结，默认不开。只想知道「有什么在等你」？那条短的每天早上已经会来，在 <a href="#" data-open-initiative>设置 → 主动</a> 里改时间或关掉。</div>
             <div class="approval-actions"><button class="btn tiny" id="brief-try" type="button">现在试一次</button></div>
           </div>
           <div class="section-head"><span>定时任务</span><span class="rt-head-actions"><label class="switch-row tiny" title="显示这台机器上所有机器人的定时任务"><input type="checkbox" id="rt-scope" /> 全部</label><button class="btn tiny" id="new-routine-btn">+ 新建</button></span></div>
@@ -209,14 +211,15 @@
                 <select class="field" id="rt-bot"></select>
                 <input class="field" id="rt-schedule" value="每天 9:00" placeholder="每天 9:00" autocomplete="off" />
               </div>
+              <div class="tiny muted">时间可以这样写：每天 9:00、工作日 8:30、每周五 18:00、每月 1 号 10:00、每 30 分钟。</div>
+              <div class="tiny rt-peak-hint" id="rt-peak-hint" hidden></div>
+              <label class="switch-row"><input type="checkbox" id="rt-only-changes" /> 只在有变化时提醒我</label>
+              <label class="switch-row"><input type="checkbox" id="rt-feishu" /> 结果同时发到飞书</label>
+              <label class="switch-row" title="DeepSeek 等分峰谷计价的模型"><input type="checkbox" id="rt-off-peak" /> 闲时再跑：到点正好是高峰时段（工作日 9–12、14–18 点）就推到 12:00 或 18:00，模型费省一半</label>
               <div class="row-2">
                 <button class="btn primary tiny" id="rt-save">创建定时任务</button>
                 <button class="btn tiny" id="rt-cancel">取消</button>
               </div>
-              <label class="switch-row"><input type="checkbox" id="rt-only-changes" /> 只在有变化时提醒我</label>
-              <label class="switch-row"><input type="checkbox" id="rt-feishu" /> 结果同时发到飞书</label>
-              <label class="switch-row" title="DeepSeek 等分峰谷计价的模型"><input type="checkbox" id="rt-off-peak" /> 闲时再跑：到点正好是高峰时段（工作日 9–12、14–18 点）就推到 12:00 或 18:00，模型费省一半</label>
-              <div class="tiny muted">时间可以这样写：每天 9:00、工作日 8:30、每周五 18:00、每月 1 号 10:00、每 30 分钟。</div>
             </div>
           </div>
           <div id="routines-list"></div>
@@ -316,6 +319,7 @@
         <button class="setnav" type="button" data-set-target="sec-checkup">体检</button>
         <button class="setnav" type="button" data-set-target="sec-appearance">外观</button>
         <button class="setnav" type="button" data-set-target="sec-usage">成本</button>
+        <button class="setnav" type="button" data-set-target="sec-backup">备份</button>
         <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
         <button class="setnav" type="button" data-set-target="sec-about">关于</button>
       </div>
@@ -578,12 +582,12 @@
           <option value="deny">一律不许</option>
         </select>
         <div class="row-note">文件工具按路径严格检查；命令行里写到其他位置也会先问你。Linux 上命令在沙箱里跑（见下面的「命令隔离」）；Windows 上命令行还不是沙箱，一条命令能碰到的比它写出来的多，要彻底隔离就在机器人设置里关掉「执行命令」。</div>
-        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">管理员权限（sudo）</div>
+        <div class="dsec-head" id="sudo-head" style="font-size:13px;margin:20px 0 6px">管理员权限（sudo）</div>
         <select class="field" id="sudo-mode">
           <option value="ask">先问我</option>
           <option value="allow">直接用</option>
         </select>
-        <div class="row-note">用 sudo、以管理员身份运行之类的命令，默认每次都先问你。</div>
+        <div class="row-note" id="sudo-note">用 sudo、以管理员身份运行之类的命令，默认每次都先问你。</div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">主助理完全信任</div>
         <label class="switch-row"><input type="checkbox" id="trust-primary" /> 主助理用 sudo、动工作区以外的位置，都直接做</label>
         <div class="row-note">只对主助理生效，其他机器人不变。格式化磁盘、删除系统目录、关机重启这类危险命令，以及你写的「先问我」规则，仍然会问你。</div>
@@ -607,6 +611,8 @@
           <button type="button" data-scope="all" class="on">所有机器</button>
           <button type="button" data-scope="here">只看这台</button>
         </div>
+        <div class="usage-headline" id="usage-headline"></div>
+        <details class="usage-more" id="usage-more"><summary>明细</summary>
         <div class="perm-summary" id="usage-summary"></div>
         <div class="row-note warn-note" id="usage-scope-note" hidden></div>
         <div id="usage-machines-wrap" hidden>
@@ -618,9 +624,9 @@
             </table>
           </div>
         </div>
-        <div class="dsec-head" style="font-size:13px;margin:12px 0 6px">按机器人</div>
+        <div class="dsec-head" style="font-size:13px;margin:12px 0 6px">按助手</div>
         <div class="perm-table-wrap">
-          <table class="perm-table usage-table" id="usage-bots" aria-label="按机器人用量">
+          <table class="perm-table usage-table" id="usage-bots" aria-label="按助手用量">
             <thead></thead>
             <tbody></tbody>
           </table>
@@ -650,6 +656,7 @@
             </table>
           </div>
         </div>
+        </details><!-- usage-more -->
         <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">模型单价（每百万 tokens：输入 · 缓存命中的输入 · 输出）</div>
         <div class="usage-prices" id="usage-prices"></div>
         <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">每日花费提醒</div>
@@ -713,7 +720,7 @@
 
       <section class="dsec" id="sec-mcp">
         <div class="dsec-head">连接应用</div>
-        <div class="row-note">把别的应用（MCP 服务器）接进来，它提供的工具就成了机器人能用的工具，比如飞书、GitHub、Notion。连接跑在这台机器上。</div>
+        <div class="row-note">把别的应用接进来，它们能做的事就成了助手能用的工具，比如飞书、GitHub、Notion。连接跑在这台机器上。</div>
         <div class="row-note">默认每次调用前先问你；应用自己声明「只读」的工具不问。信得过的应用可以设成「始终允许」。</div>
         <input class="field" id="mcp-search" type="search" placeholder="搜索应用" autocomplete="off" />
         <div class="mcp-catalog" id="mcp-catalog"></div>
@@ -791,7 +798,7 @@
       <section class="dsec" id="sec-machines">
         <div class="dsec-head">机器</div>
         <div class="dsec-hint">
-          每台机器有自己的一套助手、记忆、工作区和桌面。「全部机器」里能看到每台机器上的助手，点开就聊；只想看某一台，在左上角选它。
+          每台机器有自己的一套助手、记忆、工作区和桌面。加了别的机器后，左边会按机器分组列出每台上的助手，点开就聊；只想看某一台，在左上角选它。备份也是每台机器各自备份：在 设置 → 备份 里，别的机器也能从那里备份到这台电脑上。
         </div>
         <div class="machine-list" id="set-machines-list"></div>
         <div class="row-actions" style="margin-top:10px">
@@ -799,21 +806,6 @@
           <button class="btn tiny" id="net-check" type="button">网络诊断</button>
         </div>
         <div class="net-check" id="net-check-out" hidden></div>
-        <details class="relay-box" id="relay-box">
-          <summary><span class="relay-title">国内中转（给 Tailscale 用）</span><span class="relay-chip" id="relay-chip">可选</span></summary>
-          <div class="row-note">不想装 Tailscale：可以试试 设置 → 手机和外网 里的「云服务器中转」（试验）。下面这个只给已经在用 Tailscale 的人。</div>
-          <div class="row-note">手机、电脑、云服务器之间直连打不通时，Tailscale 会走它在国外的中转（新加坡、美国），一来一回几百毫秒。把一台国内的云服务器做成中转，就只要几十毫秒。只有你自己 Tailscale 账号里的设备能用它。需要这台服务器上已经装好 Tailscale。</div>
-          <div class="relay-status" id="relay-status"></div>
-          <button class="btn tiny" id="relay-add" type="button" hidden>在另一台服务器上装</button>
-          <div class="relay-form" id="relay-form">
-            <input class="field" id="relay-host" placeholder="服务器的公网 IP" autocomplete="off" spellcheck="false" />
-            <input class="field" id="relay-ssh-port" placeholder="SSH 端口，默认 22" inputmode="numeric" autocomplete="off" />
-            <input class="field" id="relay-ssh-user" placeholder="SSH 用户名，例如 ubuntu 或 root" autocomplete="off" spellcheck="false" />
-            <input class="field" id="relay-ssh-pass" type="password" placeholder="SSH 密码（只用这一次，不保存）" autocomplete="off" />
-            <button class="btn tiny primary" id="relay-start" type="button">在这台服务器上装中转</button>
-          </div>
-          <div class="row-note" id="relay-note" hidden></div>
-        </details>
         <div id="desktop-mode-box" hidden>
           <label class="lbl" for="desktop-mode">这台机器上机器人的桌面</label>
           <select class="field" id="desktop-mode">
@@ -925,22 +917,6 @@
             <div class="row-note warn-note" id="firewall-note" hidden></div>
             <div class="btn-row" id="firewall-row" hidden><button class="btn tiny primary" id="firewall-fix" type="button">修复防火墙</button></div>
           </div>
-          <div class="pair-row" style="align-items:center;margin-top:14px">
-            <div>
-              <div class="pair-label">外网访问（手机不用装 Tailscale）</div>
-              <div class="pair-hint" id="funnel-hint">—</div>
-            </div>
-            <label class="switch-row" for="funnel-enabled"><input type="checkbox" id="funnel-enabled" /> 开启</label>
-          </div>
-          <div class="pair-row" id="funnel-address" hidden>
-            <div class="pair-value mono" id="funnel-url">—</div>
-            <button class="btn tiny" id="funnel-copy" type="button">复制</button>
-          </div>
-          <div class="btn-row" id="funnel-actions" hidden>
-            <a class="btn tiny" id="funnel-open" target="_blank" rel="noreferrer">去 Tailscale 打开（只需一次）</a>
-            <button class="btn tiny" id="funnel-retry" type="button">重试</button>
-          </div>
-          <div class="row-note" id="funnel-note">地址是公开的 HTTPS 网址，只有配对过的设备能用。</div>
           <div class="pair-row" style="align-items:center">
             <div>
               <div class="pair-label">用手机连接</div>
@@ -970,11 +946,84 @@
         </div>
         <div class="row-note">配对码只用于把手机接进这台电脑上的 Lamplit，不会上传到任何地方。</div>
 
-        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外：用你的云服务器中转（试验，不用装 Tailscale）</div>
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">已连接的设备</div>
+        <div class="device-list" id="device-list"></div>
+        <div class="row-note" id="device-empty">还没有手机连进来。连上来之后会出现在这里，随时可以移除。</div>
+        <div class="row-note">移除一台设备后，那台手机刷新就会回到配对页；其它的设备不受影响。</div>
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外</div>
+        <div class="row-note" id="outside-ways">三种方式，选一种就行：① <b>Tailscale</b>（推荐，免费：手机和电脑都装一个小软件）；② <b>自建中转</b>（试验：要一台你自己的云服务器）；③ <b>Lamplit 中转</b>（即将推出：不用自己准备服务器）。</div>
+        <div class="dsec-head" style="font-size:13px;margin:16px 0 6px">① Tailscale（推荐）</div>
+        <div class="row-note" id="outside-state">—</div>
+        <div class="pair-card" id="tsx-box">
+          <div class="pair-row" style="align-items:center">
+            <div>
+              <div class="pair-title">用 Tailscale（免费）：你的机器连成一个私人网络</div>
+              <div class="pair-hint">装好、用你的 Tailscale 账号登录后，手机和其他机器在哪儿都连得上这台。登录在 Tailscale 自己的页面上，Lamplit 碰不到你的 Tailscale 密码。</div>
+            </div>
+            <span class="relay-chip" id="tsx-chip">—</span>
+          </div>
+          <div class="relay-status" id="tsx-status"></div>
+          <div class="row-note" id="tsx-byhand" hidden></div>
+          <div class="relay-actions">
+            <button class="btn tiny" id="tsx-install" type="button" hidden>装上 Tailscale</button>
+            <button class="btn tiny" id="tsx-login" type="button" hidden>登录 Tailscale</button>
+            <button class="btn tiny" id="tsx-uninstall" type="button" hidden>卸载 Tailscale</button>
+          </div>
+          <div class="pair-label" style="margin-top:12px">其他机器</div>
+          <div class="tsx-machines" id="tsx-machines"><div class="row-note">还没有其他机器。</div></div>
+          <details class="vault-add" id="tsx-key-box">
+            <summary>用 Auth key 一次加入（可选：不用一台台登录）</summary>
+            <div class="row-note">在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，生成一个 tskey-auth- 开头的密钥贴在这里。它只用这一次，用来让每台机器直接加入你的网络；不保存、不写进记录。</div>
+            <input class="field" id="tsx-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
+          </details>
+          <div class="relay-actions"><button class="btn tiny" id="tsx-share" type="button">让其他机器也用 Tailscale</button></div>
+          <div class="row-note" id="tsx-share-state"></div>
+          <div class="pair-row" style="align-items:center;margin-top:16px">
+            <div>
+              <div class="pair-title">手机不想装 Tailscale：用一个公开网址（Funnel）</div>
+              <div class="pair-hint" id="funnel-hint">—</div>
+            </div>
+            <label class="switch-row nowrap" for="funnel-enabled"><input type="checkbox" id="funnel-enabled" /> 开启</label>
+          </div>
+          <div class="pair-row" id="funnel-address" hidden>
+            <div class="pair-value mono" id="funnel-url">—</div>
+            <button class="btn tiny" id="funnel-copy" type="button">复制</button>
+          </div>
+          <div class="btn-row" id="funnel-actions" hidden>
+            <a class="btn tiny" id="funnel-open" target="_blank" rel="noreferrer">去 Tailscale 打开（只需一次）</a>
+            <button class="btn tiny" id="funnel-retry" type="button">重试</button>
+          </div>
+          <div class="row-note" id="funnel-note">开了会得到一个公开的 HTTPS 网址：这台电脑要装 Tailscale，手机不用装。只有配对过的设备能用。</div>
+            <details class="relay-box" id="relay-box">
+              <summary><span class="relay-title">Tailscale 加速（国内中转站）</span><span class="relay-chip" id="relay-chip">可选</span></summary>
+              <div class="row-note">和下面的「自建中转」不一样：这个只给已经在用 Tailscale 的人，让你的设备之间直连打不通时走国内这台服务器、不绕到国外；「自建中转」是不装 Tailscale 时手机连这台电脑的通道。</div>
+              <div class="row-note">手机、电脑、云服务器之间直连打不通时，Tailscale 会走它在国外的中转（新加坡、美国），一来一回几百毫秒。把一台国内的云服务器做成中转，就只要几十毫秒。只有你自己 Tailscale 账号里的设备能用它。需要这台服务器上已经装好 Tailscale。</div>
+              <div class="relay-status" id="relay-status"></div>
+              <button class="btn tiny" id="relay-add" type="button" hidden>在另一台服务器上装</button>
+              <div class="relay-form" id="relay-form">
+                <input class="field" id="relay-host" placeholder="服务器的公网 IP" autocomplete="off" spellcheck="false" />
+                <input class="field" id="relay-ssh-port" placeholder="SSH 端口，默认 22" inputmode="numeric" autocomplete="off" />
+                <input class="field" id="relay-ssh-user" placeholder="SSH 用户名，例如 ubuntu 或 root" autocomplete="off" spellcheck="false" />
+                <input class="field" id="relay-ssh-pass" type="password" placeholder="SSH 密码（只用这一次，不保存）" autocomplete="off" />
+                <button class="btn tiny primary" id="relay-start" type="button">在这台服务器上装中转</button>
+              </div>
+              <div class="row-note" id="relay-note" hidden></div>
+            </details>
+        </div>
+        <details class="vault-add" id="outside-guide">
+          <summary>手机上怎么用 Tailscale</summary>
+          <ol class="feishu-steps">
+            <li>在这台机器、你的电脑和手机上都装 <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Tailscale</a>，用同一个账号登录。Linux 机器上运行 <code>curl -fsSL https://tailscale.com/install.sh | sh</code>，再运行 <code>sudo tailscale up</code>，按提示登录。</li>
+            <li>装好后，这里会出现这台机器的 Tailscale 地址（100 开头）。</li>
+            <li>电脑上：什么都不用改。局域网连不上时，Lamplit 会自动改走 Tailscale 地址，不用重新配对。</li>
+            <li>手机上：打开 Tailscale，再用手机浏览器打开上面的 Tailscale 地址，输入配对码。</li>
+          </ol>
+        </details>
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">② 自建中转（试验）</div>
         <div class="pair-card" id="tunnel-box">
           <div class="pair-row" style="align-items:center">
             <div>
-              <div class="pair-label">不用 Tailscale：用你的云服务器中转（试验）</div>
+              <div class="pair-title">用你自己的云服务器中转</div>
               <div class="pair-hint">这台电脑主动连到你的一台云服务器（中转），手机在外面用流量也能打开它。中转只转发加密的数据，看不到内容。目前支持 Lamplit 安卓 App。</div>
             </div>
             <span class="relay-chip" id="tunnel-chip">没装</span>
@@ -1015,48 +1064,12 @@
             </ul>
           </details>
         </div>
-
-        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">已连接的设备</div>
-        <div class="device-list" id="device-list"></div>
-        <div class="row-note" id="device-empty">还没有手机连进来。连上来之后会出现在这里，随时可以移除。</div>
-        <div class="row-note">移除一台设备后，那台手机刷新就会回到配对页；其它的设备不受影响。</div>
-        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">出门在外怎么用</div>
-        <div class="row-note" id="outside-state">—</div>
-        <div class="pair-card" id="tsx-box">
-          <div class="pair-row" style="align-items:center">
-            <div>
-              <div class="pair-label">用 Tailscale（免费）：你的机器连成一个私人网络</div>
-              <div class="pair-hint">装好、用你的 Tailscale 账号登录后，手机和其他机器在哪儿都连得上这台。登录在 Tailscale 自己的页面上，Lamplit 碰不到你的 Tailscale 密码。</div>
-            </div>
-            <span class="relay-chip" id="tsx-chip">—</span>
-          </div>
-          <div class="relay-status" id="tsx-status"></div>
-          <div class="row-note" id="tsx-byhand" hidden></div>
-          <div class="relay-actions">
-            <button class="btn tiny" id="tsx-install" type="button" hidden>装上 Tailscale</button>
-            <button class="btn tiny" id="tsx-login" type="button" hidden>登录 Tailscale</button>
-            <button class="btn tiny" id="tsx-uninstall" type="button" hidden>卸载 Tailscale</button>
-          </div>
-          <div class="pair-label" style="margin-top:12px">其他机器</div>
-          <div class="tsx-machines" id="tsx-machines"><div class="row-note">还没有其他机器。</div></div>
-          <details class="vault-add" id="tsx-key-box">
-            <summary>用 Auth key 一次加入（可选：不用一台台登录）</summary>
-            <div class="row-note">在 Tailscale 后台 Settings → Keys 里点「Generate auth key」，生成一个 tskey-auth- 开头的密钥贴在这里。它只用这一次，用来让每台机器直接加入你的网络；不保存、不写进记录。</div>
-            <input class="field" id="tsx-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
-          </details>
-          <div class="relay-actions"><button class="btn tiny" id="tsx-share" type="button">让其他机器也用 Tailscale</button></div>
-          <div class="row-note" id="tsx-share-state"></div>
-        </div>
-        <details class="vault-add" id="outside-guide">
-          <summary>手机上怎么用 Tailscale</summary>
-          <ol class="feishu-steps">
-            <li>在这台机器、你的电脑和手机上都装 <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">Tailscale</a>，用同一个账号登录。Linux 机器上运行 <code>curl -fsSL https://tailscale.com/install.sh | sh</code>，再运行 <code>sudo tailscale up</code>，按提示登录。</li>
-            <li>装好后，这里会出现这台机器的 Tailscale 地址（100 开头）。</li>
-            <li>电脑上：什么都不用改。局域网连不上时，Lamplit 会自动改走 Tailscale 地址，不用重新配对。</li>
-            <li>手机上：打开 Tailscale，再用手机浏览器打开上面的 Tailscale 地址，输入配对码。</li>
-          </ol>
-        </details>
+        <div class="dsec-head" style="font-size:13px;margin:22px 0 6px">③ Lamplit 中转</div>
+        <div class="pair-card soon-card" id="lamplit-relay-soon"><div class="pair-title">Lamplit 中转 · 即将推出</div><div class="pair-hint">不用自己准备服务器，也不用装 Tailscale。上线后在这里打开。</div></div>
         <div class="row-note">不想装软件：在「飞书」里接上飞书应用，出门在外直接在手机飞书里给助理发消息。</div>
+        <div class="row-note">用数据线让机器人操作安卓手机：在 <a href="#" data-open-machines>设置 → 机器 → 手机</a>。</div>
+
+
       </section>
 
       <!-- =================================================================
@@ -1092,6 +1105,68 @@
         <div class="checkup-card">
           <div class="checkup-list" id="checkup-list"><div class="row-note">还没检查。</div></div>
           <div class="checkup-foot"><span class="row-note" id="checkup-when"></span><button class="btn tiny" id="checkup-run" type="button">重新体检</button></div>
+        </div>
+      </section>
+
+      <section class="dsec" id="sec-backup">
+        <div class="dsec-head">备份</div>
+        <div class="row-note">把这台机器上的助手（角色、规矩、头像）、群组、聊天记录、记忆、例行任务、技能、设置、连接的应用和钥匙存成一个文件，用你设的密码锁上。电脑坏了或换电脑：装好 Lamplit，在这里「从备份恢复…」。</div>
+        <div class="row-note warn-note">备份文件要存到 U 盘、网盘或另一台电脑上：只存在这台电脑上，它坏了备份也跟着没了。</div>
+        <div class="kv"><span class="k">备份哪台</span><span class="v" id="backup-machine">这台机器</span></div>
+        <div class="kv"><span class="k">上次备份</span><span class="v" id="backup-last">还没备份过</span></div>
+        <label class="lbl" for="backup-pass">备份密码</label>
+        <input class="field" id="backup-pass" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+        <label class="lbl" for="backup-pass2">再输一次</label>
+        <input class="field" id="backup-pass2" type="password" autocomplete="new-password" />
+        <div class="row-note">要记住这个密码：恢复时要用。忘了就谁也打不开，Lamplit 也打不开。</div>
+        <label class="switch-row"><input type="checkbox" id="backup-ws" /><span>也备份工作区里的文件<span class="backup-ws-size" id="backup-ws-size"></span></span></label>
+        <div class="btn-row">
+          <button class="btn primary" id="backup-go" type="button">备份到文件…</button>
+          <button class="btn" id="restore-go" type="button">从备份恢复…</button>
+        </div>
+        <input id="restore-file" type="file" accept=".lamplit" hidden />
+        <div class="set-status" id="backup-status" role="status" hidden></div>
+        <div class="restore-panel" id="restore-panel" hidden></div>
+        <details class="backup-out">
+          <summary>哪些东西不在备份里</summary>
+          <ul class="backup-out-list" id="backup-not-list"></ul>
+        </details>
+
+        <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">自动备份</div>
+        <div id="backup-auto">
+          <label class="switch-row"><input type="checkbox" id="backup-auto-on" /> 定时自动备份到一个文件夹</label>
+          <div id="backup-auto-form" hidden>
+            <label class="lbl" for="backup-auto-folder">存到哪个文件夹</label>
+            <div class="btn-row" style="margin-top:0"><input class="field" id="backup-auto-folder" placeholder="比如 E:\Lamplit备份（U 盘或网盘同步的文件夹最好）" autocomplete="off" spellcheck="false" /><button class="btn tiny" id="backup-auto-pick" type="button" hidden>选择…</button></div>
+            <label class="lbl" for="backup-auto-every">多久一次</label>
+            <select class="field" id="backup-auto-every">
+              <option value="24">每天</option>
+              <option value="72">每三天</option>
+              <option value="168">每周</option>
+            </select>
+            <label class="lbl" for="backup-auto-keep">留最近几份</label>
+            <select class="field" id="backup-auto-keep">
+              <option value="3">3 份</option>
+              <option value="7">7 份</option>
+              <option value="14">14 份</option>
+              <option value="30">30 份</option>
+            </select>
+            <label class="switch-row"><input type="checkbox" id="backup-auto-ws" /> 也备份工作区里的文件</label>
+            <label class="lbl" for="backup-auto-pass" id="backup-auto-pass-label">自动备份的密码</label>
+            <input class="field" id="backup-auto-pass" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+            <div class="row-note" id="backup-auto-pass-note">这个密码加密保存在这台电脑上，用来锁每一份自动备份；恢复时要输入它。</div>
+            <div class="btn-row">
+              <button class="btn primary" id="backup-auto-save" type="button">保存</button>
+              <button class="btn" id="backup-auto-run" type="button">现在备份一次</button>
+            </div>
+          </div>
+          <div class="row-note" id="backup-auto-last"></div>
+        </div>
+
+        <div id="backup-peers-wrap" hidden>
+          <div class="dsec-head" style="font-size:13px;margin:18px 0 6px">其他机器</div>
+          <div class="row-note">每台机器各自备份：在左上角切到那台机器，打开它的 设置 → 备份。也可以在这里把它的备份存到这台电脑上（用上面的备份密码）：</div>
+          <div class="btn-row" id="backup-peers"></div>
         </div>
       </section>
 
@@ -1214,11 +1289,12 @@
 
     <label class="form-label" for="vnc-addr" style="margin-top:8px">IP 地址</label>
     <input class="field" id="vnc-addr" placeholder="192.168.1.20" autocomplete="off" spellcheck="false" inputmode="url" />
+    <div class="row-note">家里的电脑：在那台电脑上，Windows 运行 ipconfig，Linux 运行 ip addr，找 192.168 开头的那串。云服务器：填控制台里的公网 IP。</div>
 
     <div class="row-note warn-note" id="vnc-public" hidden>这是公网地址（比如云主机）：Lamplit 的连接没有加密，配对后的凭据会在公网上明文传输，谁截到谁就能控制这台机器。强烈建议在下面填 Tailscale 密钥，以后只走加密的 Tailscale 连接；云主机的安全组也不用对外开放 4390 端口。</div>
 
     <label class="form-label" for="vnc-ssh-user" style="margin-top:8px">SSH 用户名</label>
-    <input class="field" id="vnc-ssh-user" placeholder="ubuntu" autocomplete="off" spellcheck="false" />
+    <input class="field" id="vnc-ssh-user" placeholder="你登录那台电脑用的用户名" autocomplete="off" spellcheck="false" />
 
     <label class="form-label" for="vnc-ssh-port" style="margin-top:8px">SSH 端口</label>
     <input class="field" id="vnc-ssh-port" type="number" min="1" max="65535" value="22" />
@@ -1244,8 +1320,9 @@
       <div class="row-note">在 Tailscale 后台的 Settings → Keys 里点「Generate auth key」，生成一个 Auth key（tskey-auth- 开头；不是 API access token），贴在这里。配置时会顺便装好 Tailscale 并加入你的网络；密钥只用这一次，用完就从那台机器上删掉。Linux 和 Windows 都可以。</div>
       <div class="row-note"><a href="https://login.tailscale.com/admin/settings/keys" target="_blank" rel="noreferrer">打开 Tailscale 密钥页面</a></div>
       <input class="field" id="vnc-ts-key" type="password" placeholder="tskey-auth-…" autocomplete="off" spellcheck="false" />
+      <div class="row-note warn-note" id="vnc-ts-here" hidden></div>
     </div>
-    <div class="row-note" id="vnc-outside-limit">添加时这台电脑还要能直接连到它（SSH 和 Lamplit 的端口，在同一个网络里或者它有公网地址）。只经过中转就把一台新机器加进来，现在还做不到，下一版再做。</div>
+    <div class="row-note" id="vnc-outside-limit">添加时这台电脑还要能直接连到它（SSH 和 Lamplit 的端口，在同一个网络里或者它有公网地址）。只经过中转就把一台新机器加进来，现在还做不到。</div>
 
     <div class="row-note">
       填完点「连接并自动配置」就行，剩下的都自动：
@@ -1433,6 +1510,7 @@
 <script defer src="app/main/10-computer.js"></script>
 <script defer src="app/main/11-machines.js"></script>
 <script defer src="app/main/12-wiring.js"></script>
+<script defer src="app/main/13-backup.js"></script>
 
 <script src="app/diag.js"></script>
 </body>

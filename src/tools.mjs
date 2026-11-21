@@ -17,7 +17,7 @@
 import os from 'node:os';
 import { sandboxFor } from './sandbox.mjs';
 import { runnerFor } from './winrunner.mjs';
-import { snapshot, TRASH_DIR } from './trash.mjs';
+import { snapshot, TRASH_DIR, removeInside, removeFolderInside } from './trash.mjs';
 import { P, readJsonSync } from './store.mjs';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
@@ -61,6 +61,7 @@ import { getBrowserManager } from './browser.mjs';
 import { grantsForNewBot, isRequestable } from './abilities.mjs';
 import { fetchPublic } from './netguard.mjs';
 import { realPathOf } from './realpath.mjs';
+import { readInside, writeInside } from './safefs.mjs';
 
 const MAX_SHELL_OUTPUT = 20000;
 const MAX_FILE_READ = 200000;
@@ -98,8 +99,20 @@ function resolvePath(workspaceDir, input) {
   const cmp = (s) => (process.platform === 'win32' ? s.toLowerCase() : s);
   const inWorkspace = (abs === workspaceDir || abs.startsWith(wsWithSep))
     && (cmp(realAbs) === cmp(realWs) || cmp(realAbs).startsWith(cmp(realWsSep)));
-  return { abs, raw, inWorkspace, rel: path.relative(workspaceDir, abs) || '.' };
+  // named: the path names something in the workspace (whatever it leads to right now). Such a path is always
+  // read, written and removed through the checked steps (1.5.54): where it leads can change between the
+  // approval and the step, and must never turn it into an "outside path the human said yes to".
+  const named = abs === workspaceDir || abs.startsWith(wsWithSep);
+  return { abs, raw, inWorkspace, named, rel: path.relative(workspaceDir, abs) || '.' };
 }
+
+/**
+ * Read or write a resolved path (1.5.54, review M7): inside the workspace through the
+ * checked open (safefs.mjs), so a link swapped in after resolvePath cannot lead the hub
+ * into its data folder; outside it (the human said yes to that path) as before.
+ */
+const readResolved = (r, ctx, encoding) => (r.named ? readInside(ctx.workspaceDir, r.abs, encoding || null) : fsp.readFile(r.abs, encoding || undefined));
+const writeResolved = (r, ctx, content, append = false) => (r.named ? writeInside(ctx.workspaceDir, r.abs, content, { append }) : (append ? fsp.appendFile(r.abs, content, 'utf8') : fsp.writeFile(r.abs, content, 'utf8')));
 
 // Tools that change the computer or the team. Handing one of them to a bot
 // goes past tool_request (which always asks), so it asks too (SEC-05).
@@ -526,7 +539,7 @@ export function createRegistry(deps) {
       if (!mime) throw toolError('IMAGE_BAD_TYPE', `${r.rel} is not an image (png, jpg, gif, webp, bmp)`);
       let bytes;
       try {
-        bytes = await fsp.readFile(r.abs);
+        bytes = await readResolved(r, ctx);
       } catch (err) {
         if (err.code === 'ENOENT') throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`);
         throw err;
@@ -602,7 +615,7 @@ export function createRegistry(deps) {
         const r = resolvePath(ctx.workspaceDir, args.image);
         const mime = imageMime(r.abs);
         if (!mime) throw toolError('IMAGE_BAD_TYPE', `${r.rel} is not an image`);
-        try { imageDataUrl = `data:${mime};base64,${(await fsp.readFile(r.abs)).toString('base64')}`; } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
+        try { imageDataUrl = `data:${mime};base64,${(await readResolved(r, ctx)).toString('base64')}`; } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
       }
       const jobs = typeof deps.getVideoJobs === 'function' ? deps.getVideoJobs() : null;
       try {
@@ -647,7 +660,7 @@ export function createRegistry(deps) {
       const limited = Math.min(Number(args?.maxBytes) || MAX_FILE_READ, 1000000);
       let raw;
       try {
-        raw = await fsp.readFile(r.abs, 'utf8');
+        raw = await readResolved(r, ctx, 'utf8');
       } catch (err) {
         if (err.code === 'ENOENT') throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`);
         if (err.code === 'EISDIR') throw toolError('FS_IS_DIR', `${r.rel} is a directory; use fs_list`);
@@ -685,9 +698,8 @@ export function createRegistry(deps) {
       const content = String(args?.content ?? '');
       await fsp.mkdir(path.dirname(r.abs), { recursive: true });
       // What was there first, so the human can undo it (1.5.8).
-      const undo = r.inWorkspace ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: args?.mode === 'append' ? 'append' : 'write' }) : null;
-      if (args?.mode === 'append') await fsp.appendFile(r.abs, content, 'utf8');
-      else await fsp.writeFile(r.abs, content, 'utf8');
+      const undo = r.named ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: args?.mode === 'append' ? 'append' : 'write' }) : null;
+      await writeResolved(r, ctx, content, args?.mode === 'append');
       return {
         path: r.rel,
         bytes: Buffer.byteLength(content, 'utf8'),
@@ -741,8 +753,14 @@ export function createRegistry(deps) {
         throw toolError('FS_NEEDS_RECURSIVE', `${r.rel} is a directory; pass recursive=true to remove it`);
       }
       // In the workspace a delete is a move into .trash, undoable for 7 days (1.5.8).
-      const undo = r.inWorkspace ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: 'delete' }) : null;
-      if (!undo) await fsp.rm(r.abs, { recursive: Boolean(args?.recursive), force: false });
+      const undo = r.named ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: 'delete' }) : null;
+      // In the workspace without an undo (the trash itself, a file too big to keep): removed through the
+      // checked steps too, never by name (1.5.54, the verifier's M7-C). Outside it (the human said yes): as before.
+      if (!undo && r.named) {
+        const still = await fsp.lstat(r.abs).catch(() => null);
+        if (still?.isDirectory()) await removeFolderInside(ctx.workspaceDir, r.abs);
+        else if (still) await removeInside(ctx.workspaceDir, r.abs);
+      } else if (!undo) await fsp.rm(r.abs, { recursive: Boolean(args?.recursive), force: false });
       return { path: r.rel, deleted: true, recursive: Boolean(args?.recursive), ...(undo ? { undo } : {}) };
     },
   });
@@ -761,6 +779,8 @@ export function createRegistry(deps) {
       properties: {
         command: { type: 'string', description: 'Command line, run through the platform shell.' },
         timeoutMs: { type: 'number', description: 'Kill after this many ms (default 30000, max 120000).' },
+        // The card a newcomer sees leads with this, not the code (1.5.54, walkthrough 2.2).
+        purpose: { type: 'string', description: 'One short sentence for the human, in their language and words, saying what this command does (e.g. 「把 4 个文件分到 图片 / 文档 / 安装包 三个文件夹」). Shown as the headline of the approval card; the command is one click away.' },
       },
       required: ['command'],
       additionalProperties: false,
@@ -1676,7 +1696,7 @@ export function createRegistry(deps) {
       if (!html && args?.file) {
         const r = resolvePath(ctx.workspaceDir, args.file);
         if (!r.inWorkspace) throw toolError('FS_OUTSIDE_WORKSPACE', 'file must be in the workspace');
-        try { html = await fsp.readFile(r.abs, 'utf8'); } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
+        try { html = await readResolved(r, ctx, 'utf8'); } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
       }
       if (!String(html || '').trim()) throw toolError('PAGE_EMPTY', 'the page is empty: give html, or write the page to a workspace file (fs_write, in parts if long) and pass file');
       try {
@@ -1706,7 +1726,7 @@ export function createRegistry(deps) {
       const r = resolvePath(ctx.workspaceDir, args.path);
       if (!r.inWorkspace) throw toolError('FS_OUTSIDE_WORKSPACE', 'only files in the workspace can be sent');
       let bytes;
-      try { bytes = await fsp.readFile(r.abs); } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
+      try { bytes = await readResolved(r, ctx); } catch { throw toolError('FS_NOT_FOUND', `no such file: ${r.rel}`); }
       if (bytes.length > 25 * 1024 * 1024) throw toolError('FILE_TOO_LARGE', 'files over 25 MB cannot be sent');
       try {
         const out = await peers.json(peer, 'POST', '/api/uploads', { raw: bytes, headers: { 'x-file-name': encodeURIComponent(path.basename(r.abs)) }, timeoutMs: 120000 });
@@ -1739,8 +1759,12 @@ export function createRegistry(deps) {
       const bytes = Buffer.from(await res.arrayBuffer());
       const day = new Date().toISOString().slice(0, 10);
       const destRel = path.posix.join('from-machines', String(peer.name).replace(/[\\/:*?"<>|]/g, '_'), day, path.posix.basename(rel));
-      await fsp.mkdir(path.join(ctx.workspaceDir, path.posix.dirname(destRel)), { recursive: true });
-      await fsp.writeFile(path.join(ctx.workspaceDir, destRel), bytes);
+      // Checked like the bot's own writes (1.5.54, the verifier's M7-A): a folder on the way that is a
+      // link out of the workspace (made by the bot beforehand) must not let this write land in the data folder.
+      const dest = resolvePath(ctx.workspaceDir, destRel);
+      if (!dest.inWorkspace) throw toolError('FS_OUTSIDE_WORKSPACE', `path resolves outside the shared workspace (${destRel})`);
+      await fsp.mkdir(path.dirname(dest.abs), { recursive: true });
+      try { await writeInside(ctx.workspaceDir, dest.abs, bytes); } catch (err) { throw toolError(err.code === 'PATH_OUTSIDE_WORKSPACE' ? 'FS_OUTSIDE_WORKSPACE' : 'FS_WRITE_FAILED', err.message); }
       return { machine: peer.name, path: destRel, bytes: bytes.length, note: 'Now on this machine at this path: tell the human the path (and the content, if short).' };
     },
   });

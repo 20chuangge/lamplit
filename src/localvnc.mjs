@@ -195,7 +195,7 @@ export async function ensureLocalVnc({ dir, installer, dataDir = '', key = null 
   // 1.5.53: ours gets its passwords, kept in the hub's data folder (dataDir) - see secureTightVnc.
   const secure = async (state) => {
     if (!dataDir) return state;
-    const s = await secureTightVnc({ dataDir, key });
+    const s = await secureTightVnc({ dataDir, key, paths: [state.exe] });
     return { ...state, secured: s.state, ...(s.reason ? { securedWhy: s.reason } : {}) };
   };
   if (process.platform !== 'win32' || process.env.DESK_LOCAL_VNC === '0') return { mode: 'off' };
@@ -417,10 +417,13 @@ export function checkVncAuth(port = VNC_PORT, password = '', { host = '127.0.0.1
  * first time. Never throws. -> {state:'secured'|'failed', reason?, secret?}
  * runPs / restart: tests (a mock VNC server instead of TightVNC).
  */
-export async function secureTightVnc({ dataDir, service = false, key = null, port = VNC_PORT, runPs = ps, restart = null } = {}) {
+export async function secureTightVnc({ dataDir, service = false, key = null, port = VNC_PORT, runPs = ps, restart = null, root = '', paths = [], trusted = () => vncListenerTrusted(port, { root, paths }) } = {}) {
   if (process.platform !== 'win32' && !restart) return { state: 'failed', reason: 'not Windows' };
   try {
     let secret = readVncSecret(dataDir, { key });
+    // A password answer goes only to TightVNC itself (1.5.54): never to a program that took the port.
+    const squatted = () => trusted() === 'other';
+    if (squatted()) return { state: 'failed', reason: '屏幕端口被别的程序占着（不是 TightVNC），没有设密码' };
     // Already in force (the hub restarted): nothing to change.
     if (secret && (await checkVncAuth(port, secret.password)) === 'ok') return { state: 'secured', secret };
     if (!secret) { secret = newVncSecret(); writeVncSecret(dataDir, secret, { key }); }
@@ -434,6 +437,9 @@ export async function secureTightVnc({ dataDir, service = false, key = null, por
       if (vnc) spawnSync(vnc.exe, [vnc.control, '-reload'], quiet);
     }
     for (let i = 0; i < 20; i += 1) {
+      const who = trusted();
+      if (who === 'other') return { state: 'failed', reason: '屏幕端口被别的程序占着（不是 TightVNC）' };
+      if (who === 'down') { await new Promise((r) => setTimeout(r, 500)); continue; }
       const now = await checkVncAuth(port, secret.password);
       if (now === 'ok') return { state: 'secured', secret };
       if (now === 'down') { await new Promise((r) => setTimeout(r, 500)); continue; }
@@ -443,4 +449,84 @@ export async function secureTightVnc({ dataDir, service = false, key = null, por
   } catch (err) {
     return { state: 'failed', reason: err.message };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Who is listening on the screen port (1.5.54, the verifier's new low): the
+// hub sends a password answer to whatever listens on 5900. While TightVNC is
+// down (a restart, not started yet) a bot's own program could take the port,
+// collect a challenge and its answer to break the 8-character password
+// offline, and show the page a screen of its own. So before anything is sent
+// with a password, every listener on the port must be TightVNC: the service's
+// own process (sc queryex: anyone may read its PID) or a tvnserver.exe in a
+// place the bots' account cannot write (Program Files, Lamplit's own folder).
+// ---------------------------------------------------------------------------
+
+/** PIDs listening on TCP `port` (any address), from netstat. */
+export function listenerPids(port, { run = (cmd, args) => spawnSync(cmd, args, quiet) } = {}) {
+  const pids = new Set();
+  for (const proto of ['TCP', 'TCPv6']) {
+    const out = String(run('netstat', ['-ano', '-p', proto]).stdout || '');
+    for (const line of out.split(/\r?\n/)) {
+      const m = /^\s*TCP\S*\s+(\S+):(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i.exec(line);
+      if (m && Number(m[2]) === Number(port)) pids.add(Number(m[3]));
+    }
+  }
+  return [...pids];
+}
+
+/** The TightVNC service's PID, or 0. */
+export function servicePid({ run = (cmd, args) => spawnSync(cmd, args, quiet) } = {}) {
+  const out = String(run('sc.exe', ['queryex', 'tvnserver']).stdout || '');
+  return Number(/\bPID\s*:\s*(\d+)/.exec(out)?.[1] || 0);
+}
+
+/** Where TightVNC may live: Program Files, and Lamplit's own unpacked copy (<root>\vnc). */
+export function trustedVncPaths(root = '') {
+  const pf = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean).map((d) => path.join(d, 'TightVNC', 'tvnserver.exe'));
+  const own = root ? [exeIn(path.join(root, 'vnc'))] : [];
+  // Tests only (ASSIST_TEST=1): a mock server's program. Never in a real install.
+  const extra = process.env.ASSIST_TEST === '1' && process.env.DESK_VNC_TRUST_PATH ? [process.env.DESK_VNC_TRUST_PATH] : [];
+  return [...pf, ...own, ...extra].map((p) => path.resolve(p).toLowerCase());
+}
+
+/** This account's SID (Windows' own whoami), or ''. */
+let mySid = null;
+export function ownSid() {
+  if (mySid === null) {
+    const me = spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], quiet);
+    mySid = /"(S-1-5-[\d-]+)"/.exec(String(me.stdout || ''))?.[1] || '';
+  }
+  return mySid;
+}
+
+/** Program and owner of each PID: {pid: {exe, sid}} (an owner that cannot be read is ''). */
+function processInfo(pids) {
+  const out = ps(`Get-CimInstance Win32_Process -Filter "${pids.map((p) => `ProcessId=${Number(p)}`).join(' OR ')}" | ForEach-Object { $o = try { (Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction Stop).Sid } catch { '' }; "$($_.ProcessId)|$($_.ExecutablePath)|$o" }`);
+  return Object.fromEntries(out.split(/\r?\n/).map((l) => l.split('|')).filter((x) => x[0]).map(([p, exe, sid]) => [Number(p), { exe: String(exe || '').trim(), sid: String(sid || '').trim() }]));
+}
+
+let trustedCache = { key: '', at: 0 };
+/**
+ * Is everything listening on `port` TightVNC? -> 'trusted' | 'down' | 'other'.
+ * Checked again whenever the listening processes change (a squatter has another PID).
+ * A tvnserver.exe other than the service must also be run by SYSTEM or this account:
+ * the bots' account can start Program Files' TightVNC itself, with its own password
+ * (1.5.54 verifier). An owner that cannot be read does not pass.
+ */
+export function vncListenerTrusted(port = VNC_PORT, { root = '', paths: extraPaths = [], run, info = processInfo, me = ownSid } = {}) {
+  if (process.platform !== 'win32') return 'trusted';
+  const pids = listenerPids(port, { run });
+  if (!pids.length) return 'down';
+  const allowed = new Set([...trustedVncPaths(root), ...extraPaths.map((p) => path.resolve(p).toLowerCase())]);
+  // Remembered per port, listening processes and trusted places (a squatter has another PID).
+  const key = `${port}|${pids.sort().join(',')}|${[...allowed].sort().join('|')}|${me()}`;
+  if (trustedCache.key === key && Date.now() - trustedCache.at < 60000) return 'trusted';
+  const svc = servicePid({ run });
+  const rest = pids.filter((p) => p !== svc);
+  const found = rest.length ? info(rest) : {};
+  const owners = new Set(['S-1-5-18', me()].filter(Boolean));
+  const ok = rest.every((p) => found[p]?.exe && allowed.has(path.resolve(found[p].exe).toLowerCase()) && owners.has(found[p].sid));
+  if (ok) trustedCache = { key, at: Date.now() };
+  return ok ? 'trusted' : 'other';
 }

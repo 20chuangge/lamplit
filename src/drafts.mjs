@@ -11,7 +11,9 @@
 // "data.content#text" for text inside a JSON string (Feishu's message body).
 
 /** Steps of connected apps that send something to someone: by the words of the tool's name. */
-const SEND_WORDS = /(^|[._-])(send|post|reply|publish|comment|tweet|repost|quote|forward|email|message[._-](create|reply|send)|create[._-](message|post|comment|tweet))($|[._-])/i;
+// 1.5.54 (the verifier's M6 list): sharing, uploading, inviting, submitting, and creating or editing what
+// others read (an issue, a post, a comment; not a document page, which is the user's own, as fs_write) go out too.
+const SEND_WORDS = /(^|[._-])(send|post|reply|publish|comment|tweet|repost|quote|forward|email|notify|broadcast|dm|share|upload|invite|submit|messages?[._-](create|reply|send)|create[._-](message|post|comment|tweet|issue|reply|review|gist|discussion|event)|update[._-](post|issue|comment))($|[._-])/i;
 const NOT_SEND = /(^|[._-])(get|list|search|read|fetch|query|find|lookup|describe|show|view|retrieve|count|draft_list)($|[._-])/i;
 /** Keys that hold what is said (the body of a post or a message). */
 const TEXT_KEY = /^(text|content|body|message|msg|comment|reply|caption|title|subject|desc|description|status|note|markdown|html_body|text_body)$/i;
@@ -24,11 +26,79 @@ export function postIdOf(ref) {
   return m ? m[1] : '';
 }
 
+/** A tool name as words: camelCase split (1.5.54, review M6: sendMessage, chat.postMessage, createIssueComment). */
+const nameWords = (name) => String(name || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+
 /** Is this connected-app step a send (not a look, not some other write)? */
 export function isSendingTool(toolName) {
-  const n = String(toolName || '');
+  const n = nameWords(toolName);
   if (!n || NOT_SEND.test(n.replace(/^mcp__[^_]+__/, '').split(/[._-]/)[0])) return false;
   return SEND_WORDS.test(n);
+}
+
+// What a command line sends to someone (1.5.54, review M6): a form or a body posted with
+// curl, wget, PowerShell, .NET, Python, Node or gh, or mail. Copying files around (scp, rsync,
+// git push) is not here. The verifier's second round found the short and abbreviated forms:
+// curl -sd / -sSfd / --json, wget --method=POST, irm -Me Post, -Method:Post, WebClient.Upload*,
+// urlopen(data=), httpx.post, fetch(..., {method:'POST'}), gh api -X POST, -EncodedCommand.
+const COMMAND_SENDS = [
+  // curl: a short-option cluster holding d (data), F (form) or T (upload) - case matters: -D is "dump headers".
+  /\bcurl(\.exe)?\b[^|;&\n]*\s-[A-Za-z]*[dFT][A-Za-z]*(?=[\s'"=@]|$)/,
+  /\b(curl|wget)(\.exe)?\b[^|;&\n]*(\s--(data|data-raw|data-binary|data-urlencode|data-ascii|json|form|form-string|upload-file|post-data|post-file|body-data|body-file)\b|\s-X\s*['"]?(POST|PUT|PATCH)\b|--request[=\s]+['"]?(POST|PUT|PATCH)\b|--method[=\s]+['"]?(POST|PUT|PATCH)\b)/i,
+  // PowerShell (any unique abbreviation, space or colon): -Method/-Me/-M Post, -Body/-B, -InFile/-In.
+  /\b(Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget)\b[^|;\n]*(\s-M[a-z]*[:\s]+['"]?(Post|Put|Patch)\b|\s-B[a-z]*([:\s]|$)|\s-In[a-z]*[:\s])/i,
+  /\bNet\.WebClient\b|\.Upload(String|File|Data|Values)(Async|TaskAsync)?\s*\(|\b(HttpClient|httpClient)\b[^|;\n]*\.(PostAsync|PutAsync|PatchAsync|SendAsync)\b/i,
+  /(^|[\s;&|(])(mail|mailx|sendmail|mutt|msmtp|swaks)\s/i,
+  /\b(smtplib|nodemailer)\b|\b(requests|httpx|aiohttp|session|axios)\.(post|put|patch)\s*\(|\brequests\.request\(\s*['"](POST|PUT|PATCH)|Send-MailMessage/i,
+  /\burlopen\([^)]*\bdata\s*=|\bRequest\([^)]*\bdata\s*=|\bmethod\s*[:=]\s*['"](POST|PUT|PATCH)['"]/i,
+  /\bgh(\.exe)?\s+api\b[^|;&\n]*(\s-X\s*['"]?(POST|PUT|PATCH)\b|\s--method[=\s]+['"]?(POST|PUT|PATCH)\b|\s-[fF]\s|\s--(field|raw-field|input)\b)|\bgh(\.exe)?\s+(issue|pr|release|gist|discussion)\s+(create|comment|edit|review|merge|close|reopen)\b/i,
+];
+const LOCAL_URL = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(\/|$)/i;
+/** The request can be sent somewhere else than its URL says (a proxy, a forced address): no "local only" pass. */
+const REDIRECTED = /\s--(connect-to|resolve|proxy|preproxy|socks4a?|socks5(-hostname)?|proxy1\.0)\b|\s-x(\s|\S)|\s-Proxy\b|\bHTTPS?_PROXY\s*=|\bALL_PROXY\s*=/i;
+/** Only addresses on this machine are named (a local service), sent straight there: not "out". */
+const onlyLocal = (text) => {
+  const t = String(text || '');
+  if (REDIRECTED.test(t)) return false;
+  const urls = t.match(/https?:\/\/[^\s'"]+/gi) || [];
+  return urls.length > 0 && urls.every((u) => LOCAL_URL.test(u));
+};
+/** PowerShell's -EncodedCommand (any abbreviation): the script in it, decoded, or null. */
+function encodedScript(command) {
+  const m = /\s-(e|ec|en|enc|enco|encod|encode|encoded|encodedc[a-z]*)\s+['"]?([A-Za-z0-9+/=]{8,})/i.exec(String(command || ''));
+  if (!m) return null;
+  try { return Buffer.from(m[2], 'base64').toString('utf16le'); } catch { return ''; }
+}
+
+/**
+ * May a remembered 「以后都允许」 let this step run without asking (1.5.54, the verifier's M6)?
+ * Not for a program that can reach the network used with an address: what it does with the
+ * address is in its options, and one yes for "curl" or "python" is not a yes to post anything.
+ */
+export function rememberMayCover(name, args = {}) {
+  if (name !== 'shell') return true;
+  const command = String(args?.command || '');
+  const net = /\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod|powershell|pwsh|python3?|py|node|deno|bun|gh|ruby|perl|php)(\.exe)?\b/i.test(command);
+  return !(net && (/https?:\/\//i.test(command) || encodedScript(command) !== null));
+}
+
+/**
+ * A step that sends something out with no draft card to show it in (1.5.54, review M6): a
+ * connected app's send whose text could not be found, a command that posts or mails, a
+ * website form. -> why it asks every time, or ''. What this cannot see: a bot clicking
+ * 「发布」 in its own browser, or a program it wrote doing the sending (asked as commands).
+ */
+export function outgoingAsk(name, args = {}, { mcp = null } = {}) {
+  if (mcp && (isSendingTool(mcp.tool) || isSendingTool(name))) return `用「${String(mcp.server || '连接的应用')}」往外发东西：没有能改的正文，每次都先问你`;
+  if (name === 'shell') {
+    const command = String(args?.command || '');
+    if (COMMAND_SENDS.some((re) => re.test(command)) && !onlyLocal(command)) return '这条命令会往外发数据（提交内容或发邮件），每次都先问你';
+    // A PowerShell script handed over encoded: what it says decides; one that cannot be read asks.
+    const inner = encodedScript(command);
+    if (inner !== null && (!inner.trim() || outgoingAsk('shell', { command: inner }))) return '这条命令带着一段编码过的脚本，可能往外发数据，每次都先问你';
+  }
+  if (name === 'http_fetch' && String(args?.method || 'GET').toUpperCase() !== 'GET' && !onlyLocal(args?.url)) return '向网站提交数据，每次都先问你';
+  return '';
 }
 
 function getPath(obj, key) {

@@ -13,6 +13,9 @@ async function loadSkills() {
   renderSkills();
 }
 
+/** The built-in skills by a Chinese name (1.5.54, walkthrough 6.5: 「release-check」 meant nothing). */
+const SKILL_NAMES = { 'release-check': '发布前检查', 'source-digest': '读网页写摘要', 'weekly-review': '写周报', 'workspace-sweep': '工作区小结' };
+
 function renderSkills() {
   const list = $('skills-list');
   list.innerHTML = '';
@@ -23,7 +26,7 @@ function renderSkills() {
   for (const skill of state.skills) {
     const card = el('div', 'card');
     const title = el('div', 'card-title');
-    title.appendChild(el('span', null, skill.name));
+    title.appendChild(el('span', null, SKILL_NAMES[skill.name] || skill.name));
     if (granted.has(skill.slug)) title.appendChild(el('span', 'tag good', '已授权'));
     card.appendChild(title);
     card.appendChild(el('div', 'card-sub', skill.description || '（没有描述）'));
@@ -42,7 +45,11 @@ function renderSkills() {
       if (skill.approval_notes) details.appendChild(el('div', 'skill-body', `审批说明：${skill.approval_notes}`));
       card.appendChild(details);
     }
-    card.appendChild(el('div', 'card-sub mono', skill.file));
+    // The file is a detail, under the steps (1.5.54, walkthrough 6.5).
+    const where = el('details', 'tiny muted');
+    where.appendChild(el('summary', null, '文件在哪'));
+    where.appendChild(el('div', 'card-sub mono', `${skill.name} · ${skill.file}`));
+    card.appendChild(where);
     list.appendChild(card);
   }
   if (!state.skills.length) list.appendChild(el('div', 'muted tiny', '还没有技能。'));
@@ -108,6 +115,18 @@ function routinesInView() {
   return all.filter((rt) => ids.includes(rt.botId));
 }
 
+/** A time in the peak hours, 「闲时再跑」 not ticked: said next to it (1.5.54, walkthrough 3.8). */
+function routinePeakHint() {
+  const hint = $('rt-peak-hint');
+  if (!hint) return;
+  const m = /(\d{1,2})[:：](\d{2})/.exec($('rt-schedule')?.value || '');
+  const h = m ? Number(m[1]) + Number(m[2]) / 60 : -1;
+  const peak = (h >= 9 && h < 12) || (h >= 14 && h < 18);
+  const show = peakPriced() && peak && !$('rt-off-peak')?.checked && !/周[六日天]/.test($('rt-schedule')?.value || '');
+  hint.hidden = !show;
+  hint.textContent = show ? `${m[1]}:${m[2]} 是高峰时段，勾上下面的「闲时再跑」，模型费省一半。` : '';
+}
+
 function renderRoutines() {
   const list = $('routines-list');
   list.innerHTML = '';
@@ -115,6 +134,7 @@ function renderRoutines() {
   // 「闲时再跑」 only where the model has peak hours (1.5.50).
   const offPeakRow = $('rt-off-peak')?.closest('label');
   if (offPeakRow) offPeakRow.hidden = !peakPriced();
+  routinePeakHint();
 
   for (const rt of routinesInView()) {
     const bot = state.bots.find((b) => b.id === rt.botId);
@@ -821,7 +841,7 @@ function adjustDiff(a) {
 
 /** What an answered card says it did, in words that fit it. */
 function thinkDoneLabel(data, good) {
-  if (data.draft) return good ? (data.edited ? '已发送（你改过）' : '已发送') : '不发了';
+  if (data.draft) return good ? (data.edited ? '已定稿（你改过）' : '已定稿') : '不发了';
   if (data.adjust) return good ? '已修改' : '没改';
   if (data.handoff) return good ? '已交过去' : '没交';
   return '';
@@ -923,6 +943,8 @@ function renderXCard() {
  */
 function renderXDetail(app) {
   const box = el('div', 'mcp-app-body x-detail');
+  // Said first: without a developer account there is nothing to do here yet (1.5.54, walkthrough 6.1).
+  box.appendChild(el('div', 'row-note', '要先有一个 X 开发者账号（在 X 开发者后台用你的 X 账号注册，十来分钟）。没有的话，可以先跳过 X。'));
   box.appendChild(el('div', 'tiny muted', '两部分用的是同一个 X 开发者应用：发帖要在 X 的网页上登录授权，搜帖子只要它的 Bearer Token。'));
   const v = xUi.view;
   const post = el('div', 'x-part');

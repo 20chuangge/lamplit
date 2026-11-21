@@ -94,7 +94,8 @@ function renderMessages() {
     // A restart's cut-off turn said so in words already (1.5.41: not again as "needs_attention - …").
     if (last && last.status !== 'success' && last.status !== 'needs_attention' && !newer && !working) messagesEl.appendChild(statusLine(last));
     // A reload wiped the "working…" line; the bot is still at it.
-    if (working) showTyping(typingBotId(), '正在处理…');
+    const att = state.attention?.items?.[currentChatKey()];
+    if (working) showTyping(typingBotId(), att?.needsYou || att?.asking ? '等你点头…' : '正在处理…');
   }
 
   if (visible.length) appendStarters(visible);
@@ -223,7 +224,9 @@ function specialistWelcome(bot) {
   bubble.appendChild(el('div', 'muted', onLocalMachine()
     ? '把要做的事直接发给我；要动文件或系统时我会先问你。也可以让主助理把活派给我。'
     : '把要做的事直接发给我，我自己做完。也可以让主助理把活派给我。'));
-  const starts = roleStarts(bot.role);
+  // 「你会做什么？」 and one 「帮我…」 from its role: the role's pieces alone (「打分排序」) read as nothing (1.5.54, walkthrough 3.6).
+  const first = roleStarts(bot.role).find((s) => s.length >= 4);
+  const starts = ['你会做什么？', ...(first ? [`帮我${first.replace(/^帮我/, '')}`] : [])];
   if (starts.length) {
     const chips = el('div', 'start-chips');
     for (const s of starts) {
@@ -231,7 +234,7 @@ function specialistWelcome(bot) {
       chip.type = 'button';
       chip.addEventListener('click', () => {
         const composer = $('composer');
-        composer.value = `${s}：`;
+        composer.value = /[？?]$/.test(s) ? s : `${s}：`;
         autoGrow(composer);
         composer.focus();
       });
@@ -1703,6 +1706,13 @@ function describeTool(name, rawArgs) {
 
   switch (name) {
     case 'shell':
+      // What it does in plain words leads; the code is one click away (1.5.54, walkthrough 2.2).
+      if (args.purpose) {
+        out.title = String(args.purpose).trim().slice(0, 120);
+        out.command = String(args.command || '').trim();
+        out.impact = ''; // the why-line says what happens; 「可能出现你没预料到的改动」 under a plain headline only scared (1.5.54)
+        break;
+      }
       out.detail = String(args.command || '').trim();
       set('命令', '命令', out.detail);
       break;

@@ -387,6 +387,8 @@ function mailboxList(s) {
 function mcpConnectForm(app) {
   const box = el('div', 'mcp-app-body');
   box.appendChild(el('div', 'row-note', app.help || ''));
+  // What it can do to your files, said before 「连接」 (Blender, 1.5.54).
+  if (app.warn) box.appendChild(el('div', 'row-note warn-note', app.warn));
   const go = el('button', 'btn primary tiny', '连接');
   go.type = 'button';
   if (app.auth === 'token') {
@@ -849,6 +851,10 @@ function renderFolders(policy) {
   }
   if ($('folder-outside')) $('folder-outside').value = policy?.outside || 'ask';
   if ($('sudo-mode')) $('sudo-mode').value = policy?.sudo || 'ask';
+  // Windows has no sudo: said as 管理员权限 (1.5.54, walkthrough 6.4).
+  const win = state.computer?.host?.platform === 'win32';
+  if ($('sudo-head')) $('sudo-head').textContent = win ? '管理员权限' : '管理员权限（sudo）';
+  if ($('sudo-note')) $('sudo-note').textContent = win ? '以管理员身份运行之类的命令，默认每次都先问你。' : '用 sudo、以管理员身份运行之类的命令，默认每次都先问你。';
   if ($('trust-primary')) $('trust-primary').checked = Boolean(policy?.trustPrimary);
   if ($('read-guard')) $('read-guard').checked = policy?.readGuard !== false;
   renderSandboxState(policy?.sandbox);
@@ -915,8 +921,7 @@ function renderPermOverview() {
     ['审批级别', PERM_LEVEL[level] || level, level === 'auto'],
     ['接管桌面', policy.takeover === 'view' ? '只能看' : '能看能控', false],
     ['生成媒体', { level: '跟随级别', ask: '每次先问', auto: '直接生成' }[policy.generate] || '跟随级别', policy.generate === 'auto'],
-    ['其他位置', policy.outside === 'deny' ? '一律不许' : '先问我', false],
-    ['sudo', policy.sudo === 'allow' ? '直接用' : '先问我', policy.sudo === 'allow'],
+    // 其他位置 and sudo are set in 边界, said there (1.5.54, walkthrough 6.4).
     ...(policy.trustPrimary ? [['主助理', '完全信任', true]] : []),
     ...(policy.readGuard === false ? [['读过网页后', '不再先问', true]] : []),
     ['我的规则', `${(policy.rules || []).length} 条`, false],
@@ -981,7 +986,7 @@ function renderSandboxState(s) {
     if (state === 'on') box.textContent = '已开启：机器人执行的命令用单独的 Windows 账户 lamplit-runner 来跑，看不到你的用户文件夹（C:\\Users\\你），包括 Lamplit 自己的数据（密钥、配对凭据、保险箱）；工作区和开放的文件夹照常可用，Python、ffmpeg 这类装在你用户文件夹里的工具可以运行。其他磁盘（比如 D 盘）按 Windows 默认，所有账户都能读写。以管理员身份运行的命令、你批准越过边界的那一步，用你自己的账户。';
     else if (state === 'setting-up') { box.textContent = '正在设置：在弹出的管理员确认里点「是」…'; renderSandboxState.poll = setTimeout(() => loadPolicy().catch(() => {}), 2500); }
     else if (state === 'unknown') { box.textContent = '正在检查单独账户…'; renderSandboxState.poll = setTimeout(() => loadPolicy().catch(() => {}), 3000); }
-    else if (state === 'setup') box.textContent = `还没有隔离：机器人执行的命令用你自己的账户来跑，看得到 Lamplit 自己的数据。点「设置单独账户」，Lamplit 会建一个隐藏的普通账户 lamplit-runner 来跑这些命令（会弹一次管理员确认）。${s.reason ? `上次没成功：${s.reason}。` : ''}`;
+    else if (state === 'setup') box.textContent = `机器人跑命令时用的是你的账户。点「设置单独账户」，让它用一个单独的账户（lamplit-runner），更安全；会弹一次管理员确认。${s.reason ? `上次没成功：${s.reason}。` : ''}`;
     else box.textContent = `没有生效：${s.reason || '原因不明'}。命令照常用你自己的账户运行。可以再点一次「设置单独账户」。`;
     return;
   }
@@ -1124,6 +1129,17 @@ function renderUsage(data) {
   const summary = $('usage-summary');
   if (!summary) return;
   const label = usageRangeLabel(days);
+  // One line of money first (1.5.54, walkthrough 6.2): what a newcomer wants to know.
+  const headline = $('usage-headline');
+  if (headline) {
+    const spent = totals.cost > 0 ? moneyText(totals.cost, currency) : '';
+    const perDay = data.spendRate?.perDay > 0 ? data.spendRate.perDay : totals.cost > 0 && days >= 7 ? totals.cost / days : 0;
+    // The month says the daily pace it comes from (the recent days with use, not the range).
+    const month = perDay ? `照最近每天约 ${moneyText(perDay, currency)}，一个月约 ${moneyText(perDay * 30, currency)}` : '';
+    headline.textContent = !totals.tokens ? `${label}还没用过模型。`
+      : spent ? `${label}大约花了 ${spent}${totals.unpricedTokens ? '（有的模型还没设价格，没算进来）' : ''}${month ? `；${month}` : ''}。`
+        : `${label}用了 ${totals.calls || 0} 次模型。这家的价格 Lamplit 还不知道：去服务商的价格页，把每百万 tokens 的价格填到下面「模型单价」里，这里就能算出花了多少钱。`;
+  }
   const chips = [
     [`${label} tokens`, fmtTokens(totals.tokens), false],
     [`${label}估算`, usageCostText({ tokens: totals.tokens, cost: totals.cost, unpricedTokens: totals.unpricedTokens }, currency), Boolean(totals.unpricedTokens && !totals.cost)],
@@ -1162,7 +1178,8 @@ function renderUsage(data) {
     note.textContent = [data.missing?.length ? `没连上的机器没算进来：${data.missing.join('、')}` : '', data.otherCurrencies?.length ? '有的机器单价用的是另一种货币，合计只是粗略相加' : ''].filter(Boolean).join('；');
   }
   // By name (1.5.29); assistants that are gone and nameless fold into one row, evaluation runs into another.
-  const nameOfBot = (row) => (row.machine ? state.peerBots?.[row.machine]?.[row.key] : botById(row.key)?.name) || row.name || '';
+  // Lamplit's own calls (testing the model, the checkup, translating) by what they are (1.5.54).
+  const nameOfBot = (row) => (row.key === '_app' ? 'Lamplit 自己（测试连接、体检、翻译）' : (row.machine ? state.peerBots?.[row.machine]?.[row.key] : botById(row.key)?.name) || row.name || '');
   const isEval = (row) => Boolean(row.eval) || /^评测-/.test(nameOfBot(row)) || /^[a-z]\d{1,2}-[a-z0-9-]+$/.test(row.key);
   const folded = new Map();
   const botRows = [];

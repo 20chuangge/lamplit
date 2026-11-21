@@ -689,7 +689,7 @@ function mockPlan(text, botName) {
         { tool: 'task_step', args: { step: 1, status: 'done', note: `放好了 ${files.length} 个演示文件：${dir}` } },
         { tool: 'fs_list', args: { path: dir } },
         { tool: 'task_step', args: { step: 2, status: 'done', note: '图片 1 个、文档 2 个、安装包 1 个' } },
-        { say: '打算这样分：截图-1118.png → 图片；周报-11月.docx、发票-11月.pdf → 文档；Lamplit-Setup.exe → 安装包。移动文件要你同意，下面这张卡就是在问你（命令就是做这件事的一小段脚本）。', tool: 'shell', args: { command: move, timeoutMs: 15000 } },
+        { say: '打算这样分：截图-1118.png → 图片；周报-11月.docx、发票-11月.pdf → 文档；Lamplit-Setup.exe → 安装包。移动文件要你同意，下面这张卡就是在问你（命令就是做这件事的一小段脚本）。', tool: 'shell', args: { command: move, purpose: '把 4 个文件分到 图片 / 文档 / 安装包 三个文件夹', timeoutMs: 15000 } },
         // The checklist closes itself when its last step is done (a task_end here only got NO_TASK back).
         { tool: 'task_step', args: { step: 3, status: 'done', note: '移进了 图片 / 文档 / 安装包' } },
         { tool: 'task_finish', args: { summary: `在工作区建了「${dir}」，放了 4 个演示文件，按类型分进 图片、文档、安装包。移动文件这一步先问了你：同意了就已经分好，拒绝了文件就原样不动。真用的时候，它整理的是你自己的下载文件夹，同样先给你看打算怎么动。${DEMO_END}` } },
@@ -700,7 +700,7 @@ function mockPlan(text, botName) {
       return [
         { tool: 'routine_create', args: { name: '早间简报（演示）', instruction: '看一下这台电脑的磁盘空间够不够，有异常就提醒我。', schedule: '0 8 * * *', enabled: false } },
         { tool: 'routine_list', args: {} },
-        { tool: 'task_finish', args: { summary: `建好了一个定时任务「早间简报（演示）」：每天 08:00 跑一次。演示里先不打开，免得每天给你发演示消息；在右上角工作面板的「任务」页签里能看到它，可以启用、改时间或删掉。接入模型后，它每天会真的去查、真的写简报。${DEMO_END}` } },
+        { tool: 'task_finish', args: { summary: `建好了一个定时任务「早间简报（演示）」：每天 08:00 跑一次。演示里先不打开，免得每天给你发演示消息；点右上角的「任务」就能看到它，可以启用、改时间或删掉。接入模型后，它每天会真的去查、真的写简报。${DEMO_END}` } },
       ];
 
     case 'demo_write':

@@ -87,6 +87,7 @@ import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
 import * as mediaModule from './media.mjs';
+import * as backupModule from './backup.mjs';
 import { createVideoJobs } from './videojobs.mjs';
 import { createFeishu, loadFeishu } from './feishu.mjs';
 import { createPeers, friendlyHostname } from './peers.mjs';
@@ -141,6 +142,7 @@ import {
 } from './auth.mjs';
 import { loadDeviceStore, describeAgent, deviceKind, mayPushUpdate } from './devices.mjs';
 import { realPathOf } from './realpath.mjs';
+import { statInside } from './safefs.mjs';
 import { createUpdateChecker } from './updates.mjs';
 
 // One version for the hub and the app: package.json (shipped with every hub).
@@ -208,6 +210,13 @@ function remoteAccessAllowed() {
 /** Wire every module together. Exported so scripts/smoke.mjs could embed it too. */
 export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {}) {
   await ensureDirs();
+  // A restore the human confirmed before the restart (1.5.54) goes in first,
+  // before anything below reads a bot, a key or a routine.
+  {
+    const restored = await backupModule.applyPendingRestore().catch((err) => ({ ok: false, problems: [err.message] }));
+    if (restored) console.error(`[assistant] restore from a backup applied (${restored.mode || '?'}): ${restored.ok ? 'ok' : 'with problems'}${restored.problems?.length ? ` - ${restored.problems.join('; ')}` : ''}`);
+    await backupModule.cleanRestoreLeftovers().catch(() => {});
+  }
 
   // New releases add tools; existing installs only get them through this
   // additive migration (config seeds are copy-if-missing).
@@ -944,7 +953,9 @@ function attachHubUpgrade(server, state, viaPublic) {
     // Windows: no websockify; the hub speaks WebSocket to the VNC server itself.
     if (!info.webPort && info.vncPort) {
       // The hub signs in to TightVNC for the page (1.5.53); a view-only takeover policy signs in view-only.
-      void vncSecretHere().catch(() => null).then((secret) => {
+      void vncSecretHere().catch(() => null).then(async (secret) => {
+        // The password goes only to TightVNC itself (1.5.54): a program that took the port gets nothing.
+        if (secret && (await import('./localvnc.mjs')).vncListenerTrusted(info.vncPort, { root: P.root }) !== 'trusted') { refuse(502, 'Bad Gateway'); return; }
         const view = state.config.policy?.takeover === 'view';
         const vnc = secret ? { password: view ? secret.viewOnly : secret.password } : null;
         if (!bridgeWebSocket(req, socket, head, { port: info.vncPort, vnc })) refuse(400, 'Bad Request');
@@ -2754,7 +2765,8 @@ route('POST', /^\/api\/machines\/(?<name>[^/]+)\/handoff$/, async (_req, _res, {
     made = await state.peers.json(peer, 'POST', '/api/pairing/link', { timeoutMs: 8000 });
   } catch (err) {
     if (err.code === 'REMOTE_DISABLED') {
-      throw httpError(409, 'MACHINE_REMOTE_DISABLED', `「${peer.name}」没有打开允许手机连接，先在它上面打开再试`);
+      // Any device, not only phones (1.5.54: said on a PC it read wrong).
+      throw httpError(409, 'MACHINE_REMOTE_DISABLED', `「${peer.name}」现在不让别的设备连进来。到那台电脑上，在 设置 → 手机和外网 里打开「允许手机连接」（电脑、手机都靠它），再试。`);
     }
     throw err;
   }
@@ -2888,7 +2900,7 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
   if (sb.mode === 'windows') {
     items.push(sb.state === 'on'
       ? checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令用单独的账户 lamplit-runner 来跑，碰不到你的个人文件夹和 Lamplit 的密钥。')
-      : checkupItem('isolation', '命令隔离', 'warn', '没开：机器人执行的命令和你用同一个账户，理论上能读到 Lamplit 的本机密钥，绕过「只有你能批准」。开一次就好，要点一次管理员确认。', { kind: 'runner', label: '设置单独账户' }));
+      : checkupItem('isolation', '命令隔离', 'warn', '机器人跑命令时用的是你的账户。点一下，让它用一个单独的账户，更安全（要点一次管理员确认）。', { kind: 'runner', label: '设置单独账户' }));
   } else if (sb.state === 'on') {
     // Linux with the sandbox working (1.5.33): said as it is, in green.
     items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。'));
@@ -3445,8 +3457,11 @@ export function byteRange(header, size) {
 
 route('GET', /^\/api\/workspace\/file$/, async (req, res, { state, query }) => {
   const abs = workspaceFile(state, query.get('path'));
-  const st = await fsp.stat(abs).catch(() => null);
-  if (!st?.isFile()) return errorResponse(res, 404, 'FILE_NOT_FOUND', 'no such file in the workspace');
+  // Opened first, then checked that what was opened is in the workspace (1.5.54, review M7):
+  // a link swapped in between a check and the read led the hub into its data folder.
+  const opened = await statInside(state.workspaceDir, abs).catch(() => null);
+  const st = opened?.stat;
+  if (!st?.isFile()) { await opened?.fh.close().catch(() => {}); return errorResponse(res, 404, 'FILE_NOT_FOUND', 'no such file in the workspace'); }
   const mime = mimeOf(abs);
   // A PDF may be shown in the app's viewer (?inline=1, 1.5.11); pictures and videos (1.5.49) inline; the rest downloads.
   const inline = (mime.startsWith('image/') && mime !== 'image/svg+xml') || mime.startsWith('video/') || (mime === 'application/pdf' && query.get('inline') === '1');
@@ -3459,11 +3474,11 @@ route('GET', /^\/api\/workspace\/file$/, async (req, res, { state, query }) => {
     'accept-ranges': 'bytes',
   };
   const range = byteRange(req.headers.range, st.size);
-  if (range === 'bad') { res.writeHead(416, { 'content-range': `bytes */${st.size}` }); res.end(); return undefined; }
+  if (range === 'bad') { await opened.fh.close().catch(() => {}); res.writeHead(416, { 'content-range': `bytes */${st.size}` }); res.end(); return undefined; }
   if (range) res.writeHead(206, { ...headers, 'content-range': `bytes ${range.start}-${range.end}/${st.size}`, 'content-length': range.end - range.start + 1 });
   else res.writeHead(200, { ...headers, 'content-length': st.size });
-  // Streamed, not read whole into memory (videos are tens of MB).
-  const stream = fs.createReadStream(abs, range ? { start: range.start, end: range.end } : {});
+  // Streamed, not read whole into memory (videos are tens of MB); from the checked handle, closed at the end.
+  const stream = opened.fh.createReadStream(range ? { start: range.start, end: range.end } : {});
   stream.on('error', () => res.destroy());
   stream.pipe(res);
   return undefined;
@@ -4000,10 +4015,14 @@ async function vncSecretHere() {
 
 async function refreshVncGuard() {
   if (process.platform !== 'win32' && !process.env.DESK_VNC_PORT) return vncGuard;
-  const { checkVncAuth } = await import('./localvnc.mjs');
+  const { checkVncAuth, vncListenerTrusted } = await import('./localvnc.mjs');
   const secret = await vncSecretHere();
+  // 1.5.54: a password answer goes only to TightVNC itself, never to a program that took the port.
+  const who = vncListenerTrusted(SCREEN_VNC_PORT, { root: P.root });
+  if (who !== 'trusted') { vncGuard.state = who === 'down' ? 'down' : 'squatted'; return vncGuard; }
   const seen = await checkVncAuth(SCREEN_VNC_PORT, secret?.password || '');
-  vncGuard.state = seen === 'ok' ? 'secured' : seen;
+  // No password of Lamplit's, and TightVNC asks for one: the human set their own (kept; the page asks for it).
+  vncGuard.state = seen === 'ok' ? 'secured' : !secret && seen === 'wrong' ? 'own' : seen;
   if (seen === 'ok') vncGuard.reason = '';
   return vncGuard;
 }
@@ -4028,7 +4047,9 @@ async function secureVncHere({ elevate = false } = {}) {
       const body = [...Object.entries(env).map(([k, v]) => `$env:${k} = ${quote(v)}`), `$out = & { ${script} }`, 'Restart-Service tvnserver -Force', `Set-Content -LiteralPath ${quote(done)} -Value ($out -join ' ')`].join('\r\n');
       try {
         fs.writeFileSync(file, body, { mode: 0o600 });
-        spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "try { $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$env:DESK_VNC_FILE; exit $p.ExitCode } catch { exit 5 }"], { windowsHide: true, timeout: 180000, env: { ...process.env, DESK_VNC_FILE: file } });
+        // Windows' own PowerShell by its full path, for both the asking and the elevated copy (1.5.54, review L7).
+        const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+        spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', "try { $p = Start-Process $env:DESK_PS -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$env:DESK_VNC_FILE; exit $p.ExitCode } catch { exit 5 }"], { windowsHide: true, timeout: 180000, env: { ...process.env, DESK_VNC_FILE: file, DESK_PS: powershell } });
         return fs.existsSync(done) ? fs.readFileSync(done, 'utf8') : '';
       } finally {
         for (const f of [file, done]) { try { fs.unlinkSync(f); } catch { /* gone */ } }
@@ -4036,16 +4057,18 @@ async function secureVncHere({ elevate = false } = {}) {
     };
     options = { runPs, restart: async () => {} };
   }
-  const r = await VNC.secureTightVnc({ dataDir: P.dataDir, service, key: masterKey(), port: SCREEN_VNC_PORT, ...options });
+  const r = await VNC.secureTightVnc({ dataDir: P.dataDir, service, key: masterKey(), port: SCREEN_VNC_PORT, root: P.root, ...options });
   if (r.state !== 'secured') vncGuard.reason = r.reason || '';
   await refreshVncGuard();
   return { state: vncGuard.state, ...(vncGuard.reason ? { reason: vncGuard.reason } : {}) };
 }
 
-route('POST', /^\/api\/desktop\/secure-vnc$/, async (req) => {
+route('POST', /^\/api\/desktop\/secure-vnc$/, async (req, _res, { body }) => {
   if (process.platform !== 'win32' && !process.env.DESK_VNC_PORT) throw httpError(400, 'NOT_WINDOWS', '只有 Windows 机器的屏幕用 TightVNC');
   // UAC appears on the screen of this computer: only its own app may ask for it.
   const here = !req.viaPublic && isLoopbackAddress(clientIp(req));
+  // The human's own TightVNC password is replaced only when they said so (1.5.54).
+  if ((await refreshVncGuard()).state === 'own' && body?.replace !== true) throw httpError(409, 'VNC_OWN_PASSWORD', 'TightVNC 有你自己设的密码：要换成 Lamplit 管的随机密码，请确认（会换掉你现在的密码）');
   const r = await secureVncHere({ elevate: here });
   await audit({ kind: 'desktop.vnc.secured', state: r.state }).catch(() => {});
   return r;
@@ -4059,8 +4082,200 @@ function vncCheckupItem() {
   if (vncGuard.state === 'open') return checkupItem('vnc', '屏幕密码', 'warn', '这台电脑的屏幕服务（TightVNC）没有密码：机器人在这台电脑上跑的命令能直接看到并操作桌面。点「设好密码」，Lamplit 给它设一个随机密码，以后看屏幕时由 Lamplit 替你输入。', fix);
   if (vncGuard.state === 'wrong') return checkupItem('vnc', '屏幕密码', 'warn', '屏幕服务的密码和 Lamplit 记的不一样，看屏幕可能会要你输密码。点「设好密码」重新设一次。', fix);
   if (vncGuard.state === 'failed') return checkupItem('vnc', '屏幕密码', 'warn', `没能给屏幕服务设密码${vncGuard.reason ? `（${vncGuard.reason}）` : ''}。点「设好密码」再试一次。`, fix);
+  // 1.5.54: the human's own TightVNC password stays; a program in the screen's port is said, never signed in to.
+  if (vncGuard.state === 'own') return checkupItem('vnc', '屏幕密码', 'ok', 'TightVNC 用的是你自己设的密码，看屏幕时会问你。想让 Lamplit 替你输入，可以换成 Lamplit 管的随机密码（会换掉你现在的密码）。', { kind: 'vnc', label: '换成 Lamplit 的密码', replace: true });
+  if (vncGuard.state === 'squatted') return checkupItem('vnc', '屏幕密码', 'bad', '屏幕的端口（5900）被一个不是 TightVNC 的程序占着：Lamplit 不会把密码交给它，所以暂时看不到屏幕。重启电脑或 TightVNC 后再体检；如果还这样，看看是哪个程序占了 5900。');
   return null;
 }
+
+// --- backup and restore (1.5.54) ---------------------------------------------
+// One file with everything this machine knows, locked with a password the
+// human sets; restored here or on another computer (keys sealed again there).
+// Every route is the human's (auth.mjs default-deny; none is on OPEN_ROUTES). See src/backup.mjs.
+//   GET  /api/backup -> {machine, lastBackup, lastRestore, schedule, workspace, notIncluded, peers, defaultFolder}
+//   POST /api/backup {password, includeWorkspace, to?} -> the file (a download), or {ok, file, bytes} (to: the desktop app's save dialog)
+//   POST /api/backup/schedule {enabled, folder, keep, everyHours, includeWorkspace, password?} -> {schedule}
+//   POST /api/backup/schedule/run -> {ok, file, bytes, removed}   「现在备份一次」
+//   POST /api/restore/upload (the file, application/octet-stream) -> {uploadId, backup}
+//   POST /api/restore/peek {from} -> {backup}                        (a path from the desktop app's open dialog)
+//   POST /api/restore/inspect {uploadId|from, password} -> {id, backup, contents, current, notIncluded}
+//   POST /api/restore/apply {id, mode: replace|merge, includeWorkspace, confirm: true} -> {ok, preBackup, restarting}
+//   POST /api/restore/cancel {id} -> {ok}
+//   POST /api/peers/:m/backup {password, includeWorkspace} -> that machine's own backup, through its link
+
+let backupBusy = false;
+async function oneBackupAtATime(fn) {
+  if (backupBusy) throw httpError(409, 'BACKUP_BUSY', '正在做另一个备份或恢复，等它做完再试');
+  backupBusy = true;
+  try { return await fn(); } finally { backupBusy = false; }
+}
+function publicSchedule(st, hasPassword) {
+  const s = st.schedule || {};
+  return { enabled: Boolean(s.enabled), folder: s.folder || '', keep: s.keep || 7, everyHours: s.everyHours || 24, includeWorkspace: Boolean(s.includeWorkspace), hasPassword, lastAuto: s.lastAuto || null };
+}
+const restoreSource = (body) => {
+  const up = backupModule.uploadFile(body?.uploadId);
+  if (up) return up;
+  const from = String(body?.from || '').trim();
+  if (from && path.isAbsolute(from)) return path.resolve(from);
+  throw httpError(400, 'BACKUP_NO_FILE', body?.uploadId ? '上传的备份已经不在了，重新选一次文件' : '先选一个备份文件');
+};
+function sendBackupFile(res, file, name, bytes) {
+  res.writeHead(200, withSecurityHeaders(res.req, {
+    'content-type': 'application/octet-stream',
+    'content-length': bytes,
+    'content-disposition': `attachment; filename="lamplit-backup${backupModule.BACKUP_EXT}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    'cache-control': 'no-store',
+  }));
+  return pipelineAsync(fs.createReadStream(file), res);
+}
+const pipelineAsync = (...s) => import('node:stream/promises').then((m) => m.pipeline(...s));
+
+route('GET', /^\/api\/backup$/, async (_req, _res, { state, query }) => {
+  const st = await backupModule.loadState();
+  // ?brief=1: what the page asks at every start (did a restore just happen?) - no walk through the workspace.
+  if (query.get('brief') === '1') return { lastBackup: st.lastBackup || null, lastRestore: st.lastRestore || null };
+  return {
+    format: backupModule.BACKUP_FORMAT,
+    machine: selfMachineName(),
+    lastBackup: st.lastBackup || null,
+    lastRestore: st.lastRestore || null,
+    schedule: publicSchedule(st, Boolean(await backupModule.keptKeys())),
+    workspace: await backupModule.workspaceSize(),
+    notIncluded: backupModule.NOT_INCLUDED,
+    peers: state.peers.list().map((p) => p.name),
+    defaultFolder: backupModule.defaultBackupDir(),
+  };
+});
+
+route('POST', /^\/api\/backup$/, async (_req, res, { body }) => {
+  const keys = await backupModule.newKeys(body?.password);
+  return oneBackupAtATime(async () => {
+    const machine = selfMachineName();
+    const workspace = Boolean(body?.includeWorkspace);
+    const name = `${backupModule.manualName(machine)}${backupModule.BACKUP_EXT}`;
+    const note = async (out, file) => {
+      await backupModule.saveState({ lastBackup: { at: nowIso(), bytes: out.bytes, kind: 'manual', file, workspace } });
+      await audit({ kind: 'backup.create', workspace, bytes: out.bytes, counts: out.counts, toFile: Boolean(file) });
+    };
+    if (body?.to) {
+      const to = backupModule.checkSavePath(body.to);
+      const out = await backupModule.writeBackup({ to, keys, workspace, kind: 'manual', appVersion: VERSION, machine });
+      await note(out, out.file);
+      return { ok: true, file: out.file, bytes: out.bytes, counts: out.counts, warnings: out.warnings.slice(0, 20) };
+    }
+    const { file: tmp } = await backupModule.uploadTarget();
+    try {
+      const out = await backupModule.writeBackup({ to: tmp, keys, workspace, kind: 'manual', appVersion: VERSION, machine });
+      await note(out, '');
+      await sendBackupFile(res, tmp, name, out.bytes);
+    } finally {
+      await fsp.rm(tmp, { force: true }).catch(() => {});
+    }
+    return undefined;
+  });
+});
+
+route('POST', /^\/api\/backup\/schedule$/, async (_req, _res, { body }) => {
+  const st = await backupModule.loadState();
+  const prev = st.schedule || {};
+  if (!body?.enabled) {
+    await backupModule.forgetKeys();
+    const next = await backupModule.saveState({ schedule: { ...prev, enabled: false } });
+    await audit({ kind: 'backup.schedule', enabled: false });
+    return { schedule: publicSchedule(next, false) };
+  }
+  const folder = backupModule.checkFolder(body.folder);
+  let hasKey = Boolean(await backupModule.keptKeys());
+  if (body.password) {
+    await backupModule.keepKeys(await backupModule.newKeys(body.password));
+    hasKey = true;
+  }
+  if (!hasKey) throw httpError(400, 'BACKUP_PASSWORD_REQUIRED', '自动备份也要设一个密码（恢复时用）。');
+  const keep = Math.max(1, Math.min(100, Math.round(Number(body.keep) || 7)));
+  const everyHours = Math.max(1, Math.min(24 * 30, Math.round(Number(body.everyHours) || 24)));
+  const next = await backupModule.saveState({ schedule: { ...prev, enabled: true, folder, keep, everyHours, includeWorkspace: Boolean(body.includeWorkspace) } });
+  await audit({ kind: 'backup.schedule', enabled: true, keep, everyHours, includeWorkspace: Boolean(body.includeWorkspace) });
+  return { schedule: publicSchedule(next, true) };
+});
+
+route('POST', /^\/api\/backup\/schedule\/run$/, async () => oneBackupAtATime(async () => {
+  const out = await backupModule.runAutoBackup({ appVersion: VERSION, machine: selfMachineName() });
+  await audit({ kind: 'backup.create', auto: true, bytes: out.bytes });
+  return out;
+}));
+
+route('POST', /^\/api\/restore\/upload$/, async (req) => {
+  const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (type !== 'application/octet-stream') {
+    req.resume();
+    throw httpError(415, 'FILE_REQUIRED', 'send the backup file as application/octet-stream');
+  }
+  const { id, file } = await backupModule.uploadTarget();
+  try {
+    await pipelineAsync(req, fs.createWriteStream(file));
+    const { header } = await backupModule.readHeader(file);
+    return { uploadId: id, backup: backupModule.summary(header) };
+  } catch (err) {
+    await fsp.rm(file, { force: true }).catch(() => {});
+    throw err;
+  }
+}, { rawBody: true });
+
+route('POST', /^\/api\/restore\/peek$/, async (_req, _res, { body }) => {
+  const { header } = await backupModule.readHeader(restoreSource(body));
+  return { backup: backupModule.summary(header) };
+});
+
+route('POST', /^\/api\/restore\/inspect$/, async (_req, _res, { body }) => oneBackupAtATime(async () => {
+  const file = restoreSource(body);
+  const out = await backupModule.inspect(file, body?.password);
+  // Staged and checked: an upload is not needed any more.
+  if (backupModule.uploadFile(body?.uploadId)) await fsp.rm(file, { force: true }).catch(() => {});
+  return out;
+}));
+
+route('POST', /^\/api\/restore\/cancel$/, async (_req, _res, { body }) => backupModule.cancel(String(body?.id || '')));
+
+route('POST', /^\/api\/restore\/apply$/, async (_req, _res, { body, state }) => {
+  if (body?.confirm !== true) throw httpError(400, 'RESTORE_CONFIRM_REQUIRED', '恢复会改掉这台现在的数据，要你确认一次');
+  if (!['replace', 'merge'].includes(body?.mode)) throw httpError(400, 'RESTORE_BAD_MODE', '选「换成备份里的」还是「合并」');
+  if (state.runtime.activeTurns().length) throw httpError(409, 'RESTORE_BUSY', '有助手正在干活，等它做完（或者先停下）再恢复');
+  return oneBackupAtATime(async () => {
+    const out = await backupModule.prepareApply(String(body.id || ''), { mode: body.mode, workspace: Boolean(body.includeWorkspace), appVersion: VERSION, machine: selfMachineName() });
+    await audit({ kind: 'backup.restore', mode: body.mode, workspace: Boolean(body.includeWorkspace) });
+    // Put in place at the next start, before anything is loaded; the desktop app
+    // (or systemd on a server) starts the hub again, like after an update.
+    const restarting = process.env.ASSIST_UPDATE_NO_EXIT !== '1';
+    if (restarting) setTimeout(() => process.exit(0), 800).unref?.();
+    return { ok: true, ...out, restarting };
+  });
+});
+
+// Another machine backs itself up; the file comes here through its link (the human only).
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/backup$/, async (req, res, { params, body, state }) => {
+  backupModule.checkPassword(body?.password);
+  const peer = remoteMachine(req, state, params.machine);
+  let far;
+  try {
+    far = await state.peers.call(peer, 'POST', '/api/backup', { body: { password: body.password, includeWorkspace: Boolean(body.includeWorkspace) }, headers: { [VIA_HEADER]: '1' }, timeoutMs: 60 * 60 * 1000 });
+  } catch (err) { throw peerFailure(err, peer); }
+  if (!far.ok || !/octet-stream/.test(far.headers.get('content-type') || '')) {
+    const data = await far.json().catch(() => ({}));
+    if (far.status === 404) throw httpError(409, 'PEER_TOO_OLD', `「${peer.name}」上的 Lamplit 还不会备份：先把它更新到最新版`);
+    throw httpError(far.status >= 400 && far.status < 500 ? far.status : 502, data?.error?.code || 'PEER_ERROR', data?.error?.message || `「${peer.name}」没做成备份`);
+  }
+  const name = `${backupModule.manualName(peer.name)}${backupModule.BACKUP_EXT}`;
+  res.writeHead(200, withSecurityHeaders(req, {
+    'content-type': 'application/octet-stream',
+    ...(far.headers.get('content-length') ? { 'content-length': far.headers.get('content-length') } : {}),
+    'content-disposition': `attachment; filename="lamplit-backup${backupModule.BACKUP_EXT}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    'cache-control': 'no-store',
+  }));
+  await pipelineAsync(Readable.fromWeb(far.body), res);
+  await audit({ kind: 'backup.peer', machine: peer.name });
+  return undefined;
+});
 
 // --- policy ----------------------------------------------------------------
 
@@ -5516,6 +5731,8 @@ route('POST', /^\/api\/turns\/(?<id>[^/]+)\/cancel$/, async (_req, _res, { param
 
 route('GET', /^\/api\/stream$/, async (req, res, { query, state }) => {
   const botId = query.get('botId') || '';
+  // Your page is open here, not through another machine: the daily note may come from here (1.5.54).
+  if (!isHubCall(req, state.security)) state.initiative?.seenHere?.()?.catch?.(() => {});
   // A group stream carries only events tagged with that groupId. Turn events of
   // the coordinator's group turn set it; private bot_message replies do not.
   const groupId = query.get('groupId') || '';
@@ -6053,6 +6270,8 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
   const learnRelays = () => state.peers.learnRelays().catch(() => {});
   setTimeout(learnRelays, 15000).unref();
   setInterval(learnRelays, 10 * 60 * 1000).unref();
+  // Automatic backups to the folder the human picked (1.5.54), when they are due.
+  state.backupScheduler = backupModule.startScheduler({ info: () => ({ appVersion: VERSION, machine: selfMachineName() }), log: (m) => console.error(`[backup] ${m}`) });
 
   // A funnel the human left on comes back after a restart; failure is logged,
   // never fatal (the tunnel is optional).

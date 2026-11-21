@@ -17,7 +17,7 @@ const SHELL = [
   // The page script, split by feature (scripts/page-source.mjs MAIN_PARTS).
   '/app/main/01-core.js', '/app/main/02-avatars.js', '/app/main/03-groups.js', '/app/main/04-bots.js',
   '/app/main/05-chat.js', '/app/main/06-live.js', '/app/main/07-skills-routines.js', '/app/main/08-settings.js',
-  '/app/main/09-apps.js', '/app/main/10-computer.js', '/app/main/11-machines.js', '/app/main/12-wiring.js',
+  '/app/main/09-apps.js', '/app/main/10-computer.js', '/app/main/11-machines.js', '/app/main/12-wiring.js', '/app/main/13-backup.js',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png',
 ];
 

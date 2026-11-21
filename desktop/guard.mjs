@@ -32,7 +32,8 @@ export function senderKind(url, { localOrigin = '', machineOrigins = [] } = {}) 
  * fine from any added machine's page too (the clipboard, adding a machine -
  * which always runs from here - switching, notifications, voice).
  */
-const LOCAL_ONLY = new Set(['desk:open-file', 'desk:set-remote', 'desk:install-update', 'desk:firewall-status', 'desk:firewall-fix', 'desk:tailscale-netcheck']);
+// The backup dialogs too (1.5.54): the path they give is one on this computer, for this computer's hub.
+const LOCAL_ONLY = new Set(['desk:open-file', 'desk:set-remote', 'desk:install-update', 'desk:firewall-status', 'desk:firewall-fix', 'desk:tailscale-netcheck', 'desk:pick-backup-save', 'desk:pick-backup-open', 'desk:pick-folder']);
 
 export function mayUse(channel, kind) {
   if (kind === 'local') return true;

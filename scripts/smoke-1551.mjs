@@ -199,11 +199,11 @@ async function runInstallerCases({ check, sh }) {
   // Every path is bash's own (R = the case's folder, as bash names it): no Windows drive
   // letter in PATH, and one replacing pass, so an inserted path is never replaced again
   // (CI 11-21: on Linux the temp folder itself is under /tmp/, and a second /tmp/ pass doubled it).
-  const SYS = /\/etc\/|\/usr\/share\/keyrings|\/tmp\/|\/opt\/desk-hub\/runtime\/bin\/node| \/usr\/bin\/node;/g;
-  const fake = { '/etc/': '$R/etc/', '/usr/share/keyrings': '$R/usr/share/keyrings', '/tmp/': '$R/tmp/', '/opt/desk-hub/runtime/bin/node': '$R/none/node', ' /usr/bin/node;': ' $R/none/node2;' };
+  const SYS = /\/etc\/|\/usr\/share\/keyrings|\/tmp\/|\/var\/log\/|\/opt\/desk-hub\/runtime\/bin\/node| \/usr\/bin\/node;/g;
+  const fake = { '/etc/': '$R/etc/', '/usr/share/keyrings': '$R/usr/share/keyrings', '/tmp/': '$R/tmp/', '/var/log/': '$R/var/log/', '/opt/desk-hub/runtime/bin/node': '$R/none/node', ' /usr/bin/node;': ' $R/none/node2;' };
   const run = (name, { osRelease, env = {} }) => {
     const dir = path.join(tmp, name);
-    for (const d of ['bin', 'etc/apt/sources.list.d', 'etc/apt/preferences.d', 'etc/yum.repos.d', 'usr/share/keyrings', 'tmp']) fs.mkdirSync(path.join(dir, d), { recursive: true });
+    for (const d of ['bin', 'etc/apt/sources.list.d', 'etc/apt/preferences.d', 'etc/yum.repos.d', 'etc/pki/rpm-gpg', 'usr/share/keyrings', 'tmp', 'var/log']) fs.mkdirSync(path.join(dir, d), { recursive: true });
     if (osRelease !== null) fs.writeFileSync(path.join(dir, 'etc', 'os-release'), osRelease);
     // A stand-in finds the case's folder from where it lives: bin/..
     const tool = (n, body) => fs.writeFileSync(path.join(dir, 'bin', n), `#!/bin/bash\nR="$(cd "$(dirname "$0")/.." && pwd)"\necho "${n} $*" >> "$R/calls"\n${body}\n`, { mode: 0o755 });
@@ -211,8 +211,22 @@ async function runInstallerCases({ check, sh }) {
     tool('node', 'if [ -f "$R/installed" ]; then [ "$1" = -v ] && echo v22.11.0 || echo 22; else [ "$1" = -v ] && echo v18.19.0 || echo 18; fi');
     tool('apt-get', `case "$*" in *"install -y nodejs"*) ${installed} ;; esac; exit 0`);
     tool('apt-cache', `echo "nodejs:"; echo "  Installed: (none)"; echo "  Candidate: ${env.APT_CANDIDATE || '18.19.1+dfsg-6ubuntu5'}"`);
-    tool('curl', 'echo FAKEKEY');
-    tool('gpg', 'while [ $# -gt 0 ]; do [ "$1" = -o ] && { cat > "$2"; exit 0; }; shift; done');
+    // 1.5.54 (L8): the key is saved with -o and its fingerprint checked before it is used.
+    tool('curl', 'out=""; url=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; http*) url="$1" ;; esac; shift; done; k="FAKEKEY $url"; if [ -n "$out" ]; then echo "$k" > "$out"; else echo "$k"; fi');
+    tool('gpg', [
+      'case "$*" in *--show-keys*|*--with-fingerprint*)',
+      '  f="${@: -1}"',
+      // As gpg prints it: a pub line, then its fingerprint (and a subkey's after a sub line).
+      `  if ${env.TWO_KEYS ? 'true' : 'false'}; then printf 'pub:-:4096:1:AAAA:::::::::\\nfpr:::::::::0000000000000000000000000000000000000000:\\n'; fi`,
+      `  if ${env.BAD_KEY ? 'true' : 'false'}; then printf 'pub:-:4096:1:AAAA:::::::::\\nfpr:::::::::0000000000000000000000000000000000000000:\\n'`,
+      `  elif grep -q rpm "$f"; then printf 'pub:-:4096:1:BBBB:::::::::\\nfpr:::::::::242B813831AF09562B6C46F76B88DA4E3AF28A14:\\nsub:-:4096:1:CCCC:::::::::\\nfpr:::::::::1111111111111111111111111111111111111111:\\n'`,
+      `  else printf 'pub:-:4096:1:DDDD:::::::::\\nfpr:::::::::6F71F525282841EEDAF851B42F59B5F99B1BE0B4:\\nsub:-:4096:1:EEEE:::::::::\\nfpr:::::::::2222222222222222222222222222222222222222:\\n'; fi; exit 0 ;;`,
+      'esac',
+      'while [ $# -gt 0 ]; do',
+      '  if [ "$1" = -o ]; then o="$2"; shift 2; if [ $# -gt 0 ] && [ -f "${@: -1}" ]; then cat "${@: -1}" > "$o"; else cat > "$o"; fi; exit 0; fi',
+      '  shift',
+      'done',
+    ].join('\n'));
     tool('dpkg', 'echo amd64');
     tool('dnf', `case "$*" in *"module install"*) ${env.DNF_MODULE_OK ? installed : 'exit 1'} ;; *"list available nodejs"*) echo "nodejs.x86_64   ${env.DNF_AVAIL || '1:16.20.2-8.el9_4'}   appstream" ;; *"install -y nodejs"*|*"upgrade -y nodejs"*) ${installed} ;; esac; exit 0`);
     tool('rpm', `exit ${env.RPM_HAS ? 0 : 1}`);
@@ -242,8 +256,21 @@ async function runInstallerCases({ check, sh }) {
     const tencent = run('tencentos', { osRelease: 'ID="tencentos"\nID_LIKE="rhel fedora centos"\nPRETTY_NAME="TencentOS Server 3.1"\n', env: { RPM_HAS: true } });
     const repo = tencent.file('etc/yum.repos.d/nodesource-nodejs.repo');
     check('installer run (TencentOS, no module, system Node 16 installed): NodeSource 22 repo with gpgcheck, an upgrade of nodejs',
-      tencent.code === 0 && /baseurl=https:\/\/rpm\.nodesource\.com\/pub_22\.x\/nodistro\/nodejs\/\$basearch/.test(repo) && /gpgcheck=1/.test(repo) && /gpgkey=https:\/\/rpm\.nodesource\.com\/gpgkey\/ns-operations-public\.key/.test(repo) && /module_hotfixes=1/.test(repo)
+      tencent.code === 0 && /baseurl=https:\/\/rpm\.nodesource\.com\/pub_22\.x\/nodistro\/nodejs\/\$basearch/.test(repo) && /gpgcheck=1/.test(repo) && /gpgkey=file:\/\/\S*\/etc\/pki\/rpm-gpg\/RPM-GPG-KEY-nodesource$/m.test(repo) && tencent.file('etc/pki/rpm-gpg/RPM-GPG-KEY-nodesource').includes('ns-operations-public.key') && /module_hotfixes=1/.test(repo)
       && /dnf upgrade -y nodejs/.test(tencent.calls) && /Node\.js v22\.11\.0 装好了/.test(tencent.out), `${tencent.out}\n${tencent.calls}`);
+    // 1.5.54 (review L8): a NodeSource key whose fingerprint is not the one written down is not used.
+    const badDeb = run('ubuntu-badkey', { osRelease: 'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 24.04 LTS"\n', env: { BAD_KEY: true } });
+    const badRpm = run('tencent-badkey', { osRelease: 'ID="tencentos"\nID_LIKE="rhel fedora centos"\nPRETTY_NAME="TencentOS Server 3.1"\n', env: { BAD_KEY: true } });
+    check('installer run (a NodeSource key with another fingerprint): stops before adding the source or installing, on apt and on dnf; the log is not in /tmp',
+      badDeb.code === 1 && /指纹对不上/.test(badDeb.out) && !badDeb.file('etc/apt/sources.list.d/nodesource.sources') && !badDeb.file('usr/share/keyrings/nodesource.gpg') && !/install -y nodejs/.test(badDeb.calls)
+      && badRpm.code === 1 && /指纹对不上/.test(badRpm.out) && !badRpm.file('etc/yum.repos.d/nodesource-nodejs.repo') && !badRpm.file('etc/pki/rpm-gpg/RPM-GPG-KEY-nodesource')
+      && /NODE_LOG=\/var\/log\//.test(sh) && !/NODE_LOG=\/tmp\//.test(sh), `${badDeb.out}\n${badRpm.out}`);
+    // The verifier's follow-up: the right key with another one put in the same file is refused too (both would be trusted).
+    const twoDeb = run('ubuntu-twokeys', { osRelease: 'ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 24.04 LTS"\n', env: { TWO_KEYS: true } });
+    const twoRpm = run('tencent-twokeys', { osRelease: 'ID="tencentos"\nID_LIKE="rhel fedora centos"\nPRETTY_NAME="TencentOS Server 3.1"\n', env: { TWO_KEYS: true } });
+    check('installer run (the NodeSource key file holds a second key besides the right one): refused on apt and on dnf, nothing added',
+      twoDeb.code === 1 && /指纹对不上/.test(twoDeb.out) && !twoDeb.file('usr/share/keyrings/nodesource.gpg') && !/install -y nodejs/.test(twoDeb.calls)
+      && twoRpm.code === 1 && /指纹对不上/.test(twoRpm.out) && !twoRpm.file('etc/yum.repos.d/nodesource-nodejs.repo'), `${twoDeb.out}\n${twoRpm.out}`);
     const alinux = run('alinux3', { osRelease: 'ID="alinux"\nID_LIKE="rhel fedora centos anolis"\nPRETTY_NAME="Alibaba Cloud Linux 3 (Soaring Falcon)"\n', env: { DNF_MODULE_OK: true } });
     check('installer run (Alibaba Cloud Linux 3, as on Aliyun ECS): treated as RHEL-like, the system\'s module stream', alinux.code === 0 && /dnf -y module install nodejs:22\/common/.test(alinux.calls) && /Node\.js 22/.test(alinux.out), alinux.out);
     const alpine = run('alpine', { osRelease: 'ID=alpine\nPRETTY_NAME="Alpine Linux v3.20"\n' });

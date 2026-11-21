@@ -31,7 +31,10 @@
         else source += part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       });
       // Most specific first: more literal text = fewer false matches.
-      patterns.push({ re: new RegExp(`${source}$`), order, en, weight: zh.replace(/\{\d\}/g, '').length });
+      const literal = zh.replace(/\{\d\}/g, '');
+      // A one-character rule (的 → "on", 想 → "wants to"; 1.5.54, walkthrough 7.2) is used only when
+      // the whole text comes out English: half-translated it read 「个人文件 on 电脑」, worse than Chinese.
+      patterns.push({ re: new RegExp(`${source}$`), order, en, weight: literal.length, whole: literal.length <= 1 && CJK.test(literal) && !CJK.test(en) });
     }
     patterns.sort((a, b) => b.weight - a.weight);
 
@@ -47,7 +50,9 @@
           if (!m) continue;
           const values = [];
           p.order.forEach((slot, i) => { values[slot] = m[i + 1]; });
-          out = p.en.replace(/\{(\d)\}/g, (_, slot) => t(values[Number(slot)] || ''));
+          const made = p.en.replace(/\{(\d)\}/g, (_, slot) => t(values[Number(slot)] || ''));
+          if (p.whole && CJK.test(made)) continue;
+          out = made;
           break;
         }
       }

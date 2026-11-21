@@ -32,6 +32,7 @@ import tls from 'node:tls';
 import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, relayFailureDetail, shieldStream } from '../hub/relay/relay.mjs';
 import { createDirectServer } from './direct.mjs';
 import { readRelayUpdate } from './relayupdate.mjs';
+import { masterKey, openSealed, sealText, sealedButLocked } from './store.mjs';
 
 /** The relay's own report (1.5.47), kept to what Settings shows. */
 function cleanRelayInfo(msg) {
@@ -292,9 +293,11 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
   if (upgrade) server.on('upgrade', upgrade);
   server.on('clientError', (_err, socket) => { try { socket.destroy(); } catch { /* gone */ } });
 
+  // Sealed with the desktop app's master key where there is one (1.5.54, review L6): the key and join secret.
   function readConfig() {
     try {
-      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      let raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (raw?.lamplitSealed) raw = JSON.parse(openSealed(raw) || 'null');
       return raw && typeof raw === 'object' ? raw : {};
     } catch {
       return {};
@@ -302,8 +305,11 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
   }
 
   function saveConfig() {
+    // Sealed with a key this run does not have (started without the desktop app): never replaced.
+    if (sealedButLocked(file)) { log('relay-link.json is sealed with the desktop app key: not saved in this run'); return; }
     fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(`${file}.tmp`, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    const text = JSON.stringify(cfg, null, 2);
+    fs.writeFileSync(`${file}.tmp`, masterKey() ? sealText(text) : text, { mode: 0o600 });
     fs.renameSync(`${file}.tmp`, file);
     try { fs.chmodSync(file, 0o600); } catch { /* Windows */ }
   }

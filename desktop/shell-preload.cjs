@@ -52,4 +52,8 @@ contextBridge.exposeInMainWorld('desk', {
   openExternal: (url) => ipcRenderer.invoke('desk:open-external', String(url ?? '')),
   // 有新版本 → 立即更新: download the Lamplit installer, install it, start again.
   installUpdate: (url) => ipcRenderer.invoke('desk:install-update', String(url ?? '')),
+  // 设置 → 备份 (1.5.54): the system's save / open / folder dialogs; a path for this computer's hub.
+  pickBackupSave: (name) => ipcRenderer.invoke('desk:pick-backup-save', String(name ?? '')),
+  pickBackupOpen: () => ipcRenderer.invoke('desk:pick-backup-open'),
+  pickFolder: () => ipcRenderer.invoke('desk:pick-folder'),
 });

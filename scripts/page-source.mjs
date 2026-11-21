@@ -22,6 +22,7 @@ export const MAIN_PARTS = [
   'app/main/10-computer.js',
   'app/main/11-machines.js',
   'app/main/12-wiring.js',
+  'app/main/13-backup.js',
 ];
 export const PAGE_PARTS = ['app/theme.js', 'app/lang.js', 'app/style.css', ...MAIN_PARTS, 'app/diag.js'];
 

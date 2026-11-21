@@ -86,7 +86,7 @@ export async function mockVnc({ password: pw0 = '', viewOnly: vo0 = '', name = '
 }
 
 /** A page's WebSocket to `url` (ws://...), as noVNC talks: -> {read(n), write(buf), close()} over the RFB bytes. */
-function wsClient(url, headers = {}) {
+export function wsClient(url, headers = {}) {
   const u = new URL(url);
   return new Promise((resolve, reject) => {
     const req = http.request({ host: u.hostname, port: u.port, path: u.pathname + u.search, headers: { connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': crypto.randomBytes(16).toString('base64'), 'sec-websocket-protocol': 'binary', ...headers } });
@@ -130,7 +130,7 @@ function wsClient(url, headers = {}) {
 }
 
 /** What noVNC does up to the desktop's name, answering only "None" (it has no password). -> {types, name} */
-async function pageSession(ws) {
+export async function pageSession(ws) {
   const version = (await ws.read(12)).toString('latin1');
   ws.write(Buffer.from('RFB 003.008\n'));
   const n = (await ws.read(1))[0];
@@ -195,7 +195,7 @@ export async function vncUnitChecks({ check }) {
   const runPs = (script, env) => { runs += 1; envSeen = env; return script.includes('Set-Acl') ? 'DESK_VNC_OK' : ''; };
   const restart = async () => server.set(readBack()); // the service restarts with what the registry now says
   try {
-    const first = await L.secureTightVnc({ dataDir: dir, service: true, key, port: server.port, runPs, restart });
+    const first = await L.secureTightVnc({ dataDir: dir, service: true, key, port: server.port, runPs, restart, trusted: () => 'trusted' });
     const secret = readBack();
     const fileText = fsSync.readFileSync(path.join(dir, L.SECRET_FILE), 'utf8');
     check('VNC-8 a machine found without a password gets one: made once, kept sealed in the data folder (no password in the file text), written to the service key locked to SYSTEM and Administrators, and signed in with',
@@ -203,7 +203,7 @@ export async function vncUnitChecks({ check }) {
       && envSeen?.DESK_VNC_LOCK === '1' && /HKLM/.test(envSeen?.DESK_VNC_KEY || '') && envSeen.DESK_VNC_PW === V.vncStoredPassword(secret.password).toString('hex')
       && L.REGISTRY_SCRIPT.includes("'S-1-5-18', 'S-1-5-32-544'") && L.REGISTRY_SCRIPT.includes('SetAccessRuleProtection($true, $false)'),
       JSON.stringify({ first: first.state, why: first.reason, runs, lock: envSeen?.DESK_VNC_LOCK }));
-    const again = await L.secureTightVnc({ dataDir: dir, service: true, key, port: server.port, runPs, restart });
+    const again = await L.secureTightVnc({ dataDir: dir, service: true, key, port: server.port, runPs, restart, trusted: () => 'trusted' });
     check('VNC-9 at the next start (the passwords already in force) nothing is rewritten and nothing restarts', again.state === 'secured' && runs === 1 && readBack().password === secret.password, JSON.stringify({ again: again.state, runs }));
   } finally {
     await server.close();
@@ -231,7 +231,7 @@ export async function vncHubChecks({ check, serverPath = path.join(REPO, 'src', 
   for (const d of ['config', 'skills', 'public']) await fsp.cp(path.join(REPO, d), path.join(home, d), { recursive: true });
   await fsp.mkdir(path.join(home, 'data'), { recursive: true });
   await fsp.writeFile(path.join(home, 'data', 'tightvnc.json'), JSON.stringify(secret));
-  const proc = spawn(process.execPath, [serverPath], { env: { ...process.env, ASSIST_HOME: home, ASSIST_DATA_DIR: path.join(home, 'data'), ASSIST_WORKSPACE_DIR: path.join(home, 'workspace'), PORT: '0', DESK_VNC_PORT: String(mock.port), DESK_SCREEN_WATCH: '0', DESK_CLI_WATCH: '0', DESK_VNC_SECURE: '0', ASSIST_MODEL_PROVIDER: 'mock', ASSIST_MASTER_KEY: '' }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const proc = spawn(process.execPath, [serverPath], { env: { ...process.env, ASSIST_HOME: home, ASSIST_DATA_DIR: path.join(home, 'data'), ASSIST_WORKSPACE_DIR: path.join(home, 'workspace'), PORT: '0', DESK_VNC_PORT: String(mock.port), DESK_SCREEN_WATCH: '0', DESK_CLI_WATCH: '0', DESK_VNC_SECURE: '0', ASSIST_TEST: '1', DESK_VNC_TRUST_PATH: process.execPath, ASSIST_MODEL_PROVIDER: 'mock', ASSIST_MASTER_KEY: '' }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   try {
     const ready = await new Promise((resolve, reject) => {
       let out = '';

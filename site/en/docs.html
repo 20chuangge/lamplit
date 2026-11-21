@@ -42,6 +42,7 @@
     <a href="#outside-road">· Which route</a>
     <a href="#outside-why">· Direct did not connect?</a>
     <p class="grp">More machines</p>
+    <a href="#all-machines">Several machines together</a>
     <a href="#machines">Add machines</a>
     <a href="#machine-home">· A computer at home</a>
     <a href="#machine-cloud">· A cloud server</a>
@@ -56,6 +57,8 @@
     <a href="#coding">Coding assistants</a>
     <a href="#media">Images, video, voice</a>
     <a href="#more">Memory, skills, routines</a>
+    <a href="#initiative">It comes to you</a>
+    <a href="#save">Spending less</a>
     <p class="grp">When something is wrong</p>
     <a href="#update">Updates and data</a>
     <a href="#trouble">Troubleshooting</a>
@@ -63,7 +66,7 @@
 
   <article class="doc">
     <h1>Documentation</h1>
-    <p class="intro">Lamplit is an AI assistant with a computer of its own. This guide goes from installing it to every feature; ten minutes of reading and you can hand it work with confidence. Menu names below are as they appear with the app set to English (Settings → Appearance).</p>
+    <p class="intro">Lamplit is an AI assistant with a computer of its own. This guide goes from installing it to every feature; the first three sections take five minutes and you can start; read the rest when you need it, and the last section when something goes wrong. Menu names below are as they appear with the app set to English (Settings → Appearance).</p>
 
     <h2 id="install">Install</h2>
     <p>Pick one from the <a href="https://github.com/20chuangge/lamplit/releases/latest">download page</a>:</p>
@@ -80,12 +83,13 @@
 
     <h2 id="model">Connect a model</h2>
     <p>Lamplit has no model of its own; it uses your key and talks straight to the provider you choose.</p>
+    <div class="tip"><p><strong>No key yet?</strong> Choose "Try the demo first" when it opens: without filling in anything you see how it works and how it asks first (answers come from a written script: no internet, no cost).</p></div>
     <ol>
       <li>Open <strong>Settings → Model</strong> and pick a provider: DeepSeek, Qwen, Kimi, Zhipu, Doubao, SiliconFlow, OpenAI, Claude and more are listed; any other OpenAI-compatible service goes under "Custom".</li>
       <li>Enter the key and click "Test connection". One key can add several of its models at once.</li>
       <li>Each assistant can use its own model: a cheap one for simple work, a strong one for hard work.</li>
     </ol>
-    <div class="tip"><p>DeepSeek is a good first choice: cheap, good at Chinese and English, good with tools. Add a SiliconFlow key and voice input, image understanding, drawing and video all work too.</p></div>
+    <div class="tip"><p>DeepSeek is a good first choice: cheap, good at Chinese and English, good with tools. To get a key: sign up at platform.deepseek.com → "API Keys" on the left → "Create API Key", copy it, and top up a few dollars. Add a SiliconFlow key and voice input, image understanding, drawing and video all work too.</p></div>
     <p><strong>What it costs, and a limit</strong>: Settings → Cost lists use per assistant, model, machine and scheduled task. Prices are per million tokens; fill in the "cached price" (the low price providers such as DeepSeek charge for repeated input) and the estimate comes close to the bill. "Daily budget per assistant": when an assistant has spent that much today it stops and asks - a card when you are there; a scheduled run with nobody there just stops.</p>
 
     <h2 id="chat">Working with the assistants</h2>
@@ -232,6 +236,10 @@
       <li><strong>Everything from outside counts as outside</strong>: the 8-digit pairing code does not work, only devices paired by scanning; the things only you may approve cannot be done from there. The same goes for direct connections.</li>
     </ul>
 
+    <h2 id="all-machines">Several machines together</h2>
+    <p>Once you add a second machine, "All machines" appears at the top left: the left side lists each machine's assistants and groups, click one to chat without switching windows; the chat title says which machine (such as "Assistant · Cloud host"). A machine that is offline is greyed out; message its assistant and it carries on when the machine is back. To see just one machine, pick it at the top left.</p>
+    <p>The main assistant picks the machine for you: scheduled jobs that keep running go to the always-on cloud server. The first time it hands work to a machine it asks you once; after that it just tells you.</p>
+
     <h2 id="machines">Add machines</h2>
     <p>An old laptop, a desktop at home or a cloud server can all become computers it works on. Each machine has its own assistants, memory, workspace and desktop; switch between them at the top left. Added machines <strong>update with this computer</strong>, and one that was off updates when it comes back.</p>
     <p>Go to <strong>Settings → Machines → Add machine</strong>. You enter only a name, the IP address, the SSH user, port and password. "Connect and set up" then installs what is needed over SSH, deploys Lamplit, gives each assistant a desktop, pairs, and adds the machine to the list. The password is used this once and not kept.</p>
@@ -329,7 +337,9 @@
       <li><strong>Fill in a few values</strong>: DingTalk (Client ID and Secret), MiniMax (key and which site the account is on), Home Assistant (address and long-lived token).</li>
       <li><strong>Mail</strong>: Gmail, Outlook, QQ, 163, 126…; the address and an app password / authorization code (not your sign-in password). Several mailboxes work; deleted mail goes to Trash and can be restored.</li>
       <li><strong>Feishu</strong>: uses the app set up in Settings → Feishu.</li>
-      <li><strong>Programs on this computer</strong>: Obsidian, Docker, Godot and Kubernetes talk to local programs, so they are connected on this machine only.</li>
+      <li><strong>Programs on this computer</strong>: Obsidian, Docker, Godot, Kubernetes and Blender talk to local programs, so they are connected on this machine only.</li>
+      <li><strong>Blender</strong>: through Blender Lab's official interface (Blender 5.1 or newer; the card has the setup steps). It runs code written by the assistant inside Blender, so every step asks you first by default; back up your .blend files before you start.</li>
+      <li><strong>X (Twitter)</strong>: you need an X developer account first. Posts and replies come to you as a draft; you can set X up from another machine's page, and the sign-in finishes on the computer you are using.</li>
     </ul>
     <div class="tip"><p>Except for local programs, connecting once connects it on all your machines. For an app not in the list, use "Add one yourself" at the bottom (a command or an address).</p></div>
 
@@ -363,6 +373,22 @@
       <li><strong>Memory</strong>: it keeps your habits and preferences; each assistant has its own, and there is one they share.</li>
       <li><strong>Skills</strong>: a workflow it has done can be saved as a skill and reused with one sentence.</li>
       <li><strong>Routines</strong>: daily briefings and regular checks run on time, whether or not you are there. In the chat each run takes one line, "⏱ time · task · how often"; "Show instruction" lets you edit it, pause it or run it again now. A run that found nothing new does not disturb you. To change the time or delete one, use "Change time" and "Delete" on the Tasks tab of the panel at the top right.</li>
+    </ul>
+
+    <h2 id="initiative">It comes to you</h2>
+    <ul>
+      <li><strong>One note each morning</strong>: the main assistant tells you what is waiting for you: cards waiting for your OK, finished work you have not looked at. Change the time or turn it off in <strong>Settings → Initiative</strong>. It comes only from the machine you opened most recently, not from every machine. The "Daily briefing" in the Tasks panel is a separate, longer summary, off by default.</li>
+      <li><strong>Checking back</strong>: say "look at the result in an hour" and it comes back on time and tells you what it found.</li>
+      <li><strong>Drafts first</strong>: before an email or a post goes out, you get the draft and can edit it; clicking "Send" makes it final, it sends exactly what is in the box and says so in the chat once it is out.</li>
+      <li><strong>Change an assistant by saying so</strong>: for example "from now on the strategy assistant looks only at jobs in Beijing"; the change has an "Undo" under it.</li>
+    </ul>
+
+    <h2 id="save">Spending less</h2>
+    <ul>
+      <li><strong>What it costs</strong>: the top line of <strong>Settings → Cost</strong> says roughly what these days cost and what a month would be at this pace. DeepSeek's prices are built in; for other providers fill in the price per million tokens under "By model".</li>
+      <li><strong>Off-peak</strong>: with a model priced by peak hours such as DeepSeek, tick "Off-peak" on a new scheduled task; a run that falls in peak time (weekdays 9-12 and 14-18) moves to 12:00 or 18:00 and costs half.</li>
+      <li><strong>Days left</strong>: with DeepSeek, <strong>Settings → Checkup</strong> works out how many days your balance lasts at the recent pace.</li>
+      <li><strong>A daily budget per assistant</strong>: see "Connect a model" above.</li>
     </ul>
 
     <h2 id="update">Updates and data</h2>

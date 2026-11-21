@@ -2883,4 +2883,18 @@ window.DESK_I18N_EN = {
   // 1.5.51 test fixes
   "只记在这台电脑的 Lamplit 里：这台上的主助理按这一句挑机器。": "Kept in this computer's Lamplit only: the main assistant here picks machines by this line.",
   "X 在上面的「X（推特）」卡里：发帖和搜帖子都在那里。": "X is in the “X (Twitter)” card above: posting and searching are both there.",
+  // 1.5.52 X tile
+  "还没登录授权": "Not signed in yet",
+  "要在电脑上的 Lamplit 里点登录：X 会把你送回这台电脑，它再交给设置 X 的那台机器（在别的机器的页面里设置也行）。": "Sign in from Lamplit on your computer: X sends you back to this computer, which hands it to the machine X is set up on (setting it up from another machine's page works too).",
+  // 1.5.52 beginner test
+  "{0}做完会把结果交回来，我再告诉你。同意后，以后交给「{1}」不再问你，聊天里会写一行交给了谁。": "{0} brings the result back when done, and I tell you. Once you agree, hand-offs to “{1}” no longer ask; the chat shows a line saying who it went to.",
+  "那边的主助理": "the main assistant there",
+  "你这边不用换窗口，结果在左边「{0}」下面看。同意后，以后交给「{1}」不再问你，只告诉你一声。": "You stay in this window; the result shows on the left under “{0}”. Once you agree, hand-offs to “{1}” no longer ask; you are just told.",
+  "交给了「{0}」上的「{1}」": "Handed to “{1}” on “{0}”",
+  "它没有回复。": "It did not reply.",
+  "它没做完，下面是它停下前说的。": "It did not finish; below is what it said before it stopped.",
+  "它的回复：": "Its reply:",
+  "看全文": "Show all",
+  "X 后台填的回调地址要是这一行：": "The callback URL in X's developer portal must be this one:",
+  "要在电脑上的 Lamplit 里点登录：X 会把你送回你正在用的这台电脑，它再交给设置 X 的那台机器（在别的机器的页面里设置也行）。": "Sign in from Lamplit on your computer: X sends you back to the computer you are using, and it passes the sign-in on to the machine X is set up on (setting it up from another machine's page works too).",
 };

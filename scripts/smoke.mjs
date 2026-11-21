@@ -236,6 +236,7 @@ async function main() {
     await stage('1.5.45: the four building blocks - initiative, the outgoing gate, adjust by talking, the machine profile', scenarioBlocks1545);
     await stage('1.5.50: what the money really is, and spending less of it', async () => (await import('./smoke-cost.mjs')).costChecks({ check, readText, api, home, toolsMod }));
     await stage('1.5.51: one X card, and machines by name and address', scenarioUi1551);
+    await stage('1.5.52: what the real-model test found, X as a tile, X sign-in from another machine', scenarioBatch1552);
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -3478,7 +3479,7 @@ function shanghaiWeekday(ts) {
     const filters = html.match(/state\.showProcess \|\| m\.(role|kind) !== 'tool'[^)]*\)/g) || [];
     check('action cards: both transcripts keep takeover/login cards when tool chips are hidden', filters.length === 2 && filters.every((f) => f.includes('isActionCard(')));
     const live = html.slice(html.indexOf('function appendLiveChip'), html.indexOf('function appendLiveChip') + 900);
-    check('action cards: the live stream shows them when tool chips are hidden', /isActionCard\(chip\.name\)/.test(live) && /!state\.showProcess && !card/.test(live));
+    check('action cards: the live stream shows them when tool chips are hidden', /isActionCard\(chip\.name(, chip)?\)/.test(live) && /!state\.showProcess && !card/.test(live));
     // Step 4: offline banner, takeover popup, notifications.
     for (const id of ['pc-done', 'conn-retry', 'conn-local']) {
       check(`takeover/offline control ${id} is wired`, html.includes(`id="${id}"`) && html.includes(`$('${id}')?.addEventListener`));
@@ -3998,7 +3999,7 @@ async function scenarioMcp({ home, toolsMod }) {
     check('M26 slow links: with steps hidden the chat comes compact (the steps it does not show are left out, the two cards the human acts on stay; long tool output and arguments cut to a preview); showing steps loads it whole; a phone shows its home page at once and loads the chat behind it; settings, voices and groups load together',
       c.args.path === 'a.md' && /…（共 5000 字）$/.test(c.args.content) && c.output.cut === true && c.output.length > 9000 && c.output.preview.length === 1500
       && small.output.waiting === true && user.text.length === 5000 && full.status === 200 && compact.status === 200 && Array.isArray(compact.json)
-      && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name) && !m.output?.undo) && srcSrv.includes(".filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo)")
+      && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name) && !m.output?.undo) && srcSrv.includes(".filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo")
       && pg.includes("messages?limit=200${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
       && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);'));
   }
@@ -4263,7 +4264,7 @@ async function scenarioMcp({ home, toolsMod }) {
     const srv = await readText('../src/server.mjs');
     const chat = await readText('../public/app/main/05-chat.js');
     check('K33 A2 the line 「这一轮改了 N 个文件 · 撤销」 shows with steps hidden (a slim row per file change), and names the file on Windows too',
-      srv.includes("? { id: m.id, role: 'tool', name: m.name, ok: true, turnId: m.turnId, ts: m.ts, output: { undo: m.output.undo, path: m.output.path || '' } }")
+      srv.includes("{ id: m.id, role: 'tool', name: m.name, ok: true, turnId: m.turnId, ts: m.ts, output: { undo: m.output.undo, path: m.output.path || '' } }")
       && (chat + await readText('../public/app/main/03-groups.js')).includes('c.path.split(/[\\\\/]/).pop()'));
     const page = await readText('../public/index.html');
     check('K33 A3 a stop button while the bot works (it says 「停下」); 「停下」 and the stop close the turn\'s waiting cards',
@@ -5695,7 +5696,7 @@ async function scenarioApps1512() {
   const apps = await readText('../public/app/main/09-apps.js');
   const serverSrc = await readText('../src/server.mjs');
   check('A2 page: a grid of tiles with category chips (全部 / 已连接 / each category), connected first, an open tile spans the row; fields form; local apps connect here only',
-    apps.includes('function mcpTile(app)') && apps.includes("const grid = el('div', 'mcp-grid');") && apps.includes("const cats = ['全部', ...(connected.length + xConnectedCount() ? ['已连接'] : [])")
+    apps.includes('function mcpTile(app)') && apps.includes("const grid = el('div', 'mcp-grid');") && apps.includes("const cats = ['全部', ...(connected.length ? ['已连接'] : [])")
     && apps.includes("} else if (app.auth === 'fields') {") && apps.includes('{ here: app.local }')
     && serverSrc.includes("if (body?.everywhere && !local) out.peers = await syncMcpToPeers("));
   const B = await import('../src/boundary.mjs');
@@ -11811,7 +11812,7 @@ async function scenarioThink1545() {
       queued: [{ machine: '书房电脑', count: 1 }],
     });
     check('T45-15 the daily note: nothing waiting, nothing said; else a short note - the cards (which machine, which bot, what), the work done but not looked at, the messages waiting for a machine that is off',
-      empty === '' && /有 4 件事在等你/.test(text) && /2 张卡等你点头/.test(text) && /腾讯云 · X 账号管家「发一条帖子」/.test(text) && /1 件做完了你还没看/.test(text)
+      empty === '' && /有 4 件事在等你/.test(text) && /2 张卡等你点头/.test(text) && /腾讯云 · X 账号管家：发一条帖子/.test(text) && /1 件做完了你还没看/.test(text)
       && /书房电脑/.test(text) && text.split('\n').length <= 8, text);
     const at = (h, m) => { const d = new Date(2026, 10, 20, h, m); return d.getTime(); };
     check('T45-16 when: on by default at 09:00; not before the time, once a day (a computer that was off says it when it is back the same day), not when switched off',
@@ -12132,7 +12133,7 @@ async function scenarioBlocks1545() {
     const page = await readText('../public/index.html');
     const toolsSrc = await readText('../src/tools.mjs');
     check('BT45-2 the first hand-off card names the machine (「以后交给「腾讯云」不再问你」), the reason has one colon at most; a draft answered drops 「下面是草稿…」 and a draft not sent says 「没有发出去」',
-      page.includes('以后交给「${h.machine}」不再问你') && toolsSrc.includes("${why ? `（${why}）` : ''}") && page.includes("impact: data.decision ? '' :") && page.includes("if (draft) card.querySelector('.approval-impact')?.remove();") && page.includes('没有发出去，已经告诉它了。'));
+      page.includes('以后交给「${h.machine}」不再问你') && toolsSrc.includes("${reason ? `（${reason}）` : ''}") && page.includes("impact: data.decision ? '' :") && page.includes("if (draft) card.querySelector('.approval-impact')?.remove();") && page.includes('没有发出去，已经告诉它了。'));
     check('BT45-3 undone changes are struck through; the rules as they are now are on the card; the X portal is a link with what to do without an app; 改 under a machine has 取消; names, not ids, in 最近动态; another machine\'s line follows at once after its card is answered',
       page.includes("wrap.classList.add('undone')") && page.includes('现在的规则（') && toolsSrc.includes('rulesNow:') && page.includes('还没有开发者应用') && page.includes("no.addEventListener('click', show);")
       && page.includes("${ev.botName || botById(ev.botId)?.name || ev.botId} 结束") && page.includes('setTimeout(() => loadRoster({ fresh: true }), 600);'));
@@ -12173,14 +12174,15 @@ async function scenarioUi1551() {
 
   // --- 1. one X card -------------------------------------------------------------------------
   const xApp = MCP.MCP_CATALOG.find((a) => a.id === 'x');
-  check('U51-1 the hosted X app stays in the catalog (a connection made with it keeps working) but is marked as living in the X card; it says it uses the same developer app',
-    xApp && xApp.url === 'https://api.x.com/mcp' && xApp.inCard === 'x' && /同一个/.test(xApp.help || ''), JSON.stringify(xApp));
-  check('U51-2 the catalog grid and its search leave out apps that live in a card of their own (X is shown once)',
-    page.includes('.filter((a) => !a.inCard)') && page.includes("const inCard = (mcpUi.apps || []).filter((a) => a.inCard === 'x')"));
+  // 1.5.52: X is a tile like every app (X1, X2 in the 1.5.52 stage); its detail keeps the two parts.
+  check('U51-1 the hosted X app stays in the catalog (a connection made with it keeps working), with a detail of its own; it says it uses the same developer app',
+    xApp && xApp.url === 'https://api.x.com/mcp' && xApp.detail === 'x' && /同一个/.test(xApp.help || ''), JSON.stringify(xApp));
+  check('U51-2 X is shown once: its own tile, its two parts inside',
+    !page.includes('id="x-card"') && page.includes("app.detail === 'x' ? renderXDetail(app)"));
   check('U51-3 the X card has two parts - 「发帖和回复」 (sign-in on X) and 「搜帖子、看用户（可选）」 (the hosted app with a Bearer Token) - and one line saying both use the same X developer app',
     page.includes("'发帖和回复'") && page.includes("'搜帖子、看用户（可选）'") && page.includes('两部分用的是同一个 X 开发者应用') && page.includes('mcpServerPanel(srv)') && page.includes('mcpConnectForm(app)'));
-  check('U51-4 the X card counts in 「已连接」 when either part is connected, and searching for X / 推特 / twitter shows the card',
-    page.includes('xConnectedCount()') && page.includes('/^(x|推特|twitter)/i'));
+  check('U51-4 X counts in 「已连接」 when either part is connected; searching finds its tile (Twitter is in its line)',
+    page.includes('xConnectedCount()') && /Twitter/.test(xApp.desc || ''));
 
   // --- 2. the machines page --------------------------------------------------------------------
   const auto = MN.suggestNote({ name: '腾讯云', bots: [{ name: '发布', role: '后台登录、上传' }, { name: '策略', role: '筛岗' }], alwaysOn: true });
@@ -12211,11 +12213,225 @@ async function scenarioUi1551() {
     serverSrc.includes('function selfIsServer(name)') && serverSrc.includes("suggestNote({ alwaysOn: selfIsServer(here), personal: !selfIsServer(here) })") && serverSrc.includes("process.platform === 'linux'"));
   check('U51-10 (beginner test) editing 「适合」 says it is this machine\'s record; the line stays one line with 「改」 at its end and a tap shows it all; 「这台」 is not repeated as 「当前」; a search for X says the card above has it; a switched-off X does not count as connected',
     page.includes('只记在这台电脑的 Lamplit 里') && page.includes("shown.classList.toggle('full')") && page.includes("if (t.textContent === '当前') t.remove();")
-    && page.includes('X 在上面的「X（推特）」卡里') && page.includes("s.catalogId === 'x' && mcpIsOn(s)"));
-  check('U51-12 (recheck) the X card never unhides itself after it loads: the same rule decides it then (under 已连接 it shows only when a part is on)',
-    page.includes('function syncXCardShown()') && page.includes('  const xShown = syncXCardShown();') && /renderXCard\(\);\n\s+\/\/ Shown or not[^\n]*\n\s+syncXCardShown\(\);/.test(page) && !/box\.hidden = false;\n\s+renderXCard\(\);/.test(page));
+    && page.includes("s.catalogId === 'x' && mcpIsOn(s)"));
+  check('U51-12 (recheck) under 已连接 the X tile shows only when a part is on: one rule (appIsOn) for the count, the chip and the order',
+    page.includes("(mcpUi.cat === '已连接' ? appIsOn(a) : a.category === mcpUi.cat)") && page.includes('const connected = all.filter(appIsOn);'));
   check('U51-11 every app, not only X: switched off is 「已停用」, never 「已连接」 - not counted in 已连接 N, not under the 已连接 chip, listed after the ones switched on',
-    page.includes("return Boolean(srv) && srv.enabled !== false && srv.state !== 'off';") && page.includes('const connected = all.filter((a) => mcpIsOn(a.server));')
-    && page.includes("(mcpUi.cat === '已连接' ? mcpIsOn(a.server) : a.category === mcpUi.cat)") && page.includes('const rank = (a) => (mcpIsOn(a.server) ? 0 : a.server ? 1 : 2);')
+    page.includes("return Boolean(srv) && srv.enabled !== false && srv.state !== 'off';") && page.includes("a.detail === 'x' ? xConnectedCount() > 0 : mcpIsOn(a.server)") && page.includes('const connected = all.filter(appIsOn);')
+    && page.includes("(mcpUi.cat === '已连接' ? appIsOn(a) : a.category === mcpUi.cat)") && page.includes('const rank = (a) => (appIsOn(a) ? 0 :')
     && page.includes("if (srv.state === 'off') return '已停用';"));
+}
+
+// ---------------------------------------------------------------------------
+// 1.5.52: what the real-model evaluation of 1.5.51 found (F1-F10), X as a tile
+// like every other app, and X's sign-in when it is set up on another machine.
+// ---------------------------------------------------------------------------
+async function scenarioBatch1552() {
+  const L = await import('../eval/lib.mjs');
+  const toolsMod = await import('../src/tools.mjs');
+  const { AgentRuntime } = await import('../src/agent.mjs');
+  const MN = await import('../src/machinenotes.mjs');
+  const ADJ = await import('../src/adjust.mjs');
+  const NG = await import('../src/nudge.mjs');
+  const D = await import('../src/drafts.mjs');
+  const MCP = await import('../src/mcp.mjs');
+  const storeM = await import('../src/store.mjs');
+  const ws = path.join(home, 'workspace');
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'assist-1552-'));
+
+  // --- F1: the evaluation's stand-in for the human reads a card's args as the API gives them (a JSON string)
+  const dir = 'eval/r1/f1';
+  const j = (o) => JSON.stringify(o);
+  check('F1 judgeApproval: args as a JSON string are read (a command inside the task folder is approved; deleting outside it is denied); a card of several commands is approved only when every one stays inside',
+    L.judgeApproval({ toolName: 'shell', args: j({ command: 'mv eval/r1/f1/a.jpg eval/r1/f1/图片/' }) }, dir) === 'approve'
+    && L.judgeApproval({ toolName: 'fs_delete', args: j({ path: 'notes/keep.md' }) }, dir) === 'deny'
+    && L.judgeApproval({ toolName: 'fs_write', args: j({ path: 'eval/r1/f1/a.txt' }) }, dir) === 'approve'
+    && L.judgeApproval({ toolName: 'shell', args: j({ command: 'ls eval/r1/f1', commands: ['ls eval/r1/f1', 'dir C:\\Windows'] }) }, dir) === 'deny'
+    && L.judgeApproval({ toolName: 'shell', args: j({ command: 'ls eval/r1/f1', commands: ['ls eval/r1/f1', 'du -sh eval/r1/f1/x'] }) }, dir) === 'approve'
+    && L.judgeApproval({ toolName: 'shell', args: 'not json' }, dir) === 'deny');
+
+  // --- F2: the record says at which approval level it ran
+  const rec = L.renderRecord({ version: '1.5.52', day: '2026-11-22', model: 'm', results: [], level: 'auto' });
+  const evalSrc = await readText('../scripts/eval.mjs');
+  const evalDoc = await readText('../docs/EVAL.md');
+  check('F2 the evaluation reads the approval level (/api/policy) and writes it in its first line and in the record (审批档：放手); the docs say how to point it at a test instance (EVAL_HUB + EVAL_LOCAL_KEY)',
+    L.levelWords('auto') === '放手' && L.levelWords('standard') === '标准' && L.levelWords('careful') === '谨慎' && /审批档：放手/.test(rec)
+    && evalSrc.includes("api('/api/policy')") && evalDoc.includes('EVAL_HUB') && evalDoc.includes('EVAL_LOCAL_KEY'), rec.split('\n').slice(0, 3).join(' / '));
+
+  // --- F3: a turn that was stopped is not picked up again by itself
+  {
+    const id = `f3hist${Date.now()}`;
+    const f = storeM.sessionFile(id);
+    await storeM.appendJsonl(f, { kind: 'user', text: '看看下载文件夹', turnId: 't1' });
+    await storeM.appendJsonl(f, { kind: 'turn', turnId: 't1', status: 'cancelled', summary: '' });
+    await storeM.appendJsonl(f, { kind: 'user', text: '让策略只看北京', turnId: 't2' });
+    await storeM.appendJsonl(f, { kind: 'assistant', text: '好的', turnId: 't2' });
+    await storeM.appendJsonl(f, { kind: 'turn', turnId: 't2', status: 'success' });
+    await storeM.appendJsonl(f, { kind: 'user', text: '再跑一个', turnId: 't3' });
+    await storeM.appendJsonl(f, { kind: 'assistant', text: '跑了一半', turnId: 't3' });
+    await storeM.appendJsonl(f, { kind: 'turn', turnId: 't3', status: 'timeout' });
+    const h = await AgentRuntime.prototype.loadHistory.call({}, id, 16);
+    check('F3 a stopped turn with no answer gets 「（这一轮被停下了，没做完…）」 after its message, so the next message does not redo it; a turn that answered keeps only its answer',
+      h.map((m) => m.role).join() === 'user,assistant,user,assistant,user,assistant' && /这一轮被停下了/.test(h[1].content) && /继续/.test(h[1].content)
+      && h[3].content === '好的' && h[5].content === '跑了一半', JSON.stringify(h));
+    // The page's stop button says 「停下」 as a message of its own (beginner test, 1.5.52): the stopped
+    // turn's tool line and end come after that reply. The note still goes right after its message.
+    const id2 = `f3stop${Date.now()}`;
+    const f2 = storeM.sessionFile(id2);
+    await storeM.appendJsonl(f2, { kind: 'user', text: '看看下载文件夹哪些文件最大', turnId: 's1' });
+    await storeM.appendJsonl(f2, { kind: 'user', text: '停下', turnId: 's2' });
+    await storeM.appendJsonl(f2, { kind: 'assistant', text: '好，停下了', turnId: 's2' });
+    await storeM.appendJsonl(f2, { kind: 'tool', turnId: 's1', name: 'shell' });
+    await storeM.appendJsonl(f2, { kind: 'turn', turnId: 's1', status: 'cancelled' });
+    await storeM.appendJsonl(f2, { kind: 'turn', turnId: 's2', status: 'success' });
+    const h2 = await AgentRuntime.prototype.loadHistory.call({}, id2, 16);
+    check('F3b stopped with the stop button (「停下」 answered before the turn ends): the note still follows the stopped message',
+      h2.map((m) => m.role).join() === 'user,assistant,user,assistant' && /这一轮被停下了/.test(h2[1].content) && h2[3].content === '好，停下了', JSON.stringify(h2));
+  }
+
+  // --- F4: an undo is told to the assistant that proposed the change
+  {
+    const store = ADJ.createAdjustments({ file: path.join(tmp, 'adj.json') });
+    const id = await store.record({ machine: '腾讯云', botId: 'b1', botName: '策略', before: { role: 'r', persona: 'A' }, after: { role: 'r', persona: 'A\n只看北京的岗位' }, lines: [{ op: '+', text: '只看北京的岗位' }, { op: '~', label: '定时任务「早报」的时间', from: '每天 8:30', to: '每天 9:00' }], summary: '只看北京', by: 'chief', byTurn: 'turn_9' });
+    const a = store.get(id);
+    const note = ADJ.undoNote(a);
+    const serverSrc = await readText('../src/server.mjs');
+    check('F4 a change keeps who proposed it (bot and turn); the undo note names what went back (「已撤销」, each line) and is written into that assistant\'s chat, where the model sees it',
+      a.by === 'chief' && a.byTurn === 'turn_9' && /已撤销/.test(note) && /只看北京的岗位/.test(note) && /早报/.test(note) && /原样/.test(note)
+      && serverSrc.includes("source: 'undo'") && serverSrc.includes('undoNote(a)'), note);
+    const hid = `f4hist${Date.now()}`;
+    const f = storeM.sessionFile(hid);
+    await storeM.appendJsonl(f, { kind: 'user', text: '让策略只看北京', turnId: 'a' });
+    await storeM.appendJsonl(f, { kind: 'assistant', text: '改好了：只看北京', turnId: 'a' });
+    await storeM.appendJsonl(f, { kind: 'assistant', text: note, turnId: 'u1', source: 'undo', system: true });
+    await storeM.appendJsonl(f, { kind: 'user', text: '写一下机器档案', turnId: 'b' });
+    const h = await AgentRuntime.prototype.loadHistory.call({}, hid, 16);
+    check('F4b the undo note reaches the model, joined to the reply before it (never two assistant messages in a row)',
+      h.map((m) => m.role).join() === 'user,assistant,user' && /已撤销/.test(h[1].content), JSON.stringify(h));
+  }
+
+  // --- F5: bot_message to another machine asks the first time, like machine_switch
+  {
+    const notes = MN.createMachineNotes({ file: path.join(tmp, 'mn5.json') });
+    const peers = { find: (n) => (n === '腾讯云' ? { name: '腾讯云' } : null), list: () => [{ name: '腾讯云' }] };
+    const reg = toolsMod.createRegistry({ workspaceDir: ws, config: {}, getPeers: () => peers, getMachineNotes: () => notes });
+    const first = await reg.get('bot_message').escalate({ machine: '腾讯云', botId: '策略', text: '筛岗', why: '策略管筛岗' }, {});
+    const local = await reg.get('bot_message').escalate({ botId: '小笔', text: '写' }, {});
+    await notes.confirm('腾讯云');
+    const after = await reg.get('bot_message').escalate({ machine: '腾讯云', botId: '策略', text: '再筛' }, {});
+    const sw = await reg.get('machine_switch').escalate({ machine: '腾讯云', task: 'x' }, {});
+    check('F5 bot_message to a machine not yet agreed shows the same first hand-off card as machine_switch (once); to this machine, or after the yes, no card',
+      first?.alwaysAsk === true && first.handoff?.machine === '腾讯云' && /腾讯云/.test(first.reason) && /策略/.test(first.reason) && local === null && after === null && sw === null,
+      JSON.stringify({ first, local, after, sw }));
+  }
+
+  // --- F6, F7: the prompt's words
+  {
+    const lines = MN.machinesPrompt({ notes: {}, roster: [{ machine: '腾讯云', online: true, bots: [] }], here: '客厅电脑' }).join('\n');
+    check('F6 a scheduled or always-running job goes to the always-on machine whole (writing and trying the script there), not written here first and moved',
+      /scheduled/.test(lines) && /whole/.test(lines) && /not write it here first/.test(lines), lines);
+    const agentSrc = await readText('../src/agent.mjs');
+    const toolsSrc = await readText('../src/tools.mjs');
+    check('F7 what the human reads calls them 「你」, never 「人类」「用户」: said in the main rules and in follow_up / machine_note, and those two replace 人类 with 你 when they save',
+      agentSrc.includes('不要写「人类」「用户」') && (toolsSrc.match(/never 「人类」/g) || []).length >= 2 && typeof toolsMod.toHumanWords === 'function'
+      && toolsMod.toHumanWords('把结果告诉人类，只在人类点头后发') === '把结果告诉你，只在你点头后发');
+    const saved = [];
+    const reg = toolsMod.createRegistry({ workspaceDir: ws, config: {}, getInitiative: () => ({ addFollowUp: async (o) => { saved.push(o); return { id: 'fu_1' }; } }) });
+    await reg.get('follow_up').run({ inMinutes: 5, about: '看完告诉人类结果' }, { bot: { id: 'b' }, workspaceDir: ws });
+    check('F7b follow_up saves 「告诉你」, not 「告诉人类」', saved[0]?.about === '看完告诉你结果', JSON.stringify(saved));
+  }
+
+  // --- F8: the daily note's brackets, and cards that only just came up
+  {
+    const t = NG.buildNudge({ cards: [{ botName: '助理', what: '改「发布」' }], unread: [], queued: [] });
+    const serverSrc = await readText('../src/server.mjs');
+    check('F8 a card in the daily note reads 「助理：改「发布」」 (no brackets inside brackets); a card that came up in the last five minutes is not counted (the human is likely looking at it)',
+      t.includes('助理：改「发布」') && !t.includes('「改「') && serverSrc.includes('FRESH_CARD_MS') && serverSrc.includes('Date.now() - Date.parse(c.createdAt || 0) > FRESH_CARD_MS'), t);
+  }
+
+  // --- F9: this machine renamed: its old line goes
+  {
+    const notes = MN.createMachineNotes({ file: path.join(tmp, 'mn9.json') });
+    await notes.autoFill('Windows 电脑', '你的电脑，有你的个人文件', { self: true });
+    await notes.claimSelf('客厅电脑');
+    const n1 = notes.all();
+    const notes2 = MN.createMachineNotes({ file: path.join(tmp, 'mn9b.json') });
+    await notes2.set('Windows 电脑', '放照片', 'human');
+    await notes2.autoFill('Windows 电脑', 'x', { self: true });
+    await notes2.claimSelf('客厅电脑');
+    check('F9 this machine renamed: the old name\'s automatic line is dropped; a line the human wrote moves to the new name',
+      !('Windows 电脑' in n1) && !('Windows 电脑' in notes2.all()) && notes2.get('客厅电脑')?.note === '放照片', JSON.stringify({ n1, n2: notes2.all() }));
+  }
+
+  // --- F10: topics on a draft
+  {
+    const reg = toolsMod.createRegistry({ workspaceDir: ws, config: {} });
+    const pd = reg.get('post_draft');
+    const d = D.draftFor('post_draft', { channel: '小红书', title: 't', body: 'b', topics: ['成都美食', '周末'] }, { outgoing: pd.outgoing });
+    const out = await pd.run({ channel: '小红书', body: 'b', topics: ['成都美食'] });
+    check('F10 post_draft has topics: a box of their own on the card (editable), given back with the final text to put in the platform\'s topic box',
+      d.fields.some((f) => f.key === 'topics' && f.list) && d.fields.find((f) => f.key === 'topics').value === '成都美食, 周末' && JSON.stringify(out.topics) === JSON.stringify(['成都美食']) && /topic/.test(out.instruction));
+  }
+
+  // --- X: a tile like every other app ------------------------------------------------------
+  {
+    const page = await readText('../public/index.html');
+    const xApp = MCP.MCP_CATALOG.find((a) => a.id === 'x');
+    check('X1 X is one tile in the 连接应用 grid like every app (no card pinned above): the catalog entry has detail \'x\', the grid does not leave it out, opening it shows the two parts',
+      xApp?.detail === 'x' && !xApp.inCard && !page.includes('id="x-card"') && !page.includes('.filter((a) => !a.inCard)') && page.includes("app.detail === 'x'")
+      && page.includes('function renderXDetail(') && page.includes("'发帖和回复'") && page.includes("'搜帖子、看用户（可选）'") && page.includes('两部分用的是同一个 X 开发者应用'));
+    check('X2 the X tile counts as connected when either part is on (signed in to post, or the read-only app switched on)',
+      page.includes('function appIsOn(a)') && page.includes("a.detail === 'x' ? xConnectedCount() > 0 : mcpIsOn(a.server)"));
+  }
+
+  // --- X: signing in when X is set up on another machine ----------------------------------------
+  {
+    const X = await import('../src/xpost.mjs');
+    const acct = X.createXAccount({ file: path.join(tmp, 'x.json'), fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }) });
+    await acct.setApp({ clientId: 'cid-remote-1' });
+    const { url } = await acct.beginLogin({ redirectUri: 'http://127.0.0.1:14390/api/x/callback' });
+    const st = new URL(url).searchParams.get('state');
+    check('X3 the account knows the sign-ins it started (hasPending), so a callback another machine received can be handed to the right one', acct.hasPending(st) === true && acct.hasPending('nope') === false);
+    const v = await api('/api/x?relay=http%3A%2F%2F127.0.0.1%3A14390');
+    await api('/api/x/app', { method: 'PUT', body: { clientId: 'cid-hub-1552' } });
+    const login = await api('/api/x/login', { method: 'POST', body: { relay: 'http://127.0.0.1:14390' } });
+    const bad = await api('/api/x/login', { method: 'POST', body: { relay: 'http://203.0.113.9:14390' } });
+    const badUrl = bad.json?.url ? new URL(bad.json.url).searchParams.get('redirect_uri') : '';
+    const finishNoHub = await api('/api/x/finish', { method: 'POST', body: { state: 'x', code: 'y' } });
+    const serverSrc = await readText('../src/server.mjs');
+    check('X4 set up from the device the human uses (another machine\'s page in their app): the callback shown and used is that device\'s own 127.0.0.1 address; an address that is not loopback is never used; the hub that gets the callback passes it to the machine that started it (only a hub call is accepted, only a browser on this computer can hand one over)',
+      /^http:\/\/127\.0\.0\.1:14390\/api\/x\/callback$/.test(v.json?.callback || '') && new URL(login.json.url).searchParams.get('redirect_uri') === 'http://127.0.0.1:14390/api/x/callback'
+      && !/203\.0\.113/.test(badUrl) && finishNoHub.status === 403
+      && serverSrc.includes("'/api/x/finish'") && serverSrc.includes('state.xAccount.hasPending('),
+      JSON.stringify({ cb: v.json?.callback, login: login.json?.url, badUrl, f: finishNoHub.status }));
+    await api('/api/x', { method: 'DELETE' }).catch(() => {});
+    const page = await readText('../public/index.html');
+    check('X5 the page asks for the callback of the device in use (the desktop app\'s own address when it shows another machine)',
+      page.includes("api(`/api/x${xRelayQuery()}`)") && page.includes('function xRelayQuery()') && page.includes("api('/api/x/login', { method: 'POST', body: { relay: mcpRelay() } })"));
+  }
+  // --- Beginner test of 1.5.52: what the cards say, a hand-off seen in the chat, X's words
+  {
+    const notes = MN.createMachineNotes({ file: path.join(tmp, 'mn5b.json') });
+    const peers = { find: (n) => (n === '腾讯云' ? { name: '腾讯云' } : null), list: () => [{ name: '腾讯云' }] };
+    const reg = toolsMod.createRegistry({ workspaceDir: ws, config: {}, getPeers: () => peers, getMachineNotes: () => notes });
+    const ask = await reg.get('bot_message').escalate({ machine: '腾讯云', botId: '策略', text: '筛岗' }, {});
+    const sw = await reg.get('machine_switch').escalate({ machine: '腾讯云', task: 'x' }, {});
+    const page = await readText('../public/index.html');
+    check('BT52-1 the first hand-off card says what happens after the yes: bot_message waits and brings the answer back (「做完会把结果交回来」), machine_switch is followed in the sidebar; no 「窗口不动」',
+      ask?.handoff?.waits === true && !sw?.handoff?.waits && page.includes('做完会把结果交回来，我再告诉你') && page.includes('结果在左边「${h.machine}」下面看')
+      && !page.includes('impact: `窗口不动'), JSON.stringify({ ask: ask?.handoff, sw: sw?.handoff }));
+    check('BT52-2 a hand-off to another machine shows in the chat (even with the steps hidden): who it went to and its answer, folded when long',
+      page.includes('function handoffDoneCard(item)') && page.includes("item.name === 'bot_message' && !item.pending && item.ok && item.output?.machine")
+      && page.includes('isActionCard(m.name, m)') && page.includes('isActionCard(chip.name, chip)') && page.includes('交给了「${out.machine}」上的「${out.botName'));
+    const SRV = await import('../src/server.mjs');
+    const slim = SRV.compactChat([{ role: 'tool', name: 'bot_message', ok: true, id: 'a', args: { text: 'x'.repeat(900) }, output: { machine: '腾讯云', botId: 'b1', botName: '策略', status: 'success', reply: '好'.repeat(5000), note: 'n' } }, { role: 'tool', name: 'bot_message', ok: true, id: 'b', output: { reply: '本机的' } }, { role: 'tool', name: 'shell', ok: true, id: 'c', output: { stdout: 'x' } }]);
+    check('BT52-2b the chat list with steps hidden keeps a hand-off to another machine (who, and its reply up to 4000 characters), not one on this machine or other steps',
+      slim.length === 1 && slim[0].output.machine === '腾讯云' && slim[0].output.botName === '策略' && slim[0].output.reply.length <= 4001 && !slim[0].output.note, JSON.stringify(slim).slice(0, 200));
+    const note = ADJ.undoNote({ botName: '策略', machine: '腾讯云', lines: [{ op: '+', text: '只看北京的岗位' }] });
+    check('BT52-3 the undo line reads as said to the human: no 「不要再按改过的说」',
+      /已撤销/.test(note) && /以后照原来的做。）$/.test(note) && !/改过的说/.test(note), note);
+    check('BT52-4 X says 「你正在用的这台电脑」; once saved and not yet signed in, the callback stays in view; one letter finds apps by a word that starts with it (x is not MiniMax)',
+      page.includes('X 会把你送回你正在用的这台电脑') && page.includes('X 后台填的回调地址要是这一行') && page.includes('function appMatches(a, q)'));
+  }
+  await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
 }

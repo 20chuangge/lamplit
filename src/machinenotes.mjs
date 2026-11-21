@@ -61,10 +61,13 @@ export function createMachineNotes({ file } = {}) {
     },
 
     /** Written from what is known - only where nobody wrote one. */
-    async autoFill(name, note) {
+    async autoFill(name, note, { self = false } = {}) {
       await load();
       const k = key(name);
       if (!k) return null;
+      // This machine's own line is marked, so a rename can find it (1.5.52, F9).
+      if (self && notes[k] && !notes[k].self) { notes[k].self = true; await save(); }
+      if (self && !notes[k]) { notes[k] = { note: '', by: 'auto', self: true, at: new Date().toISOString() }; }
       const cur = notes[k];
       if (cur && cur.by !== 'auto') return cur;
       const text = clean(note);
@@ -117,6 +120,25 @@ export function createMachineNotes({ file } = {}) {
       return notes[k];
     },
 
+    /**
+     * This machine is called `name` now (1.5.52, F9): a line kept under its old name goes -
+     * moved to the new name when the human (or the assistant) wrote it, dropped when automatic.
+     */
+    async claimSelf(name) {
+      await load();
+      const k = key(name);
+      if (!k) return;
+      let changed = false;
+      for (const [old, n] of Object.entries(notes)) {
+        if (old === k || !n?.self) continue;
+        if (n.by !== 'auto' && n.note && !(notes[k]?.by && notes[k].by !== 'auto')) notes[k] = { ...(notes[k] || {}), note: n.note, by: n.by, self: true, at: new Date().toISOString() };
+        delete notes[old];
+        changed = true;
+      }
+      if (notes[k] && !notes[k].self) { notes[k].self = true; changed = true; }
+      if (changed) await save();
+    },
+
     async remove(name) {
       await load();
       delete notes[key(name)];
@@ -159,6 +181,7 @@ export function machinesPrompt({ notes = {}, roster = [], here = '' } = {}) {
   lines.push(
     'How to pick, when the human just says what to do:',
     '1. The machine they name. 2. Else the machine whose 「适合」 line or one of whose bots\' jobs fits the work best. 3. Work on the human\'s own files stays on the machine that has them; work that must keep running or run on a schedule goes to a machine that is always on. 4. Not sure: do it here, or ask in one short question.',
+    'A scheduled or always-running job (\'every evening at 10, fetch…\') goes to the always-on machine whole with machine_switch - writing the script, trying it and making the routine all happen there. Do not write it here first and move it later.',
     'Hand it over with machine_switch (machine, and bot when one bot there fits; task = the whole instruction, it does not see this chat; why = one short reason) - or, to wait for the answer, bot_message with its machine. The window stays here. Then tell the human in one sentence where it went and why, e.g. 「交给腾讯云上的「策略」了，它管筛岗。」 The first hand-off to a machine shows the human a card; after their yes the next ones go without one.',
     'When the human says what a machine is for (「以后腾讯云专门跑发布」), save it with machine_note and say so.',
     '',

@@ -39,7 +39,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TASKS as EVERYDAY, EVAL_TOOLS } from '../eval/tasks.mjs';
 import { HARD_TASKS } from '../eval/hard.mjs';
-import { viewOf, norm, judgeApproval, summarize, renderRecord } from '../eval/lib.mjs';
+import { viewOf, norm, judgeApproval, summarize, renderRecord, levelWords } from '../eval/lib.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -212,7 +212,10 @@ if (!wsRoot || !fs.existsSync(wsRoot)) { console.error(`工作区 ${wsRoot} 不�
 const runId = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
 const runDir = `eval/${runId}`;
 const version = health?.version || JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8')).version;
-console.log(`评测 ${tasks.length} 题 · Lamplit ${version} · 模型 ${model || '（未知）'}`);
+// The approval level decides how many cards come up (1.5.52, F2): said at the top and in the record.
+const policy = await api('/api/policy').catch(() => null);
+const level = policy?.level || policy?.effective?.level || '';
+console.log(`评测 ${tasks.length} 题 · Lamplit ${version} · 模型 ${model || '（未知）'} · 审批档 ${levelWords(level)}`);
 
 const results = [];
 try {
@@ -255,7 +258,7 @@ if (flag('--record')) {
   const doc = path.join(REPO, 'docs', 'EVAL.md');
   const text = fs.readFileSync(doc, 'utf8');
   const marker = '<!-- results: newest first -->';
-  const record = renderRecord({ version, day, model, currency: usage?.currency || 'CNY', results: counted, note });
+  const record = renderRecord({ version, day, model, currency: usage?.currency || 'CNY', results: counted, note, level });
   fs.writeFileSync(doc, text.includes(marker) ? text.replace(marker, `${marker}\n\n${record}`) : `${text}\n${record}`);
   console.log(`已写入 docs/EVAL.md`);
 }

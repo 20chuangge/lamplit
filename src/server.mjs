@@ -98,7 +98,7 @@ import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.
 import { createRoster, cleanBotId } from './roster.mjs';
 import { createXAccount, X_DEVELOPER_URL } from './xpost.mjs';
 import { createMachineNotes, suggestNote, machinesPrompt } from './machinenotes.mjs';
-import { createAdjustments, undoAdjust } from './adjust.mjs';
+import { createAdjustments, undoAdjust, undoNote } from './adjust.mjs';
 import { buildNudge } from './nudge.mjs';
 import { createInitiative } from './initiative.mjs';
 import { createTailscale, authKeyProblem, safeLoginUrl } from './tailscale.mjs';
@@ -3220,12 +3220,23 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
   // acts on) are left out altogether: they were most of the bytes.
   // A file the bot wrote or deleted stays as a slim row (1.5.33): the line
   // 「这一轮改了 N 个文件 · 撤销」 is drawn from them, and it was missing by default.
-  return query.get('compact') === '1'
-    ? items.map((m) => (m.role === 'tool' && !ACTION_CARD_TOOLS.has(m.name) && m.ok && m.output?.undo
-      ? { id: m.id, role: 'tool', name: m.name, ok: true, turnId: m.turnId, ts: m.ts, output: { undo: m.output.undo, path: m.output.path || '' } }
-      : m)).filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo).map(compactToolItem)
-    : items;
+  return query.get('compact') === '1' ? compactChat(items) : items;
 });
+
+/** The chat with its steps hidden (compact=1): only the tool rows it draws, slim. */
+export function compactChat(items) {
+  return items.map((m) => {
+    if (m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || !m.ok) return m;
+    if (m.output?.undo) return { id: m.id, role: 'tool', name: m.name, ok: true, turnId: m.turnId, ts: m.ts, output: { undo: m.output.undo, path: m.output.path || '' } };
+    // Work handed to another machine, back (1.5.52 beginner test): who, and its answer.
+    if (m.name === 'bot_message' && m.output?.machine) {
+      const reply = String(m.output.reply || '');
+      return { id: m.id, role: 'tool', name: m.name, ok: true, turnId: m.turnId, ts: m.ts, args: {}, handoff: true,
+        output: { machine: m.output.machine, botId: m.output.botId, botName: m.output.botName, status: m.output.status, reply: reply.length > 4000 ? `${reply.slice(0, 4000)}…` : reply } };
+    }
+    return m;
+  }).filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo || m.handoff).map((m) => (m.handoff ? m : compactToolItem(m)));
+}
 
 /** Tool rows the chat shows even with its steps hidden: the human acts on them. */
 const ACTION_CARD_TOOLS = new Set(['request_takeover', 'request_login', 'bot_adjust']);
@@ -4201,21 +4212,57 @@ export function closeStreamsOf(deviceId) {
 //   GET    /api/x/callback   X sends the browser back here (no session; the one-time state is the check)
 //   PUT    /api/x/bots       {bots:[id]} who may post        the human's
 //   DELETE /api/x            sign out here (?forget=1 also forgets the app)
-const xCallback = (state) => `http://127.0.0.1:${state.port}/api/x/callback`;
-const xView = (state) => ({ ...state.xAccount.view(), callback: xCallback(state), developerUrl: X_DEVELOPER_URL });
-route('GET', /^\/api\/x$/, async (_req, _res, { state }) => xView(state));
+// The callback X sends the browser to (1.5.52): the device the human uses - this computer, or,
+// when its desktop app shows another machine, its own hub (relay: http://127.0.0.1:<port>). That
+// hub hands the code to the machine that started the sign-in (POST /api/x/finish). Only a loopback
+// address is ever used: X sends a code to it, never to an address on the network.
+const X_LOOPBACK = /^http:\/\/127\.0\.0\.1:\d{1,5}$/;
+const xCallback = (state, relay = '') => `${X_LOOPBACK.test(String(relay || '')) ? String(relay) : `http://127.0.0.1:${state.port}`}/api/x/callback`;
+const xView = (state, relay = '') => ({ ...state.xAccount.view(), callback: xCallback(state, relay), developerUrl: X_DEVELOPER_URL });
+route('GET', /^\/api\/x$/, async (_req, _res, { state, query }) => xView(state, query.get('relay') || ''));
 route('PUT', /^\/api\/x\/app$/, async (_req, _res, { body, state }) => {
   try { await state.xAccount.setApp({ clientId: body?.clientId, clientSecret: body?.clientSecret }); } catch (err) { throw httpError(err.status || 400, err.code || 'X_BAD_APP', err.message); }
   await audit({ kind: 'x.app', withSecret: Boolean(body?.clientSecret) });
   state.bus.emit({ type: 'settings.changed', section: 'x' });
   return xView(state);
 });
-route('POST', /^\/api\/x\/login$/, async (_req, _res, { state }) => {
-  try { return await state.xAccount.beginLogin({ redirectUri: xCallback(state) }); } catch (err) { throw httpError(err.status || 400, err.code || 'X_LOGIN', err.message); }
+route('POST', /^\/api\/x\/login$/, async (_req, _res, { state, body }) => {
+  try { return await state.xAccount.beginLogin({ redirectUri: xCallback(state, body?.relay || '') }); } catch (err) { throw httpError(err.status || 400, err.code || 'X_LOGIN', err.message); }
 });
-route('GET', /^\/api\/x\/callback$/, async (_req, res, { state, query }) => {
-  let out;
+// A callback another machine's browser got for a sign-in this machine started (1.5.52). Only
+// another of the human's hubs may hand one over (its token); the one-time state and PKCE do the rest.
+route('POST', /^\/api\/x\/finish$/, async (req, _res, { state, body }) => {
+  if (!isHubCall(req, state.security)) throw httpError(403, 'HUB_ONLY', '只有你的另一台机器能把 X 的登录交过来');
+  if (!state.xAccount.hasPending(body?.state)) return { known: false };
   try {
+    const r = await state.xAccount.finishLogin({ state: body?.state, code: body?.code, error: body?.error });
+    await audit({ kind: 'x.connected', via: 'peer' });
+    state.bus.emit({ type: 'settings.changed', section: 'x' });
+    return { known: true, ok: true, username: r.username || '' };
+  } catch (err) {
+    return { known: true, ok: false, message: err.code && /^X_/.test(err.code) ? err.message : '登录没有完成。' };
+  }
+});
+route('GET', /^\/api\/x\/callback$/, async (req, res, { state, query }) => {
+  let out;
+  // A sign-in another machine started, through this computer's browser (1.5.52): handed to it.
+  // Only a browser on this computer can hand one over; a call another hub passed on is not passed on again.
+  const fromHere = /^(127\.|::1$|::ffff:127\.)/.test(String(req.socket?.remoteAddress || ''));
+  const st = query.get('state') || '';
+  if (st && !state.xAccount.hasPending(st) && fromHere && !req.headers[VIA_HEADER]) {
+    const q = { state: st, code: query.get('code') || '', error: query.get('error') || '' };
+    for (const p of state.peers.list()) {
+      let a = null;
+      try { a = await state.peers.json(state.peers.find(p.name), 'POST', '/api/x/finish', { body: q, headers: { [VIA_HEADER]: '1' }, timeoutMs: 30000 }); } catch { /* the next one */ }
+      if (a?.known) {
+        out = a.ok
+          ? { ok: true, title: a.username ? `「${p.name}」已连接 X：@${a.username}` : `「${p.name}」已连接 X`, text: '可以关掉这个页面，回到 Lamplit。那台的助手要发帖时，会先给你一张能改的草稿卡。' }
+          : { ok: false, title: '没有连上 X', text: a.message || '登录没有完成。' };
+        break;
+      }
+    }
+  }
+  if (!out) try {
     const r = await state.xAccount.finishLogin({ state: query.get('state'), code: query.get('code'), error: query.get('error') });
     out = { ok: true, title: r.username ? `已连接 X：@${r.username}` : '已连接 X', text: '可以关掉这个页面，回到 Lamplit。助手要发帖时，会先给你一张能改的草稿卡，你点「发送」才发。' };
     await audit({ kind: 'x.connected' });
@@ -4272,8 +4319,10 @@ async function fillMachineNotes(notes, roster, peers = null) {
   }
   // This machine too: the human's own computer has their files; one given to the bots stays on.
   const here = selfMachineName();
+  // Renamed since (1.5.52, F9): the old name's line goes, or moves when the human wrote it.
+  if (here) await notes.claimSelf(here).catch(() => {});
   if (here && !(notes.get(here)?.by && notes.get(here).by !== 'auto')) {
-    await notes.autoFill(here, suggestNote({ alwaysOn: selfIsServer(here), personal: !selfIsServer(here) }));
+    await notes.autoFill(here, suggestNote({ alwaysOn: selfIsServer(here), personal: !selfIsServer(here) }), { self: true });
   }
   if (here) await notes.setFacts(here, { alwaysOn: selfIsServer(here), kind: selfIsServer(here) ? 'bots' : 'yours' }).catch(() => {});
 }
@@ -4318,6 +4367,13 @@ route('POST', /^\/api\/adjustments\/(?<id>[^/]+)\/undo$/, async (req, _res, { pa
     throw httpError(err.status || 400, err.code || 'ADJUST_FAILED', err.message);
   }
   await audit({ kind: 'bot.adjust_undone', botId: a.botId, machine: a.machine || null, adjustmentId: a.id });
+  // The assistant that proposed it is told, in its chat (1.5.52, F4): it went on from the change.
+  if (a.by && await getBot(a.by).catch(() => null)) {
+    const note = undoNote(a);
+    const turnId = uid('undo');
+    await state.runtime.record(a.by, { kind: 'assistant', text: note, turnId, source: 'undo', system: true });
+    state.bus.emit({ type: 'message', botId: a.by, turnId, text: note, final: true, system: true, source: 'undo', ts: nowIso() });
+  }
   if (!peer) state.bus.emit({ type: 'roster.changed', scope: 'bots', action: 'update', botId: a.botId });
   return out;
 });
@@ -4359,13 +4415,16 @@ function cardWhat(c) {
   return toolWords(c.toolName) || '一个操作';
 }
 
+const FRESH_CARD_MS = 5 * 60 * 1000;
 /** What is waiting for the human right now, on every machine: the daily note's facts. */
 async function collectWaiting(state) {
   const byId = new Map((await listBots()).map((b) => [b.id, b]));
   const primary = [...byId.values()].find((b) => b.primary)?.id || state.config.primaryBotId || 'chief';
-  const cards = state.approvals.list({ status: 'pending' }).map((c) => ({ botName: byId.get(c.botId)?.name || '助手', what: cardWhat(c) }));
+  // A card that only just came up is not 「in waiting」: the human is likely looking at it (1.5.52, F8).
+  const settled = (c) => Date.now() - Date.parse(c.createdAt || 0) > FRESH_CARD_MS;
+  const cards = state.approvals.list({ status: 'pending' }).filter(settled).map((c) => ({ botName: byId.get(c.botId)?.name || '助手', what: cardWhat(c) }));
   const inbox = state.peers.list().length ? await collectInbox(state).catch(() => ({ items: [] })) : { items: [] };
-  for (const c of inbox.items) cards.push({ machine: c.machine, botName: c.botName || '助手', what: cardWhat(c) });
+  for (const c of inbox.items.filter(settled)) cards.push({ machine: c.machine, botName: c.botName || '助手', what: cardWhat(c) });
   const unread = [];
   const snap = state.attention.snapshot();
   for (const [key, item] of Object.entries(snap.items || {})) {

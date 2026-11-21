@@ -342,6 +342,15 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
  * @param {() => object} deps.getRuntime   late-bound AgentRuntime (bot_message needs it)
  * @param {() => object} deps.getRoutines  late-bound RoutineStore
  */
+/**
+ * Words the human reads, as said to them (1.5.52, F7): the prompts say "the human",
+ * and a model wrote 「告诉人类」「只在人类点头后」 into reminders and machine lines.
+ */
+export function toHumanWords(text) {
+  // 「用户名」「用户数」 stay as they are.
+  return String(text ?? '').replace(/人类|用户(?![名量数群体界协账])/g, '你');
+}
+
 export function createRegistry(deps) {
   const tools = new Map();
 
@@ -1546,6 +1555,27 @@ export function createRegistry(deps) {
   });
 
   /**
+   * The first hand-off to a machine (1.5.45, the human: say yes once, then only be told).
+   * Both ways of handing work over ask it (1.5.52, F5: bot_message, the way models mostly
+   * take, did not). -> a card's risk info, or null (this machine, no such machine, agreed).
+   */
+  async function firstHandoff({ machine, bot = '', why = '', task = '', waits = false }) {
+    const notes = deps.getMachineNotes?.();
+    const peer = deps.getPeers?.()?.find?.(String(machine || '').trim());
+    if (!notes || !peer || !String(task || '').trim()) return null;
+    await notes.load?.();
+    if (notes.get(peer.name)?.confirmed) return null;
+    const who = String(bot || '').trim();
+    const reason = String(why || '').trim().replace(/[。.]+$/, '').slice(0, 120);
+    return {
+      risk: RISK.HIGH,
+      alwaysAsk: true,
+      reason: `第一次把事情交给「${peer.name}」${who ? `上的「${who}」` : '上的主助理'}${reason ? `（${reason}）` : ''}`,
+      handoff: { machine: peer.name, bot: who, task: String(task).slice(0, 300), ...(waits ? { waits: true } : {}) },
+    };
+  }
+
+  /**
    * bot_message to a bot on another machine: run its turn there (over the
    * peer link the desktop client set up), wait, bring the reply back. The
    * same depth / budget / no-hand-back rules travel with the task.
@@ -1567,8 +1597,9 @@ export function createRegistry(deps) {
       || list.find((b) => String(b.name).toLowerCase().includes(want));
     if (!target) throw toolError('BOT_NOT_FOUND', `「${peer.name}」上没有「${args.botId}」；那台机器上有：${list.map((b) => `${b.name}（${b.id}）`).join('、')}`);
     budget.left -= 1;
-    // The machine's profile learns what runs there (1.5.45).
+    // The machine's profile learns what runs there (1.5.45); a hand-off that went is agreed (1.5.52).
     await deps.getMachineNotes?.()?.noteRan?.(peer.name, { bot: target.name, task: String(args.text || '') }).catch?.(() => {});
+    await deps.getMachineNotes?.()?.confirm?.(peer.name).catch?.(() => {});
     // Chain entries from this machine carry this machine's tag, so the other
     // side can tell its own bots from ours.
     const chain = (Array.isArray(ctx.chain) && ctx.chain.length ? ctx.chain : [ctx.bot.id]).map((c) => (c.includes('@') ? c : `${c}@${SELF_TAG}`));
@@ -1724,12 +1755,15 @@ export function createRegistry(deps) {
     // here. Hand-offs are bounded in run(): depth, a per-task budget, and no
     // hand-off back up the chain (that bot is waiting on this one: deadlock).
     risk: RISK.LOW,
+    // To another machine the first time: the human says yes once (1.5.52, F5).
+    escalate: (args) => (args?.machine ? firstHandoff({ machine: args.machine, bot: args.botId, why: args.why, task: args.text, waits: true }) : null),
     parameters: {
       type: 'object',
       properties: {
         botId: { type: 'string', description: 'Target bot id (or name).' },
         text: { type: 'string', description: 'What you are asking them to do.' },
         machine: { type: 'string', description: 'Only for a bot on another machine: that machine\'s name (see bot_list otherMachines).' },
+        why: { type: 'string', description: 'Only with machine: one short reason this machine and bot fit (shown to the human the first time).' },
       },
       required: ['botId', 'text'],
       additionalProperties: false,
@@ -2484,21 +2518,7 @@ export function createRegistry(deps) {
     description: 'Hand a task to another of the human\'s machines: its main assistant does it there, or the bot you name there (bot: its name or id from the machine list in your instructions or bot_list). The window stays where it is - the human sees that bot in the sidebar under the machine\'s name and can open its chat from here; tell them in one sentence where it went and why. Use this instead of SSH. machine is a name from machine_list; task is the full instruction (it does not see this conversation). If that machine is off, the task waits and is sent when it is back. The first hand-off to a machine shows the human a card; after their yes the next ones go without one.',
     risk: RISK.MEDIUM,
     // The first hand-off to a machine (1.5.45): the human says yes once (their choice, 2026-11-20).
-    escalate: async (args) => {
-      const notes = deps.getMachineNotes?.();
-      const peer = deps.getPeers?.()?.find?.(String(args?.machine || '').trim());
-      if (!notes || !peer || !String(args?.task || '').trim()) return null;
-      await notes.load?.();
-      if (notes.get(peer.name)?.confirmed) return null;
-      const who = String(args?.bot || '').trim();
-      const why = String(args?.why || '').trim().replace(/[。.]+$/, '').slice(0, 120);
-      return {
-        risk: RISK.HIGH,
-        alwaysAsk: true,
-        reason: `第一次把事情交给「${peer.name}」${who ? `上的「${who}」` : '上的主助理'}${why ? `（${why}）` : ''}`,
-        handoff: { machine: peer.name, bot: who, task: String(args.task).slice(0, 300) },
-      };
-    },
+    escalate: (args) => firstHandoff({ machine: args?.machine, bot: args?.bot, why: args?.why, task: args?.task }),
     parameters: {
       type: 'object',
       properties: {
@@ -2562,7 +2582,7 @@ export function createRegistry(deps) {
       properties: {
         inMinutes: { type: 'number', description: 'Minutes from now.' },
         at: { type: 'string', description: 'Local time "YYYY-MM-DD HH:MM" (instead of inMinutes).' },
-        about: { type: 'string', description: 'What to look at then, in a sentence - you will read it then without this conversation. The human sees it as 「约好的回头看：…」: write it to them, in their language (「看看筛岗结果出来没有，出来了告诉你前三名」).' },
+        about: { type: 'string', description: 'What to look at then, in a sentence - you will read it then without this conversation. The human sees it as 「约好的回头看：…」: write it to them, in their language, calling them 「你」, never 「人类」 or 「用户」 (「看看筛岗结果出来没有，出来了告诉你前三名」).' },
       },
       required: ['about'],
       additionalProperties: false,
@@ -2578,7 +2598,7 @@ export function createRegistry(deps) {
       }
       if (!Number.isFinite(when)) throw toolError('FOLLOWUP_BAD_TIME', 'give inMinutes, or at as "YYYY-MM-DD HH:MM"');
       if (when > Date.now() + 90 * 24 * 3600 * 1000) throw toolError('FOLLOWUP_TOO_FAR', 'at most 90 days ahead; for something regular make a routine');
-      const f = await deps.getInitiative().addFollowUp({ botId: ctx.bot?.id, at: when, about: String(args?.about || ''), by: ctx.bot?.id || '' });
+      const f = await deps.getInitiative().addFollowUp({ botId: ctx.bot?.id, at: when, about: toHumanWords(args?.about), by: ctx.bot?.id || '' });
       const d = new Date(when);
       return { ok: true, id: f.id, at: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`, tell: 'Say in one line when you will look again.' };
     },
@@ -2616,7 +2636,7 @@ export function createRegistry(deps) {
       type: 'object',
       properties: {
         machine: { type: 'string', description: 'Machine name (this one too).' },
-        note: { type: 'string', description: 'One short line in the human\'s language: what it is good for.' },
+        note: { type: 'string', description: 'One short line in the human\'s language: what it is good for. The human reads it: 「你」, never 「人类」 or 「用户」.' },
       },
       required: ['machine', 'note'],
       additionalProperties: false,
@@ -2629,7 +2649,7 @@ export function createRegistry(deps) {
       const peer = deps.getPeers?.()?.find?.(wanted);
       const name = peer?.name || (here && (wanted === here || wanted === '本机' || wanted === '这台') ? here : '');
       if (!name) throw toolError('MACHINE_NOT_FOUND', `no machine "${wanted}"; known: ${[here, ...(deps.getPeers?.()?.list?.() || []).map((p) => p.name)].filter(Boolean).join(', ') || 'none'}`);
-      const saved = await notes.set(name, args?.note, 'assistant');
+      const saved = await notes.set(name, toHumanWords(args?.note), 'assistant');
       return { ok: true, machine: name, note: saved?.note || '', tell: 'Say in one sentence what you noted for which machine.' };
     },
   });
@@ -2675,7 +2695,7 @@ export function createRegistry(deps) {
     outgoing: {
       channel: (a) => String(a.channel || '外部平台'),
       filesKey: 'files',
-      fields: [{ key: 'title', label: '标题', optional: true }, { key: 'body', label: '正文', multiline: true }],
+      fields: [{ key: 'title', label: '标题', optional: true }, { key: 'body', label: '正文', multiline: true }, { key: 'topics', label: '话题', optional: true, list: true }],
     },
     description: 'Before you publish or send anything outside through the browser or the phone (小红书, 抖音, B站, 公众号, 微博, a comment, a message to someone), show the human the draft: a card where they can edit the title and text. Wait for it. When they press 「发送」 you get back the final text: publish exactly that, word for word. When they turn it down, do not publish it. (Mail, X and connected apps already show their own draft card: no need there.)',
     risk: RISK.HIGH,
@@ -2684,7 +2704,8 @@ export function createRegistry(deps) {
       properties: {
         channel: { type: 'string', description: 'Where it goes, in the human\'s words: 小红书, 抖音, 公众号, 微博, 某人的微信 …' },
         title: { type: 'string', description: 'Optional title.' },
-        body: { type: 'string', description: 'The text as it will be published.' },
+        body: { type: 'string', description: 'The text as it will be published (topics / hashtags go in topics, not here).' },
+        topics: { type: 'array', items: { type: 'string' }, description: 'Optional: topics / hashtags, without #, when the platform has a box for them (小红书「话题」).' },
         files: { type: 'array', items: { type: 'string' }, description: 'Optional: workspace paths of the pictures or video that go with it (shown on the card).' },
       },
       required: ['channel', 'body'],
@@ -2696,8 +2717,9 @@ export function createRegistry(deps) {
         channel: String(args?.channel || ''),
         ...(args?.title ? { title: String(args.title) } : {}),
         body: String(args?.body || ''),
+        ...(Array.isArray(args?.topics) && args.topics.length ? { topics: args.topics.map(String) } : {}),
         ...(Array.isArray(args?.files) && args.files.length ? { files: args.files } : {}),
-        instruction: 'The human approved this draft (maybe after editing it). Publish exactly this title and text, word for word - 一字不改 - and nothing else. If publishing fails, say so; do not change the text to make it go.',
+        instruction: 'The human approved this draft (maybe after editing it). Publish exactly this title and text, word for word - 一字不改 - and nothing else; the topics go in the platform\'s topic box, each as given. If publishing fails, say so; do not change the text to make it go.',
       };
     },
   });
@@ -2805,7 +2827,7 @@ export function createRegistry(deps) {
         throw toolError(err.code || 'PEER_ERROR', `没改成：${t.machine ? `「${t.machine}」` : ''}${err.message}`);
       }
       const store = deps.getAdjustments?.();
-      const id = store ? await store.record({ machine: t.machine, botId: t.bot.id, botName: t.bot.name || t.bot.id, before: plan.before, after: plan.after, summary: args?.summary, lines: plan.lines, roleChange: plan.roleChange, by: ctx.bot?.id || '' }) : '';
+      const id = store ? await store.record({ machine: t.machine, botId: t.bot.id, botName: t.bot.name || t.bot.id, before: plan.before, after: plan.after, summary: args?.summary, lines: plan.lines, roleChange: plan.roleChange, by: ctx.bot?.id || '', byTurn: ctx.turnId || '' }) : '';
       return {
         changed: true,
         bot: t.bot.name || t.bot.id,

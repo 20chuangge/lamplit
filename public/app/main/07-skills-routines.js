@@ -722,7 +722,9 @@ function thinkCardInfo(data) {
   const a = data.adjust;
   if (a) return { title: `想改「${a.botName}」${a.machine ? `（${a.machine}）` : ''}`, detail: '', facts: [], impact: '同意后马上生效。之后可以在对话里点「撤销」改回去。' };
   const h = data.handoff;
-  if (h) return { title: `想把一件事交给「${h.machine}」${h.bot ? `上的「${h.bot}」` : '上的主助理'}`, detail: '', facts: h.task ? [['要做的事', h.task]] : [], impact: `窗口不动。同意后，以后交给「${h.machine}」不再问你，只告诉你一声。` };
+  if (h) return { title: `想把一件事交给「${h.machine}」${h.bot ? `上的「${h.bot}」` : '上的主助理'}`, detail: '', facts: h.task ? [['要做的事', h.task]] : [], impact: h.waits
+    ? `${h.bot ? `「${h.bot}」` : '那边的主助理'}做完会把结果交回来，我再告诉你。同意后，以后交给「${h.machine}」不再问你，聊天里会写一行交给了谁。`
+    : `你这边不用换窗口，结果在左边「${h.machine}」下面看。同意后，以后交给「${h.machine}」不再问你，只告诉你一声。` };
   return null;
 }
 
@@ -834,6 +836,32 @@ function thinkButtons(data) {
 }
 
 /** 「已改「策略」的规则 · 撤销」 after a change made by talking. */
+/**
+ * Work handed to an assistant on another machine, done (1.5.52 beginner test): shown in the chat
+ * even with the steps hidden - who it went to, and its answer (folded when long).
+ */
+function handoffDoneCard(item) {
+  const out = item.output && typeof item.output === 'object' ? item.output : {};
+  const wrap = el('div', 'adjust-done handoff-done');
+  wrap.appendChild(el('div', 'adjust-done-title', `交给了「${out.machine}」上的「${out.botName || out.botId || '助手'}」`));
+  const reply = String(out.reply || '').trim();
+  if (!reply || reply === '(no reply)') {
+    wrap.appendChild(el('div', 'tiny muted', '它没有回复。'));
+    return wrap;
+  }
+  if (out.status && !['success', 'done', 'ok'].includes(out.status)) wrap.appendChild(el('div', 'tiny muted', '它没做完，下面是它停下前说的。'));
+  wrap.appendChild(el('div', 'tiny muted', '它的回复：'));
+  const text = el('div', 'handoff-reply', reply.length > 300 ? `${reply.slice(0, 300)}…` : reply);
+  wrap.appendChild(text);
+  if (reply.length > 300) {
+    const more = el('button', 'btn tiny', '看全文');
+    more.type = 'button';
+    more.addEventListener('click', () => { text.textContent = reply; more.remove(); });
+    wrap.appendChild(more);
+  }
+  return wrap;
+}
+
 function adjustDoneCard(item) {
   const out = item.output && typeof item.output === 'object' ? item.output : {};
   const wrap = el('div', 'adjust-done');
@@ -866,51 +894,54 @@ function adjustDoneCard(item) {
 }
 
 /* --- X (Settings → 连接应用) ------------------------------------------- */
-const xUi = { view: null };
+// `dataset` stands in for the card's: whether 发帖和回复 is being edited survives a re-render of the grid.
+const xUi = { view: null, dataset: {} };
 
+/** ?relay=… when this page shows another machine in the desktop app: X's sign-in comes back to this computer (1.5.52). */
+function xRelayQuery() {
+  const r = mcpRelay();
+  return r ? `?relay=${encodeURIComponent(r)}` : '';
+}
+
+/** What X's tile needs: signed in or not, the callback to give X. Re-drawn where it is open. */
 async function loadXCard() {
-  const box = $('x-card');
-  if (!box) return;
-  try { xUi.view = await api('/api/x'); } catch { box.hidden = true; return; }
-  renderXCard();
-  // Shown or not as the search and the chips say (1.5.51 test: it showed under 已连接 with only a switched-off part).
-  syncXCardShown();
+  try { xUi.view = await api(`/api/x${xRelayQuery()}`); } catch { xUi.view = null; return; }
+  if ($('mcp-catalog')) renderMcp();
+}
+
+/** X's tile was changed: the grid is drawn again (the tile stays open). */
+function renderXCard() {
+  renderMcp();
 }
 
 /**
- * One X card (1.5.51; X was here twice). Two parts on the same X developer app:
+ * X in 连接应用 (1.5.52: a tile like every app, no card pinned on top). Opened, it has
+ * two parts on the same X developer app:
  *   发帖和回复              sign in on X's own page (OAuth 2.0), every post a draft first
  *   搜帖子、看用户（可选）  X's hosted app (read-only) with the app's Bearer Token -
- *                           the catalog entry marked inCard: 'x', not shown in the grid
+ *                           the catalog entry with detail: 'x'
  */
-function renderXCard() {
-  const box = $('x-card');
+function renderXDetail(app) {
+  const box = el('div', 'mcp-app-body x-detail');
+  box.appendChild(el('div', 'tiny muted', '两部分用的是同一个 X 开发者应用：发帖要在 X 的网页上登录授权，搜帖子只要它的 Bearer Token。'));
   const v = xUi.view;
-  if (!box || !v) return;
-  box.innerHTML = '';
-  const head = el('div', 'x-card-head');
-  head.appendChild(el('span', 'mcp-badge x-badge', 'X'));
-  const t = el('div', 'x-card-title');
-  t.appendChild(el('div', null, 'X（推特）'));
-  t.appendChild(el('div', 'tiny muted', '两部分用的是同一个 X 开发者应用：发帖要在 X 的网页上登录授权，搜帖子只要它的 Bearer Token。'));
-  head.appendChild(t);
-  box.appendChild(head);
   const post = el('div', 'x-part');
   post.appendChild(el('div', 'x-part-title', '发帖和回复'));
-  post.appendChild(el('div', 'tiny muted', v.connected ? `已连接：@${v.username || '你的账号'}` : v.configured ? '应用已填好，还没登录授权' : '助手发的每一条都先给你看草稿，你点「发送」才发'));
-  renderXPost(post, v, box);
+  if (!v) post.appendChild(el('div', 'tiny muted', '这台机器的 Lamplit 还不支持。'));
+  else {
+    post.appendChild(el('div', 'tiny muted', v.connected ? `已连接：@${v.username || '你的账号'}` : v.configured ? '应用已填好，还没登录授权' : '助手发的每一条都先给你看草稿，你点「发送」才发'));
+    renderXPost(post, v, xUi);
+  }
   box.appendChild(post);
   const read = el('div', 'x-part');
   read.appendChild(el('div', 'x-part-title', '搜帖子、看用户（可选）'));
-  renderXRead(read);
+  renderXRead(read, app);
   box.appendChild(read);
+  return box;
 }
 
 /** 搜帖子、看用户: X's hosted app, with the same panels as any connected app. */
-function renderXRead(part) {
-  const inCard = (mcpUi.apps || []).filter((a) => a.inCard === 'x');
-  const app = inCard[0];
-  if (!app) { part.appendChild(el('div', 'tiny muted', '这台机器的 Lamplit 还不支持。')); return; }
+function renderXRead(part, app) {
   const srv = app.server || (mcpUi.servers || []).find((s) => s.catalogId === 'x') || null;
   part.appendChild(el('div', 'tiny muted', srv ? mcpStateLabel(srv) : '只读：让助手搜 X 上的帖子、看用户和话题。用不着就不用接。'));
   if (srv) { part.appendChild(mcpServerPanel(srv)); return; }
@@ -924,9 +955,17 @@ function renderXRead(part) {
   part.appendChild(mcpConnectForm(app));
 }
 
-/** How many of the X card's parts are connected (for 「已连接 N」): 0 or 1. */
+/** Whether X's tile counts as connected (for 「已连接 N」): either part switched on. 0 or 1. */
 function xConnectedCount() {
   return xUi.view?.connected || (mcpUi.servers || []).some((s) => s.catalogId === 'x' && mcpIsOn(s)) ? 1 : 0;
+}
+
+/** X's tile line: signed in, the read part's state, set up but not signed in, or 连接. */
+function xTileState(srv) {
+  if (xUi.view?.connected) return { text: '✓ 已连接', cls: 'ok' };
+  if (srv) return { text: mcpStateLabel(srv), cls: srv.state === 'ready' ? 'ok' : srv.state === 'needs_auth' || srv.state === 'failed' ? 'warn' : '' };
+  if (xUi.view?.configured) return { text: '还没登录授权', cls: 'warn' };
+  return { text: '连接', cls: '' };
 }
 
 /** 发帖和回复: the human's developer app, signing in on X, who may post. */
@@ -983,6 +1022,16 @@ function renderXPost(box, v, card) {
     box.appendChild(row);
     return;
   }
+  // Saved, not signed in yet (1.5.52 beginner test): the callback stays in view, the one X must have.
+  if (!v.connected && v.callback) {
+    box.appendChild(el('div', 'row-note', 'X 后台填的回调地址要是这一行：'));
+    const cbNow = el('input', 'field mono');
+    cbNow.readOnly = true;
+    cbNow.value = v.callback;
+    cbNow.setAttribute('aria-label', '回调地址');
+    cbNow.addEventListener('focus', () => cbNow.select());
+    box.appendChild(cbNow);
+  }
   const row = el('div', 'btn-row');
   const login = el('button', `btn${v.connected ? '' : ' primary'}`, v.connected ? '重新登录授权' : '去 X 登录授权');
   login.type = 'button';
@@ -990,7 +1039,7 @@ function renderXPost(box, v, card) {
   login.addEventListener('click', async () => {
     login.disabled = true;
     try {
-      const r = await api('/api/x/login', { method: 'POST', body: {} });
+      const r = await api('/api/x/login', { method: 'POST', body: { relay: mcpRelay() } });
       await openSignInPage(r.url);
       toast('在打开的 X 页面上登录并点「允许」，完成后回到这里');
     } catch (err) { if (!err.quiet) toast(err.message, true); } finally { login.disabled = false; }
@@ -1010,7 +1059,7 @@ function renderXPost(box, v, card) {
     row.appendChild(out);
   }
   box.appendChild(row);
-  box.appendChild(el('div', 'row-note', '要在这台电脑上的 Lamplit 里点登录：X 会把你送回这台电脑的地址。'));
+  box.appendChild(el('div', 'row-note', '要在电脑上的 Lamplit 里点登录：X 会把你送回你正在用的这台电脑，它再交给设置 X 的那台机器（在别的机器的页面里设置也行）。'));
   if (v.connected) {
     box.appendChild(el('div', 'lbl', '哪些助手能在 X 上发帖（每一条都先给你看草稿）'));
     const picks = el('div', 'x-bots');

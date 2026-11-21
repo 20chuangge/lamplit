@@ -123,9 +123,9 @@ export function createAdjustments({ file } = {}) {
   return {
     load,
     /** -> id. The newest first in list(). */
-    async record({ machine = '', botId, botName = '', before, after, summary = '', lines = [], roleChange = null, by = '' }) {
+    async record({ machine = '', botId, botName = '', before, after, summary = '', lines = [], roleChange = null, by = '', byTurn = '' }) {
       await load();
-      const item = { id: uid('adj'), at: new Date().toISOString(), machine: String(machine || ''), botId: String(botId), botName: String(botName || botId), before, after, summary: String(summary || '').slice(0, 200), lines: lines.slice(0, 40), ...(roleChange ? { roleChange } : {}), ...(by ? { by } : {}) };
+      const item = { id: uid('adj'), at: new Date().toISOString(), machine: String(machine || ''), botId: String(botId), botName: String(botName || botId), before, after, summary: String(summary || '').slice(0, 200), lines: lines.slice(0, 40), ...(roleChange ? { roleChange } : {}), ...(by ? { by } : {}), ...(byTurn ? { byTurn: String(byTurn) } : {}) };
       list.unshift(item);
       list = list.slice(0, KEEP);
       await writeJsonAtomic(file, list);
@@ -140,6 +140,16 @@ export function createAdjustments({ file } = {}) {
       return a;
     },
   };
+}
+
+/**
+ * What the assistant that proposed a change is told when it is undone (1.5.52, F4): it
+ * kept working from the change - wrote it into a machine's line, passed it on in a task.
+ */
+export function undoNote(a) {
+  const what = (a.lines || []).map((l) => (l.op === '~' ? `${l.label}：${l.to} 改回 ${l.from || '原来的'}` : l.op === '+' ? `去掉「${l.text}」` : `加回「${l.text}」`));
+  if (a.roleChange) what.unshift(`职责改回「${a.roleChange.from || '原来的'}」`);
+  return `（已撤销：「${a.botName}」${a.machine ? `（${a.machine}）` : ''}这次的修改都回到原样了${what.length ? `——${what.join('；')}` : ''}。以后照原来的做。）`;
 }
 
 /**

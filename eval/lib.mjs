@@ -105,7 +105,13 @@ const EVERYDAY = new Set(['fs_write', 'fs_mkdir', 'fs_delete', 'memory_write', '
 /** 'approve' | 'deny' for one approval card of a task working in `dir`. */
 export function judgeApproval(card, dir) {
   const tool = String(card?.toolName || card?.tool || '');
-  const args = card?.args || {};
+  // /api/approvals gives the arguments as JSON text (1.5.52, F1: read as an object they
+  // were empty - every command card was refused and every file card approved).
+  let args = card?.args || {};
+  if (typeof args === 'string') {
+    try { args = JSON.parse(args); } catch { return 'deny'; }
+  }
+  if (!args || typeof args !== 'object') return 'deny';
   const home = norm(dir);
   const inside = (p) => {
     const n = norm(p);
@@ -117,10 +123,15 @@ export function judgeApproval(card, dir) {
     return !p || inside(p) || tool.startsWith('routine_') || tool.startsWith('memory_') || tool === 'page_save' ? 'approve' : 'deny';
   }
   if (tool === 'shell') {
-    const cmd = String(args.command || '').replace(/\\/g, '/');
-    // Climbing out of the folder, the system, or rights: no.
-    if (/\.\.\/|\.\.$|\bsudo\b|\bformat\b|reg(\.exe)?\s+(add|delete)|Set-ExecutionPolicy|shutdown|curl\s|wget\s|Invoke-WebRequest/i.test(cmd)) return 'deny';
-    return cmd.includes(home) ? 'approve' : 'deny';
+    // A card for several look-only commands: every one of them must stay in the task folder.
+    const all = Array.isArray(args.commands) && args.commands.length ? args.commands : [args.command];
+    const ok = (c) => {
+      const cmd = String(c || '').replace(/\\/g, '/');
+      // Climbing out of the folder, the system, or rights: no.
+      if (/\.\.\/|\.\.$|\bsudo\b|\bformat\b|reg(\.exe)?\s+(add|delete)|Set-ExecutionPolicy|shutdown|curl\s|wget\s|Invoke-WebRequest/i.test(cmd)) return false;
+      return cmd.includes(home);
+    };
+    return all.every(ok) ? 'approve' : 'deny';
   }
   return 'deny';
 }
@@ -146,12 +157,18 @@ export function summarize(results) {
 const cell = (s) => String(s ?? '').replace(/\|/g, '/').replace(/\s+/g, ' ').trim();
 
 /** The docs/EVAL.md section for one run (no paths, no names: the file is public). */
-export function renderRecord({ version, day, model, currency = 'CNY', results, note = '' }) {
+/** The approval level in words (1.5.52, F2: 0 cards at 放手 and 28 at 标准 are not comparable). */
+export function levelWords(level) {
+  return { careful: '谨慎', standard: '标准', auto: '放手' }[String(level || '')] || '未知';
+}
+
+export function renderRecord({ version, day, model, currency = 'CNY', results, note = '', level = '' }) {
   const s = summarize(results);
   const money = currency === 'USD' ? '$' : '¥';
   const lines = [
     `## ${version} · ${day} · ${cell(model) || '（模型未知）'}`,
     '',
+    ...(level ? [`审批档：${levelWords(level)}`, ''] : []),
     `成功 **${s.passed}/${s.total}**（${s.rate}%），人工干预 ${s.interventions} 次${s.asks ? `，中途问人 ${s.asks} 次` : ''}，${s.tokens.toLocaleString('en-US')} tokens，花费 ${s.cost ? `${money}${s.cost.toFixed(2)}` : '未定价'}，用时 ${Math.round(s.seconds / 60)} 分钟。`,
     ...(note ? ['', cell(note)] : []),
     '',

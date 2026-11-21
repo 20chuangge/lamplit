@@ -156,6 +156,12 @@ export function createXAccount({ file, fetchImpl = (...a) => fetch(...a), now = 
       return { url: url.href };
     },
 
+    /** Did this account start this sign-in (1.5.52: a callback another machine got is handed to the right one)? */
+    hasPending(state) {
+      const p = pending.get(String(state || ''));
+      return Boolean(p) && now() - p.at <= LOGIN_TTL_MS;
+    },
+
     /** X sent the browser back: swap the code for tokens, read the account's name. */
     async finishLogin({ state, code, error } = {}) {
       await load();

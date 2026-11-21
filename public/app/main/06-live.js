@@ -529,7 +529,7 @@ function appendLiveChip(chip) {
   // alive, so keep the typing indicator updated with what is running.
   // Cards the human has to act on (takeover, login form) are not "process":
   // they always show, once the call has finished.
-  const card = chip && isActionCard(chip.name);
+  const card = chip && isActionCard(chip.name, chip);
   if (card && chip.pending) return;
   if (!state.showProcess && !card) {
     if (chip && chip.name) showTyping(typingBotId(), `正在${toolNameLabel(chip.name)}…`);

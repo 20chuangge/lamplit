@@ -20,6 +20,10 @@ npm run eval -- --record
 
 只跑几个：`npm run eval -- --only f1-sort,m2-reply`；只跑难题：`npm run eval -- --hard`；`--verbose` 打出没过那题的每轮回复。单题超时默认 360 秒（`EVAL_TURN_SECONDS`）。
 
+不碰日常用的那台：起一台一次性的测试实例，用 `EVAL_HUB=http://127.0.0.1:端口` 和 `EVAL_LOCAL_KEY=<那台 data\local-key 里的本机钥匙>` 指向它跑（1.5.51 的真模型评测就是这么跑的）。
+
+审批档会改变卡片数量（「标准」下搬文件、删文件、上网、建定时任务都要问，「放手」下基本不问）：脚本开头读 `/api/policy`，在第一行和记录里写明「审批档」，不同档的「人工干预」不要直接比。
+
 ## 记录
 
 花费按 设置 → 用量 里填的单价算；没填单价的模型只记 tokens。

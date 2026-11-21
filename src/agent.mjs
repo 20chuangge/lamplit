@@ -558,6 +558,8 @@ export const REPLY_STYLE = [
   // 1.5.39, every bot on every machine: the human had to open a file to pick replies out, got bare URLs, and options came back as questions.
   '- 结果直接写在聊天里：要看、要挑、要用的东西（条目、草稿、答案、链接）放在回复里，写短。不要让人去文件里自己挑；文件只是存档，最后一行提一句路径即可。',
   '- 链接一律写成可点的 Markdown：[打开…](https://…)，不要给裸网址。',
+  // 1.5.52 (F7): the prompts say "the human"; written out, that read 「告诉人类」「只在人类点头后」.
+  '- 写给人看的字（回复、计划、提醒、档案），称呼对方用「你」，不要写「人类」「用户」。',
   '- 先判断再问：列选项或条目时，每条说值不值得做、优先级和一句理由，从高到低排；不值得做的合成一行。',
   '- 拿不准时，先给出你的建议和理由，再问「这样行吗？」。一条消息最多问一个问题。',
   '- 最后一行说清：他现在要做什么，你接下来做什么（一句话就能答完的回复不用加）。',
@@ -1211,15 +1213,28 @@ export class AgentRuntime {
 
   async loadHistory(botId, limit = 16) {
     const records = await readJsonl(sessionFile(botId));
+    // Lines Lamplit adds itself (the daily note, an undo): joined to the reply before them.
+    const ADDED = new Set(['nudge', 'undo']);
+    const answered = new Set(records.filter((r) => r.kind === 'assistant' && r.text && r.turnId).map((r) => r.turnId));
     const usable = [];
     for (const r of records) {
+      // A turn stopped (or cut off) before it answered (1.5.52, F3): said so, or the next message
+      // read the old one as still to do and did it again.
+      if (r.kind === 'turn' && r.turnId && !answered.has(r.turnId) && ['cancelled', 'failed', 'timeout', 'max_steps', 'budget', 'error'].includes(r.status)) {
+        // Right after that turn's own message, even when other lines came in between (the stop
+        // button says 「停下」 as a message of its own, answered before the stopped turn ends).
+        let at = -1;
+        for (let i = usable.length - 1; i >= 0; i -= 1) if (usable[i].kind === 'user' && usable[i].turnId === r.turnId) { at = i; break; }
+        if (at >= 0 && usable[at + 1]?.kind !== 'assistant') usable.splice(at + 1, 0, { kind: 'assistant', text: '（这一轮被停下了，没做完。用户没说「继续」，就不要再做这件事。）', turnId: r.turnId });
+        continue;
+      }
       if (!((r.kind === 'user' || r.kind === 'assistant') && r.text)) continue;
       const prev = usable[usable.length - 1];
       // An opening line and a reply cut into parts belong to one answer.
       if (prev && r.kind === 'assistant' && prev.kind === 'assistant' && r.turnId && prev.turnId === r.turnId) prev.text = `${prev.text}\n\n${r.text}`;
-      // The daily 「有什么在等你」 (1.5.45) follows a reply of its own: one assistant message, never two in a row.
-      else if (prev && r.kind === 'assistant' && prev.kind === 'assistant' && (r.source === 'nudge' || prev.source === 'nudge')) prev.text = `${prev.text}\n\n${r.source === 'nudge' ? '（每天的提醒）' : ''}${r.text}`;
-      else usable.push({ kind: r.kind, text: String(r.text), turnId: r.turnId, ...(r.source === 'nudge' ? { source: 'nudge' } : {}) });
+      // The daily 「有什么在等你」 (1.5.45), an undo (1.5.52, F4) follow a reply of their own: one assistant message, never two in a row.
+      else if (prev && r.kind === 'assistant' && prev.kind === 'assistant' && (ADDED.has(r.source) || ADDED.has(prev.source))) prev.text = `${prev.text}\n\n${r.source === 'nudge' ? '（每天的提醒）' : ''}${r.text}`;
+      else usable.push({ kind: r.kind, text: String(r.text), turnId: r.turnId, ...(ADDED.has(r.source) ? { source: r.source } : {}) });
     }
     return usable.slice(historyStart(usable.length, limit)).map((r) => ({ role: r.kind, content: r.text }));
   }

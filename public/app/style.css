@@ -3618,6 +3618,7 @@ button.roster-head:hover { color: var(--text); }
 .adjust-line.minus { color: var(--danger, #e5484d); background: color-mix(in srgb, var(--danger, #e5484d) 10%, transparent); text-decoration: line-through; text-decoration-thickness: 1px; }
 .adjust-done { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--panel-2); max-width: 520px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .adjust-done-title { font-size: 13px; color: var(--text); }
+.handoff-reply { font-size: 13px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .adjust-done .adjust-diff { margin: 0; align-self: stretch; }
 .x-card { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 12px; }
 .x-card[hidden] { display: none; }

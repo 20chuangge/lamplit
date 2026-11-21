@@ -35,7 +35,7 @@ function renderMessages() {
   // "像发消息一样" — the turn's tool calls are process, not conversation.
   // They live in the Activity panel; the transcript only shows what was said.
   const visible = state.messages.filter(
-    (m) => m.role !== 'status' && (state.showProcess || m.role !== 'tool' || isActionCard(m.name)),
+    (m) => m.role !== 'status' && (state.showProcess || m.role !== 'tool' || isActionCard(m.name, m)),
   );
   const statuses = state.messages.filter((m) => m.role === 'status');
 
@@ -434,7 +434,7 @@ function renderItem(item) {
     case 'tool': {
       const node = toolChip(item);
       // Action cards sit in the replies' column, like a reply.
-      if (!isActionCard(item.name)) return node;
+      if (!isActionCard(item.name, item)) return node;
       const row = el('div', 'row assistant card-row');
       row.appendChild(node);
       return row;
@@ -1886,13 +1886,20 @@ function bridgeClipboard(frame) {
 }
 
 /** Tool calls that put something in front of the human to act on. */
-function isActionCard(name) {
+function isActionCard(name, item = null) {
+  if (name === 'bot_message') return peerHandoffDone(item);
   return name === 'request_takeover' || name === 'request_login' || name === 'bot_adjust';
+}
+
+/** A hand-off to another machine that came back (its card shows in the chat). */
+function peerHandoffDone(item) {
+  return Boolean(item && item.name === 'bot_message' && !item.pending && item.ok && item.output?.machine);
 }
 
 function toolChip(item) {
   // A change made to a bot by talking (1.5.45): what changed, and 「撤销」.
   if (item.name === 'bot_adjust' && !item.pending && item.ok && item.output?.changed) return adjustDoneCard(item);
+  if (item.name === 'bot_message' && !item.pending && item.ok && item.output?.machine) return handoffDoneCard(item);
   if (item.name === 'request_takeover' && !item.pending) return takeoverCard(item);
   if (item.name === 'request_login' && !item.pending) return loginCard(item);
   const info = describeTool(item.name, item.args);

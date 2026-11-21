@@ -493,7 +493,8 @@ function showTyping(botId, label = '正在处理…') {
   let row = messagesEl.querySelector('.typing-row');
   if (!row) {
     row = el('div', 'typing-row');
-    row.innerHTML = '<span class="typing-dots"><i></i><i></i><i></i></span><span class="typing-label"></span>';
+    // No three dots (1.5.56): the bot's face in the header thinks and works now; the line says what.
+    row.innerHTML = '<span class="typing-label"></span>';
   }
   // Always under the newest message (a message sent meanwhile goes above it).
   if (messagesEl.lastElementChild !== row) messagesEl.appendChild(row);

@@ -787,8 +787,12 @@ function openSettings(section) {
   loadPages().catch(() => {});
   loadFeishu().catch(() => {});
   loadModels().catch(() => {});
-  closeSidebar();
-  closePanel();
+  // Phone: what was open, taken before it is closed; one history step (1.5.56).
+  settingsNav.opened(section, state.settingsOpen);
+  // On a phone the home list and the panel stay under the sheet until it has faded in (160 ms):
+  // shut at once, the chat behind them flashed (1.5.56).
+  if (isMobile()) setTimeout(() => { if (state.settingsOpen) { closeSidebar(); closePanel(); } }, 200);
+  else { closeSidebar(); closePanel(); }
   state.settingsOpen = true;
   $('settings-drawer').classList.add('open');
   $('settings-drawer').setAttribute('aria-hidden', 'false');
@@ -852,12 +856,15 @@ async function saveDesktopMode() {
   } catch (err) { toast(`保存失败：${err.message}`, true); }
 }
 
-function closeSettings() {
+function closeSettings(opts) {
+  // Phone: back where it was opened from (opts is a click event when wired straight to a button).
+  const from = state.settingsOpen ? settingsNav.closed({ viaHistory: opts?.viaHistory === true }) : null;
   state.settingsOpen = false;
   $('settings-drawer').classList.remove('open');
   $('settings-drawer').setAttribute('aria-hidden', 'true');
   $('settings-scrim').classList.remove('show');
   normalizeOverlays();
+  restoreSettingsView(from);
   if (!isMobile()) $('settings-btn').focus();
 }
 
@@ -897,6 +904,10 @@ function attentionBadge(key) {
   } else if (item.working) {
     kind = 'working';
     label = '正在工作';
+  } else if (item.failed) {
+    // Redesign step 2: the last turn got stuck - a red dot until the next one starts.
+    kind = 'failed';
+    label = `上一次：${stuckLine(item.failed.status)}`;
   } else if (unread) {
     kind = 'unread';
     label = '有新结果';
@@ -950,9 +961,16 @@ function rosterLine(key, { idle = '', last = '', group = false } = {}) {
     if (doing.tool) return { kind: 'working', text: `正在${toolNameLabel(doing.tool)}…` };
     return { kind: 'working', text: '正在工作…' };
   }
+  if (item?.failed) return { kind: 'failed', text: stuckLine(item.failed.status), hint: '上一次没做完' };
   // The chat on screen has no "new result": the human is looking at it.
   if (item?.unread && key !== currentChatKey()) return { kind: 'unread', text: last ? `做完了：${last}` : '做完了，有新结果' };
   return { kind: '', text: idle };
+}
+
+/** Why the last turn got stuck, as the list says it: 「出错了，没做完」. */
+function stuckLine(status) {
+  if (status === 'stalled') return statusWords(status);
+  return `${status === 'failed' || status === 'error' ? '出错了' : statusWords(status)}，没做完`;
 }
 
 /** That line as a node: in a narrow list the words give way, the count ("3/8") stays. */
@@ -993,6 +1011,7 @@ function loadAttention() {
     syncDoneButton();
     syncTypingWithAttention();
     renderDecisionStrip();
+    lampRefresh();
   }, 120);
 }
 
@@ -1223,6 +1242,7 @@ function setConnected(ok) {
   state.conn.fails += 1;
   if (state.conn.fails < 2 || state.conn.offline) return;
   state.conn.offline = true;
+  lampRefresh(); // the faces close their eyes until the machine answers again
   if (banner) {
     $('conn-text').textContent = onLocalMachine()
       ? '连不上本机的 Lamplit 服务，正在重连…'

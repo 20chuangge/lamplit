@@ -194,7 +194,8 @@ function choiceButton(key, title, desc, onPick) {
 function emptyMark() {
   const bot = botById(state.botId);
   if (bot) {
-    const av = avatarNode(bot, 54, 'empty-avatar');
+    const av = el('span', 'empty-avatar');
+    lampMount(av, bot, 54, 'empty-avatar');
     av.setAttribute('aria-hidden', 'true');
     return av;
   }

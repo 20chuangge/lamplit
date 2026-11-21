@@ -388,11 +388,8 @@ function renderCustomizerPreview() {
   const bot = currentAvatarBot();
   const host = $('avatar-preview');
   if (!bot || !host) return;
-  const a = avatarOf(bot);
-  host.className = `av av-s-${a.shape}`;
-  host.style.setProperty('--av-color', a.color);
-  host.innerHTML = '';
-  appendAvatarContent(host, a);
+  // The preview is alive too: a new shape or colour shows the face that will look back.
+  lampMount(host, bot, 96);
 }
 
 function renderCustomizer() {

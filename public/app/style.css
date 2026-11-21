@@ -2343,6 +2343,9 @@
   .chat-head .sub { font-size: var(--t-xs); color: var(--dim); max-width: 46vw; line-height: var(--lh-tight); margin-top: 1px; }
   .chat-head-actions { display: flex; align-items: center; gap: 6px; flex: none; }
   .chat-head .icon-btn { width: 32px; height: 32px; border-radius: 8px; }
+  /* 「任务」 (1.5.56): the labelled button sizes to icon + word; the rule above made it 32px and squeezed the icon away. */
+  .chat-head .icon-btn.with-label { width: auto; }
+  .icon-btn.with-label svg { flex: none; }
   .pill.soft { border-color: transparent; background: var(--panel-2); color: var(--dim); font-size: var(--t-xs); padding: 3px 9px; }
   .pill.warn {
     border-color: var(--accent-line); background: var(--accent-soft);
@@ -2728,7 +2731,7 @@
     #nav-toggle { display: grid; }
     .chat-head .sub { max-width: 42vw; }
     .chat-head .icon-btn { width: var(--touch); height: var(--touch); }
-    #nav-toggle, #panel-toggle { width: 36px; height: 36px; }
+    #nav-toggle, #panel-toggle { width: 36px; height: 36px; min-height: 36px; } /* square (the touch rule made them 36x44) */
     #panel-toggle .work-label { display: none; } /* narrow: the icon alone (1.5.54) */
     #panel-toggle.with-label { padding: 0; justify-content: center; }
     .chat-head-actions { gap: 2px; }
@@ -3693,3 +3696,112 @@ button.roster-head:hover { color: var(--text); }
 .restore-mode b { display: block; font-size: var(--t-sm); margin-bottom: 2px; }
 .restore-panel .lbl { display: block; margin-top: 14px; }
 .restore-panel .warn-note { margin-top: 10px; }
+/* --- redesign step 2: the living avatar (11b-lamp.js) -------------------------
+   Large faces are inline SVG that clip themselves; the ring sits outside the
+   shape. List faces stay the cached face images: other eyes, a soft glow while
+   it works, grey when its machine is away. Nothing here runs per frame. */
+.av.lamp-live { background: none; overflow: visible; -webkit-mask-image: none; mask-image: none; }
+.lamp-live svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.lamp-live .e-open { transform-box: fill-box; transform-origin: center; }
+.lamp-live .e-happy, .lamp-live .e-shut, .lamp-live .e-half { display: none; }
+.lamp-live[data-state="done"] .e-open { display: none; }
+.lamp-live[data-state="done"] .e-happy { display: inline; }
+.lamp-live[data-state="offline"] .e-open { display: none; }
+.lamp-live[data-state="offline"] .e-shut { display: inline; }
+.lamp-live[data-state="stuck"] .e-open { display: none; }
+.lamp-live[data-state="stuck"] .e-half { display: inline; }
+.lamp-live .lamp-glow { opacity: 0; transition: opacity 600ms var(--ease); }
+.lamp-live .lamp-body { transform-box: fill-box; transform-origin: 50% 60%; }
+.lamp-live .lamp-ring { fill: none; stroke: transparent; stroke-width: 5; transition: stroke 300ms var(--ease); }
+/* 在想: it breathes, eyes up. 在做: the lamp inside glows on and off. */
+.lamp-live[data-state="think"] .lamp-body { animation: lamp-breathe 2.6s ease-in-out infinite; }
+.lamp-live[data-state="think"] .lamp-glow { opacity: 0.45; }
+.lamp-live[data-state="work"] .lamp-glow { animation: lamp-glow 2.2s ease-in-out infinite; }
+/* 等你: a violet ring that slowly brightens, and a violet badge. 卡住: a red badge. */
+.lamp-live[data-state="wait"] .lamp-ring { stroke: var(--accent); animation: lamp-ring 2s ease-in-out infinite; }
+.lamp-live .lamp-badge {
+  display: none; position: absolute; right: -3px; bottom: -3px; pointer-events: none;
+  width: 30%; height: 30%; min-width: 9px; min-height: 9px; max-width: 16px; max-height: 16px;
+  border-radius: 50%; box-shadow: 0 0 0 2px var(--bg);
+}
+.lamp-live[data-state="wait"] .lamp-badge { display: block; background: var(--accent); }
+.lamp-live[data-state="stuck"] .lamp-badge { display: block; background: var(--danger); }
+/* A picture keeps its picture: only the ring says the state. */
+.lamp-live[data-img][data-state="work"] .lamp-ring, .lamp-live[data-img][data-state="think"] .lamp-ring { stroke: var(--text); animation: lamp-ring 2.2s ease-in-out infinite; }
+.lamp-live[data-img][data-state="done"] .lamp-ring { stroke: var(--ok); }
+/* 机器离线: eyes shut, the lamp off, grey and dim. */
+.lamp-live[data-state="offline"] svg { filter: grayscale(1); opacity: 0.55; }
+.lamp-live[data-state="offline"] .lamp-glow { opacity: 0; animation: none; }
+/* 做完了: one hop. */
+.lamp-live.lamp-hop[data-state="done"] .lamp-body { animation: lamp-hop 520ms ease-out 1; }
+@keyframes lamp-glow { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@keyframes lamp-breathe { 50% { transform: scale(1.035) translateY(-1.5%); } }
+@keyframes lamp-ring { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@keyframes lamp-hop { 30% { transform: translateY(-12%) scale(1.04, 0.97); } 60% { transform: translateY(0) scale(0.98, 1.03); } }
+/* Still (系统「减少动态效果」or 外观 → 头像动起来 off): the state shows, nothing moves. */
+html.lamp-still .lamp-live .lamp-body, html.lamp-still .lamp-live .lamp-glow, html.lamp-still .lamp-live .lamp-ring { animation: none !important; transition: none; }
+html.lamp-still .lamp-live[data-state="work"] .lamp-glow { opacity: 0.9; }
+@media (prefers-reduced-motion: reduce) {
+  .lamp-live .lamp-body, .lamp-live .lamp-glow, .lamp-live .lamp-ring { animation: none !important; transition: none; }
+  .lamp-live[data-state="work"] .lamp-glow { opacity: 0.9; }
+}
+.empty-avatar.lamp-live { border-radius: 0; }
+/* 在想 / 在做 on a large face: the same small turning ring as in the list (1.5.56 beginner test:
+   at 30 px in the header the lamp alone was easy to miss). */
+.lamp-live[data-state="work"] .lamp-badge, .lamp-live[data-state="think"] .lamp-badge {
+  display: block; box-sizing: border-box; background: var(--bg);
+  border: 2px solid var(--lamp-track); border-top-color: var(--text); animation: lamp-spin 0.9s linear infinite;
+}
+html.lamp-still .lamp-live .lamp-badge { animation: none; }
+@media (prefers-reduced-motion: reduce) { .lamp-live .lamp-badge { animation: none; } }
+
+/* The list. The shape mask moves from the avatar to its face layer, so a
+   badge (and the violet ring of 等你) can sit outside the shape:
+     在想 / 在做  a small turning ring at the corner, and a lit face
+     等你         a violet ring and a violet dot
+     卡住         a red dot
+     机器离线     grey, the whole row faded
+   (1.5.56 beginner test: working and stuck did not show without reading.)
+   Only a working bot's ring turns - a CSS rotation, no script, still when motion is off. */
+.av[data-lamp] { -webkit-mask-image: none; mask-image: none; background: none; overflow: visible; }
+.av[data-lamp] > .av-face, .av[data-lamp] > .av-img, .av[data-lamp]::after {
+  -webkit-mask-image: var(--av-mask); mask-image: var(--av-mask);
+  -webkit-mask-size: 100% 100%; mask-size: 100% 100%; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+}
+.av[data-lamp].has-image > .av-img { background: var(--av-color); }
+.av[data-lamp="work"]::after, .av[data-lamp="think"]::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--on-color) 55%, transparent), transparent 66%);
+}
+/* 在做: the lamp in the face pulses (a CSS opacity change on the few working rows). */
+.av[data-lamp="work"]::after { animation: lamp-glow 2.2s ease-in-out infinite; }
+html.lamp-still .av[data-lamp="work"]::after { animation: none; opacity: 0.9; }
+@media (prefers-reduced-motion: reduce) { .av[data-lamp="work"]::after { animation: none; opacity: 0.9; } }
+:root { --lamp-track: color-mix(in srgb, var(--dim) 60%, transparent); }
+.av[data-lamp]::before {
+  position: absolute; right: -3px; bottom: -3px; z-index: 1; pointer-events: none;
+  width: 13px; height: 13px; box-sizing: border-box; border-radius: 50%; box-shadow: 0 0 0 2px var(--bg-2);
+}
+.av[data-lamp="work"]::before, .av[data-lamp="think"]::before {
+  content: ""; background: var(--bg-2); border: 2.5px solid var(--lamp-track); border-top-color: var(--text);
+  animation: lamp-spin 0.9s linear infinite;
+}
+.av[data-lamp="wait"]::before {
+  content: "!"; background: var(--accent-solid); color: var(--on-accent);
+  font: 700 var(--t-xs)/13px var(--sans); text-align: center;
+}
+.av[data-lamp="stuck"]::before { content: ""; background: var(--danger); }
+@keyframes lamp-spin { to { transform: rotate(360deg); } }
+html.lamp-still .av[data-lamp]::before { animation: none; }
+@media (prefers-reduced-motion: reduce) { .av[data-lamp]::before { animation: none; } }
+.av[data-lamp="offline"] { filter: grayscale(1); }
+.bot:has(.bot-av[data-lamp="offline"]) { opacity: 0.6; }
+.bot.remote.off .bot-av[data-lamp="offline"] { opacity: 1; }
+.av[data-lamp="wait"] {
+  filter: drop-shadow(0 0 1px var(--accent)) drop-shadow(0 0 1px var(--accent)) drop-shadow(0 0 1.5px var(--accent));
+}
+/* The dot at the row's end: working is a hollow ring, a new result a solid dot (the two greys looked alike). */
+.att.working i { background: none; box-shadow: inset 0 0 0 2px var(--text); animation-name: att-ring; }
+@keyframes att-ring { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+.att.failed i { background: var(--danger); }
+.bot-preview.st-failed { color: var(--danger-text); }

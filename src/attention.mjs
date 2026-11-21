@@ -7,6 +7,10 @@
 //   needsYou  an approval card is open, or the turn ended waiting for a login
 //             or a takeover (kept until that chat's next turn starts)
 //   unread    a turn ended after the human last looked at that chat
+//   failed    the last turn ended stuck (the model failed, an error or a timeout,
+//             the day's budget, no progress, the step limit), kept until that
+//             chat's next turn starts
+//             (redesign step 2: the avatar's 出错了 face)
 // "Looked at" is POST /api/attention/seen from whichever window shows the chat,
 // so a phone and the desktop agree. Seen times and waits survive a restart.
 //
@@ -17,6 +21,9 @@
 //   asking the question a step of its checklist or board waits on the human for
 
 import fsp from 'node:fs/promises';
+
+/** Turn endings that mean it got stuck (not a stop the human asked for, not a wait). */
+export const STUCK_STATUSES = new Set(['failed', 'error', 'timeout', 'budget', 'stalled', 'max_steps']);
 
 const keyOf = (ev) => (ev.groupId ? `group:${ev.groupId}` : ev.botId ? `bot:${ev.botId}` : null);
 
@@ -57,7 +64,7 @@ export function createAttention({ file, bus, pending = null }) {
   const asks = new Map();         // approvalId -> {tool, botId, botName, count?}
   const doing = new Map();        // key -> {text, tool} of the work in progress
   const plans = new Map();        // key -> planProgress() of its open checklist / board
-  let saved = { seen: {}, result: {}, waiting: {} };
+  let saved = { seen: {}, result: {}, waiting: {}, failed: {} };
   let saveTimer = null;
   let changeTimer = null;
 
@@ -100,6 +107,7 @@ export function createAttention({ file, bus, pending = null }) {
     delete saved.seen[key];
     delete saved.result[key];
     delete saved.waiting[key];
+    delete saved.failed[key];
     working.delete(key);
     doing.delete(key);
     plans.delete(key);
@@ -120,7 +128,7 @@ export function createAttention({ file, bus, pending = null }) {
         if (!ev.aside && !doing.get(key)?.text) doing.set(key, { ...doing.get(key), text: requestLine(ev.text) });
         // The human answered (or something else started a turn here): the
         // wait for a login or a takeover is over.
-        if (saved.waiting[key]) { delete saved.waiting[key]; persist(); }
+        if (saved.waiting[key] || saved.failed[key]) { delete saved.waiting[key]; delete saved.failed[key]; persist(); }
         changed();
         break;
       }
@@ -133,6 +141,11 @@ export function createAttention({ file, bus, pending = null }) {
         prevResult.set(key, saved.result[key] || 0);
         saved.result[key] = Date.parse(ev.ts) || Date.now();
         if (ev.waitingFor) saved.waiting[key] = { kind: ev.waitingFor, text: String(ev.waitingText || ev.summary || '').slice(0, 300) };
+        // The chat's last turn is what its face shows: stuck, or fine again.
+        if (!working.has(key)) {
+          if (STUCK_STATUSES.has(ev.status)) saved.failed[key] = { status: ev.status };
+          else delete saved.failed[key];
+        }
         persist();
         changed();
         break;
@@ -181,16 +194,16 @@ export function createAttention({ file, bus, pending = null }) {
     async load() {
       try {
         const data = JSON.parse(await fsp.readFile(file, 'utf8'));
-        saved = { seen: data.seen || {}, result: data.result || {}, waiting: data.waiting || {} };
+        saved = { seen: data.seen || {}, result: data.result || {}, waiting: data.waiting || {}, failed: data.failed || {} };
       } catch { /* first run */ }
       bus.subscribe(onEvent);
     },
 
-    /** -> {items: {key: {working, needsYou, unread, waiting?, doing?, ask?, asking?}}, needsYou, unread, working} */
+    /** -> {items: {key: {working, needsYou, unread, failed?, waiting?, doing?, ask?, asking?}}, needsYou, unread, working} */
     snapshot() {
       syncApprovals();
       const asking = [...plans].filter(([, p]) => p.waiting || p.held).map(([k]) => k);
-      const keys = new Set([...working.keys(), ...approvals.values(), ...Object.keys(saved.waiting), ...Object.keys(saved.result), ...asking]);
+      const keys = new Set([...working.keys(), ...approvals.values(), ...Object.keys(saved.waiting), ...Object.keys(saved.result), ...Object.keys(saved.failed), ...asking]);
       const items = {};
       const totals = { needsYou: 0, unread: 0, working: 0 };
       for (const key of keys) {
@@ -202,12 +215,13 @@ export function createAttention({ file, bus, pending = null }) {
         };
         if (open) item.approvals = open;
         if (saved.waiting[key]) item.waiting = saved.waiting[key];
+        if (saved.failed[key] && !item.working) item.failed = saved.failed[key];
         // A step that waits for the human's answer: said on the line (not counted as needsYou).
         const plan = plans.get(key);
         if (plan?.waiting) item.asking = { question: plan.question || '', count: plan.waiting };
         // A parked checklist of its own waits on your reply - unless the bot is busy with something else now.
         else if (plan?.held && !working.has(key)) item.asking = { question: '', count: 1 };
-        if (!item.working && !item.needsYou && !item.unread && !item.asking) continue;
+        if (!item.working && !item.needsYou && !item.unread && !item.asking && !item.failed) continue;
         if (open) {
           const [firstId] = [...approvals].find(([, k]) => k === key) || [];
           if (asks.has(firstId)) item.ask = asks.get(firstId);
@@ -252,7 +266,7 @@ export function createAttention({ file, bus, pending = null }) {
     /** Drop every key that is not a live bot or group (left from older versions). */
     prune(liveKeys) {
       const live = new Set(liveKeys);
-      const stale = new Set([...Object.keys(saved.seen), ...Object.keys(saved.result), ...Object.keys(saved.waiting)].filter((k) => !live.has(k)));
+      const stale = new Set([...Object.keys(saved.seen), ...Object.keys(saved.result), ...Object.keys(saved.waiting), ...Object.keys(saved.failed)].filter((k) => !live.has(k)));
       for (const key of stale) forget(key);
       return stale.size;
     },

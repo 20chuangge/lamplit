@@ -99,16 +99,32 @@ function isLightColor(hex) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.45;
 }
 
-function faceSvg(color, zoom = 1) {
-  const key = `${String(color || AVATAR_DEFAULT.color).trim().toLowerCase()}@${zoom}`;
+/* Eyes for a state (redesign step 2), drawn once per colour and cached: a list
+   of avatars changes its face, never animates it. open / up (thinking) /
+   down (working) / happy (done) / half (stuck) / shut (offline, no model). */
+const FACE_EYES = {
+  open: (x, ink) => `<rect x='${x}' y='39' width='8.5' height='15' rx='4.25' fill='#000' opacity='.16' transform='translate(0 1.6)'/>`
+    + `<rect x='${x}' y='39' width='8.5' height='15' rx='4.25' fill='${ink}'/>`,
+  up: (x, ink) => `<rect x='${x + 2.5}' y='35' width='8.5' height='15' rx='4.25' fill='${ink}'/>`,
+  down: (x, ink) => `<rect x='${x}' y='43' width='8.5' height='13' rx='4.25' fill='${ink}'/>`,
+  happy: (x, ink) => `<path d='M${x - 0.5},50 q4.75,-8 9.5,0' fill='none' stroke='${ink}' stroke-width='3.8' stroke-linecap='round'/>`,
+  // 卡住: drooping lids, the outer corner lower - reads as "not right" even at 38 px.
+  half: (x, ink) => (x < 50
+    ? `<path d='M${x - 1},48.5 L${x + 9.5},44.5 L${x + 9.5},50 Q${x + 9.5},55.5 ${x + 4.25},55.5 Q${x - 1},55.5 ${x - 1},50 Z' fill='${ink}'/>`
+    : `<path d='M${x - 1},44.5 L${x + 9.5},48.5 L${x + 9.5},50 Q${x + 9.5},55.5 ${x + 4.25},55.5 Q${x - 1},55.5 ${x - 1},50 Z' fill='${ink}'/>`),
+  shut: (x, ink) => `<path d='M${x},48 h8.5' fill='none' stroke='${ink}' stroke-width='3.4' stroke-linecap='round' opacity='.85'/>`,
+};
+
+function faceSvg(color, zoom = 1, eyes = 'open') {
+  const look = FACE_EYES[eyes] ? eyes : 'open';
+  const key = `${String(color || AVATAR_DEFAULT.color).trim().toLowerCase()}@${zoom}${look === 'open' ? '' : `:${look}`}`;
   const cached = faceCache.get(key);
   if (cached) return cached;
   const bg = /^#[0-9a-f]{3,8}$/.test(String(color || '').trim().toLowerCase())
     ? String(color).trim().toLowerCase()
     : AVATAR_DEFAULT.color;
   const ink = isLightColor(bg) ? '#1c1a17' : '#fff';
-  const eye = (x) => `<rect x='${x}' y='39' width='8.5' height='15' rx='4.25' fill='#000' opacity='.16' transform='translate(0 1.6)'/>`
-    + `<rect x='${x}' y='39' width='8.5' height='15' rx='4.25' fill='${ink}'/>`;
+  const eye = (x) => FACE_EYES[look](x, ink);
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs>`
     + `<linearGradient id='l' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#fff' stop-opacity='.26'/><stop offset='.55' stop-color='#fff' stop-opacity='0'/><stop offset='1' stop-color='#000' stop-opacity='.16'/></linearGradient>`
     + `</defs>`
@@ -133,7 +149,8 @@ function installAvatarStyles() {
     const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>`
       + `<path fill='white' fill-rule='evenodd' d='${path}'/></svg>`;
     const url = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-    return `.av-s-${id}{-webkit-mask-image:${url};mask-image:${url}}`;
+    // --av-mask: the same shape for a face layer, when the ring of 「等你」 sits outside it (11b-lamp.js).
+    return `.av-s-${id}{-webkit-mask-image:${url};mask-image:${url};--av-mask:${url}}`;
   });
   try {
     const style = document.createElement('style');
@@ -197,12 +214,8 @@ function avatarNode(bot, size = 52, className = '') {
 function renderChatAvatar(bot) {
   const host = $('chat-avatar');
   if (!host || !bot) return;
-  const a = avatarOf(bot);
-  host.className = `av av-s-${a.shape} chat-avatar`;
-  host.style.setProperty('--av-size', '30px');
-  host.style.setProperty('--av-color', a.color);
-  host.innerHTML = '';
-  appendAvatarContent(host, a);
+  // A living face (14-lamp.js): it looks around and shows what the bot is doing.
+  lampMount(host, bot, 30, 'chat-avatar');
   host.setAttribute('aria-label', `更换 ${bot.name} 的头像`);
   host.title = `更换 ${bot.name} 的头像`;
 }

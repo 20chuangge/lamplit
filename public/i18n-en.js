@@ -79,6 +79,11 @@ window.DESK_I18N_EN = {
   "跟随系统": "System",
   "切换立即生效，只记在这台设备上。": "Takes effect immediately and is remembered on this device only.",
   "在对话里显示工具过程": "Show tool steps in the conversation",
+  "头像动起来：眼睛跟着你看、会眨眼": "Living avatars: eyes follow you and blink",
+  "上一次：{0}": "Last time: {0}",
+  "{0}，没做完": "{0}, did not finish",
+  "上一次没做完": "Did not finish last time",
+  "关掉后头像不再动，但还是看得出它在做、在等你还是做完了。系统开了「减少动态效果」时也不动。": "Off: avatars stay still, but you can still tell whether a bot is working, waiting for you or done. They also stay still when your system asks for reduced motion.",
   "时区": "Time zone",
   "定时任务、时间和日志都按这个时区理解。用远程机器时，可以让它跟着那台机器走。": "Routines, times and logs use this time zone. On a remote machine you can follow that machine's zone.",
   "跟随这台设备": "This device",
@@ -3180,4 +3185,6 @@ window.DESK_I18N_EN = {
   "等太久没人点，这一步自动取消了": "Nobody answered in time; this step was cancelled",
   "Lamplit 重启过，这张卡已经失效": "Lamplit restarted; this card no longer applies",
   "等太久没人点，这一步没做。": "Nobody answered in time; this step was not done.",
+  // 1.5.56 the group hint on a phone
+  "@ 可指定谁来答…": "@ to pick who answers…",
 };

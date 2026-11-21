@@ -130,11 +130,7 @@ function openBotEdit(botId, options = {}) {
   renderBotVoiceSelect(bot);
   renderAbilities(bot);
   $('botedit-note').hidden = true;
-  const preview = $('botedit-preview');
-  preview.className = `av av-s-${avatarOf(bot).shape}`;
-  preview.style.setProperty('--av-color', avatarOf(bot).color);
-  preview.innerHTML = '';
-  appendAvatarContent(preview, avatarOf(bot));
+  lampMount($('botedit-preview'), bot, 60);
 
   // The way the 「主助理不能删」 note points to (1.5.33, C8).
   const prim = $('botedit-primary');
@@ -975,7 +971,8 @@ function updateComposerMode() {
   } else if (isGroupMode()) {
     const group = groupById(state.groupId);
     const coordinator = groupCoordinator(group);
-    input.placeholder = `发到「${group ? group.name : '群组'}」· 输入 @ 指定谁来回答，不指定就由 ${coordinator ? coordinator.name : '协调者'} 先答…`;
+    // A phone has room for a short line only, and the group's name is in the header (1.5.56: cut off).
+    input.placeholder = isMobile() ? '@ 可指定谁来答…' : `发到「${group ? group.name : '群组'}」· 输入 @ 指定谁来回答，不指定就由 ${coordinator ? coordinator.name : '协调者'} 先答…`;
   } else {
     const title = botById(state.botId)?.name || $('chat-title').textContent || '你的助手';
     const pad = padName(title);
@@ -1296,6 +1293,7 @@ function botRow(bot) {
     row.setAttribute('aria-pressed', active ? 'true' : 'false');
 
     const av = avatarNode(bot, 38, 'bot-av');
+    lampMarkRow(av, bot);
     av.setAttribute('role', 'img');
     av.setAttribute('aria-label', `${bot.name} 的头像，点按自定义`);
     av.title = '自定义头像';
@@ -1394,7 +1392,10 @@ async function selectBot(id, { keepHome = false } = {}) {
   }
   // Picking a teammate always dismisses the drawers, on any width (not the
   // chat a phone loads behind its home page at start).
+  // From the home list on a phone: one back step, so the back key comes back to it (1.5.56).
+  const fromHome = document.body.classList.contains('m-home');
   if (!keepHome) { closeSidebar(); closePanel(); }
+  if (fromHome && !keepHome) chatNav.entered();
   const bot = botById(id);
   renderBots();
   if (!bot) return;

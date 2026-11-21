@@ -21,6 +21,7 @@ export const MAIN_PARTS = [
   'app/main/09-apps.js',
   'app/main/10-computer.js',
   'app/main/11-machines.js',
+  'app/main/11b-lamp.js',
   'app/main/12-wiring.js',
   'app/main/13-backup.js',
 ];

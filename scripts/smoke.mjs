@@ -242,9 +242,11 @@ async function main() {
     await stage('1.5.54: one-click backup and restore', async () => (await import('./smoke-backup.mjs')).backupChecks({ check, readText }));
     await stage('1.5.54: what a newcomer tripped over, and three queued items', async () => (await import('./smoke-ux1554.mjs')).uxChecks({ check, readText, api, home, toolsMod }));
     await stage('1.5.55: the page always gets new scripts after an update; statuses in words', async () => (await import('./smoke-sw1555.mjs')).swChecks({ check, readText, rawFetch, base }));
+    await stage('1.5.56: the living avatar - a face per state, still when asked', async () => (await import('./smoke-lamp1556.mjs')).lampChecks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
+    await stage('1.5.56: on a phone, closing settings goes back where it was opened from', async () => (await import('./smoke-nav1556.mjs')).navChecks({ check, readText }));
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -3447,7 +3449,7 @@ function shanghaiWeekday(ts) {
     const html = await readText('../public/index.html');
     check('design tokens (redesign step 1): one neutral grey scale and one violet accent, in dark and light', html.includes('--on-solid: #0b0b0c;') && html.includes('--on-solid: #ffffff;') && html.includes('--accent: #8b7cf6;') && html.includes('--accent: #6a5ae0;') && html.includes('--accent-solid: #6a5ae0;'));
     check('buttons on the solid fill use the on-solid colour, not white', html.includes('.usage-range button.on, .pc-mobile-bar button.on { color: var(--on-solid); }'));
-    check('phone settings open on a list and have a way back', html.includes('id="settings-back"') && html.includes("$('settings-back')?.addEventListener('click', showSettingsHome)") && html.includes('if (isMobile() && !section) showSettingsHome();'));
+    check('phone settings open on a list and have a way back', html.includes('id="settings-back"') && html.includes("$('settings-back')?.addEventListener('click', () => { settingsNav.toHome(); showSettingsHome(); });") && html.includes('if (isMobile() && !section) showSettingsHome();'));
     check('every settings page has a line icon', (html.match(/<button class="setnav[^>]*data-set-target="([a-z-]+)"/g) || []).every((b) => html.includes("'" + b.match(/data-set-target="([a-z-]+)"/)[1] + "':")));
     check('both sides keep a bubble, the human one a softer grey', html.includes('--bubble-user: #2a2a2d;') && html.includes('--bubble-user: #e8e8eb;') && html.includes('background: var(--bubble-bot); border: 0; box-shadow: none; padding: 10px 16px;'));
     check('settings icons are sized and only shown in the phone list', html.includes('<svg class="setnav-icon" width="20" height="20"') && html.includes('  .setnav-icon { display: none; }') && html.includes('.settings-modal.set-home .setnav svg { display: block;'));
@@ -7363,12 +7365,13 @@ async function scenarioV163() {
   const tags = [...raw.matchAll(/<script defer src="(app\/main\/[\w-]+\.js)"><\/script>/g)].map((m) => m[1]);
   const sizes = PS.MAIN_PARTS.map((rel) => fsx.readFileSync(path.join(pub, rel), 'utf8').split('\n').length);
   // 1.5.54: a 13th part, 13-backup.js (设置 → 备份), after wiring.
-  check('ENG-04b split: the page script is 13 files by feature (core, avatars, groups, bots, chat, live, skills, settings, apps, computer, machines, wiring, backup), none over 2 000 lines; the old main.js is gone',
-    PS.MAIN_PARTS.length === 13 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
+  // 1.5.56: a 14th, 11b-lamp.js (the living avatar), before wiring, which draws the first faces.
+  check('ENG-04b split: the page script is 14 files by feature (core, avatars, groups, bots, chat, live, skills, settings, apps, computer, machines, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
+    PS.MAIN_PARTS.length === 14 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
     && !fsx.existsSync(path.join(pub, 'app', 'main.js')) && !raw.includes('type="module"'), JSON.stringify(sizes));
   const order = (await import('./check-page-parts.mjs')).checkPageParts(pub);
   check('ENG-04b split: load-time code never needs a later part, no name is declared twice, nothing clashes with the browser (scripts/check-page-parts.mjs)',
-    !order.skipped && order.problems.length === 0 && order.parts === 13, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
+    !order.skipped && order.problems.length === 0 && order.parts === 14, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
   const auth = await import('../src/auth.mjs');
   const part = await fetch(`${base}/app/main/05-chat.js`);
   const body = await part.text();
@@ -7576,7 +7579,7 @@ async function scenarioV160() {
   const whole = PS.pageSource(path.join(REPO, 'public'));
   const i18n = await readText('../scripts/check-i18n.mjs');
   check('ENG-04 checks: the self-tests and the English check read the split page as one text (every part present, in page order)',
-    PS.PAGE_PARTS.length === 17 && whole.includes('<style>') && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
+    PS.PAGE_PARTS.length === 18 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
     && i18n.includes("import { pageSource } from './page-source.mjs';") && (await readText('../public/index.html')) === whole);
 
   const auth = await import('../src/auth.mjs');

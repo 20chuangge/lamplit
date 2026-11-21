@@ -299,8 +299,10 @@ async function openGroup(id) {
   state.pcPinned = null;
   state.pcFollow = null;
   state.liveTurn = null;
+  const fromHome = document.body.classList.contains('m-home'); // a back step on a phone (1.5.56)
   closeSidebar();
   closePanel();
+  if (fromHome) chatNav.entered();
   renderBots();
   renderGroups();
   renderGroupHead(group);
@@ -1246,6 +1248,7 @@ function remoteBotRow(m, b) {
   row.tabIndex = 0;
   row.setAttribute('aria-pressed', active ? 'true' : 'false');
   const av = avatarNode(bot, 38, 'bot-av');
+  lampMarkRow(av, bot, { key: `bot:${id}`, online: m.online });
   av.setAttribute('role', 'img');
   av.setAttribute('aria-label', `${bot.name} 的头像`);
   const text = el('div', 'bot-text');

@@ -892,6 +892,11 @@
           <input type="checkbox" id="show-process" />
           <span>在对话里显示工具过程</span>
         </label>
+        <label class="switch-row" for="lamp-motion">
+          <input type="checkbox" id="lamp-motion" checked />
+          <span>头像动起来：眼睛跟着你看、会眨眼</span>
+        </label>
+        <div class="row-note">关掉后头像不再动，但还是看得出它在做、在等你还是做完了。系统开了「减少动态效果」时也不动。</div>
 
         <div class="dsec-head" style="margin-top:20px">时区</div>
         <p class="dsec-sub">定时任务、时间和日志都按这个时区理解。用远程机器时，可以让它跟着那台机器走。</p>
@@ -1509,6 +1514,7 @@
 <script defer src="app/main/09-apps.js"></script>
 <script defer src="app/main/10-computer.js"></script>
 <script defer src="app/main/11-machines.js"></script>
+<script defer src="app/main/11b-lamp.js"></script>
 <script defer src="app/main/12-wiring.js"></script>
 <script defer src="app/main/13-backup.js"></script>
 

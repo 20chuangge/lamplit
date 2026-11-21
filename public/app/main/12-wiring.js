@@ -50,7 +50,7 @@ function wireChrome() {
   // topbar / drawers
   $('nav-toggle').addEventListener('click', () => {
     if ($('sidebar').classList.contains('open')) closeSidebar();
-    else { closePanel(); openSidebar(); }
+    else { closePanel(); chatNav.left(); openSidebar(); }
   });
   $('sidebar-close').addEventListener('click', closeSidebar);
   $('home-search')?.addEventListener('input', filterHome);
@@ -59,13 +59,11 @@ function wireChrome() {
   document.querySelectorAll('input[name="vnc-outside"]').forEach((r) => r.addEventListener('change', syncOutsideChoice));
   $('sidebar-scrim').addEventListener('click', closeSidebar);
 
-  $('settings-btn').addEventListener('click', () => {
-    closeSidebar();
-    closePanel();
-    openSettings();
-  });
+  // openSettings looks at what is open first, then closes it (1.5.56: shut here, the home list was lost).
+  $('settings-btn').addEventListener('click', () => openSettings());
   $('settings-close').addEventListener('click', closeSettings);
-  $('settings-back')?.addEventListener('click', showSettingsHome);
+  $('settings-back')?.addEventListener('click', () => { settingsNav.toHome(); showSettingsHome(); });
+  window.addEventListener('popstate', onNavPopState);
   decorateSettingsNav();
   cardifySettings();
   $('settings-scrim').addEventListener('click', closeSettings);
@@ -74,10 +72,10 @@ function wireChrome() {
     if (state.settingsOpen && !isMobile() && e.target.closest('.bot, .group')) closeSettings();
   });
   document.querySelectorAll('.setnav').forEach((btn) => {
-    btn.addEventListener('click', () => setSettingsNav(btn.dataset.setTarget));
+    btn.addEventListener('click', () => { settingsNav.sectionPicked(btn.dataset.setTarget); setSettingsNav(btn.dataset.setTarget); });
   });
 
-  $('mock-banner-btn').addEventListener('click', openSettings);
+  $('mock-banner-btn').addEventListener('click', () => openSettings('sec-model'));
   $('group-delete-btn')?.addEventListener('click', deleteCurrentGroup);
   $('confirm-ok')?.addEventListener('click', () => settleConfirm(true));
   $('confirm-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); settleConfirm(true); } });
@@ -753,4 +751,118 @@ function cancelMachineModal() {
   closeMachineModal();
   if (state.machineFromSettings) openSettings('sec-machines');
   state.machineFromSettings = false;
+}
+
+/* settings-nav:start */
+/**
+ * Phone: where 设置 was opened from, and the back key inside it (1.5.56). Closing 设置 used to
+ * land in 助理's chat whatever was open before (the home list, the 任务 / 电脑 panel), and the
+ * back key left the app. Now each level of 设置 is one history step: a page (and a page opened
+ * from it, e.g. 体检 → 「去设置模型」) → the settings list → back where you came from. The desktop
+ * adds no history and restores nothing.
+ *   env: { mobile(), view(), push(name), back(steps) }
+ */
+function makeSettingsNav(env) {
+  let origin = null;
+  let open = false;   // 设置 added its own step (the settings list)
+  let pages = [];     // the pages opened in it, one history step each
+  let ignore = 0;     // steps this code took back itself (✕, the ‹ arrow): their popstate is not the back key
+  const page = (section) => { if (section && pages[pages.length - 1] !== section) { env.push('section'); pages.push(section); } };
+  return {
+    /** 设置 opened (already: it was open, and a page is opened from the list or from another page). */
+    opened(section, already) {
+      if (!env.mobile()) { if (!already) origin = null; return; }
+      if (!already || !open) { origin = already ? origin : env.view(); env.push('settings'); open = true; pages = []; }
+      page(section);
+    },
+    /** A page picked in the settings list. */
+    sectionPicked(section = 'page') { if (env.mobile() && open && !pages.length) page(section); },
+    /** The ‹ arrow: back to the settings list (as many steps as pages). */
+    toHome() { if (pages.length) { ignore += 1; env.back(pages.length); pages = []; } },
+    /** 设置 closed: its steps go (unless the back key took them), and where it was opened from. */
+    closed({ viaHistory = false } = {}) {
+      const from = origin;
+      origin = null;
+      if (!viaHistory && open) { ignore += 1; env.back(1 + pages.length); }
+      open = false;
+      pages = [];
+      return from;
+    },
+    /** A history step went back: 'page:<id>' (the page before), 'home' (the list), 'close', 'ignore' (ours) or 'none'. */
+    popped() {
+      if (ignore) { ignore -= 1; return 'ignore'; }
+      if (pages.length > 1) { pages.pop(); return `page:${pages[pages.length - 1]}`; }
+      if (pages.length === 1) { pages.pop(); return 'home'; }
+      if (open) return 'close';
+      return 'none';
+    },
+  };
+}
+
+/**
+ * Phone: a chat opened from the home list is one history step, so the back key shows the home
+ * list again (it left the app). Back on the home list leaves the app, as before. Settings' steps
+ * sit on top of it and go first. The desktop adds nothing.
+ *   env: { mobile(), push(name), back(steps) }
+ */
+function makeChatNav(env) {
+  let inChat = false; // the chat's step is in the history
+  let ignore = 0;     // the chat's ‹ took it back itself
+  return {
+    /** A chat opened from the home list (another one from inside a chat adds nothing). */
+    entered() { if (env.mobile() && !inChat) { env.push('chat'); inChat = true; } },
+    /** The chat's ‹: back to the home list by the page itself. */
+    left() { if (inChat) { inChat = false; ignore += 1; env.back(1); } },
+    /** A history step went back: 'home', 'ignore' (ours) or 'none' (not ours: the app leaves). */
+    popped() {
+      if (ignore) { ignore -= 1; return 'ignore'; }
+      if (inChat) { inChat = false; return 'home'; }
+      return 'none';
+    },
+  };
+}
+
+/** What was on screen: the home list (and its search), the panel's tab, the chat. */
+function settingsView() {
+  const panelOpen = Boolean($('panel')?.classList.contains('open'));
+  return {
+    home: document.body.classList.contains('m-home'),
+    search: $('home-search')?.value || '',
+    panel: panelOpen ? document.querySelector('.tabs .tab.active')?.dataset.tab || 'activity' : '',
+    chat: currentChatKey(),
+  };
+}
+
+/** Back to it. A chat that something in 设置 opened meanwhile stays: it was asked for. */
+function restoreSettingsView(from) {
+  if (!from || !isMobile() || from.chat !== currentChatKey()) return;
+  if (from.home) {
+    openSidebar();
+    if (from.search && $('home-search')) { $('home-search').value = from.search; filterHome(); }
+  } else if (from.panel) openPanel(from.panel);
+}
+/* settings-nav:end */
+
+const settingsNav = makeSettingsNav({
+  mobile: () => isMobile(),
+  view: settingsView,
+  push: (name) => { try { history.pushState({ lamplit: name }, ''); } catch { /* no history: the buttons still work */ } },
+  back: (steps) => { try { history.go(-steps); } catch { /* nothing to take back */ } },
+});
+
+const chatNav = makeChatNav({
+  mobile: () => isMobile(),
+  push: (name) => { try { history.pushState({ lamplit: name }, ''); } catch { /* no history: the ‹ still works */ } },
+  back: (steps) => { try { history.go(-steps); } catch { /* nothing to take back */ } },
+});
+
+/** The back key (Android) or the browser's back: one level of 设置 first, then a chat → the home list. */
+function onNavPopState() {
+  const said = settingsNav.popped();
+  if (said.startsWith('page:') && state.settingsOpen) setSettingsNav(said.slice(5));
+  else if (said === 'home' && state.settingsOpen) showSettingsHome();
+  else if (said === 'close' && state.settingsOpen) closeSettings({ viaHistory: true });
+  else if (said === 'none') {
+    if (chatNav.popped() === 'home') { closePanel(); openSidebar(); }
+  }
 }

@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn as spawnChild } from 'node:child_process';
+import { spawn as spawnChild, spawnSync } from 'node:child_process';
 import fsp from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import zlib from 'node:zlib';
@@ -107,7 +107,7 @@ import { masterKey, sealSecretFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
 import { toolWords } from './abilities.mjs';
 import { checkSandbox, sandboxStatus } from './sandbox.mjs';
-import { checkRunner, setupRunner, syncGrants, autoSetupOnHub } from './winrunner.mjs';
+import { checkRunner, setupRunner, syncGrants, autoSetupOnHub, isElevated } from './winrunner.mjs';
 import { undoChanges, pruneTrash } from './trash.mjs';
 import * as modelsModule from './models.mjs';
 import { applyUpdate, compareVersions, currentBuild, isUpdate, installedSetupVersion, shippedSetupVersion, UPDATE_MAX_BYTES, verifyUpdate, readSignedPackage } from './selfupdate.mjs';
@@ -937,11 +937,18 @@ function attachHubUpgrade(server, state, viaPublic) {
     const hasOrigin = Boolean(String(req.headers.origin || '').trim());
     const hasBearer = /^bearer\s+\S/i.test(String(req.headers.authorization || ''));
     if (!hasBearer && !(hasOrigin && isSameOriginRequest(req))) return refuse(401, 'Unauthorized');
+    // A bot's screen is the human's to watch and use (1.5.53): a program here can name this page as its Origin.
+    if (!carriesLocalKey(req, req.auth || evaluateAuth(req, state.security, state.devices), P.dataDir, state.devices, state.security)) return refuse(403, 'Forbidden');
     const info = desktopInfo(safeDecode(match[1]));
     if (!info.running) return refuse(404, 'Not Found');
     // Windows: no websockify; the hub speaks WebSocket to the VNC server itself.
     if (!info.webPort && info.vncPort) {
-      if (!bridgeWebSocket(req, socket, head, { port: info.vncPort })) refuse(400, 'Bad Request');
+      // The hub signs in to TightVNC for the page (1.5.53); a view-only takeover policy signs in view-only.
+      void vncSecretHere().catch(() => null).then((secret) => {
+        const view = state.config.policy?.takeover === 'view';
+        const vnc = secret ? { password: view ? secret.viewOnly : secret.password } : null;
+        if (!bridgeWebSocket(req, socket, head, { port: info.vncPort, vnc })) refuse(400, 'Bad Request');
+      });
       return;
     }
     if (!info.webPort) return refuse(404, 'Not Found');
@@ -1131,9 +1138,10 @@ async function dispatchApi(req, res, state, pathname, url) {
       }
     }
 
-    // What gives power needs the human's own app or a paired device (1.5.27):
-    // a bot's command on this computer reaches loopback too.
-    if (isAuthorityRequest(method, pathname, body)) {
+    // Every route needs the human's own app, a paired device or another of the
+    // human's hubs (1.5.53, default-deny; auth.mjs OPEN_ROUTES are the few that
+    // do not): a bot's command on this computer reaches loopback too.
+    if (isAuthorityRequest(method, pathname)) {
       const auth = req.auth || evaluateAuth(req, state.security, state.devices);
       if (!carriesLocalKey(req, auth, P.dataDir, state.devices, state.security) && !firstModelSetup(req, auth, method, pathname, body, state)) {
         return errorResponse(res, 403, 'LOCAL_KEY_REQUIRED', '这一步要你本人确认：请在 Lamplit 应用里操作，或者先把这个浏览器配对一次（配对码在 Lamplit 应用的 设置 → 手机和外网）。');
@@ -1307,7 +1315,9 @@ function firstModelSetup(req, auth, method, pathname, body, state) {
   if (state.apiKey || (state.settings?.provider && state.settings.provider !== 'mock')) return false;
   const model = body?.model && typeof body.model === 'object' ? body.model : body;
   const top = Object.keys(body || {});
-  return (top.length === 1 && top[0] === 'model' ? Object.keys(model || {}) : top).every((k) => FIRST_MODEL_FIELDS.has(k));
+  // At least one model field (1.5.53): an empty body is not a first setup.
+  const fields = top.length === 1 && top[0] === 'model' ? Object.keys(model || {}) : top;
+  return fields.length > 0 && fields.every((k) => FIRST_MODEL_FIELDS.has(k));
 }
 
 /** May this request do what only the human may (decide approvals, see the pairing code)? */
@@ -1383,7 +1393,7 @@ route('PUT', /^\/api\/desktop\/screen$/, async (_req, _res, { body }) => {
   if (choice !== 'all' && choice !== 'primary' && !(Number.isInteger(choice) && choice >= 1 && choice <= 16)) throw httpError(400, 'BAD_SCREEN', 'screen must be "primary", "all" or a screen number');
   if (process.platform !== 'win32') throw httpError(409, 'SCREENS_UNSUPPORTED', '只有 Windows 电脑能选屏幕（Linux 上每个机器人的桌面本来就只有一块屏）');
   const { shareScreen } = await import('./localvnc.mjs');
-  const r = await shareScreen(choice);
+  const r = await shareScreen(choice, { dataDir: P.dataDir, key: masterKey() });
   if (!r.ok) throw httpError(502, 'SCREEN_FAILED', r.error);
   writeJsonSyncAtomic(SCREEN_FILE, { screen: choice, updatedAt: nowIso() });
   return { ok: true, choice };
@@ -1394,7 +1404,7 @@ if (process.platform === 'win32' && process.env.DESK_SCREEN_WATCH !== '0') {
     const up = desktopSupport().available;
     if (up && !vncWasUp) {
       const { shareScreen } = await import('./localvnc.mjs');
-      await shareScreen(screenChoice()).catch(() => {});
+      await shareScreen(screenChoice(), { dataDir: P.dataDir, key: masterKey() }).catch(() => {});
     }
     vncWasUp = up;
   };
@@ -2224,7 +2234,7 @@ route('GET', /^\/api\/auth$/, async (req, _res, { state }) => {
   // authority: whether this client may decide approvals (1.5.32): a browser on
   // this computer without the app's key is told so before the human clicks.
   // codeAllowed (1.5.47): through the relay, direct or the public door the 8-digit code is refused, so the page does not offer it.
-  return { required: auth.required, authorized: auth.authorized, mode: auth.mode, authority: auth.authorized && carriesLocalKey(req, auth, P.dataDir, state.devices, state.security), codeAllowed: !req.viaPublic };
+  return { required: auth.required, authorized: auth.authorized, mode: auth.mode, authority: auth.authorized && carriesLocalKey(req, auth, P.dataDir, state.devices, state.security), codeAllowed: !req.viaPublic && !pairCodePaused().paused };
 });
 
 route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
@@ -2235,34 +2245,45 @@ route('POST', /^\/api\/pair$/, async (req, res, { body, state }) => {
       throw httpError(429, 'PAIR_PAUSED_PUBLIC', 'too many failed public pairing attempts; try again later');
     }
   }
-  // The public port has its own global budget (below); the per-IP limiter would
-  // otherwise see one address for the whole internet and throttle real pairings.
-  if (!req.viaPublic) {
-    const limit = state.pairLimiter.check(clientIp(req));
+  // Two ways in: the 8-digit code a human types, and the one-time token a QR code carries.
+  const code = String(body?.code ?? body?.token ?? '').trim();
+  if (!code) throw httpError(400, 'PAIR_CODE_REQUIRED', 'body needs { code }');
+  const typed = /^\d{8}$/.test(code);
+
+  // The 8-digit code can be guessed; the one-time token (256 bits) cannot. The
+  // code gets a limit per address and a budget for everyone (1.5.53 review N1:
+  // loopback is all of 127/8, so a program here took 5 fresh tries from each of
+  // 127.0.0.2, 127.0.0.3, ... - about 1100 a second). The public port takes no
+  // code at all and has its own budget for tokens (below).
+  if (typed && !req.viaPublic) {
+    const paused = pairCodePaused();
+    if (paused.paused) {
+      res.setHeader('retry-after', String(Math.max(1, Math.ceil(paused.retryAfterMs / 1000))));
+      throw httpError(429, 'PAIR_CODE_PAUSED', '配对码试错太多次，8 位配对码暂停 15 分钟，也换了新码。现在可以扫设置里的二维码配对，或稍后用新码。');
+    }
+    const ip = clientIp(req);
+    const limit = state.pairLimiter.check(isLoopbackAddress(ip) ? 'loopback' : ip);
     if (!limit.allowed) {
+      await notePairCodeFailure(state);
       res.setHeader('retry-after', String(Math.max(1, Math.ceil((limit.retryAfterMs || 0) / 1000))));
       throw httpError(429, 'PAIR_RATE_LIMITED', 'too many pairing attempts; wait a minute and try again');
     }
   }
-
-  // Two ways in, both counted against the same rate limit: the 8-digit code a
-  // human types, and the one-time token a QR code carries.
-  const code = String(body?.code ?? body?.token ?? '').trim();
-  if (!code) throw httpError(400, 'PAIR_CODE_REQUIRED', 'body needs { code }');
   // A typed code is a shared secret that can be guessed; the public port only
   // takes the one-time token a QR code carries.
-  if (req.viaPublic && /^\d{8}$/.test(code)) {
+  if (req.viaPublic && typed) {
     await notePublicPairFailure(state);
     throw httpError(403, 'PAIR_CODE_NOT_ALLOWED_PUBLIC', 'the 8-digit code cannot be used on the public address; scan the QR code instead');
   }
   let link = null;
-  if (!/^\d{8}$/.test(code)) {
+  if (!typed) {
     link = state.pairLinks.consume(code);
     if (!link) {
       if (req.viaPublic) await notePublicPairFailure(state);
       throw httpError(401, 'PAIR_INVALID_LINK', 'that code was already used or has expired; scan the code again');
     }
   } else if (!safeEqual(code, state.security.code)) {
+    await notePairCodeFailure(state);
     throw httpError(401, 'PAIR_INVALID_CODE', 'that pairing code is not valid');
   } else if (pairingCodeExpired(state.security)) {
     void renewPairingCode(state.security);
@@ -2312,6 +2333,34 @@ async function notePublicPairFailure(state) {
       until: new Date(publicPairLog.pausedUntil).toISOString(),
     }).catch(() => {});
     state.bus.emit({ type: 'attention.changed' });
+  }
+}
+
+// --- the 8-digit code's budget (1.5.53 review N1) -------------------------------
+// 20 wrong (or over-the-limit) tries with the code within an hour, from anyone:
+// a new code, and the code is refused for 15 minutes (audited once). The QR
+// code's one-time links still pair. An address cannot get fresh tries by
+// changing its source: every loopback address is one ('loopback').
+
+const pairCodeLog = { fails: [], pausedUntil: 0 };
+
+function pairCodePaused() {
+  const now = Date.now();
+  if (pairCodeLog.pausedUntil > now) return { paused: true, retryAfterMs: pairCodeLog.pausedUntil - now };
+  return { paused: false };
+}
+
+async function notePairCodeFailure(state) {
+  const now = Date.now();
+  pairCodeLog.fails = pairCodeLog.fails.filter((t) => now - t < 60 * 60 * 1000);
+  pairCodeLog.fails.push(now);
+  if (pairCodeLog.fails.length >= 20 && pairCodeLog.pausedUntil < now) {
+    pairCodeLog.pausedUntil = now + 15 * 60 * 1000;
+    pairCodeLog.fails = [];
+    await renewPairingCode(state.security);
+    await audit({ kind: 'pair.code.paused', until: new Date(pairCodeLog.pausedUntil).toISOString() }).catch(() => {});
+    state.bus.emit({ type: 'attention.changed' });
+    state.bus.emit({ type: 'settings.changed', section: 'network' });
   }
 }
 
@@ -2824,6 +2873,10 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
     : pairedPhone
       ? checkupItem('phone', '手机', 'info', '手机已经配对，能在手机上用 Lamplit；要让机器人帮你操作手机，在手机 App 的「设置 → 机器 → 手机」里打开「让机器人用这部手机」。')
       : checkupItem('phone', '手机', 'info', '还没连手机（可选）：装上 Lamplit 手机 App，扫一下二维码，在外面也能用，机器人也能帮你操作手机。', { kind: 'settings', target: 'sec-pair', label: '连手机' }));
+  // The screen's password (Windows, 1.5.53).
+  await refreshVncGuard().catch(() => {});
+  const screenItem = vncCheckupItem();
+  if (screenItem) items.push(screenItem);
   // This machine: memory and processor.
   const load = machineLoad();
   items.push(load.busy
@@ -3929,6 +3982,85 @@ route('PUT', /^\/api\/workspace$/, async (_req, _res, { body, state }) => {
   if (!same && process.env.ASSIST_UPDATE_NO_EXIT !== '1') setTimeout(() => process.exit(0), 800).unref?.();
   return { ok: true, path: target.path, restarting: !same };
 });
+
+// --- the Windows screen's password (1.5.53, security review N2) -----------------
+// TightVNC on 127.0.0.1:5900 had no password: a bot's own command on the machine
+// is loopback too. Now it has one (localvnc.mjs secureTightVnc), the hub signs in
+// for the page (wsbridge.mjs), and 体检 says when a screen still has none.
+//   POST /api/desktop/secure-vnc -> {state, reason?}   (the human: 体检's 「设好密码」)
+
+const SCREEN_VNC_PORT = Number(process.env.DESK_VNC_PORT) || 5900;
+/** How this machine's screen is protected: 'secured' | 'open' | 'wrong' | 'failed' | 'down' | 'unknown'. */
+const vncGuard = { state: 'unknown', reason: '' };
+
+async function vncSecretHere() {
+  const { readVncSecret } = await import('./localvnc.mjs');
+  return readVncSecret(P.dataDir, { key: masterKey() });
+}
+
+async function refreshVncGuard() {
+  if (process.platform !== 'win32' && !process.env.DESK_VNC_PORT) return vncGuard;
+  const { checkVncAuth } = await import('./localvnc.mjs');
+  const secret = await vncSecretHere();
+  const seen = await checkVncAuth(SCREEN_VNC_PORT, secret?.password || '');
+  vncGuard.state = seen === 'ok' ? 'secured' : seen;
+  if (seen === 'ok') vncGuard.reason = '';
+  return vncGuard;
+}
+
+/**
+ * Give this machine's TightVNC its passwords. elevate: ask Windows for
+ * administrator rights (the UAC prompt is the human's yes) when the service
+ * needs them and this hub has none; the values go through a file in the data
+ * folder (the bots' account cannot read it), gone afterwards.
+ */
+async function secureVncHere({ elevate = false } = {}) {
+  const VNC = await import('./localvnc.mjs');
+  const service = VNC.hasVncService();
+  const admin = process.platform === 'win32' ? await isElevated().catch(() => false) : false;
+  let options = {};
+  if (service && !admin) {
+    if (!elevate) return { state: 'failed', reason: '要管理员权限才能给 TightVNC 服务设密码' };
+    const runPs = (script, env) => {
+      const file = path.join(P.dataDir, `vnc-secure-${crypto.randomBytes(6).toString('hex')}.ps1`);
+      const done = `${file}.done`;
+      const quote = (v) => `'${String(v).replace(/'/g, "''")}'`;
+      const body = [...Object.entries(env).map(([k, v]) => `$env:${k} = ${quote(v)}`), `$out = & { ${script} }`, 'Restart-Service tvnserver -Force', `Set-Content -LiteralPath ${quote(done)} -Value ($out -join ' ')`].join('\r\n');
+      try {
+        fs.writeFileSync(file, body, { mode: 0o600 });
+        spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "try { $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',$env:DESK_VNC_FILE; exit $p.ExitCode } catch { exit 5 }"], { windowsHide: true, timeout: 180000, env: { ...process.env, DESK_VNC_FILE: file } });
+        return fs.existsSync(done) ? fs.readFileSync(done, 'utf8') : '';
+      } finally {
+        for (const f of [file, done]) { try { fs.unlinkSync(f); } catch { /* gone */ } }
+      }
+    };
+    options = { runPs, restart: async () => {} };
+  }
+  const r = await VNC.secureTightVnc({ dataDir: P.dataDir, service, key: masterKey(), port: SCREEN_VNC_PORT, ...options });
+  if (r.state !== 'secured') vncGuard.reason = r.reason || '';
+  await refreshVncGuard();
+  return { state: vncGuard.state, ...(vncGuard.reason ? { reason: vncGuard.reason } : {}) };
+}
+
+route('POST', /^\/api\/desktop\/secure-vnc$/, async (req) => {
+  if (process.platform !== 'win32' && !process.env.DESK_VNC_PORT) throw httpError(400, 'NOT_WINDOWS', '只有 Windows 机器的屏幕用 TightVNC');
+  // UAC appears on the screen of this computer: only its own app may ask for it.
+  const here = !req.viaPublic && isLoopbackAddress(clientIp(req));
+  const r = await secureVncHere({ elevate: here });
+  await audit({ kind: 'desktop.vnc.secured', state: r.state }).catch(() => {});
+  return r;
+});
+
+/** The checkup line for this machine's screen password (Windows), or null. */
+function vncCheckupItem() {
+  if (process.platform !== 'win32' && !process.env.DESK_VNC_PORT) return null;
+  const fix = { kind: 'vnc', label: '设好密码' };
+  if (vncGuard.state === 'secured') return checkupItem('vnc', '屏幕密码', 'ok', '这台电脑的屏幕有密码：只有经过 Lamplit 才能看和操作，机器人自己的命令连不上。');
+  if (vncGuard.state === 'open') return checkupItem('vnc', '屏幕密码', 'warn', '这台电脑的屏幕服务（TightVNC）没有密码：机器人在这台电脑上跑的命令能直接看到并操作桌面。点「设好密码」，Lamplit 给它设一个随机密码，以后看屏幕时由 Lamplit 替你输入。', fix);
+  if (vncGuard.state === 'wrong') return checkupItem('vnc', '屏幕密码', 'warn', '屏幕服务的密码和 Lamplit 记的不一样，看屏幕可能会要你输密码。点「设好密码」重新设一次。', fix);
+  if (vncGuard.state === 'failed') return checkupItem('vnc', '屏幕密码', 'warn', `没能给屏幕服务设密码${vncGuard.reason ? `（${vncGuard.reason}）` : ''}。点「设好密码」再试一次。`, fix);
+  return null;
+}
 
 // --- policy ----------------------------------------------------------------
 
@@ -5851,6 +5983,17 @@ export async function startServer({ port = DEFAULT_PORT, host = HOST } = {}) {
   prune();
   setInterval(prune, 24 * 3600 * 1000).unref();
   // Windows: the bots' commands as lamplit-runner, once it is set up (1.5.7).
+  // An added Windows machine's screen gets its password (1.5.53, N2): at every start, so an update brings it to
+  // machines set up before; the hub there runs with administrator rights. Elsewhere 体检 says how it stands.
+  if (process.platform === 'win32' && process.env.DESK_VNC_SECURE !== '0') {
+    (async () => {
+      const VNC = await import('./localvnc.mjs');
+      if (process.env.DESK_MACHINE_MODE === 'remote' && VNC.hasVncService() && await isElevated()) {
+        const r = await secureVncHere();
+        console.error(`[desktop] screen password: ${r.state}${r.reason ? ` (${r.reason})` : ''}`);
+      } else await refreshVncGuard();
+    })().catch((err) => console.error('[desktop] screen password:', err.message));
+  }
   if (process.platform === 'win32') {
     // A Windows machine added for the bots makes the account itself (1.5.9).
     autoSetupOnHub(state.config.policy || {}, { workspaceDir: state.config.workspaceDir }).catch((err) => console.error('[runner] setup on this machine:', err.message));

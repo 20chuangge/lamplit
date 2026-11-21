@@ -225,10 +225,13 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 
 # -----------------------------------------------------------------------------
-Say '5/7 桌面：TightVNC（只听本机，经 Hub 配对后才能看和接管）'
+Say '5/7 桌面：TightVNC（只听本机，要密码；经 Hub 配对后才能看和接管）'
 # The machine's real screen (login screen when nobody is signed in) for the
-# live view and takeover. TightVNC runs as a service; it accepts loopback only
-# and has no VNC password, the hub's authenticated relay is the only way in.
+# live view and takeover. TightVNC runs as a service and accepts loopback only.
+# It asks for a password (1.5.53): a bot's own command here is loopback too.
+# The hub makes the passwords at its start (src/localvnc.mjs secureTightVnc:
+# random, kept in its data folder, the registry key locked to SYSTEM and
+# Administrators) and signs in for the page; none of it is on a command line.
 $desktopOk = 0
 try {
   if (-not (Get-Service tvnserver -ErrorAction SilentlyContinue)) {
@@ -253,7 +256,8 @@ try {
       throw "安装包签名不对（$($sig.Status) $($sig.SignerCertificate.Subject)），不装"
     }
     $msiArgs = @('/i', "`"$msi`"", '/quiet', '/norestart', 'ADDLOCAL=Server', 'SERVER_REGISTER_AS_SERVICE=1',
-      'SERVER_ADD_FIREWALL_EXCEPTION=0', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=0',
+      'SERVER_ADD_FIREWALL_EXCEPTION=0', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1',
+      'SET_USECONTROLAUTHENTICATION=1', 'VALUE_OF_USECONTROLAUTHENTICATION=1',
       'SET_LOOPBACKONLY=1', 'VALUE_OF_LOOPBACKONLY=1', 'SET_ALLOWLOOPBACK=1', 'VALUE_OF_ALLOWLOOPBACK=1',
       'SET_ACCEPTHTTPCONNECTIONS=1', 'VALUE_OF_ACCEPTHTTPCONNECTIONS=0')
     $p = Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
@@ -263,7 +267,8 @@ try {
   # Enforce the safe settings on every run, whoever installed it.
   $reg = 'HKLM:\SOFTWARE\TightVNC\Server'
   if (Test-Path $reg) {
-    foreach ($kv in @(@('LoopbackOnly', 1), @('AllowLoopback', 1), @('UseVncAuthentication', 0),
+    # Never without a password again (the passwords themselves are the hub's).
+    foreach ($kv in @(@('LoopbackOnly', 1), @('AllowLoopback', 1), @('UseVncAuthentication', 1), @('UseControlAuthentication', 1),
                       @('AcceptHttpConnections', 0), @('RfbPort', 5900), @('RemoveWallpaper', 0))) {
       Set-ItemProperty -Path $reg -Name $kv[0] -Value $kv[1] -Type DWord
     }

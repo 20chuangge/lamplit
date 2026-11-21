@@ -4,10 +4,17 @@
  * does it itself (RFC 6455: handshake, masked client frames, unmasked binary
  * server frames, ping/pong, close). The VNC stream is a byte stream, so
  * fragmented messages are forwarded as they arrive.
+ *
+ * With `vnc: {password}` (1.5.53, Windows: TightVNC asks for a password) the
+ * hub does the VNC authentication itself before it answers the upgrade, then
+ * offers the page RFB security "None": the page never holds the password, and
+ * a program on the machine that reaches 127.0.0.1:5900 directly is asked for it.
  */
 
 import crypto from 'node:crypto';
 import net from 'node:net';
+
+import { chunkReader, rfbClientHandshake } from './vncauth.mjs';
 
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -30,11 +37,15 @@ function frame(payload, opcode = 0x2) {
   return Buffer.concat([header, payload]);
 }
 
+/** A 32-bit big-endian number. */
+const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32BE(n >>> 0, 0); return b; };
+
 /**
  * Take over an HTTP upgrade (already authorised by the caller) and connect it
  * to host:port. Returns false when the request is not a WebSocket handshake.
+ * vnc: {password} - authenticate to the VNC server here (see the top).
  */
-export function bridgeWebSocket(req, socket, head, { host = '127.0.0.1', port }) {
+export function bridgeWebSocket(req, socket, head, { host = '127.0.0.1', port, vnc = null, timeoutMs = 15000 }) {
   const key = req.headers['sec-websocket-key'];
   if (!key || String(req.headers.upgrade || '').toLowerCase() !== 'websocket') return false;
   const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');
@@ -45,14 +56,26 @@ export function bridgeWebSocket(req, socket, head, { host = '127.0.0.1', port })
   let pending = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
   let open = false;
   let closed = false;
+  // 'pipe': bytes go straight through. With vnc: 'server' (the hub signs in to
+  // VNC), then 'page' (the page is told: no password), then 'pipe'.
+  let phase = vnc ? 'server' : 'pipe';
+  const fromServer = chunkReader();
+  const fromPage = chunkReader();
 
   const close = () => {
     if (closed) return;
     closed = true;
-    try { socket.end(frame(Buffer.alloc(0), 0x8)); } catch { /* gone */ }
+    fromServer.end();
+    fromPage.end();
+    try { if (open) socket.end(frame(Buffer.alloc(0), 0x8)); } catch { /* gone */ }
     socket.destroy();
     upstream.destroy();
   };
+  const refuse = () => {
+    if (!open) { try { socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); } catch { /* gone */ } }
+    close();
+  };
+  const toServer = (payload) => { if (phase === 'pipe') upstream.write(payload); else fromPage.push(payload); };
 
   const pump = () => {
     // Parse as many complete client frames as are buffered.
@@ -83,11 +106,11 @@ export function bridgeWebSocket(req, socket, head, { host = '127.0.0.1', port })
       if (opcode === 0x8) { close(); return; }
       if (opcode === 0x9) { socket.write(frame(payload, 0xa)); continue; }
       if (opcode === 0xa) continue;
-      upstream.write(payload); // text, binary or continuation: bytes for VNC
+      toServer(payload); // text, binary or continuation: bytes for VNC
     }
   };
 
-  upstream.on('connect', () => {
+  const answerUpgrade = () => {
     open = true;
     socket.write([
       'HTTP/1.1 101 Switching Protocols',
@@ -99,14 +122,39 @@ export function bridgeWebSocket(req, socket, head, { host = '127.0.0.1', port })
       '',
     ].join('\r\n'));
     pump();
-  });
-  upstream.on('data', (chunk) => socket.write(frame(chunk)));
-  upstream.on('error', () => {
-    if (!open) {
-      try { socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); } catch { /* gone */ }
+  };
+
+  /** The hub signs in to VNC, then plays the server's part of the handshake for the page with security None. */
+  async function signInFirst() {
+    const timer = setTimeout(refuse, timeoutMs);
+    try {
+      await rfbClientHandshake({ read: (n) => fromServer.read(n), write: (b) => upstream.write(b) }, { password: vnc.password || '' });
+      phase = 'page';
+      answerUpgrade();
+      socket.write(frame(Buffer.from('RFB 003.008\n', 'latin1')));
+      const minor = Number(/^RFB 003\.00(\d)\n$/.exec((await fromPage.read(12)).toString('latin1'))?.[1] || 8);
+      if (minor < 7) socket.write(frame(u32(1)));
+      else {
+        socket.write(frame(Buffer.from([1, 1])));
+        await fromPage.read(1);
+        if (minor >= 8) socket.write(frame(u32(0)));
+      }
+      phase = 'pipe';
+      const fromPageRest = fromPage.rest();
+      if (fromPageRest.length) upstream.write(fromPageRest);
+      const fromServerRest = fromServer.rest();
+      if (fromServerRest.length) socket.write(frame(fromServerRest));
+    } catch (err) {
+      if (err?.code && err.code !== 'VNC_CLOSED') console.error(`[desktop] VNC sign-in failed: ${err.code}`);
+      refuse();
+    } finally {
+      clearTimeout(timer);
     }
-    close();
-  });
+  }
+
+  upstream.on('connect', () => { if (vnc) signInFirst(); else answerUpgrade(); });
+  upstream.on('data', (chunk) => { if (phase === 'pipe') socket.write(frame(chunk)); else fromServer.push(chunk); });
+  upstream.on('error', refuse);
   upstream.on('close', close);
   socket.on('data', (chunk) => {
     pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;

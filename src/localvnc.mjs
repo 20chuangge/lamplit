@@ -18,8 +18,8 @@
  *   stopLocalVnc(state) at quit: "tvnserver -controlapp -shutdown", then the
  *   process itself if it is still there.
  *
- * Loopback only and no VNC password, as on the added machines: the hub's
- * authenticated relay is the only way in from outside.
+ * Loopback only, and since 1.5.53 with a VNC password the hub keeps (see the
+ * end of this file): a bot's own command on this computer is loopback too.
  */
 
 import fs from 'node:fs';
@@ -29,14 +29,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
+import { newVncSecret, isVncSecret, vncStoredPassword, rfbClientHandshake, chunkReader } from './vncauth.mjs';
+import { sealText, openSealed } from './store.mjs';
+
 export const VNC_PORT = 5900;
 /** The startup entry a bot made by hand before Nightshift did this itself. */
 export const LEGACY_RUN_VALUE = 'DeskVncServer';
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const SERVER_KEY = 'HKCU\\Software\\TightVNC\\Server';
-/** Loopback only, no VNC password (the hub relay authenticates), no web page, no tray icon. */
+/** Loopback only, a VNC password (1.5.53: set by secureTightVnc, the hub signs in for the page), no web page, no tray icon. */
 export const SAFE_SETTINGS = [
-  ['LoopbackOnly', 1], ['AllowLoopback', 1], ['UseVncAuthentication', 0],
+  ['LoopbackOnly', 1], ['AllowLoopback', 1], ['UseVncAuthentication', 1], ['UseControlAuthentication', 1],
   ['AcceptHttpConnections', 0], ['RfbPort', VNC_PORT], ['RemoveWallpaper', 0], ['RunControlInterface', 0],
 ];
 
@@ -188,7 +191,13 @@ async function waitPort(port, ms) {
  * Make sure this computer's screen can be seen. Never throws.
  * -> {mode:'off'|'service'|'other'|'own'|'failed', exe?, pid?, retired?, error?}
  */
-export async function ensureLocalVnc({ dir, installer } = {}) {
+export async function ensureLocalVnc({ dir, installer, dataDir = '', key = null } = {}) {
+  // 1.5.53: ours gets its passwords, kept in the hub's data folder (dataDir) - see secureTightVnc.
+  const secure = async (state) => {
+    if (!dataDir) return state;
+    const s = await secureTightVnc({ dataDir, key });
+    return { ...state, secured: s.state, ...(s.reason ? { securedWhy: s.reason } : {}) };
+  };
   if (process.platform !== 'win32' || process.env.DESK_LOCAL_VNC === '0') return { mode: 'off' };
   try {
     if (hasVncService()) return { mode: 'service' };
@@ -196,7 +205,7 @@ export async function ensureLocalVnc({ dir, installer } = {}) {
     const exe = exeIn(dir);
     // Ours still running (Nightshift ended without its quit, e.g. a crash): keep it.
     const ours = tvnProcesses().find((p) => p.path && path.resolve(p.path) === path.resolve(exe) && !/-controlapp/i.test(p.cmd));
-    if (ours) return { mode: 'own', exe, pid: ours.pid, retired };
+    if (ours) return secure({ mode: 'own', exe, pid: ours.pid, retired });
     if (await portOpen(VNC_PORT)) return { mode: 'other', retired };
     await unpack(dir, { installer });
     configure();
@@ -204,7 +213,7 @@ export async function ensureLocalVnc({ dir, installer } = {}) {
     child.on('error', () => {});
     child.unref();
     const up = await waitPort(VNC_PORT, 15000);
-    return up ? { mode: 'own', exe, pid: child.pid, retired } : { mode: 'failed', error: 'TightVNC 启动了但 5900 端口没起来', retired };
+    return up ? secure({ mode: 'own', exe, pid: child.pid, retired }) : { mode: 'failed', error: 'TightVNC 启动了但 5900 端口没起来', retired };
   } catch (err) {
     return { mode: 'failed', error: err.message };
   }
@@ -277,15 +286,25 @@ export function shareArgs(choice) {
   return ['-shareprimary'];
 }
 
-/** Tell the running TightVNC what to show. -> {ok, error?} */
-export async function shareScreen(choice) {
+/**
+ * Tell the running TightVNC what to show. -> {ok, error?}
+ * dataDir/key (1.5.53): its control commands ask for the administrative
+ * password; where this account cannot read it from the (locked) registry key,
+ * it goes in a file in the data folder for this one command (-passfile).
+ */
+export async function shareScreen(choice, { dataDir = '', key = null } = {}) {
   const vnc = await runningVnc();
   if (!vnc) return { ok: false, error: '这台电脑上没有在运行的 TightVNC' };
+  const secret = dataDir ? readVncSecret(dataDir, { key }) : null;
+  const passfile = secret ? path.join(dataDir, `vnc-control-${process.pid}-${Date.now()}.txt`) : '';
+  if (passfile) fs.writeFileSync(passfile, secret.control, { mode: 0o600 });
+  const cleanup = () => { if (passfile) { try { fs.unlinkSync(passfile); } catch { /* gone */ } } };
   return new Promise((resolve) => {
-    const child = spawn(vnc.exe, [vnc.control, ...shareArgs(choice)], { windowsHide: true, stdio: 'ignore' });
-    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } resolve({ ok: false, error: 'TightVNC 没有回应' }); }, 10000);
-    child.on('error', (err) => { clearTimeout(timer); resolve({ ok: false, error: err.message }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve(code === 0 ? { ok: true } : { ok: false, error: `TightVNC 返回 ${code}` }); });
+    const done = (v) => { cleanup(); resolve(v); };
+    const child = spawn(vnc.exe, [vnc.control, ...shareArgs(choice), ...(passfile ? ['-passfile', passfile] : [])], { windowsHide: true, stdio: 'ignore' });
+    const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } done({ ok: false, error: 'TightVNC 没有回应' }); }, 10000);
+    child.on('error', (err) => { clearTimeout(timer); done({ ok: false, error: err.message }); });
+    child.on('close', (code) => { clearTimeout(timer); done(code === 0 ? { ok: true } : { ok: false, error: `TightVNC 返回 ${code}` }); });
   });
 }
 
@@ -294,4 +313,134 @@ export function stopLocalVnc(state) {
   if (!state || state.mode !== 'own') return false;
   try { shutdown(state.exe, state.pid); } catch { /* gone */ }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// The VNC password (1.5.53, security review N2). "Loopback only" kept the
+// network out, not a bot's own command on the same machine: it could connect
+// to 5900, or ask tvnserver to connect out to a viewer of its own
+// (-controlservice -connect). Now TightVNC asks for a password, a view-only
+// one, and an administrative one for its control commands. They live in
+// <data>/tightvnc.json (the bots' account is denied the data folder; sealed
+// where the desktop app gives a master key; the file itself only for SYSTEM,
+// Administrators and this account), and in TightVNC's registry key - for the
+// service, locked to SYSTEM and Administrators (TightVNC keeps them there
+// under a public key, so the key itself must not be readable). The hub signs
+// in for the page (wsbridge.mjs); nothing shows or logs the passwords.
+// ---------------------------------------------------------------------------
+
+export const SECRET_FILE = 'tightvnc.json';
+export const SERVICE_KEY = 'HKLM:\\SOFTWARE\\TightVNC\\Server';
+export const APP_KEY = 'HKCU:\\Software\\TightVNC\\Server';
+
+/** The passwords this machine set, or null. `key`: the master key (sealed file). */
+export function readVncSecret(dataDir, { key = null } = {}) {
+  try {
+    let value = JSON.parse(fs.readFileSync(path.join(dataDir, SECRET_FILE), 'utf8'));
+    if (value?.lamplitSealed) value = JSON.parse(openSealed(value, key) || 'null');
+    return isVncSecret(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep the passwords: sealed with `key` when there is one; on Windows the file only for SYSTEM, Administrators and this account. */
+export function writeVncSecret(dataDir, secret, { key = null } = {}) {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const file = path.join(dataDir, SECRET_FILE);
+  const text = `${JSON.stringify(secret, null, 2)}\n`;
+  fs.writeFileSync(`${file}.tmp`, key ? sealText(text, key) : text, { mode: 0o600 });
+  fs.renameSync(`${file}.tmp`, file);
+  if (process.platform === 'win32') {
+    // Windows' own whoami (not one a PATH may put first). Without this account's SID the
+    // file keeps the data folder's rules (the bots' account is denied there too).
+    const me = spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], quiet);
+    const sid = /"(S-1-5-[\d-]+)"/.exec(String(me.stdout || ''))?.[1];
+    if (sid) spawnSync('icacls', [file, '/inheritance:r', '/grant:r', '*S-1-5-18:F', '*S-1-5-32-544:F', `*${sid}:F`], quiet);
+  }
+  return file;
+}
+
+/** The PowerShell that puts the passwords into TightVNC's registry key; the values come in through the environment. */
+export const REGISTRY_SCRIPT = [
+  '$k = $env:DESK_VNC_KEY',
+  'if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null }',
+  "function Get-Bytes($h) { [byte[]]($h -split '(..)' | Where-Object { $_ } | ForEach-Object { [Convert]::ToByte($_, 16) }) }",
+  'Set-ItemProperty -Path $k -Name Password -Value (Get-Bytes $env:DESK_VNC_PW) -Type Binary',
+  'Set-ItemProperty -Path $k -Name PasswordViewOnly -Value (Get-Bytes $env:DESK_VNC_VIEW) -Type Binary',
+  'Set-ItemProperty -Path $k -Name ControlPassword -Value (Get-Bytes $env:DESK_VNC_CTRL) -Type Binary',
+  "foreach ($kv in @(@('UseVncAuthentication', 1), @('UseControlAuthentication', 1), @('LoopbackOnly', 1), @('AllowLoopback', 1), @('AcceptHttpConnections', 0))) { Set-ItemProperty -Path $k -Name $kv[0] -Value $kv[1] -Type DWord }",
+  // The service's key: only SYSTEM (TightVNC itself) and Administrators (the hub) may read it.
+  "if ($env:DESK_VNC_LOCK -eq '1') { $acl = Get-Acl -Path $k; $acl.SetAccessRuleProtection($true, $false); foreach ($r in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($r) }; foreach ($sid in 'S-1-5-18', 'S-1-5-32-544') { $id = New-Object System.Security.Principal.SecurityIdentifier $sid; $acl.AddAccessRule((New-Object System.Security.AccessControl.RegistryAccessRule($id, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }; Set-Acl -Path $k -AclObject $acl }",
+  "'DESK_VNC_OK'",
+].join('; ');
+
+/** The environment REGISTRY_SCRIPT reads. */
+export function registryEnv(secret, { service }) {
+  return {
+    DESK_VNC_KEY: service ? SERVICE_KEY : APP_KEY,
+    DESK_VNC_PW: vncStoredPassword(secret.password).toString('hex'),
+    DESK_VNC_VIEW: vncStoredPassword(secret.viewOnly).toString('hex'),
+    DESK_VNC_CTRL: vncStoredPassword(secret.control).toString('hex'),
+    DESK_VNC_LOCK: service ? '1' : '0',
+  };
+}
+
+/**
+ * Does the VNC server on `port` take this password? -> 'ok' (signed in with
+ * it), 'open' (it asks for none: anyone on this machine gets in), 'wrong',
+ * 'down', or 'other'.
+ */
+export function checkVncAuth(port = VNC_PORT, password = '', { host = '127.0.0.1', timeoutMs = 4000 } = {}) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ port, host });
+    const r = chunkReader();
+    let done = false;
+    let timer = null;
+    const finish = (v) => { if (done) return; done = true; clearTimeout(timer); sock.destroy(); resolve(v); };
+    timer = setTimeout(() => finish('other'), timeoutMs);
+    sock.on('data', (c) => r.push(c));
+    sock.on('error', () => { r.end(); finish('down'); });
+    sock.on('close', () => r.end());
+    sock.once('connect', () => {
+      rfbClientHandshake({ read: (n) => r.read(n), write: (b) => sock.write(b) }, { password })
+        .then((x) => finish(x.security === 1 ? 'open' : 'ok'))
+        .catch((err) => finish(err.code === 'VNC_AUTH_FAILED' || err.code === 'VNC_NO_SECURITY' ? 'wrong' : 'other'));
+    });
+  });
+}
+
+/**
+ * Give TightVNC its passwords. service: the TightVNC service (HKLM; needs
+ * administrator rights - the hub on an added machine has them), else this
+ * account's program (HKCU). Keeps the passwords made before; makes them the
+ * first time. Never throws. -> {state:'secured'|'failed', reason?, secret?}
+ * runPs / restart: tests (a mock VNC server instead of TightVNC).
+ */
+export async function secureTightVnc({ dataDir, service = false, key = null, port = VNC_PORT, runPs = ps, restart = null } = {}) {
+  if (process.platform !== 'win32' && !restart) return { state: 'failed', reason: 'not Windows' };
+  try {
+    let secret = readVncSecret(dataDir, { key });
+    // Already in force (the hub restarted): nothing to change.
+    if (secret && (await checkVncAuth(port, secret.password)) === 'ok') return { state: 'secured', secret };
+    if (!secret) { secret = newVncSecret(); writeVncSecret(dataDir, secret, { key }); }
+    const out = runPs(REGISTRY_SCRIPT, registryEnv(secret, { service }));
+    if (!/DESK_VNC_OK/.test(out)) return { state: 'failed', reason: service ? '没能改 TightVNC 服务的设置（要管理员权限）' : '没能改 TightVNC 的设置' };
+    // The new settings take effect: the service restarts, our own program reloads them.
+    if (restart) await restart();
+    else if (service) runPs("Restart-Service tvnserver -Force; 'DESK_VNC_OK'");
+    else {
+      const vnc = await runningVnc();
+      if (vnc) spawnSync(vnc.exe, [vnc.control, '-reload'], quiet);
+    }
+    for (let i = 0; i < 20; i += 1) {
+      const now = await checkVncAuth(port, secret.password);
+      if (now === 'ok') return { state: 'secured', secret };
+      if (now === 'down') { await new Promise((r) => setTimeout(r, 500)); continue; }
+      return { state: 'failed', reason: now === 'open' ? 'TightVNC 还是不要密码' : 'TightVNC 不认新密码' };
+    }
+    return { state: 'failed', reason: 'TightVNC 重启后没有起来' };
+  } catch (err) {
+    return { state: 'failed', reason: err.message };
+  }
 }

@@ -58,16 +58,24 @@
 
     const SKIP = '.bubble:not(.system), textarea, input, pre, code, .tech-pre, .mem-pre, .no-i18n, #pc-vnc-wrap';
     const ATTRS = ['title', 'placeholder', 'aria-label', 'alt'];
+    // What this file wrote itself (1.5.53, the 1.5.52 walkthrough's #1): the observer
+    // sees its own change as new text, and a translation that still had Chinese in it
+    // (a pattern rule's leftover) was translated again, and again - the page froze on
+    // opening Settings. A value that is what we wrote is ours: left alone.
+    const wroteText = new WeakMap(); // text node -> the value written
+    const wroteAttr = new WeakMap(); // element -> {name: value written}
     function fixText(node) {
       const parent = node.parentElement;
       if (!parent || parent.closest(SKIP) || parent.closest('script, style')) return;
       const before = node.nodeValue;
-      if (!CJK.test(before)) return;
+      if (!CJK.test(before) || wroteText.get(node) === before) return;
       const after = t(before);
       if (after !== before) {
         const lead = before.match(/^\s*/)[0];
         const tail = before.match(/\s*$/)[0];
-        node.nodeValue = lead + after + tail;
+        const value = lead + after + tail;
+        wroteText.set(node, value);
+        node.nodeValue = value;
       }
     }
     function fixAttrs(el) {
@@ -75,8 +83,13 @@
       for (const name of ATTRS) {
         const v = el.getAttribute && el.getAttribute(name);
         if (v && CJK.test(v)) {
+          const mine = wroteAttr.get(el);
+          if (mine && mine[name] === v) continue;
           const nv = t(v);
-          if (nv !== v) el.setAttribute(name, nv);
+          if (nv !== v) {
+            wroteAttr.set(el, { ...(mine || {}), [name]: nv });
+            el.setAttribute(name, nv);
+          }
         }
       }
     }

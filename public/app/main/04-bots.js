@@ -1052,6 +1052,13 @@ async function setupRunnerAccount() {
   }
 }
 
+/** 体检's 「设好密码」 (1.5.53): TightVNC gets a random password; Lamplit signs in for you from then on. */
+async function secureScreen() {
+  toast('如果弹出管理员确认，点「是」。');
+  const r = await api('/api/desktop/secure-vnc', { method: 'POST', body: {} }).catch((err) => ({ reason: err.message }));
+  toast(r?.state === 'secured' ? '屏幕密码设好了。' : `没设好：${r?.reason || r?.state || ''}`, r?.state !== 'secured');
+}
+
 const ONBOARD_PROVIDERS = ['deepseek', 'moonshot', 'zhipu', 'qwen', 'siliconflow', 'openai'];
 const ONBOARD_FIRST = '你好！用两三句话介绍一下你能帮我做什么。';
 const onboard = { step: 1, provider: '', error: '', busy: false };

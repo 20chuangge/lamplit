@@ -1827,8 +1827,10 @@ if (!gotLock) {
     if (process.platform !== 'win32') return;
     import(pathToFileURL(path.join(SERVER_DIR, 'src', 'localvnc.mjs')).href)
       .then(async (m) => {
-        localVnc = { mod: m, state: await m.ensureLocalVnc({ dir: path.join(HOME, 'vnc') }) };
-        bootLog(`local screen: ${localVnc.state.mode}${localVnc.state.error ? ` (${localVnc.state.error})` : ''}${localVnc.state.retired?.length ? ` [${localVnc.state.retired.join(', ')}]` : ''}`);
+        // Its passwords live in the hub's data folder, sealed with the master key (1.5.53): the hub signs in for the page.
+        const key = /^[0-9a-f]{64}$/i.test(masterKey()) ? Buffer.from(masterKey(), 'hex') : null;
+        localVnc = { mod: m, state: await m.ensureLocalVnc({ dir: path.join(HOME, 'vnc'), dataDir: path.join(HOME, 'data'), key }) };
+        bootLog(`local screen: ${localVnc.state.mode}${localVnc.state.secured ? ` password ${localVnc.state.secured}${localVnc.state.securedWhy ? ` (${localVnc.state.securedWhy})` : ''}` : ''}${localVnc.state.error ? ` (${localVnc.state.error})` : ''}${localVnc.state.retired?.length ? ` [${localVnc.state.retired.join(', ')}]` : ''}`);
       })
       .catch((err) => bootLog(`local screen: failed (${err.message})`));
   };

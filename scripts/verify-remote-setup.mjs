@@ -118,7 +118,8 @@ const ps = (script) => `powershell -NoProfile -Command "${script}"`;
 const POSTFLIGHT_WINDOWS = {
   task: ps('(Get-ScheduledTask -TaskName NightshiftHub).State'),
   health: ps(`(Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 http://127.0.0.1:${port}/api/health).Content`),
-  policy: ps(`(Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 http://127.0.0.1:${port}/api/policy).Content`),
+  // Every route but health needs the human since 1.5.53: the local key from the hub's data folder, as its app sends it.
+  policy: ps(`(Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Headers @{'x-lamplit-local'=(Get-Content -Raw (Join-Path $env:ProgramData 'Nightshift\\hub\\data\\local-key')).Trim()} http://127.0.0.1:${port}/api/policy).Content`),
   firewall: ps("(Get-NetFirewallRule -DisplayName 'Nightshift Hub').Enabled"),
   vnc: ps('(Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue).LocalAddress'),
 };

@@ -412,46 +412,42 @@ export function sessionCookieName(req) {
 }
 
 /**
- * What only the human may do (1.5.27). Bots do these through their own tools,
- * which go through approvals; the HTTP routes are for the human's app.
+ * What may be asked WITHOUT the human (1.5.53, default-deny). Every /api route
+ * needs the human - carriesLocalKey: the local key (the human's desktop app),
+ * a paired device (a phone, a browser the human paired), or another of the
+ * human's hubs with its token (machine-to-machine calls, and calls passed on
+ * between hubs, carry that token, so they need no entry here) - except these.
+ *
+ * Before 1.5.53 it was the other way round: a list of what only the human may
+ * do, and every route left off it was open to any program on this computer,
+ * a bot's own `curl` included. The 11-21 security review chained the gaps into
+ * the human's authority on every machine (another machine's pairing link
+ * handed over, the workspace moved, a server "added" that then received the
+ * model keys, a bot's rules rewritten).
+ *
+ * Add an entry only for a caller that can hold none of those credentials, and
+ * say why. scripts/smoke-sec1553.mjs asks every route in server.mjs without a
+ * key and fails on any that answers without being listed here. A new route
+ * (backup, restore, ...) is the human's without anyone having to remember it.
  */
-export function isAuthorityRequest(method, pathname, body = {}) {
+export const OPEN_ROUTES = Object.freeze([
+  { method: 'GET', path: /^\/api\/health$/, why: 'liveness: setup-linux.sh / setup-windows.ps1 and the launcher ask it with no key right after install; version and counts only, no secret' },
+  { method: 'GET', path: /^\/api\/auth$/, why: 'how a client learns it must pair (and whether it may decide); says nothing secret' },
+  { method: 'POST', path: /^\/api\/pair$/, why: 'pairing itself: the 8-digit code or a one-time link is the check, rate-limited; the code is never shown without the human' },
+  { method: 'GET', path: /^\/api\/mcp\/oauth\/callback$/, why: 'a connected app sends the system browser back here after sign-in (no key there); the one-time state the human started is the check' },
+  { method: 'GET', path: /^\/api\/x\/callback$/, why: 'X sends the system browser back here after sign-in (no key there); the one-time state and PKCE verifier the human started are the check' },
+]);
+
+/** The OPEN_ROUTES entry this request matches, or null. */
+export function openRouteFor(method, pathname) {
   const m = String(method || 'GET').toUpperCase();
   const p = String(pathname || '');
-  // A bot on another machine, talked to through this hub (1.5.42 一个花名册):
-  // sending, reading its chat, following it live, stopping, undoing, its
-  // screen, and the messages waiting for a machine that is off. This hub uses
-  // that machine's token, so none of it may come from a bot's own command here.
-  if (/^\/api\/peers\/[^/]+\/bots\/[^/]+\//.test(p)) return true;
-  // Another machine's group (1.5.43): the same rules as its bots.
-  if (/^\/api\/peers\/[^/]+\/groups\/[^/]+\//.test(p)) return true;
-  // A new bot or group made on another machine from here (1.5.44 「建在哪台？」).
-  if (m === 'POST' && /^\/api\/peers\/[^/]+\/(bots|groups)$/.test(p)) return true;
-  // Tailscale on this machine and the others (1.5.43): installing, logging in, removing, sharing.
-  if (m === 'POST' && /^\/api\/tailscale\/(install|login|uninstall|share)$/.test(p)) return true;
-  if (/^\/api\/peers\/outbox(\/|$)/.test(p)) return true;
-  // 1.5.45 第四步「替你想」: X (its app, signing in, who may post, signing out), what each
-  // machine is for, undoing a change to a bot, the daily note. X's callback is exempt (below).
-  if (m !== 'GET' && /^\/api\/x(\/(app|login|bots))?$/.test(p)) return true;
-  if (m !== 'GET' && (p === '/api/machine-notes' || p === '/api/nudge')) return true;
-  // The initiative layer's settings, and stopping a bot's follow-up or watch (1.5.45).
-  if (m !== 'GET' && /^\/api\/initiative(\/|$)/.test(p)) return true;
-  if (m === 'POST' && /^\/api\/adjustments\/[^/]+\/undo$/.test(p)) return true;
-  // A file in another machine's workspace, read through this hub with that
-  // machine's token: the human's file cards only, not a program here (1.5.42).
-  // A group's automatic fetch goes to that machine directly and is not this route.
-  if (/^\/api\/peers\/[^/]+\/file$/.test(p)) return true;
-  if (m === 'GET') return p === '/api/pairing';
-  if (/^\/api\/approvals\/[^/]+$/.test(p) && m === 'POST') return true;
-  // Another machine's card, answered here and passed on (1.5.41 一个待办箱).
-  if (/^\/api\/inbox\/[^/]+\/[^/]+$/.test(p) && m === 'POST') return true;
-  if (p === '/api/policy' || p === '/api/settings' || p === '/api/cliagents' || p === '/api/pairing/link') return true;
-  if (p === '/api/usage' && m === 'PUT') return true;
-  if (p === '/api/relay-link' && m === 'PUT') return true;
-  if (/^\/api\/(vault|mcp|feishu|devices)(\/|$)/.test(p) && !/\/test$/.test(p)) return true;
-  if (/^\/api\/bots\/[^/]+\/primary$/.test(p)) return true;
-  if (/^\/api\/bots(\/[^/]+)?$/.test(p) && (m === 'POST' || m === 'PATCH') && body && (body.policy !== undefined || (m === 'PATCH' && body.tools !== undefined))) return true;
-  return false;
+  return OPEN_ROUTES.find((r) => (r.method === m || (m === 'HEAD' && r.method === 'GET')) && r.path.test(p)) || null;
+}
+
+/** Does this request need the human (1.5.53: every route but OPEN_ROUTES)? */
+export function isAuthorityRequest(method, pathname) {
+  return !openRouteFor(method, pathname);
 }
 
 export function isAuthExemptPath(method, pathname) {

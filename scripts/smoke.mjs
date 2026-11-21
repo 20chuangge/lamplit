@@ -237,6 +237,8 @@ async function main() {
     await stage('1.5.50: what the money really is, and spending less of it', async () => (await import('./smoke-cost.mjs')).costChecks({ check, readText, api, home, toolsMod }));
     await stage('1.5.51: one X card, and machines by name and address', scenarioUi1551);
     await stage('1.5.52: what the real-model test found, X as a tile, X sign-in from another machine', scenarioBatch1552);
+    await stage('1.5.53: security - what only the human may do is the default', async () => (await import('./smoke-sec1553.mjs')).secChecks({ check, api, rawFetch, base, readText, startServerChild, stopProcess, seedHome }));
+    await stage('1.5.53: the Windows screen asks for a password, the hub signs in for the page', async () => { const v = await import('./smoke-vnc1553.mjs'); await v.vncUnitChecks({ check }); await v.vncHubChecks({ check }); });
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -2341,8 +2343,10 @@ async function scenarioCrossSite({ auth }) {
   check('SEC-03: a desktop WebSocket from another website is refused (401)', wsEvil === 401, String(wsEvil));
   const wsBare = await rawUpgrade(wsPath, { host: `127.0.0.1:${port}` });
   check('SEC-03: a desktop WebSocket with neither the page Origin nor a Bearer token is refused (401)', wsBare === 401, String(wsBare));
-  const wsSame = await rawUpgrade(wsPath, { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` });
-  check('SEC-03: the hub page itself gets past the check (404 here: no desktop running)', wsSame === 404, String(wsSame));
+  const wsSame = await rawUpgrade(wsPath, { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}`, 'x-lamplit-local': localKeyOf() });
+  check('SEC-03: the hub page in the human\'s app (its key) gets past the check (404 here: no desktop running)', wsSame === 404, String(wsSame));
+  const wsProgram = await rawUpgrade(wsPath, { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` });
+  check('SEC-03b (1.5.53) a program here naming the hub page as its Origin, without the key, is refused (403)', wsProgram === 403, String(wsProgram));
 }
 
 function scenarioAuth({ auth, devicesMod }) {
@@ -2680,8 +2684,9 @@ async function scenarioPairing() {
     authInfo.text,
   );
 
-  // Wrong attempts already spent two of the five permits; spend the rest.
-  for (let i = 0; i < 3; i += 1) await api('/api/pair', { method: 'POST', body: { code: 'ffffffff' } });
+  // Wrong attempts already spent two of the five permits; spend the rest. Since 1.5.53
+  // only the typed 8-digit code is limited per address (a one-time link is 256 bits).
+  for (let i = 0; i < 3; i += 1) await api('/api/pair', { method: 'POST', body: { code: code === '00000002' ? '00000003' : '00000002' } });
   const limited = await api('/api/pair', { method: 'POST', body: { code } });
   check('pairing is rate-limited to 5 attempts per minute', limited.status === 429 && limited.json?.error?.code === 'PAIR_RATE_LIMITED', limited.text.slice(0, 200));
 }
@@ -3647,8 +3652,8 @@ async function scenarioCliAgents({ toolsMod, home }) {
       const mainSrc = await readText('../desktop/main.mjs');
       const remoteSrc = await readText('../src/remote.mjs');
       const settings = Object.fromEntries(lv.SAFE_SETTINGS);
-      check('M33 screen: loopback only, no password, no web page, no tray icon, port 5900',
-        settings.LoopbackOnly === 1 && settings.AllowLoopback === 1 && settings.UseVncAuthentication === 0 && settings.AcceptHttpConnections === 0 && settings.RfbPort === 5900 && settings.RunControlInterface === 0);
+      check('M33 screen: loopback only, a password (1.5.53: the hub signs in for the page), no web page, no tray icon, port 5900',
+        settings.LoopbackOnly === 1 && settings.AllowLoopback === 1 && settings.UseVncAuthentication === 1 && settings.UseControlAuthentication === 1 && settings.AcceptHttpConnections === 0 && settings.RfbPort === 5900 && settings.RunControlInterface === 0);
       check('M33 screen: only a hand-made copy in a bot workspace is retired',
         lv.isLegacyCopy('C:\\Users\\a\\AppData\\Roaming\\Desk\\workspace\\tools\\tightvnc\\PFiles\\TightVNC\\tvnserver.exe') && !lv.isLegacyCopy('C:\\Program Files\\TightVNC\\tvnserver.exe') && !lv.isLegacyCopy('C:\\Users\\a\\AppData\\Roaming\\Desk\\vnc\\PFiles\\TightVNC\\tvnserver.exe'));
       const prev = process.env.DESK_LOCAL_VNC;
@@ -3657,7 +3662,7 @@ async function scenarioCliAgents({ toolsMod, home }) {
       if (prev === undefined) delete process.env.DESK_LOCAL_VNC; else process.env.DESK_LOCAL_VNC = prev;
       check('M33 screen: switched off (or not Windows) it does nothing, and stopping something it did not start does nothing', off.mode === 'off' && lv.stopLocalVnc(off) === false && lv.stopLocalVnc({ mode: 'service' }) === false && lv.stopLocalVnc({ mode: 'other' }) === false);
       check('M33 screen: the desktop app starts it at launch and stops it on every quit path; the MSI must be signed by GlavSoft and is shared with machine installs',
-        mainSrc.includes("path.join(SERVER_DIR, 'src', 'localvnc.mjs')") && mainSrc.includes("m.ensureLocalVnc({ dir: path.join(HOME, 'vnc') })")
+        mainSrc.includes("path.join(SERVER_DIR, 'src', 'localvnc.mjs')") && mainSrc.includes("m.ensureLocalVnc({ dir: path.join(HOME, 'vnc'), dataDir: path.join(HOME, 'data'), key })")
         && (mainSrc.match(/stopLocalScreen\(\);/g) || []).length >= 2
         && remoteSrc.includes("import { tightVncInstaller } from './localvnc.mjs';") && !remoteSrc.includes('async function tightVncInstaller'));
 
@@ -4115,12 +4120,12 @@ async function scenarioMcp({ home, toolsMod }) {
     const settings = await noKey('/api/settings', { method: 'PUT', body: JSON.stringify({ timezone: 'UTC' }) });
     const reads = await noKey('/api/bots');
     const rename = await noKey('/api/bots/chief', { method: 'PATCH', body: JSON.stringify({ role: '助理' }) });
-    check('K27 local key: without it, a request from this computer cannot change a bot\'s permissions, the approval level, settings, decide an approval or read the pairing code; ordinary reads and edits still work',
-      [patchBot, policy, decide, pairing, settings].every((r) => r.status === 403) && reads.status === 200 && rename.status === 200,
+    check('K27 local key: without it, a request from this computer cannot change a bot\'s permissions, the approval level, settings, decide an approval or read the pairing code; since 1.5.53 not ordinary reads and edits either (default-deny)',
+      [patchBot, policy, decide, pairing, settings, reads, rename].every((r) => r.status === 403),
       JSON.stringify([patchBot, policy, decide, pairing, settings, reads, rename].map((r) => r.status)));
     const withKey = await api('/api/policy');
     check('K27 local key: the human\'s app (with the key) and paired devices still can; the key file is a secret a bot\'s command asks for',
-      withKey.status === 200 && A.isAuthorityRequest('PATCH', '/api/bots/x', { tools: [] }) && !A.isAuthorityRequest('PATCH', '/api/bots/x', { role: 'r' })
+      withKey.status === 200 && A.isAuthorityRequest('PATCH', '/api/bots/x') && A.isAuthorityRequest('GET', '/api/bots')
       && A.carriesLocalKey({ headers: {} }, { mode: 'token', authorized: true }, '.') === true
       && (await import('../src/agent.mjs')).reachesSecrets('shell', { command: 'cat /opt/desk-hub/data/local-key' }) !== '');
     const desk3 = await readText('../desktop/main.mjs');
@@ -4130,13 +4135,14 @@ async function scenarioMcp({ home, toolsMod }) {
   // a browser on this computer could not decide at all. Now: the code only for the human, a browser the human paired may decide.
   {
     const noKey = (p, o = {}) => rawFetch(`${base}${p}`, { ...o, headers: { 'content-type': 'application/json', ...(o.headers || {}) } });
-    const settings = await (await noKey('/api/settings')).json();
+    const settingsRes = await noKey('/api/settings');
+    const settings = await settingsRes.json();
     const auth = await (await noKey('/api/auth')).json();
     const withKey = (await api('/api/settings')).json;
     const ownAuth = (await api('/api/auth')).json;
-    check('K32 the pairing code: a request from this computer without the app\'s key gets no code from /api/settings (it is told it is hidden) and is told it may not decide; the app sees both',
-      settings.pairing?.code === '' && settings.pairing?.hidden === true && auth.authority === false
-      && /^\d{8}$/.test(withKey?.pairing?.code || '') && !withKey?.pairing?.hidden && ownAuth?.authority === true, JSON.stringify({ p: settings.pairing, a: auth, o: ownAuth }));
+    check('K32 the pairing code: a request from this computer without the app\'s key gets no code (since 1.5.53 no settings at all) and is told it may not decide; the app sees both',
+      settingsRes.status === 403 && !/"code":"\d{8}"/.test(JSON.stringify(settings)) && auth.authority === false
+      && /^\d{8}$/.test(withKey?.pairing?.code || '') && !withKey?.pairing?.hidden && ownAuth?.authority === true, JSON.stringify({ s: settingsRes.status, a: auth, o: ownAuth }));
     const before = await noKey('/api/approvals/ap_nothing', { method: 'POST', body: JSON.stringify({ decision: 'approve' }) });
     const refusal = await before.json().catch(() => ({}));
     const wrongCookie = await noKey('/api/approvals/ap_nothing', { method: 'POST', headers: { cookie: 'desk_session=nope' }, body: JSON.stringify({ decision: 'approve' }) });
@@ -10647,7 +10653,7 @@ async function scenarioInbox1541() {
       live.includes("'/api/inbox'") && live.includes('来自：') && /buildApprovalCard\(/.test(live) && live.includes('/api/inbox/'));
     check('INB-10 another machine\'s notification no longer says 「点这里切换到那台机器」; it opens the card', !sets.includes('点这里切换到那台机器') && sets.includes("'inbox'"));
     const auth = await import('../src/auth.mjs');
-    check('INB-11 answering through the inbox is one of the things only the human may do', auth.isAuthorityRequest('POST', '/api/inbox/x/ap_1') && !auth.isAuthorityRequest('GET', '/api/inbox'));
+    check('INB-11 answering through the inbox is one of the things only the human may do (1.5.53: reading the inbox too - every route is the human\'s but auth.mjs OPEN_ROUTES)', auth.isAuthorityRequest('POST', '/api/inbox/x/ap_1') && auth.isAuthorityRequest('GET', '/api/inbox'));
   } finally {
     await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
     if (other?.child) await stopProcess(other.child);
@@ -10946,10 +10952,10 @@ async function scenarioRoster1542() {
       && (await bMessages()).length === before,
       `${unpairedSend.status} ${unpairedRead.status} ${unpairedStream.status} ${unpairedQueue.status}`);
     const authMod = await import('../src/auth.mjs');
-    check('RC-2b a remote chat (send, read, follow, stop, undo, the screen) and the waiting queue are things only the human may do; the roster of names is not',
+    check('RC-2b a remote chat (send, read, follow, stop, undo, the screen) and the waiting queue are things only the human may do; since 1.5.53 the roster of names too',
       ['POST /message', 'GET /messages', 'GET /stream', 'POST /turns/t1/cancel', 'GET /turns', 'POST /undo', 'GET /desktop'].every((x) => { const [m, p] = x.split(' '); return authMod.isAuthorityRequest(m, `/api/peers/a/bots/b${p}`); })
       && authMod.isAuthorityRequest('GET', '/api/peers/outbox') && authMod.isAuthorityRequest('POST', '/api/peers/outbox/flush')
-      && !authMod.isAuthorityRequest('GET', '/api/peers/roster'));
+      && authMod.isAuthorityRequest('GET', '/api/peers/roster'));
     const hop = await rawFetch(`${base}${remote(peerName, 'ops', '/message')}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${aToken}`, 'x-lamplit-via': 'x' }, body: JSON.stringify({ text: '你好' }) });
     const detour = await bApi(`/api/peers/${encodeURIComponent('客厅电脑')}/bots/chief/message`, { method: 'POST', key: false, body: { text: '你好' } });
     await sleep(300);
@@ -11021,8 +11027,8 @@ async function scenarioRoster1542() {
       fileByProgram.status === 403 && fileByProgram.json?.error?.code === 'LOCAL_KEY_REQUIRED' && !fileByProgram.text.includes('only for you')
       && fileHop.status === 403 && fileByHuman.status === 200 && fileByHuman.text === 'only for you',
       `${fileByProgram.status} ${fileHop.status} ${fileByHuman.status}`);
-    check('RC-13b fetching a file from another machine is one of the things only the human may do; finding which machine has it (names only) is not',
-      authMod.isAuthorityRequest('GET', '/api/peers/x/file') && !authMod.isAuthorityRequest('GET', '/api/peers/locate'));
+    check('RC-13b fetching a file from another machine is one of the things only the human may do; since 1.5.53 finding which machine has it too',
+      authMod.isAuthorityRequest('GET', '/api/peers/x/file') && authMod.isAuthorityRequest('GET', '/api/peers/locate'));
     const cross = await readText('../src/crossmachine.mjs');
     check('RC-13c a group\'s automatic fetch goes to the other machine itself with its token (peers.call), not through this hub\'s file route',
       cross.includes("peers.call(peer, 'GET', `/api/workspace/file?path=${encodeURIComponent(rel)}`") && !cross.includes('/api/peers/'));
@@ -11371,7 +11377,7 @@ async function scenarioTailscale1543() {
   const auth = await import('../src/auth.mjs');
   const unpaired = await Promise.all(['/api/tailscale/install', '/api/tailscale/login', '/api/tailscale/uninstall', '/api/tailscale/share'].map((p) => api(p, { method: 'POST', body: {}, headers: noKey })));
   check('TS-4 installing, logging in, removing and sharing Tailscale are the human\'s only (a program here, or a browser not paired, is refused)',
-    unpaired.every((r) => r.status === 403) && ['install', 'login', 'uninstall', 'share'].every((x) => auth.isAuthorityRequest('POST', `/api/tailscale/${x}`)) && !auth.isAuthorityRequest('GET', '/api/tailscale'),
+    unpaired.every((r) => r.status === 403) && ['install', 'login', 'uninstall', 'share'].every((x) => auth.isAuthorityRequest('POST', `/api/tailscale/${x}`)) && auth.isAuthorityRequest('GET', '/api/tailscale'),
     unpaired.map((r) => r.status).join(' '));
   const seen = [];
   const fake = http.createServer(async (req, res) => {
@@ -11510,7 +11516,7 @@ async function scenarioRoster1544() {
     check('R44-1 making a bot or group on another machine is the human\'s (unpaired: 403 LOCAL_KEY_REQUIRED; a call another hub passed on: 403); nothing reaches that machine',
       unpaired.status === 403 && unpaired.json?.error?.code === 'LOCAL_KEY_REQUIRED' && unpairedG.status === 403
       && hop.status === 403 && authMod.isAuthorityRequest('POST', '/api/peers/x/bots') && authMod.isAuthorityRequest('POST', '/api/peers/x/groups')
-      && !authMod.isAuthorityRequest('GET', '/api/peers/roster')
+      && authMod.isAuthorityRequest('GET', '/api/peers/roster')
       && !seen.slice(before).some((s) => s.method === 'POST'), JSON.stringify({ u: unpaired.status, g: unpairedG.status, h: hop.status }));
 
     // --- a bot: only its name, job and persona go over -------------------------------------

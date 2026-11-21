@@ -6,11 +6,16 @@
  * so the machine needs no public address, port or tunnel. Events come in as
  * protobuf frames (pbbp2.Frame), replies go out over the normal REST API.
  *
- * Who may use it: nobody until they pair. The first message from a Feishu user
- * must contain the pairing code shown in Settings → 飞书; after that their
- * open_id is allowed. Everyone else is told how to pair and nothing runs.
+ * Who may use it: nobody until they pair. A Feishu user sends the pairing code
+ * shown in Settings → 飞书 (the code alone, or 「配对 」 and the code); after that
+ * their open_id is allowed. Everyone else is told how to pair and nothing runs.
+ * The code (1.5.53, security review H3): 8 digits, good for 30 minutes, spent
+ * once; a message has to BE the code, not just contain it (one long run of
+ * digits contained every 6-digit code); a sender with 5 wrong tries in an hour
+ * is not heard for that hour, and 20 wrong tries from anyone change the code
+ * and pause pairing for 15 minutes.
  *
- * data/feishu.json {enabled, appId, appSecret, botId, pairCode, users:[{openId, since, target}]}
+ * data/feishu.json {enabled, appId, appSecret, botId, pairCode, pairCodeAt, users:[{openId, since, target}]}
  *
  * Who answers: each person has a current target ({botId, machine, name}; none =
  * the primary bot). "@名字 …" talks to that bot and makes it the target, so the
@@ -134,7 +139,15 @@ const headerOf = (frame, key) => frame.headers.find((h) => h.key === key)?.value
 // settings
 // ---------------------------------------------------------------------------
 
-const newPairCode = () => String(crypto.randomInt(100000, 1000000));
+const newPairCode = () => String(crypto.randomInt(10_000_000, 100_000_000));
+export const PAIR_CODE_TTL_MS = 30 * 60 * 1000;
+const PAIR_TRIES_PER_SENDER = 5; // wrong tries per Feishu user per hour
+const PAIR_TRIES_ALL = 20; // wrong tries from everyone per hour: a new code and a pause
+const PAIR_PAUSE_MS = 15 * 60 * 1000;
+/** What a pairing message says: the code alone, or 「配对 」/「pair 」 and the code. */
+export function pairAttempt(text) {
+  return String(text || '').replace(/\s+/g, '').replace(/^(配对|pair)[:：]?/i, '');
+}
 
 export async function loadFeishu(file) {
   const raw = await readJson(file, null);
@@ -144,7 +157,10 @@ export async function loadFeishu(file) {
     appId: String(r.appId || ''),
     appSecret: String(r.appSecret || ''),
     botId: String(r.botId || ''),
-    pairCode: /^\d{6}$/.test(String(r.pairCode)) ? String(r.pairCode) : newPairCode(),
+    // A code from before 1.5.53 (6 digits, no time) is replaced.
+    ...(/^\d{8}$/.test(String(r.pairCode)) && Number.isFinite(Date.parse(r.pairCodeAt))
+      ? { pairCode: String(r.pairCode), pairCodeAt: String(r.pairCodeAt) }
+      : { pairCode: newPairCode(), pairCodeAt: new Date().toISOString() }),
     users: Array.isArray(r.users) ? r.users.filter((u) => u && u.openId).map((u) => ({
       openId: String(u.openId),
       since: u.since || null,
@@ -195,8 +211,38 @@ export function createFeishu(o) {
   const waitingApproval = new Map(); // chatId -> approvalId
   const picks = new Map(); // openId -> {list, until} after "切换"
   let unsubscribe = null;
+  const now = o.now || (() => Date.now());
+  const wrongBySender = new Map(); // openId -> times of wrong pairing tries
+  let wrongAll = []; // times of wrong pairing tries from anyone
+  let pairPausedUntil = 0;
 
   const log = (...a) => console.log('[feishu]', ...a);
+
+  /** A new pairing code, good for 30 minutes from now. */
+  function freshCode() {
+    cfg.pairCode = newPairCode();
+    cfg.pairCodeAt = new Date(now()).toISOString();
+  }
+  const codeExpired = () => !(now() - Date.parse(cfg.pairCodeAt || '') <= PAIR_CODE_TTL_MS);
+  /** The code to show: an expired one is replaced when it is looked at (saved in the background). */
+  function currentCode() {
+    if (codeExpired()) { freshCode(); saveFeishuFile(o.file, cfg).catch(() => {}); }
+    return cfg.pairCode;
+  }
+  const lastHour = (list) => list.filter((t) => now() - t < 3600 * 1000);
+  /** A wrong try, counted for this sender and for everyone; too many from everyone: a new code and a pause. */
+  async function wrongTry(sender) {
+    wrongBySender.set(sender, [...lastHour(wrongBySender.get(sender) || []), now()]);
+    if (wrongBySender.size > 1000) wrongBySender.delete(wrongBySender.keys().next().value);
+    wrongAll = [...lastHour(wrongAll), now()];
+    if (wrongAll.length >= PAIR_TRIES_ALL) {
+      wrongAll = [];
+      pairPausedUntil = now() + PAIR_PAUSE_MS;
+      freshCode();
+      await saveFeishuFile(o.file, cfg);
+      log('pairing paused for 15 minutes after many wrong codes; the code was changed');
+    }
+  }
 
   // ---------------------------------------------------------------- REST
   async function tenantToken() {
@@ -391,16 +437,34 @@ export function createFeishu(o) {
 
     // Pairing: nothing runs for someone this machine has not met.
     if (!cfg.users.some((u) => u.openId === sender)) {
-      if (text.includes(cfg.pairCode)) {
+      if (now() < pairPausedUntil) {
+        await sendText(to, '配对暂停了一会儿（有人试了太多次错误的配对码）。请 15 分钟后，在电脑上的 Lamplit 里看新的配对码再试。');
+        return;
+      }
+      if (lastHour(wrongBySender.get(sender) || []).length >= PAIR_TRIES_PER_SENDER) {
+        await sendText(to, '配对码试错太多次了，请一小时后再试。');
+        return;
+      }
+      const attempt = pairAttempt(text);
+      const right = /^\d{8}$/.test(attempt) && crypto.timingSafeEqual(Buffer.from(attempt), Buffer.from(cfg.pairCode));
+      if (right && codeExpired()) {
+        freshCode();
+        await saveFeishuFile(o.file, cfg);
+        await sendText(to, '这个配对码已经过期了（30 分钟内有效）。请在电脑上的 Lamplit 里打开「设置 → 飞书」，把新的配对码发给我。');
+        return;
+      }
+      if (right) {
         cfg.users.push({ openId: sender, since: new Date().toISOString() });
-        cfg.pairCode = newPairCode(); // one code, one person
+        freshCode(); // one code, one person
+        wrongBySender.delete(sender);
         await saveFeishuFile(o.file, cfg);
         o.bus?.emit({ type: 'feishu.changed' });
         await sendText(to, o.pinned
           ? `已连接到「${o.pinned.machine || here()}」的${o.pinned.name}。直接发消息给我就行，图片和语音也可以。`
           : `已连接到「${here()}」的助理。直接发消息给我就行，图片和语音也可以。发「切换」可以换别的机器人。`);
       } else {
-        await sendText(to, '还没配对：在电脑上的 Lamplit 里打开「设置 → 飞书」，把配对码发给我。');
+        await wrongTry(sender);
+        await sendText(to, '还没配对：在电脑上的 Lamplit 里打开「设置 → 飞书」，只把配对码发给我（或者发「配对 」加配对码）。');
       }
       return;
     }
@@ -703,7 +767,7 @@ export function createFeishu(o) {
       if (typeof patch.appSecret === 'string' && patch.appSecret.trim()) cfg.appSecret = patch.appSecret.trim();
       if (patch.botId !== undefined) cfg.botId = String(patch.botId || '').slice(0, 64);
       if (patch.enabled !== undefined) cfg.enabled = Boolean(patch.enabled);
-      if (patch.newPairCode) cfg.pairCode = newPairCode();
+      if (patch.newPairCode) freshCode();
       if (patch.clearSecret) cfg.appSecret = '';
       await saveFeishuFile(o.file, cfg);
       // Reconnect only when what the connection uses changed: saving the same
@@ -723,7 +787,8 @@ export function createFeishu(o) {
         appId: cfg.appId,
         hasSecret: Boolean(cfg.appSecret),
         botId: cfg.botId,
-        pairCode: cfg.pairCode,
+        pairCode: currentCode(),
+        pairCodeExpiresAt: new Date(Date.parse(cfg.pairCodeAt) + PAIR_CODE_TTL_MS).toISOString(),
         users: cfg.users.map((u) => ({ openId: u.openId, since: u.since, talkingTo: u.target ? sayWho(u.target) : '' })),
         pinned: o.pinned || null,
         connected: status.connected,

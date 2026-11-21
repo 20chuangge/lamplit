@@ -241,8 +241,10 @@ async function main() {
     await stage('1.5.53: the Windows screen asks for a password, the hub signs in for the page', async () => { const v = await import('./smoke-vnc1553.mjs'); await v.vncUnitChecks({ check }); await v.vncHubChecks({ check }); });
     await stage('1.5.54: one-click backup and restore', async () => (await import('./smoke-backup.mjs')).backupChecks({ check, readText }));
     await stage('1.5.54: what a newcomer tripped over, and three queued items', async () => (await import('./smoke-ux1554.mjs')).uxChecks({ check, readText, api, home, toolsMod }));
+    await stage('1.5.55: the page always gets new scripts after an update; statuses in words', async () => (await import('./smoke-sw1555.mjs')).swChecks({ check, readText, rawFetch, base }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
+    await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -3443,13 +3445,13 @@ function shanghaiWeekday(ts) {
   // Design v2 (Notion §97.5): one brand colour, surfaces, a settings list on phones.
   {
     const html = await readText('../public/index.html');
-    check('design v2 layer is present with light and dark tokens', html.includes('v7 · design v2') && html.includes('--on-accent: #0A0A0A;') && html.includes('--on-accent: #FFFFFF;'));
-    check('buttons on the accent use the on-accent colour, not white', html.includes('.usage-range button.on, .pc-mobile-bar button.on { color: var(--on-accent); }'));
+    check('design tokens (redesign step 1): one neutral grey scale and one violet accent, in dark and light', html.includes('--on-solid: #0b0b0c;') && html.includes('--on-solid: #ffffff;') && html.includes('--accent: #8b7cf6;') && html.includes('--accent: #6a5ae0;') && html.includes('--accent-solid: #6a5ae0;'));
+    check('buttons on the solid fill use the on-solid colour, not white', html.includes('.usage-range button.on, .pc-mobile-bar button.on { color: var(--on-solid); }'));
     check('phone settings open on a list and have a way back', html.includes('id="settings-back"') && html.includes("$('settings-back')?.addEventListener('click', showSettingsHome)") && html.includes('if (isMobile() && !section) showSettingsHome();'));
     check('every settings page has a line icon', (html.match(/<button class="setnav[^>]*data-set-target="([a-z-]+)"/g) || []).every((b) => html.includes("'" + b.match(/data-set-target="([a-z-]+)"/)[1] + "':")));
-    check('both sides keep a bubble, the human one a softer grey', html.includes('--bubble-user: #333333;') && html.includes('--bubble-user: #E3E3E3;') && html.includes('background: var(--bubble-bot); border: 0; box-shadow: none; padding: 10px 16px;'));
+    check('both sides keep a bubble, the human one a softer grey', html.includes('--bubble-user: #2a2a2d;') && html.includes('--bubble-user: #e8e8eb;') && html.includes('background: var(--bubble-bot); border: 0; box-shadow: none; padding: 10px 16px;'));
     check('settings icons are sized and only shown in the phone list', html.includes('<svg class="setnav-icon" width="20" height="20"') && html.includes('  .setnav-icon { display: none; }') && html.includes('.settings-modal.set-home .setnav svg { display: block;'));
-    check('the sidebar is set apart from the chat (darker grey in light, a divider line)', html.includes('--bg: #FFFFFF; --bg-2: #F0F0F0;') && html.includes('.sidebar, html[data-theme="light"] .sidebar { border-right: 1px solid var(--border); }'));
+    check('the sidebar is set apart from the chat (darker grey in light, a divider line)', /--bg: #f7f7f8;\s+--bg-2: #f1f1f3;/.test(html) && html.includes('.sidebar, html[data-theme="light"] .sidebar { border-right: 1px solid var(--border); }'));
     check('feishu apps of their own: the settings list, the add form and its button are wired', ['feishu-apps', 'feishu-app-bot', 'feishu-app-id', 'feishu-app-secret', 'feishu-app-save'].every((id) => html.includes(`id="${id}"`)) && html.includes("$('feishu-app-save')?.addEventListener('click', addFeishuApp)"));
     const launcher = await readText('../mobile/shell/launcher.js');
     check('the app picker says how each machine is reached', launcher.includes('function linkKind(raw)') && launcher.includes('url.textContent = linkLabel(entry.best || entry.url, entry);'));
@@ -3991,8 +3993,9 @@ async function scenarioMcp({ home, toolsMod }) {
       const pgD = await readText('../public/index.html');
       check('M40 dialogs: no window.prompt in the page (it does nothing in the desktop app); changing the workspace and renaming a machine use the page own dialog',
         !pgD.includes('window.prompt(') && pgD.includes('async function askText(') && pgD.includes("const answer = await askText({") && pgD.includes("const name = await askText({ title: '给这台机器改名'"));
-      check('M39 offline cache: pictures and other files come from the network first (cache only offline), and the renamed cache drops the old one - an update shows the new icon on the first load',
-        /const VERSION = 'lamplit-v\d+';/.test(swSrc) && swSrc.includes('.catch(async () => (await caches.match(req)) || Response.error()),') && !swSrc.includes('return hit || network;'));
+      // 1.5.55: the worker keeps no picture or app file at all (an old copy next to a new page looked broken).
+      check('M39 offline cache: pictures and the app files come from the network only (the worker keeps just the offline page), and a new version is a new cache that drops the old one - an update shows the new icon on the first load',
+        swSrc.includes("const VERSION = 'lamplit-__LAMPLIT_VERSION__';") && swSrc.includes("if (req.mode === 'navigate')") && !swSrc.includes('caches.match(req)') && !swSrc.includes('return hit || network;'));
       const pg2 = await readText('../public/index.html');
       check('M38 start: the chosen folder (data/workspace.json) is used at start, the test env still wins; settings has 更改位置 on the workspace row and the hub restarts after a change',
         storeSrc.includes("export const WORKSPACE_FILE = path.join(DATA_DIR, 'workspace.json');") && storeSrc.includes('(chosenWorkspace() || DEFAULT_WORKSPACE_DIR)')
@@ -5179,7 +5182,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     check('M10 iPhone home-screen app: header below the clock, a page that never scrolls up, no second home-bar gap, 16px text boxes so typing does not zoom', pageSrc.includes("if (isIphone && standalone) document.documentElement.classList.add('ios-standalone');") && /position: fixed; top: 0; left: 0; right: 0;\s+height: var\(--app-height, 100dvh\);/.test(pageSrc) && pageSrc.includes('html.ios-standalone, html.ios-standalone body { overflow: hidden; }') && pageSrc.includes('html.ios-short-vp { --safe-b: 0px; }') && pageSrc.includes('html.ios textarea, html.ios select {') && pageSrc.includes('font-size: 16px !important;') && pageSrc.includes('.chat-head { padding: calc(var(--s2) + var(--safe-t)) var(--s4) var(--s2);'));
     check('M10 iPhone: another machine opened from the home-screen app (iOS in-app browser, its own bars) is laid out as a browser page, not under the clock', pageSrc.includes('const gap = (window.screen?.height || 0) - window.innerHeight;') && pageSrc.includes('const standalone = flagged && gap < 100;') && pageSrc.includes("if (isIphone && standalone && gap >= 40) document.documentElement.classList.add('ios-short-vp');"));
     check('M10 iPhone: full-screen settings and the page viewer start below the clock; the status bar height is known per screen size', /\.settings-modal \{\s+width: 100%; height: 100%; max-height: none;\s+border: 0; border-radius: 0;[\s\S]{0,120}padding-top: var\(--safe-t\);/.test(pageSrc) && pageSrc.includes('.page-viewer { padding-top: var(--safe-t); }') && pageSrc.includes('({ 956: 62, 932: 59, 926: 47, 896: 48, 874: 62, 852: 59, 844: 47, 812: 50 })[h]'));
-    check('M9 bot settings: name and role at the top, abilities and approval as switch rows, a fixed save bar', pageSrc.includes('<div class="be-group" id="botedit-abilities"></div>') && pageSrc.includes("input.className = 'be-switch';") && pageSrc.includes('<textarea class="be-role" id="botedit-role-input"') && pageSrc.includes('<div class="be-foot">') && pageSrc.includes('.be-switch:checked::after { transform: translateX(14px); background: var(--on-accent, #fff); }'));
+    check('M9 bot settings: name and role at the top, abilities and approval as switch rows, a fixed save bar', pageSrc.includes('<div class="be-group" id="botedit-abilities"></div>') && pageSrc.includes("input.className = 'be-switch';") && pageSrc.includes('<textarea class="be-role" id="botedit-role-input"') && pageSrc.includes('<div class="be-foot">') && pageSrc.includes('.be-switch:checked::after { transform: translateX(14px); background: var(--on-solid); }'));
   }
   // An app with very many tools (Notion has 77): requests stay under the APIs' 128-tool limit.
   {
@@ -7369,10 +7372,10 @@ async function scenarioV163() {
   const auth = await import('../src/auth.mjs');
   const part = await fetch(`${base}/app/main/05-chat.js`);
   const body = await part.text();
-  check('ENG-04b split: each part loads before pairing with the right type, starts with \'use strict\', and the offline cache keeps every part under a new name',
+  check('ENG-04b split: each part loads before pairing with the right type, starts with \'use strict\', and the offline cache keeps none of them (1.5.55), under a versioned name',
     PS.MAIN_PARTS.every((p) => auth.isPublicShellPath(`/${p}`)) && !auth.isPublicShellPath('/app/main/../../data/x.js') && !auth.isPublicShellPath('/app/other/x.js')
     && part.status === 200 && /javascript/.test(part.headers.get('content-type') || '') && body.startsWith("'use strict';")
-    && PS.MAIN_PARTS.every((p) => (fsx.readFileSync(path.join(pub, 'sw.js'), 'utf8')).includes(`'/${p}'`)) && fsx.readFileSync(path.join(pub, 'sw.js'), 'utf8').includes("const VERSION = 'lamplit-v3';"));
+    && !PS.MAIN_PARTS.some((p) => (fsx.readFileSync(path.join(pub, 'sw.js'), 'utf8')).includes(`'/${p}'`)) && fsx.readFileSync(path.join(pub, 'sw.js'), 'utf8').includes("const VERSION = 'lamplit-__LAMPLIT_VERSION__';"));
 }
 
 /**
@@ -7596,8 +7599,9 @@ async function scenarioV160() {
     bare.length === 0 && sheet.includes('url("../icons/icon-64.png")') && icon.status === 200, `${bare.join(', ')} ${icon.status}`);
 
   const sw = await readText('../public/sw.js');
-  check('ENG-04 offline: the service worker keeps every part of the page, under a new cache name so old single-file copies are dropped',
-    PS.PAGE_PARTS.every((p) => sw.includes(`'/${p}'`)) && /const VERSION = 'lamplit-v\d+';/.test(sw));
+  // 1.5.55: the opposite of before - no part is kept, so an update never mixes old and new parts.
+  check('ENG-04 offline: the service worker keeps no part of the page (the browser always fetches them), under a cache name with the version so older copies are dropped',
+    PS.PAGE_PARTS.every((p) => !sw.includes(`'/${p}'`)) && sw.includes("const VERSION = 'lamplit-__LAMPLIT_VERSION__';"));
 }
 
 /**
@@ -8780,7 +8784,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const toolSrc = await readText('../src/tools.mjs');
     const unlabelled = [...toolSrc.matchAll(/name: '([a-z_]+)',\n\s+description/g)].map((m) => m[1]).filter((n) => !labelled.has(n));
     check('working hint: every tool has a Chinese name (no "正在image_view…")', unlabelled.length === 0, unlabelled.join(','));
-    check('fullscreen: the "我弄好了，继续" button is readable (not white on the near-white accent)', /\.pc-done \{[^}]*background: #fff; color: #0a0a0a;/.test(page));
+    check('fullscreen: the "我弄好了，继续" button is readable (not white on the near-white accent)', /\.pc-done \{[^}]*background: var\(--media-text\); color: var\(--media-bg\);/.test(page));
     check('new bots: a specialist\'s empty chat is its own greeting with starts from its role; the primary bot is listed first', page.includes('if (bot && !bot.primary) return specialistWelcome(bot);') && page.includes('Number(Boolean(b.primary)) - Number(Boolean(a.primary))'));
     const main = await readText('../desktop/main.mjs');
     check('open files: the desktop app opens a workspace file or shows it in its folder, only inside the workspace, only on this computer', main.includes("handle('desk:open-file'") && main.includes("if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };") && page.includes('return Boolean(window.desk?.openFile) && onLocalMachine();'));
@@ -9989,9 +9993,12 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       page.includes("document.execCommand('copy')") && page.includes('Linux 需要 xclip 或 wl-clipboard'));
     // Fullscreen controls never follow the theme: the surface behind them is black.
     check('takeover: fullscreen buttons are fixed white-on-dark with safe-area offsets',
-      /\.pc-exit\s*\{[^}]*safe-r[^}]*background: rgba\(0, 0, 0, 0\.55\);[^}]*color: #fff;/.test(page) &&
-      /\.pc-done\s*\{[^}]*safe-r[^}]*background: #fff;[^}]*color: #0a0a0a;/.test(page) &&
-      /\.pc-mobile-bar button\s*\{[^}]*background: rgba\(0, 0, 0, 0\.55\);[^}]*color: #fff;/.test(page));
+      /\.pc-exit\s*\{[^}]*safe-r[^}]*background: var\(--media-overlay\);[^}]*color: var\(--media-text\);/.test(page) &&
+      /\.pc-done\s*\{[^}]*safe-r[^}]*background: var\(--media-text\);[^}]*color: var\(--media-bg\);/.test(page) &&
+      /\.pc-mobile-bar button\s*\{[^}]*background: var\(--media-overlay\);[^}]*color: var\(--media-text\);/.test(page) &&
+      // ...and those tokens are set once, the same in both themes
+      /--media-overlay: rgba\(0, 0, 0, 0\.55\);/.test(page) && /--media-text: #ffffff;/.test(page) &&
+      !/html\[data-theme="light"\] \{[^}]*--media-/.test(page));
     // Real landscape: native orientation lock + hidden bars, CSS fallback kept.
     const mobilePkg = JSON.parse(await readText('../mobile/package.json'));
     const shellBridge = await readText('../mobile/android/app/src/main/java/com/desk/assistant/ShellBridge.java');

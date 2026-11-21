@@ -444,4 +444,33 @@ export function runnerFor(command, ctx = {}, baseEnv = {}) {
   return { exe: helperExe(), input: helperPayload({ user: runner.user, password: runner.password, cwd, command, env }) };
 }
 
+/**
+ * Moving a workspace file or folder AS the account (1.5.55, the verifier's
+ * second 1.5.54 round). Windows resolves a move's two names one after the
+ * other, so a bot that keeps swapping a folder on the way for a junction to
+ * Lamplit's data folder could get the hub (which can reach that folder) to
+ * move a data file into the workspace. Done as lamplit-runner, Windows' own
+ * access check refuses every name that leads into the data folder, however
+ * the names are resolved. The names go in environment variables, never into
+ * the command line (a name may hold %, &, ^). -> async (from, to), or null
+ * when the account is not on (then the bots run as the human and see the data
+ * folder anyway: there is no line to keep).
+ */
+export const FENCED_MOVE = 'move "%LAMPLIT_FROM%" "%LAMPLIT_TO%" >nul';
+export function fencedMoveEnv(from, to) {
+  const root = process.env.SystemRoot || 'C:\\Windows';
+  return { SystemRoot: root, ComSpec: path.win32.join(root, 'System32', 'cmd.exe'), PATH: path.win32.join(root, 'System32'), LAMPLIT_FROM: from, LAMPLIT_TO: to };
+}
+export function fencedMover(workspaceDir = P.workspaceDir) {
+  if (process.platform !== 'win32' || status.state !== 'on') return null;
+  const runner = readRunner();
+  if (!runner) return null;
+  return async (from, to) => {
+    const env = runnerEnv(fencedMoveEnv(from, to), { home: runner.home || RUNNER_HOME });
+    const input = helperPayload({ user: runner.user, password: runner.password, cwd: path.resolve(String(workspaceDir)), command: FENCED_MOVE, env });
+    const r = await run(helperExe(), [], { input, timeoutMs: 30000 });
+    if (r.code !== 0) throw Object.assign(new Error(`moving as ${RUNNER_USER} was refused: ${String(r.out).trim().slice(-200)}`), { code: 'EFENCE' });
+  };
+}
+
 export const _test = { setStatus: (s) => { status = s; }, osHome: os.homedir };

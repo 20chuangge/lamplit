@@ -569,7 +569,20 @@ function registerServiceWorker() {
     const host = location.hostname;
     const allowed = proto === 'https:' || host === 'localhost' || host === '127.0.0.1' || host === '::1';
     if (!allowed || !('serviceWorker' in navigator)) return;
-    navigator.serviceWorker.register('sw.js').catch(() => { /* offline cache is optional */ });
+    // Where the worker could not reach the hub, offline.js removed it: not again here for 30 days (1.5.55).
+    let failedAt = 0;
+    try { failedAt = Number(localStorage.getItem('lamplit.noSw')) || 0; } catch { /* private mode */ }
+    if (failedAt && Date.now() - failedAt < 30 * 24 * 3600 * 1000) return;
+    // A new worker (a new version) taking over a page an older one served: load once more, so the
+    // page and its scripts are all the new version (1.5.55). Once per tab.
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController) return;
+      try { if (sessionStorage.getItem('lamplit.swReloaded')) return; sessionStorage.setItem('lamplit.swReloaded', '1'); } catch { return; }
+      location.reload();
+    });
+    // Never from the HTTP cache: a new sw.js (a new version) is seen at once.
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => { /* the offline page is optional */ });
   } catch { /* never let PWA wiring break the UI */ }
 }
 

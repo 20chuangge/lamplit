@@ -29,6 +29,7 @@ import path from 'node:path';
 import { P } from './store.mjs';
 import { openInside, writeInside, isBelow } from './safefs.mjs';
 import { realPathOf } from './realpath.mjs';
+import { fencedMover } from './winrunner.mjs';
 
 export const TRASH_DIR = '.trash';
 export const KEEP_DAYS = 7;
@@ -63,7 +64,11 @@ async function putBackInData(tempName, name) {
     let entries = [];
     try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
-      if (e.name === tempName) { await fsp.rename(path.join(dir, tempName), path.join(dir, name)).catch(() => {}); return true; }
+      if (e.name === tempName) {
+        // Never over a file of the same name (one made since would be lost): then it stays under the random name.
+        if (!fs.existsSync(path.join(dir, name))) await fsp.rename(path.join(dir, tempName), path.join(dir, name)).catch(() => {});
+        return true;
+      }
       if (e.isDirectory() && !e.isSymbolicLink()) stack.push(path.join(dir, e.name));
     }
   }
@@ -78,24 +83,39 @@ async function putBackInData(tempName, name) {
  * random name is ours if it is the checked thing; anything else is renamed
  * back. A random name exists in one place only, so the next steps by that name
  * cannot reach anything else. -> the random name's path, or throws.
+ *
+ * 1.5.55 (the verifier's second 1.5.54 round): Windows resolves a rename's two
+ * names one after the other, not through one folder, and a junction is made as
+ * an empty real folder first; 3 in 30000 swapped renames moved a data file
+ * into the workspace. So when the bots have their own account, every move of
+ * a name the bot chose is done AS that account (winrunner.mjs fencedMover):
+ * Windows refuses it any name that leads into the data folder. The checks
+ * below stay, for what the account may move (another workspace file swapped in).
  */
-async function takeOut(abs, want) {
+let fenceForTests = undefined;
+export const _test = { setFence: (fn) => { fenceForTests = fn; }, putBackInData: (tempName, name) => putBackInData(tempName, name) };
+const moverFor = (ws) => (fenceForTests !== undefined ? fenceForTests : fencedMover(ws));
+
+async function takeOut(abs, want, ws) {
   const name = path.basename(abs);
   const tempName = randomName('.lamplit-out-');
   const temp = path.join(path.dirname(abs), tempName);
-  await fsp.rename(abs, temp);
+  const fenced = moverFor(ws);
+  const move = fenced || ((a, b) => fsp.rename(a, b));
+  await move(abs, temp);
   for (let i = 0; i < 1000; i += 1) {
     const got = await fsp.lstat(temp, { bigint: true }).catch(() => null);
-    if (got && sameFile(want, got) && !got.isSymbolicLink()) return temp;
+    if (got && sameFile(want, got) && !got.isSymbolicLink()) return { temp, move };
     if (got) {
       // Not what was checked (a link was swapped in on the way): back under its own name, in its own folder.
-      try { await fsp.rename(temp, abs); throw outsideErr('the path changed while it was being removed: nothing was removed'); } catch (err) { if (err.code === 'PATH_OUTSIDE_WORKSPACE') throw err; }
+      try { await move(temp, abs); throw outsideErr('the path changed while it was being removed: nothing was removed'); } catch (err) { if (err.code === 'PATH_OUTSIDE_WORKSPACE') throw err; }
     }
     // Where the name leads right now is not where it is (a folder on the way is swapped): wait.
     await pause();
   }
-  // Never seen again where its name leads: if it is in the data folder, it goes back there.
-  await putBackInData(tempName, name);
+  // Never seen again where its name leads: if it is in the data folder, it goes back there
+  // (only possible without the bots' account: as that account nothing there can be moved).
+  if (!fenced) await putBackInData(tempName, name);
   throw outsideErr('the path changed while it was being removed: nothing was removed');
 }
 
@@ -117,7 +137,7 @@ export async function removeInside(ws, abs) {
   const fh = await openInside(ws, abs, 'r');
   const want = await fh.stat({ bigint: true });
   await fh.close();
-  const temp = await takeOut(abs, want);
+  const { temp } = await takeOut(abs, want, ws);
   await onRandomName(temp, (p) => fsp.unlink(p));
 }
 
@@ -125,7 +145,7 @@ export async function removeInside(ws, abs) {
 export async function removeFolderInside(ws, abs) {
   const before = await fsp.lstat(abs, { bigint: true });
   if (before.isSymbolicLink() || !before.isDirectory() || !isBelow(realPathOf(ws), realPathOf(abs))) throw outsideErr('path resolves outside the shared workspace');
-  const temp = await takeOut(abs, before);
+  const { temp } = await takeOut(abs, before, ws);
   await onRandomName(temp, (p) => fsp.rm(p, { recursive: true, force: false }));
 }
 
@@ -134,8 +154,9 @@ async function moveFolderAside(ws, target, kept) {
   const before = await fsp.lstat(target, { bigint: true });
   if (before.isSymbolicLink() || !before.isDirectory() || !isBelow(realPathOf(ws), realPathOf(target))) throw outsideErr('path resolves outside the shared workspace');
   await fsp.mkdir(path.dirname(kept), { recursive: true });
-  const temp = await takeOut(target, before);
-  await onRandomName(temp, (p) => fsp.rename(p, kept));
+  // The second move too: as the account when there is one (a swapped .trash must not lead it into the data folder).
+  const { temp, move } = await takeOut(target, before, ws);
+  await onRandomName(temp, (p) => move(p, kept));
 }
 
 /**

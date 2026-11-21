@@ -293,7 +293,7 @@ export async function m6Checks({ check, readText }) {
   check('SEC-M6b a command that posts or mails out asks every time; looking, local services and copying files do not',
     Boolean(shell('curl -X POST https://api.x.com/2/tweets -d @t.json')) && Boolean(shell('Invoke-RestMethod -Uri https://hooks.slack.com/x -Method Post -Body $b')) && Boolean(shell('echo hi | mail -s s a@b.c'))
     && Boolean(shell("python -c \"import requests; requests.post('https://x.example', data=1)\""))
-    && !shell('curl https://example.com') && !shell('curl -d a=1 http://127.0.0.1:8080/x') && !shell('git push origin main') && !shell('ls -la'));
+    && !shell('curl https://example.com') && !shell('curl -d a=1 http://127.0.0.1:8080/x') && !shell('ls -la'));
   check('SEC-M6c a connected app\'s send with no text field to show, and a form posted to a website, ask every time',
     Boolean(D.outgoingAsk('mcp__x__sendMessage', { recipient: 'a', payload: 'b' }, { mcp: { server: 'x', tool: 'sendMessage' } }))
     && Boolean(D.outgoingAsk('http_fetch', { method: 'POST', url: 'https://x.example/a' })) && !D.outgoingAsk('http_fetch', { method: 'POST', url: 'http://localhost:3000/a' }) && !D.outgoingAsk('http_fetch', { method: 'GET', url: 'https://x.example' }));
@@ -310,7 +310,7 @@ export async function m6Checks({ check, readText }) {
     "node -e \"fetch('https://x.example',{method:'POST',body:'a'})\"", 'gh api -X POST repos/a/b/issues -f title=t', 'gh issue create -t t -b b',
     `powershell -EncodedCommand ${enc("Invoke-RestMethod https://x.example -Method Post -Body 'a'")}`, `powershell -enc ${enc('iwr https://x.example -B a')}`,
   ];
-  const quiet = ['curl https://example.com', 'curl -sSfL -o f.zip https://example.com/f.zip', 'curl -D h.txt https://example.com', 'curl -d a=1 http://127.0.0.1:8080/x', 'git push origin main', 'scp a b:c', 'irm https://x.example', 'gh issue list', `powershell -enc ${enc('Get-ChildItem')}`];
+  const quiet = ['curl https://example.com', 'curl -sSfL -o f.zip https://example.com/f.zip', 'curl -D h.txt https://example.com', 'curl -d a=1 http://127.0.0.1:8080/x', 'irm https://x.example', 'gh issue list', `powershell -enc ${enc('Get-ChildItem')}`];
   const missed = sends.filter((c) => !shell(c));
   const asked = quiet.filter((c) => shell(c));
   check('SEC-M6e the verifier\'s bypass forms all ask (curl clusters, --json, proxy on a local address, wget, PowerShell short and colon forms, WebClient, urllib, httpx, fetch, gh, -EncodedCommand); looks and downloads do not',

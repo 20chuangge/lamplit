@@ -5983,6 +5983,13 @@ async function serveStatic(req, res, pathname) {
   const stamp = `${info.size.toString(16)}-${Math.floor(info.mtimeMs).toString(16)}`;
   const etag = `W/"${stamp}"`;
 
+  // The service worker carries this version (and build) in its cache name (1.5.55): a new version is
+  // a new worker, and activating it drops the older cache. Small, so always sent whole.
+  if (relative === 'sw.js') {
+    const body = Buffer.from((await fsp.readFile(target, 'utf8')).replaceAll('__LAMPLIT_VERSION__', VERSION + (BUILD ? `-${BUILD}` : '')), 'utf8');
+    res.writeHead(200, withSecurityHeaders(req, { 'content-type': type, 'content-length': body.length, 'cache-control': 'no-cache' }));
+    return res.end(req.method === 'HEAD' ? undefined : body);
+  }
   // Revalidation is the cheap path over a relayed phone link: no body at all.
   if (String(req.headers['if-none-match'] || '') === etag) {
     res.writeHead(304, { etag, 'cache-control': 'no-cache' });

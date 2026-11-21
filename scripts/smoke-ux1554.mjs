@@ -152,7 +152,7 @@ export async function uxChecks({ check, readText }) {
     const css = await readText('../public/app/style.css');
     const light = css.slice(css.indexOf('html[data-theme="light"] {'), css.indexOf('}', css.indexOf('html[data-theme="light"] {')));
     check('UX27 the yellow notice bar\'s text is a theme token (pale yellow on dark, dark amber on light), not a fixed #fde68a',
-      css.includes('color: var(--notice-text, #fde68a);') && /--notice-text: #fde68a;/.test(css) && /--notice-text: #7a4a00;/.test(light));
+      /\.conn-banner \{[^}]*color: var\(--warn-text\);/.test(css) && /--warn-text: #e3b866;/.test(css) && /--warn-text: #7a4c00;/.test(light) && !css.includes('#fde68a'));
   }
 
   // --- Beginner test of 1.5.54

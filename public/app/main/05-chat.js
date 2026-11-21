@@ -289,7 +289,7 @@ function statusLine(item) {
   };
   // The same call three times is "stuck", not the step limit.
   const stuck = item.status === 'max_steps' && /^Stopped: repeated /.test(item.summary || '');
-  const [kind, label] = stuck ? ['warn', '同一个操作重复了，先停下了'] : (map[item.status] || ['warn', item.status]);
+  const [kind, label] = stuck ? ['warn', '同一个操作重复了，先停下了'] : (map[item.status] || ['warn', statusWords(item.status)]);
   if (stuck) {
     const line = el('div', 'status-line');
     line.appendChild(el('span', 'dot warn'));
@@ -298,7 +298,7 @@ function statusLine(item) {
   }
   const line = el('div', 'status-line');
   line.appendChild(el('span', `dot ${kind === 'bad' ? 'bad' : 'warn'}`));
-  line.appendChild(el('span', null, `${label}${item.summary ? ` - ${item.summary}` : ''}`));
+  line.appendChild(el('span', null, `${label}${item.summary ? ` - ${reasonLabel(item.summary)}` : ''}`));
   return line;
 }
 
@@ -927,7 +927,7 @@ async function loadCliAgents(refresh = false) {
     row.append(name, state);
     const how = document.createElement('div');
     how.className = 'mono';
-    how.style.fontSize = '12px';
+    how.style.fontSize = 'var(--t-xs)';
     how.textContent = !a.installed ? `安装：${a.install}` : !a.loggedIn ? `登录：在这台机器的终端里运行 ${a.login}` : '';
     if (how.textContent) row.appendChild(how);
     // Which model it uses by default: its own list when it gives one, any name typed in.
@@ -962,7 +962,7 @@ async function loadCliAgents(refresh = false) {
       if ((a.models || []).length) {
         const note = document.createElement('div');
         note.className = 'row-note';
-        note.style.fontSize = '12px';
+        note.style.fontSize = 'var(--t-xs)';
         note.textContent = `可选 ${a.models.length} 个：点输入框选，或直接填模型名。机器人交活时也可以临时换模型。`;
         row.appendChild(note);
       }

@@ -127,7 +127,9 @@ function applyTheme(pref, { persist = false } = {}) {
   document.documentElement.dataset.themePref = next;
   document.documentElement.style.colorScheme = resolved;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', resolved === 'light' ? '#ffffff' : '#0a0a0a');
+  // the bar colour follows the page background token (style.css --bg)
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  if (meta && bg) meta.setAttribute('content', bg);
   if (persist) {
     try { localStorage.setItem(THEME_KEY, next); } catch { /* private mode */ }
     // Every machine's page shows the same 外观 (theme.js, 1.3.2).
@@ -357,7 +359,25 @@ const DECISION_LABELS = {
 };
 function decisionLabel(decision) {
   if (!decision) return '';
-  return DECISION_LABELS[String(decision).toLowerCase()] || String(decision);
+  return DECISION_LABELS[String(decision).toLowerCase()] || statusWords(decision);
+}
+
+/**
+ * Every status an approval, a run or a task can end with, in words (1.5.55: a card that timed out
+ * showed 「timeout」 in the Chinese UI). The English UI gets English from the dictionary.
+ */
+const STATUS_WORDS = {
+  approved: '已批准', denied: '已拒绝', pending: '待批准',
+  timeout: '超时了', expired: '已过期', dismissed: '已收起', needs_approval: '等你批准',
+  success: '完成', done: '完成', failed: '失败', cancelled: '已取消', max_steps: '到达步数上限',
+  needs_attention: '要你看一下', budget: '到了每日预算', error: '出错了', stopped: '停下了',
+  stalled: '没有进展，先停下了', skipped: '跳过了', running: '进行中', doing: '进行中', todo: '还没开始',
+  waiting: '在等', waiting_human: '等你', replaced: '换掉了', moved: '挪走了',
+};
+function statusWords(status) {
+  if (!status) return '';
+  const key = String(status).toLowerCase();
+  return STATUS_WORDS[key] || (/^[a-z_]+$/.test(key) ? '状态未知' : String(status));
 }
 
 /** The policy engine explains itself in English; these phrases are part of
@@ -376,6 +396,9 @@ function reasonLabel(reason) {
     .replace(/command matches danger denylist \((.*?)\)/g, '命令命中危险黑名单（$1）')
     .replace(/path resolves outside the shared workspace \((.*?)\)/g, '要动的文件不在共享工作区里（$1）')
     .replace(/\bapproval timed out\b/gi, '等太久没确认，已经自动取消')
+    // What the approvals module writes on a card it closed (1.5.55: shown raw before).
+    .replace(/\bno response within the approval window\b/gi, '等太久没人点，这一步自动取消了')
+    .replace(/\bapproval window expired after a restart\b/gi, 'Lamplit 重启过，这张卡已经失效')
     .replace(/\bturn cancelled\b/gi, '这一轮被取消了')
     .replace(/\bserver shutting down\b/gi, '服务先关掉了');
 }

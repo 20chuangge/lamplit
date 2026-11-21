@@ -3162,4 +3162,22 @@ window.DESK_I18N_EN = {
   "屏幕密码": "Screen password",
   // 1.5.54 recheck
   "未配置": "not set up",
+  // 1.5.55 statuses in words
+  "已过期": "Expired",
+  "等你批准": "Waiting for your OK",
+  "要你看一下": "Needs a look",
+  "到了每日预算": "Daily budget reached",
+  "出错了": "Error",
+  "停下了": "Stopped",
+  "没有进展，先停下了": "No progress, stopped for now",
+  "跳过了": "Skipped",
+  "还没开始": "Not started",
+  "在等": "Waiting",
+  "等你": "Waiting for you",
+  "换掉了": "Replaced",
+  "挪走了": "Moved",
+  "状态未知": "Unknown status",
+  "等太久没人点，这一步自动取消了": "Nobody answered in time; this step was cancelled",
+  "Lamplit 重启过，这张卡已经失效": "Lamplit restarted; this card no longer applies",
+  "等太久没人点，这一步没做。": "Nobody answered in time; this step was not done.",
 };

@@ -331,6 +331,7 @@ const PUBLIC_SHELL_PATHS = new Set([
   '/manifest.json',
   '/sw.js',
   '/offline.html',
+  '/offline.js', // the offline page's script (1.5.55): no secret, needed before pairing too
   '/favicon.ico',
 ]);
 

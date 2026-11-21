@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Desk · 离线</title>
+<title>Lamplit · 离线</title>
 <style>
   :root { color-scheme: dark; }
   html, body { height: 100%; margin: 0; }
@@ -25,11 +25,12 @@
 </head>
 <body>
   <div class="card">
-    <img src="icons/icon-192.png" alt="Desk">
-    <h1>连不上你的电脑</h1>
-    <p>Desk 的工作跑在你的电脑上，这个页面现在拿不到它。</p>
-    <p>确认那台电脑还开着、Desk 还在运行，然后重试。</p>
-    <button onclick="location.reload()">重试</button>
+    <img src="/icons/icon-192.png" alt="Lamplit">
+    <h1 id="off-title">连不上你的电脑</h1>
+    <p id="off-line1">Lamplit 的工作跑在你的电脑上，这个页面现在拿不到它。</p>
+    <p id="off-line2">确认那台电脑还开着、Lamplit 还在运行。连上后这个页面会自己回去，也可以点重试。</p>
+    <button id="off-retry" type="button">重试</button>
   </div>
+  <script src="/offline.js"></script>
 </body>
 </html>

@@ -805,9 +805,9 @@ function buildApprovalCard(data) {
     const cancelled = !good && /^已取消/.test(String(data.note || ''));
     const done = el('div', 'approval-done');
     done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : (think && thinkDoneLabel(data, good)) || decisionLabel(data.decision)));
-    done.appendChild(el('span', 'muted tiny', good ? '这一轮已经继续跑了。' : cancelled ? String(data.note).replace(/^已取消[：:]\s*/, '') + '。' : data.draft ? '没有发出去，已经告诉它了。' : '它已经收到「不要做」。'));
+    done.appendChild(el('span', 'muted tiny', good ? '这一轮已经继续跑了。' : cancelled ? String(data.note).replace(/^已取消[：:]\s*/, '') + '。' : data.decision === 'timeout' ? '等太久没人点，这一步没做。' : data.draft ? '没有发出去，已经告诉它了。' : '它已经收到「不要做」。'));
     actions.appendChild(done);
-    if (data.note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${data.note}`));
+    if (data.note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${reasonLabel(data.note)}`));
     card.appendChild(actions);
     appendTechnicalDetails(card, data);
     return card;
@@ -912,7 +912,7 @@ function settleApprovalCard(card, decision, note) {
     if (draft) card.querySelector('.approval-impact')?.remove();
     done.appendChild(el('span', 'muted tiny', good ? '这一轮会继续跑。' : cancelled ? String(note).replace(/^已取消[：:]\s*/, '') + '。' : draft ? '没有发出去，已经告诉它了。' : '已经告诉它不要做。'));
     actions.appendChild(done);
-    if (note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${note}`));
+    if (note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${reasonLabel(note)}`));
   }
 }
 
@@ -1298,7 +1298,7 @@ const RUN_STATUS_LABELS = {
 };
 function runStatusLabel(status) {
   if (!status) return '—';
-  return RUN_STATUS_LABELS[String(status).toLowerCase()] || String(status);
+  return RUN_STATUS_LABELS[String(status).toLowerCase()] || statusWords(status);
 }
 
 const ACTIVITY_KIND_LABELS = { turn: '对话', tool: '工具', approval: '审批', message: '消息', error: '错误' };

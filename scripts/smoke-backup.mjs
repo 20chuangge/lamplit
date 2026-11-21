@@ -393,7 +393,7 @@ export async function backupChecks({ check, readText }) {
       check('BK50 the desktop app asks where with its own save / open / folder dialogs, from this computer\'s page only',
         /handle\('desk:pick-backup-save'/.test(main) && /handle\('desk:pick-backup-open'/.test(main) && /handle\('desk:pick-folder'/.test(main) && /pickBackupSave/.test(preload) && /pickBackupOpen/.test(preload) && /pickFolder/.test(preload)
         && /'desk:pick-backup-save'/.test(guard) && /'desk:pick-backup-open'/.test(guard) && /'desk:pick-folder'/.test(guard));
-      check('BK51 the page part is cached for offline like the others', sw.includes('/app/main/13-backup.js') && page.includes('function loadBackup'));
+      check('BK51 the page part is fetched fresh like the others (1.5.55: the worker keeps no part)', !sw.includes('/app/main/13-backup.js') && page.includes('function loadBackup'));
       check('BK52 the restore screen asks before replacing and says the data here is backed up first', page.includes('恢复前自动备份') && /window\.confirm\(/.test(page.slice(page.indexOf('function loadBackup'))));
       check('BK53 全部机器: each machine backs itself up, and another machine can be backed up from here', page.includes('每台机器各自备份') && page.includes('也备份'));
       // What the beginner test found (11-21).

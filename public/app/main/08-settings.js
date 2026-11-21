@@ -1464,7 +1464,7 @@ function modelNote(text, bad = false) {
   const note = $('mp-note');
   note.hidden = !text;
   note.textContent = text;
-  note.style.color = bad ? 'var(--red)' : '';
+  note.style.color = bad ? 'var(--danger)' : '';
 }
 
 async function testNewModel() {

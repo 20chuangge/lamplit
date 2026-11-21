@@ -13,7 +13,10 @@
 /** Steps of connected apps that send something to someone: by the words of the tool's name. */
 // 1.5.54 (the verifier's M6 list): sharing, uploading, inviting, submitting, and creating or editing what
 // others read (an issue, a post, a comment; not a document page, which is the user's own, as fs_write) go out too.
-const SEND_WORDS = /(^|[._-])(send|post|reply|publish|comment|tweet|repost|quote|forward|email|notify|broadcast|dm|share|upload|invite|submit|messages?[._-](create|reply|send)|create[._-](message|post|comment|tweet|issue|reply|review|gist|discussion|event)|update[._-](post|issue|comment))($|[._-])/i;
+// 1.5.55 (the verifier's second 1.5.54 round): GitHub's pull requests and pushed files, and chat
+// tools' writes (write_message, chat_update, edit_message, add_member) go out too. A Notion page or
+// database item stays the user's own document, as before; so does a local file tool's write_file.
+const SEND_WORDS = /(^|[._-])(send|post|reply|publish|comment|tweet|repost|quote|forward|email|notify|broadcast|dm|share|upload|invite|submit|push|messages?[._-](create|reply|send|update|edit)|create[._-](message|post|comment|tweet|issue|reply|review|gist|discussion|event|pull[._-]request|pr|release|or[._-]update[._-]file)|update[._-](post|issue|comment|message|pull[._-]request)|merge[._-](pull[._-]request|pr)|(write|edit)[._-]message|chat[._-](update|send|post[._-]?message)|add[._-](member|collaborator|participant|user)s?)($|[._-])/i;
 const NOT_SEND = /(^|[._-])(get|list|search|read|fetch|query|find|lookup|describe|show|view|retrieve|count|draft_list)($|[._-])/i;
 /** Keys that hold what is said (the body of a post or a message). */
 const TEXT_KEY = /^(text|content|body|message|msg|comment|reply|caption|title|subject|desc|description|status|note|markdown|html_body|text_body)$/i;
@@ -43,13 +46,32 @@ export function isSendingTool(toolName) {
 // urlopen(data=), httpx.post, fetch(..., {method:'POST'}), gh api -X POST, -EncodedCommand.
 const COMMAND_SENDS = [
   // curl: a short-option cluster holding d (data), F (form) or T (upload) - case matters: -D is "dump headers".
-  /\bcurl(\.exe)?\b[^|;&\n]*\s-[A-Za-z]*[dFT][A-Za-z]*(?=[\s'"=@]|$)/,
+  // The program's name in any case (1.5.55: CURL.EXE, cUrL), the option letters as they are.
+  /\b[cC][uU][rR][lL](\.[eE][xX][eE])?\b[^|;&\n]*\s-[A-Za-z]*[dFT][A-Za-z]*(?=[\s'"=@]|$)/,
   /\b(curl|wget)(\.exe)?\b[^|;&\n]*(\s--(data|data-raw|data-binary|data-urlencode|data-ascii|json|form|form-string|upload-file|post-data|post-file|body-data|body-file)\b|\s-X\s*['"]?(POST|PUT|PATCH)\b|--request[=\s]+['"]?(POST|PUT|PATCH)\b|--method[=\s]+['"]?(POST|PUT|PATCH)\b)/i,
   // PowerShell (any unique abbreviation, space or colon): -Method/-Me/-M Post, -Body/-B, -InFile/-In.
   /\b(Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget)\b[^|;\n]*(\s-M[a-z]*[:\s]+['"]?(Post|Put|Patch)\b|\s-B[a-z]*([:\s]|$)|\s-In[a-z]*[:\s])/i,
-  /\bNet\.WebClient\b|\.Upload(String|File|Data|Values)(Async|TaskAsync)?\s*\(|\b(HttpClient|httpClient)\b[^|;\n]*\.(PostAsync|PutAsync|PatchAsync|SendAsync)\b/i,
+  /\bNet\.WebClient\b|\.Upload(String|File|Data|Values)(Async|TaskAsync)?\s*\(|\.(PostAsync|PutAsync|PatchAsync|SendAsync|PostAsJsonAsync|PutAsJsonAsync)\s*\(/i,
   /(^|[\s;&|(])(mail|mailx|sendmail|mutt|msmtp|swaks)\s/i,
-  /\b(smtplib|nodemailer)\b|\b(requests|httpx|aiohttp|session|axios)\.(post|put|patch)\s*\(|\brequests\.request\(\s*['"](POST|PUT|PATCH)|Send-MailMessage/i,
+  /\b(smtplib|nodemailer)\b|\b(requests|httpx|aiohttp|session|axios)\.(post|put|patch)\s*\(|\.request\(\s*(method\s*=\s*)?['"](POST|PUT|PATCH)['"]|Send-MailMessage/i,
+  // 1.5.55 (the verifier's second round): what else carries data out of the computer.
+  // PowerShell's method as an expression or a variable (-Method ("Po"+"st"), -Method $m): not known, so it asks.
+  /\b(Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^|;\n]*\s-M[a-z]*[:\s]+[($]/i,
+  // Uploads with BITS, certutil's URL fetches (the address itself can carry the data).
+  /\bStart-BitsTransfer\b[^|;\n]*\s-T[a-z]*[:\s]+['"]?Up/i, /\bbitsadmin(\.exe)?\b[^|;&\n]*\/upload\b/i, /\bcertutil(\.exe)?\b[^|;&\n]*\s[-/](urlcache|verifyctl|url)\b/i,
+  // Raw sockets (Python, PowerShell, .NET), DNS lookups (data in the name), remote shells and copies, cloud copies, FTP, git push.
+  /\bsocket\.(socket|create_connection)\s*\(|\.sendall\s*\(|Net\.Sockets\.(TcpClient|UdpClient|Socket)\b|\b(nc|ncat|netcat|socat|telnet)(\.exe)?\s/i,
+  /\b(nslookup|dig|Resolve-DnsName)(\.exe)?\s/i,
+  /(^|[\s;&|(])(ssh|scp|sftp|lftp|ftp|tftp|plink|pscp|psftp)(\.exe)?\s/i,
+  /\brsync\b[^|;&\n]*(\s\S*[^\s:\\/]:|::|rsync:\/\/)/i,
+  /\brclone(\.exe)?\s+(copy|copyto|sync|bisync|move|moveto|rcat|mkdir|purge)\b/i,
+  /\baws(\.exe)?\s+s3\s+(cp|mv|sync)\b|\baws(\.exe)?\s+s3api\s+put-object\b|\b(gsutil|azcopy)(\.exe)?\s+(cp|mv|rsync|copy|sync)\b/i,
+  /\bgit(\.exe)?\s+(-[cC]\s+\S+\s+)*push\b/i,
+  // Options kept out of sight: curl -K/--config, wget -e/--execute/--config, a command's output or a
+  // PowerShell splat as the options. What they say cannot be read here, so it asks.
+  /\b[cC][uU][rR][lL](\.[eE][xX][eE])?\b[^|;&\n]*(\s-[A-Za-z]*K[A-Za-z]*(?=[\s'"=]|$)|\s--config\b)/,
+  /\b[wW][gG][eE][tT](\.[eE][xX][eE])?\b[^|;&\n]*(\s-[A-Za-z]*e[A-Za-z]*(?=[\s'"=]|$)|\s--(execute|config)\b)/,
+  /\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)(\.exe)?\b[^|;&\n]*(\$\(|`|\s@[A-Za-z_]\w*)/i,
   /\burlopen\([^)]*\bdata\s*=|\bRequest\([^)]*\bdata\s*=|\bmethod\s*[:=]\s*['"](POST|PUT|PATCH)['"]/i,
   /\bgh(\.exe)?\s+api\b[^|;&\n]*(\s-X\s*['"]?(POST|PUT|PATCH)\b|\s--method[=\s]+['"]?(POST|PUT|PATCH)\b|\s-[fF]\s|\s--(field|raw-field|input)\b)|\bgh(\.exe)?\s+(issue|pr|release|gist|discussion)\s+(create|comment|edit|review|merge|close|reopen)\b/i,
 ];
@@ -57,9 +79,11 @@ const LOCAL_URL = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(\/|
 /** The request can be sent somewhere else than its URL says (a proxy, a forced address): no "local only" pass. */
 const REDIRECTED = /\s--(connect-to|resolve|proxy|preproxy|socks4a?|socks5(-hostname)?|proxy1\.0)\b|\s-x(\s|\S)|\s-Proxy\b|\bHTTPS?_PROXY\s*=|\bALL_PROXY\s*=/i;
 /** Only addresses on this machine are named (a local service), sent straight there: not "out". */
+/** Options that are not on the line (a config file, a command's output, a splat): where it goes is not known. */
+const HIDDEN = /\s-[A-Za-z]*K[A-Za-z]*(?=[\s'"=]|$)|\s--(config|execute)\b|\$\(|`|\s@[A-Za-z_]\w*/;
 const onlyLocal = (text) => {
   const t = String(text || '');
-  if (REDIRECTED.test(t)) return false;
+  if (REDIRECTED.test(t) || HIDDEN.test(t)) return false;
   const urls = t.match(/https?:\/\/[^\s'"]+/gi) || [];
   return urls.length > 0 && urls.every((u) => LOCAL_URL.test(u));
 };
@@ -77,9 +101,23 @@ function encodedScript(command) {
  */
 export function rememberMayCover(name, args = {}) {
   if (name !== 'shell') return true;
-  const command = String(args?.command || '');
-  const net = /\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod|powershell|pwsh|python3?|py|node|deno|bun|gh|ruby|perl|php)(\.exe)?\b/i.test(command);
-  return !(net && (/https?:\/\//i.test(command) || encodedScript(command) !== null));
+  const raw = String(args?.command || '');
+  const command = unescapedCommand(raw);
+  // 1.5.55: the programs that reach another computer by name (ssh, scp, git, …) too, and options
+  // out of sight (-K, --config, $(…), backticks, a splat) count like an address.
+  const net = /\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod|powershell|pwsh|python3?|py|node|deno|bun|gh|ruby|perl|php|ssh|scp|sftp|ftp|tftp|nslookup|dig|Resolve-DnsName|git|rclone|aws|gsutil|azcopy|bitsadmin|certutil|Start-BitsTransfer|nc|ncat|socat|telnet)(\.exe)?\b/i.test(command);
+  // Programs that reach another computer by its name alone (no https:// to see): never covered.
+  if (/(^|[\s;&|(])(ssh|scp|sftp|lftp|ftp|tftp|plink|pscp|nslookup|dig|Resolve-DnsName|nc|ncat|netcat|socat|telnet)(\.exe)?\s/i.test(command)) return false;
+  return !(net && (/https?:\/\//i.test(command) || encodedScript(command) !== null || HIDDEN.test(raw) || /\s@\S/.test(raw)));
+}
+
+/**
+ * The command as the shell will read it (1.5.55, the verifier's second round): cmd's ^ escapes
+ * (c^url), empty quotes inside a word (c""url, c''url) and PowerShell's backtick escapes (c`url)
+ * taken out, so a program's name is seen however it is spelled.
+ */
+export function unescapedCommand(command) {
+  return String(command || '').replace(/\^(?=[^\s])/g, '').replace(/(\S)(""|'')(?=\S)/g, '$1').replace(/`(?=[A-Za-z])/g, '');
 }
 
 /**
@@ -91,8 +129,9 @@ export function rememberMayCover(name, args = {}) {
 export function outgoingAsk(name, args = {}, { mcp = null } = {}) {
   if (mcp && (isSendingTool(mcp.tool) || isSendingTool(name))) return `用「${String(mcp.server || '连接的应用')}」往外发东西：没有能改的正文，每次都先问你`;
   if (name === 'shell') {
-    const command = String(args?.command || '');
-    if (COMMAND_SENDS.some((re) => re.test(command)) && !onlyLocal(command)) return '这条命令会往外发数据（提交内容或发邮件），每次都先问你';
+    const raw = String(args?.command || '');
+    const command = unescapedCommand(raw);
+    if (COMMAND_SENDS.some((re) => re.test(command) || re.test(raw)) && !(onlyLocal(raw) && onlyLocal(command))) return '这条命令会往外发数据（提交内容、上传、连到别的电脑或发邮件），每次都先问你';
     // A PowerShell script handed over encoded: what it says decides; one that cannot be read asks.
     const inner = encodedScript(command);
     if (inner !== null && (!inner.trim() || outgoingAsk('shell', { command: inner }))) return '这条命令带着一段编码过的脚本，可能往外发数据，每次都先问你';

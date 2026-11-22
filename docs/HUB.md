@@ -93,7 +93,7 @@ docker logs -f desk-hub
 ## 5. 安全（必须看）
 
 - **不要**把 `4390` 直接映射到公网。用 Tailscale / Cloudflare Tunnel，或前置一层带 TLS 的反向代理。
-- 非回环访问必须过配对码 / Bearer token。主 token 在 `data/security.json`；每台设备的会话在 `data/devices.json`（界面「设置 → 配对 → 已连接的设备」里可单独移除）。两处都清掉才算全部重新配对。
+- 非回环访问必须过配对码 / Bearer token。主 token 在 `data/security.json`；每台设备的会话在 `data/devices.json`（界面「设置 → 手机和外网 → 已连接的设备」里可单独移除）。两处都清掉才算全部重新配对。
 - Bot 能执行 shell —— 把 Hub 当成"你要托付的机器"：不要用存着网银的机器当 Hub，云主机用独立用户。
 - 审批闸门对**远程客户端同样生效**：高危动作仍然会在你手机上弹卡。
 

@@ -1,31 +1,36 @@
 'use strict';
-// Lamplit page, part 8b: the settings home (redesign step 5, 1.5.61) - on top 「一切正常吗、花了多少钱」, then 4 groups, each page with its name in plain words, one line on what it is, and what it is set to now, so most of it reads without opening anything. The phone's list (set-home) uses the same names. Parts share one scope and load in order (scripts/check-page-parts.mjs).
+// Lamplit page, part 8b: the settings home (redesign step 5, 1.5.61) - on top 「一切正常吗、花了多少钱」, then 4 groups, each page with its short name, one line on what it is, and what it is set to now, so most of it reads without opening anything. Parts share one scope and load in order (scripts/check-page-parts.mjs).
 
-/** The 4 groups: [page, name, what it is]. The names are the same in the left list and on a phone. */
+/**
+ * The 4 groups: [page, name, what it is]. The names are the short ones of the
+ * left list, the section heads and every 「设置 → …」 (1.5.62: step 5 had
+ * renamed them in plain words and nothing else matched); the line under each
+ * says what it is. The group titles here stay in plain words.
+ */
 const SETTINGS_GROUPS = [
   ['助手怎么干活', [
     ['sec-model', '模型', '它用哪个 AI 思考'],
     ['sec-skills', '技能', '会做哪些事'],
     ['sec-memory', '记忆', '它记住了你什么'],
-    ['sec-initiative', '主动找你', '每天简报、定时任务'],
+    ['sec-initiative', '主动', '什么时候主动找你：每天简报、定时任务'],
   ]],
   ['安全', [
-    ['sec-run', '什么时候先问你', '审批规则'],
-    ['sec-bounds', '能碰哪些地方', '文件夹、网站、命令的边界'],
+    ['sec-run', '审批', '什么时候先问你'],
+    ['sec-bounds', '边界', '能碰哪些地方：文件夹、网站、命令'],
     ['sec-vault', '保险箱', '账号密码，只存在这台电脑'],
-    ['sec-audit', '做过什么', '操作记录，能撤销的都在这'],
+    ['sec-audit', '操作记录', '做过什么，能撤销的都在这'],
   ]],
   ['连接', [
     ['sec-machines', '机器', '家里的电脑、云服务器'],
-    ['sec-pair', '手机和出门在外', '手机连回家里的电脑'],
+    ['sec-pair', '手机和外网', '出门在外也能用'],
     ['sec-feishu', '飞书', '在飞书里跟助手说话'],
     ['sec-mcp', '连接应用', '邮箱、网盘、X…'],
   ]],
   ['外观和系统', [
     ['sec-appearance', '外观', '深色、浅色，头像动起来'],
-    ['sec-backup', '备份和恢复', '换电脑也不丢'],
+    ['sec-backup', '备份', '备份和恢复，换电脑也不丢'],
     ['sec-checkup', '体检', '哪里不对，一个按钮去修'],
-    ['sec-usage', '花了多少钱', '按天、按助手、按机器看'],
+    ['sec-usage', '成本', '花了多少钱：按天、按助手、按机器看'],
     ['sec-pages', '页面库', '它做的页面都在这'],
     ['sec-about', '关于', '版本和更新'],
   ]],
@@ -67,7 +72,7 @@ function settingsValue(target) {
     }
     case 'sec-usage': {
       const u = settingsHomeUi.usage;
-      return u ? { text: `30 天 ${moneyWords(u)}` } : null;
+      return u ? { text: `这台 30 天 ${moneyWords(u)}` } : null;
     }
     case 'sec-about': {
       const v = state.settings?.app?.version || state.config?.version;
@@ -80,6 +85,19 @@ function settingsValue(target) {
 function moneyWords(u) {
   const cost = Number(u?.totals?.cost) || 0;
   return `${u?.currency === 'USD' ? '$' : '¥'}${cost.toFixed(2)}`;
+}
+
+/**
+ * The home's figure is this machine's last 30 days, so it opens 成本 at just
+ * that (1.5.62): the page opened on all machines and 7 days, and the two
+ * numbers did not match. The buttons on that page change it as before.
+ */
+function openUsageHere() {
+  state.usageScope = 'here';
+  state.usageDays = 30;
+  for (const b of $('usage-scope')?.querySelectorAll('button') || []) b.classList.toggle('on', b.dataset.scope === 'here');
+  setSettingsNav('sec-usage');
+  loadUsage(30).catch(() => {});
 }
 
 /** The first thing settings shows (on a computer): is all well, what it cost, then the 4 groups. */
@@ -110,8 +128,8 @@ function renderSettingsHome() {
   const spent = el('button', 'set-health-cost');
   spent.type = 'button';
   spent.appendChild(el('b', null, settingsHomeUi.usage ? moneyWords(settingsHomeUi.usage) : '—'));
-  spent.appendChild(el('span', null, '最近 30 天花了'));
-  spent.addEventListener('click', () => setSettingsNav('sec-usage'));
+  spent.appendChild(el('span', null, '这台电脑最近 30 天'));
+  spent.addEventListener('click', openUsageHere);
   health.appendChild(spent);
   box.appendChild(health);
   // The 4 groups.
@@ -133,7 +151,7 @@ function renderSettingsHome() {
       const v = settingsValue(target);
       if (v?.text) row.appendChild(el('span', `set-row-value${v.warn ? ' warn' : ''}`, v.text));
       row.appendChild(el('span', 'set-row-go', '›'));
-      row.addEventListener('click', () => setSettingsNav(target));
+      row.addEventListener('click', target === 'sec-usage' ? openUsageHere : () => setSettingsNav(target)); // 成本 at what its value says
       card.appendChild(row);
     }
     grid.appendChild(card);

@@ -201,8 +201,20 @@ export async function oldRelayChecks({ check }) {
     const id = R.makeSelfSignedCert({ commonName: 'lamplit-relay' });
     const join = crypto.randomBytes(18).toString('base64url');
     const relay = R.createRelay({ identity: id, joinSecret: join, updater: R.createRelayUpdater({ running: { version: '1.5.47', sha256: '0'.repeat(64) }, stateDir: path.join(tmp, `state-${label}`), minIntervalMs: 0 }) });
-    const port = await new Promise((r) => relay.server.listen(0, '127.0.0.1', () => r(relay.server.address().port)));
-    await relay.listenStun(port, '127.0.0.1');
+    // TCP and UDP on the same number: Windows keeps some UDP ports for itself (bind EACCES), so another one
+    // is tried, and what was opened is closed when it fails - the TCP server left listening kept the whole
+    // smoke run from ever exiting after its result (1.5.62).
+    let port = 0;
+    for (let tries = 1; ; tries += 1) {
+      port = await new Promise((r) => relay.server.listen(0, '127.0.0.1', () => r(relay.server.address().port)));
+      try {
+        await relay.listenStun(port, '127.0.0.1');
+        break;
+      } catch (err) {
+        await new Promise((r) => relay.server.close(() => r()));
+        if (tries >= 5) { relay.close(); throw err; }
+      }
+    }
     const link = createRelayLink({ dataDir: path.join(tmp, `hub-${label}`), handler: (_q, s) => s.end('hub'), log: (line) => { if (/error|TypeError|undefined/i.test(line)) errors.push(`${label}: ${line}`); }, relayUpdate: () => null });
     try {
       link.configure({ enabled: true, host: '127.0.0.1', port, relayFingerprint: id.fingerprint, join });

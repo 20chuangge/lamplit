@@ -229,7 +229,7 @@ cd mobile && npm ci && npm run sync:www && npx cap sync android \
 # => mobile/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-装好后第一次打开：填 `http://<电脑局域网IP>:4390` + 配对码（电脑终端启动时会打印 `pairing code: xxxxxxxx`，或 UI 的「设置 → 配对」里看），点「连接并打开」。
+装好后第一次打开：填 `http://<电脑局域网IP>:4390` + 配对码（电脑终端启动时会打印 `pairing code: xxxxxxxx`，或 UI 的「设置 → 手机和外网」里看），点「连接并打开」。
 
 启动 Hub 的正确姿势（默认只监听 127.0.0.1，手机永远连不上）：
 

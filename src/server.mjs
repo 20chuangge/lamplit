@@ -4846,15 +4846,16 @@ async function collectWaiting(state) {
   for (const c of inbox.items.filter(settled)) cards.push({ machine: c.machine, botName: c.botName || '助手', what: cardWhat(c) });
   const unread = [];
   const snap = state.attention.snapshot();
+  // A new group's self-introductions are not work done for the human (1.5.62: a new machine's first note counted them).
   for (const [key, item] of Object.entries(snap.items || {})) {
-    if (!item.unread || item.working || item.needsYou) continue;
+    if (!item.unread || item.working || item.needsYou || item.intro) continue;
     const m = /^bot:(.+)$/.exec(key);
     if (m && m[1] !== primary && byId.has(m[1])) unread.push({ name: byId.get(m[1]).name });
   }
   const roster = state.peers.list().length ? await state.roster.list().catch(() => []) : [];
   for (const r of roster) {
     for (const [key, item] of Object.entries(r.attention || {})) {
-      if (!item.unread || item.working || item.needsYou) continue;
+      if (!item.unread || item.working || item.needsYou || item.intro) continue;
       const m = /^bot:(.+)@/.exec(key);
       const b = m && (r.bots || []).find((x) => x.id === m[1]);
       if (b && !b.primary) unread.push({ machine: r.machine, name: b.name });
@@ -4928,7 +4929,8 @@ async function initiativeEvents(state) {
 }
 
 // --- one roster (1.5.42 第三步「一个花名册」) ------------------------------------
-//   GET  /api/peers/roster?fresh=1 -> {machines:[{machine, online, bots:[{id, name, role,
+//   GET  /api/peers/roster?fresh=1|quick=1 -> {machines:[{machine, online, bots:[{id, name, role,
+//        (quick: kept 3 s, not 15 s - the page while something works there, 1.5.62)
 //        primary, preview}], attention:{"bot:id@machine": item}, queued?}]}
 //        every other machine and its bots; one that is off keeps the bots it had.
 // A bot over there, talked to from here (only the human: isAuthorityRequest).
@@ -4964,7 +4966,7 @@ function peerFailure(err, peer) {
 }
 const passOn = (state, peer, method, p, opts = {}) => state.peers.json(peer, method, p, { timeoutMs: 15000, ...opts, headers: { [VIA_HEADER]: '1', ...(opts.headers || {}) } });
 
-route('GET', /^\/api\/peers\/roster$/, async (_req, _res, { state, query }) => ({ machines: await state.roster.list({ fresh: query.get('fresh') === '1' }) }));
+route('GET', /^\/api\/peers\/roster$/, async (_req, _res, { state, query }) => ({ machines: await state.roster.list({ fresh: query.get('fresh') === '1', quick: query.get('quick') === '1' }) }));
 
 route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/messages$/, async (req, _res, { params, state, query }) => {
   const { peer, botId } = remoteTarget(req, state, params);

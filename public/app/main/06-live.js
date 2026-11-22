@@ -16,6 +16,7 @@ async function send() {
 
   state.sending = true;
   $('send-btn').disabled = true;
+  pokeRoster(); // what this starts may run on another machine: its row lights up within seconds (1.5.62)
   // Read the answer aloud: always, or when this question was spoken.
   const mode = readAloudMode();
   const readThis = call.on || mode === 'always' || (mode === 'voice' && voice.spokeSinceSend);

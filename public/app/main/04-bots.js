@@ -44,60 +44,88 @@ function renderAbilities(bot) {
   renderAllowed(bot);
 }
 
+/** A bot's remembered permissions: what was answered 「以后都允许」, and what was let through on the phone (still valid). */
+function rememberedOf(bot) {
+  const allowed = Array.isArray(bot?.policy?.allowed) ? bot.policy.allowed : [];
+  const grants = Array.isArray(bot?.policy?.phoneGrants) ? bot.policy.phoneGrants.filter((g) => !g.until || Date.parse(g.until) > Date.now()) : [];
+  return { allowed, grants };
+}
+
+// 手机上放开的操作 (1.5.25), in words.
+const PHONE_GRANT_KIND = { send: '发消息', publish: '发布', agree: '点同意', delete: '删除' };
+const phoneGrantWords = (g) => `手机「${g.app}」上${PHONE_GRANT_KIND[g.kind] || g.kind}${g.until ? '（今天）' : ''}`;
+
+/**
+ * 撤销 one of them: the bot's policy without it, the same PATCH as ever
+ * (rules are made and enforced as before). Returns the bot as it is now.
+ */
+async function revokeRemembered(bot, { key = '', grant = null } = {}) {
+  const policy = { ...(bot.policy || {}) };
+  if (grant) policy.phoneGrants = (bot.policy?.phoneGrants || []).filter((x) => !(x.app === grant.app && x.kind === grant.kind));
+  else policy.allowed = (bot.policy?.allowed || []).filter((a) => a.key !== key);
+  const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { policy } });
+  const updated = (res && res.bot) || { ...bot, policy };
+  const index = state.bots.findIndex((b) => b.id === bot.id);
+  if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
+  return state.bots[index] || updated;
+}
+
+/** One remembered permission with its 撤销; `after(bot)` redraws the list it is in. */
+function rememberedLine(bot, label, which, after) {
+  const row = el('div', 'be-allowed-row');
+  row.appendChild(el('span', 'be-allowed-label', label));
+  const undo = el('button', 'btn small be-allowed-undo', '撤销');
+  undo.type = 'button';
+  undo.title = '以后这类操作又会先问你';
+  undo.addEventListener('click', async () => {
+    undo.disabled = true;
+    try {
+      const updated = await revokeRemembered(bot, which);
+      after(updated);
+      renderRememberedAll(); // 设置 → 审批 shows the same
+    } catch (err) {
+      undo.disabled = false;
+      toast(err.message, true);
+    }
+  });
+  row.appendChild(undo);
+  return row;
+}
+
 /** 已记住的权限: what you said "以后都允许" to for this bot, each with 撤销. */
 function renderAllowed(bot) {
   const box = $('botedit-allowed');
   if (!box) return;
-  const list = Array.isArray(bot.policy?.allowed) ? bot.policy.allowed : [];
-  const grants = Array.isArray(bot.policy?.phoneGrants) ? bot.policy.phoneGrants.filter((g) => !g.until || Date.parse(g.until) > Date.now()) : [];
+  const { allowed, grants } = rememberedOf(bot);
   box.innerHTML = '';
-  box.hidden = !list.length && !grants.length;
-  if (!list.length && !grants.length) return;
+  box.hidden = !allowed.length && !grants.length;
+  if (!allowed.length && !grants.length) return;
   box.appendChild(el('div', 'be-allowed-title', '已记住的权限（不再问你）'));
-  // 手机上放开的操作 (1.5.25), each with 撤销.
-  const KIND = { send: '发消息', publish: '发布', agree: '点同意', delete: '删除' };
-  for (const g of grants) {
-    const row = el('div', 'be-allowed-row');
-    row.appendChild(el('span', 'be-allowed-label', `手机「${g.app}」上${KIND[g.kind] || g.kind}${g.until ? '（今天）' : ''}`));
-    const undo = el('button', 'btn small be-allowed-undo', '撤销');
-    undo.type = 'button';
-    undo.addEventListener('click', async () => {
-      undo.disabled = true;
-      try {
-        const phoneGrants = (bot.policy?.phoneGrants || []).filter((x) => !(x.app === g.app && x.kind === g.kind));
-        const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { policy: { ...(bot.policy || {}), phoneGrants } } });
-        const updated = (res && res.bot) || { ...bot, policy: { ...(bot.policy || {}), phoneGrants } };
-        const index = state.bots.findIndex((b) => b.id === bot.id);
-        if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
-        renderAllowed(state.bots[index] || updated);
-      } catch (err) { undo.disabled = false; toast(err.message, true); }
-    });
-    row.appendChild(undo);
-    box.appendChild(row);
+  for (const g of grants) box.appendChild(rememberedLine(bot, phoneGrantWords(g), { grant: g }, renderAllowed));
+  for (const item of allowed) box.appendChild(rememberedLine(bot, item.label || item.key, { key: item.key }, renderAllowed));
+}
+
+/**
+ * 设置 → 审批 (1.5.62): every remembered permission of this machine's
+ * assistants, by assistant, each with 撤销 - they were on each assistant's
+ * own page only.
+ */
+function renderRememberedAll() {
+  const box = $('remembered-all');
+  if (!box) return;
+  box.innerHTML = '';
+  let any = false;
+  for (const bot of (state.bots || []).filter((b) => !isRemoteId(b.id))) {
+    const { allowed, grants } = rememberedOf(bot);
+    if (!allowed.length && !grants.length) continue;
+    any = true;
+    const group = el('div', 'be-allowed remembered-bot');
+    group.appendChild(el('div', 'be-allowed-title', bot.name));
+    for (const g of grants) group.appendChild(rememberedLine(bot, phoneGrantWords(g), { grant: g }, () => {}));
+    for (const item of allowed) group.appendChild(rememberedLine(bot, item.label || item.key, { key: item.key }, () => {}));
+    box.appendChild(group);
   }
-  for (const item of list) {
-    const row = el('div', 'be-allowed-row');
-    row.appendChild(el('span', 'be-allowed-label', item.label || item.key));
-    const undo = el('button', 'btn small be-allowed-undo', '撤销');
-    undo.type = 'button';
-    undo.title = '以后这类操作又会先问你';
-    undo.addEventListener('click', async () => {
-      undo.disabled = true;
-      try {
-        const allowed = list.filter((a) => a.key !== item.key);
-        const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { policy: { ...(bot.policy || {}), allowed } } });
-        const updated = (res && res.bot) || { ...bot, policy: { ...(bot.policy || {}), allowed } };
-        const index = state.bots.findIndex((b) => b.id === bot.id);
-        if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
-        renderAllowed(state.bots[index] || updated);
-      } catch (err) {
-        undo.disabled = false;
-        toast(err.message, true);
-      }
-    });
-    row.appendChild(undo);
-    box.appendChild(row);
-  }
+  if (!any) box.appendChild(el('div', 'row-note', '还没有。审批卡上点过「以后都允许」的，会列在这里。'));
 }
 
 /** The bot's tool list after the checkboxes: groups on/off, other tools kept. */
@@ -853,9 +881,8 @@ async function boot() {
   refreshInbox({ notify: false });
   let inboxTick = 0;
   setInterval(() => { inboxTick += 1; if (!document.hidden || inboxTick % 3 === 0) refreshInbox(); }, 20000);
-  // The other machines' bots in this sidebar (1.5.42 一个花名册): every 20 s on screen.
-  loadRoster();
-  setInterval(whenVisible(loadRoster), 20000);
+  // The other machines' bots in this sidebar (1.5.42 一个花名册): every 20 s on screen, every 4 s while something there works (1.5.62, scheduleRoster).
+  loadRoster().finally(() => scheduleRoster());
   // A phone with the screen off used to keep polling (and re-drawing ~1.5 MB
   // screenshots every 5s). Background tabs now stay quiet until they come back.
   document.addEventListener('visibilitychange', () => {
@@ -864,6 +891,7 @@ async function boot() {
     pollHealth();
     loadAttention();
     refreshInbox();
+    scheduleRoster(0); // the other machines now, then at their pace (1.5.62)
     if (state.tab === 'computer') refreshScreen();
     maybeCheckForUpdate();
   });

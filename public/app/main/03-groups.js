@@ -1108,9 +1108,38 @@ function rosterGrouped() {
   return state.view === 'all' && !single && (state.peerRoster || []).length > 0;
 }
 
-async function loadRoster({ fresh = false } = {}) {
+/**
+ * How often the other machines' bots are looked at (1.5.62): every 4 s while
+ * something there works or waits, or for a minute after the human sent
+ * something (a hand-off may start work there); every 20 s otherwise; nothing
+ * while the window is hidden. A 10 s job there used to finish between looks.
+ */
+const ROSTER_FAST_MS = 4000;
+const ROSTER_SLOW_MS = 20000;
+const rosterPace = { timer: 0, pokedAt: 0 };
+function rosterBusyHere() {
+  return Object.values(state.peerAttention || {}).some((i) => i && (i.working || i.needsYou || i.asking));
+}
+function rosterFast(now = Date.now()) {
+  return (state.peerRoster || []).length > 0 && (rosterBusyHere() || now - rosterPace.pokedAt < 60000);
+}
+function scheduleRoster(ms = document.hidden || !rosterFast() ? ROSTER_SLOW_MS : ROSTER_FAST_MS) {
+  clearTimeout(rosterPace.timer);
+  rosterPace.timer = setTimeout(async () => {
+    if (!document.hidden) await loadRoster({ quick: rosterFast() }).catch(() => {});
+    scheduleRoster();
+  }, ms);
+}
+/** The human sent something: look at the other machines often for a while. */
+function pokeRoster() {
+  if (!(state.peerRoster || []).length) return;
+  rosterPace.pokedAt = Date.now();
+  scheduleRoster(ROSTER_FAST_MS);
+}
+
+async function loadRoster({ fresh = false, quick = false } = {}) {
   let data;
-  try { data = await api(`/api/peers/roster${fresh ? '?fresh=1' : ''}`); } catch { return; }
+  try { data = await api(`/api/peers/roster${fresh ? '?fresh=1' : quick ? '?quick=1' : ''}`); } catch { return; }
   // How long a machine's last answer took changes on every look: not a reason to draw the list again (1.5.61).
   const sig = (list) => JSON.stringify((list || []).map(({ ms, ...m }) => m));
   const before = sig(state.peerRoster);

@@ -610,7 +610,7 @@ function setSettingsNav(sectionId) {
   drawer?.classList.remove('set-home');
   if (sectionId === 'sec-home') renderSettingsHome(); // 1.5.61: the home first (08b-settings-home.js)
   const picked = document.querySelector(`.setnav[data-set-target="${sectionId}"]`);
-  $('settings-title').textContent = isMobile() && picked ? picked.textContent.trim() : settingsTitle();
+  $('settings-title').textContent = isMobile() && picked ? setnavName(picked) : settingsTitle();
 }
 
 /**
@@ -618,15 +618,17 @@ function setSettingsNav(sectionId) {
  * machine's, and nothing said which. 「Windows 电脑的设置」, in the app too.
  */
 function settingsTitle() {
-  const name = machineDisplayName();
-  return name ? `${name}的设置` : '设置';
+  const name = String(machineDisplayName() || '').trim();
+  if (!name) return '设置';
+  // 「腾讯云 -ubuntu的设置」 ran the name into 的设置 (1.5.62): a space after a name that ends in Latin, a digit or a sign.
+  return /[\x21-\x7e]$/.test(name) ? `${name} 的设置` : `${name}的设置`;
 }
 
 // From desktop width to phone width with a page open: its name, not 「…的设置」 (1.5.44 test).
 mqMobile.addEventListener?.('change', () => {
   if (!state.settingsOpen || $('settings-drawer')?.classList.contains('set-home')) return;
   const picked = document.querySelector('.setnav.active');
-  $('settings-title').textContent = isMobile() && picked ? picked.textContent.trim() : settingsTitle();
+  $('settings-title').textContent = isMobile() && picked ? setnavName(picked) : settingsTitle();
 });
 
 /** Phone: the settings list itself (the mockup's grouped list). */
@@ -728,11 +730,26 @@ function showModelTab(key) {
 }
 
 function decorateSettingsNav() {
+  // What each page is, from the home's list (1.5.62): shown under the short name in the phone's list only.
+  const notes = new Map(SETTINGS_GROUPS.flatMap(([, pages]) => pages.map(([target, , what]) => [target, what])));
   document.querySelectorAll('.setnav').forEach((btn) => {
+    const note = notes.get(btn.dataset.setTarget);
+    if (note && !btn.querySelector('.setnav-text')) {
+      const text = el('span', 'setnav-text');
+      text.append(...[...btn.childNodes]);
+      text.appendChild(el('small', 'setnav-note', note));
+      btn.appendChild(text);
+    }
     const shape = SETNAV_ICONS[btn.dataset.setTarget];
     if (!shape || btn.querySelector('svg')) return;
     btn.insertAdjacentHTML('afterbegin', `<svg class="setnav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`);
   });
+}
+
+/** A page's short name in the settings list, without the note under it (the phone's top bar shows it). */
+function setnavName(btn) {
+  const text = btn.querySelector('.setnav-text');
+  return (text ? [...text.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('') : btn.textContent).trim();
 }
 
 /** One model for every machine (desktop app only: it holds the pairings). */

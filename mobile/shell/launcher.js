@@ -1274,7 +1274,7 @@
       throw new Error(/NotAllowed|Permission/i.test(String(err && (err.name || err.message))) ? 'NO_CAMERA_PERMISSION' : String((err && err.message) || err));
     }
     view.hidden = false;
-    status.textContent = '对准电脑上「设置 → 配对」里的二维码';
+    status.textContent = '对准电脑上「设置 → 手机和外网」里的二维码';
     video.srcObject = stream;
     await video.play().catch(() => {});
     const canvas = document.createElement('canvas');

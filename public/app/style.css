@@ -2630,6 +2630,8 @@
   }
   .setnav:hover { background: var(--panel-2); color: var(--text); }
   .setnav.active { background: var(--panel-2); color: var(--text); font-weight: 500; }
+  /* What each page is: under the short name in the phone's list only (1.5.62); a computer has the home for that. */
+  .setnav-note { display: none; }
   /* On a computer the settings list has the phone's icons too. */
   @media (min-width: 861px) {
     .setnav { display: flex; align-items: center; gap: 9px; }
@@ -3388,6 +3390,8 @@
       border-right: 1.75px solid var(--dim); border-top: 1.75px solid var(--dim); transform: rotate(45deg);
     }
     .settings-modal.set-home .setnav svg { display: block; width: 20px; height: 20px; flex: none; color: var(--muted); }
+    .settings-modal.set-home .setnav-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 0; }
+    .settings-modal.set-home .setnav-note { display: block; font-size: var(--t-sm); color: var(--muted); line-height: 1.35; }
     /* each group is one rounded card with its title above it */
     .settings-modal.set-home .setnav-sec { gap: 0; margin: 0 0 20px; }
     .settings-modal.set-home .setnav-group { padding: 0 16px 8px; font-size: var(--t-sm); font-weight: 500; }
@@ -4030,15 +4034,18 @@ html[data-theme="light"] .group.remote.off { opacity: 0.75; }
 .set-home-note { color: var(--dim); font-size: var(--t-xs); margin-top: 14px; }
 .setnav-home { margin-bottom: 8px; }
 @media (max-width: 860px) { .setnav-home { display: none; } }
-/* 连接应用: plain grey letter blocks; one action per row, as a button; why it is recommended */
-.mcp-badge, .mcp-badge.has-icon { background: var(--panel-3) !important; color: var(--text); box-shadow: inset 0 0 0 1px var(--border-soft); font-weight: 600; }
+/* 连接应用: one action per row, as a button; why it is recommended. 1.5.62: each app's own icon again (the grey letter blocks are gone). */
 .mcp-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 14px 2px 8px; }
 .mcp-sec-head b { font-size: var(--t-md); font-weight: 600; }
 .mcp-sec-head small { color: var(--dim); font-size: var(--t-xs); }
 .mcp-why { color: var(--muted); }
 .mcp-why::before { content: '↳ '; color: var(--dim); }
 .mcp-state { align-self: center; padding: 5px 12px; border-color: var(--border); color: var(--text); background: var(--panel-2); font-size: var(--t-sm); }
-.mcp-state.ok { background: transparent; border-color: transparent; color: var(--ok-text); }
-.mcp-state.ok::before { content: '✓ '; }
+.mcp-state.ok { background: transparent; border-color: transparent; color: var(--ok-text); } /* the text has its own ✓ (1.5.62: 「✓✓ 已连接」) */
 /* a group's line (where its members are) may take two lines in a narrow list */
 .group .bot-preview .bp-text { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* --- 1.5.62: 设置 → 审批 lists every 「以后都允许」, by assistant --------------------------------------------------- */
+.remembered-all { display: grid; gap: 14px; margin: 4px 0 2px; }
+.remembered-all .be-allowed { margin-top: 0; }
+.remembered-all .be-allowed-title { font-weight: 600; color: var(--text); }

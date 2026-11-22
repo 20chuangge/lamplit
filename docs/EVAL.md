@@ -26,7 +26,7 @@ npm run eval -- --record
 
 ## 记录
 
-花费按 设置 → 用量 里填的单价算；没填单价的模型只记 tokens。
+花费按 设置 → 成本 里填的单价算；没填单价的模型只记 tokens。
 
 <!-- results: newest first -->
 

@@ -631,7 +631,9 @@ function replyGroup() {
 /** On a reply card in a chat, when others wait too: one quiet button to see them together. */
 function replyGroupHint(data) {
   if (!isReplyDraft(data.draft) || data.decision) return null;
-  const n = waitingReplies().length;
+  // This card counts too, also when it is drawn before it reaches the list (1.5.62: three waiting said 「2 条」).
+  const items = waitingReplies();
+  const n = items.length + (items.some((i) => i.id === data.approvalId) ? 0 : 1);
   if (n < 2) return null;
   const go = el('button', 'btn ghost tiny reply-group-link', `一起看这 ${n} 条回复`);
   go.type = 'button';

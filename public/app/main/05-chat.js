@@ -1845,7 +1845,7 @@ function takeoverCard(item) {
   row.appendChild(done);
   card.appendChild(row);
   card.appendChild(el('div', 'row-note', state.policy?.takeover === 'view'
-    ? '这台机器的接管设成了「只能看」：要操作的话，先在 设置 → 权限 里改成「能看能控」。'
+    ? '这台机器的接管设成了「只能看」：要操作的话，先在 设置 → 审批 里改成「能看能控」。'
     : '密码、验证码只在屏幕上输入，不要发在聊天里。'));
   return card;
 }

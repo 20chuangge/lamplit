@@ -1393,6 +1393,8 @@ export class AgentRuntime {
       unattended,
       ...(fromBotId ? { fromBotId } : {}),
       ...(coordinatorTurn ? { groupId: group.id } : {}),
+      // A new group's round of introductions (1.5.62): the daily note does not count it as work done (attention.mjs intro).
+      ...(kickoff ? { kickoff: true } : {}),
     };
     this.bus.emit({ type: 'turn.start', ...baseEvent, text });
 

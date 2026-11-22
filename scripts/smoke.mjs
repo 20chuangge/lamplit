@@ -247,6 +247,7 @@ async function main() {
     await stage('1.5.58: cards you answer - plain titles, risk tags, honest receipts, next steps; approval decisions unchanged', async () => (await import('./smoke-cards1558.mjs')).cards1558Checks({ check, readText }));
     await stage('1.5.59: the sidebar - 「N 件等你」 / 「N 个在做」, machines with an online dot, status lines, the header counts the chat on screen', async () => (await import('./smoke-sidebar1559.mjs')).sidebar1559Checks({ check, readText }));
     await stage('1.5.61: redesign step 5 - groups on top, a stable order kept on the hub, the first run, the settings home, 连接应用', async () => (await import('./smoke-step5-1561.mjs')).step5Checks({ check, readText }));
+    await stage('1.5.62: the reply count, the other machines\' pace, 「以后都允许」 in 审批, this machine\'s cost, introductions not counted', async () => (await import('./smoke-fixes-1562.mjs')).fixes1562Checks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -5735,11 +5736,13 @@ async function scenarioApps1512() {
   // The apps' own marks (simple-icons, CC0): a file for each app that has one, the licence next to them.
   const fsMod = await import('node:fs');
   const withIcon = mcp.MCP_CATALOG.filter((e) => e.icon);
-  // 1.5.61 (redesign step 5): the page shows one plain grey letter block per app; the marks stay shipped, with their licence.
-  check('A4 icons: the apps with a mark have its SVG (plain paths, no script) and the licence is shipped; the page shows a plain letter block (1.5.61)',
+  // 1.5.62: the page draws them again (1.5.61's grey letter blocks were not asked for); apps without one keep their letters on their colour.
+  const appCss = await readText('../public/app/style.css');
+  check('A4 icons: the apps with a mark have its SVG (plain paths, no script) and the page draws it as a mask on the app\'s colour; the licence is shipped; nothing paints the badges grey',
     withIcon.length >= 12 && withIcon.every((e) => { const f = new URL(`../public/vendor/app-icons/${e.id}.svg`, import.meta.url); return fsMod.existsSync(f) && !/<script|on\w+=/i.test(fsMod.readFileSync(f, 'utf8')); })
     && fsMod.existsSync(new URL('../public/vendor/LICENSE-simple-icons.txt', import.meta.url))
-    && apps.includes("const badge = el('div', 'mcp-badge', String(app.badge || app.name)"));
+    && apps.includes("mark.style.maskImage = `url(\"${app.icon}\")`;") && apps.includes("badge.style.background = app.color || '#5b6474';")
+    && apps.includes("const badge = el('div', 'mcp-badge', app.badge || app.name.slice(0, 1));") && !/\.mcp-badge[^{]*\{[^}]*!important/.test(appCss));
 }
 
 /**
@@ -7771,15 +7774,30 @@ async function scenarioV156() {
     const nav = (page.match(/<nav class="settings-nav" id="settings-nav"[\s\S]*?<\/nav>/) || [''])[0];
     const groups = [...nav.matchAll(/<div class="setnav-sec"[^>]*>\s*<div class="setnav-group">([^<]+)<\/div>([\s\S]*?)<\/div>\s*(?=<div class="setnav-sec"|<\/nav>)/g)]
       .map((m) => [m[1], [...m[2].matchAll(/data-set-target="([^"]+)"/g)].map((x) => x[1]).join(',')]);
-    // 1.5.61 (redesign step 5): the groups in plain words, 外观和系统 in the design's order; a home on top.
-    check('S1 settings: four groups with titles - 助手怎么干活 / 安全 / 连接 / 外观和系统 - in the design\'s order',
+    // 1.5.61 (redesign step 5): the design's order and a home on top; 1.5.62: the short group names again (the home keeps plain words).
+    check('S1 settings: four groups with titles - 助理 / 安全 / 连接 / 通用 - in the design\'s order',
       JSON.stringify(groups) === JSON.stringify([
-        ['助手怎么干活', 'sec-model,sec-skills,sec-memory,sec-initiative'],
+        ['助理', 'sec-model,sec-skills,sec-memory,sec-initiative'],
         ['安全', 'sec-run,sec-bounds,sec-vault,sec-audit'],
         ['连接', 'sec-machines,sec-pair,sec-feishu,sec-mcp'],
-        // 1.5.54: 备份 joins 通用; 1.5.61: 外观和系统, in the design's order.
-        ['外观和系统', 'sec-appearance,sec-backup,sec-checkup,sec-usage,sec-pages,sec-about'],
+        // 1.5.54: 备份 joins 通用; 1.5.61: in the design's order.
+        ['通用', 'sec-appearance,sec-backup,sec-checkup,sec-usage,sec-pages,sec-about'],
       ]), JSON.stringify(groups));
+    // 1.5.62: step 5 renamed the left list in plain words (什么时候先问你, 花了多少钱…) and nothing else matched: the short names, the same on the section heads and the home.
+    const navLabels = Object.fromEntries([...nav.matchAll(/data-set-target="(sec-[a-z]+)">([^<]+)<\/button>/g)].map((m) => [m[1], m[2]]));
+    const SHORT = { 'sec-home': '设置首页', 'sec-model': '模型', 'sec-skills': '技能', 'sec-memory': '记忆', 'sec-initiative': '主动', 'sec-run': '审批', 'sec-bounds': '边界', 'sec-vault': '保险箱', 'sec-audit': '操作记录',
+      'sec-machines': '机器', 'sec-pair': '手机和外网', 'sec-feishu': '飞书', 'sec-mcp': '连接应用', 'sec-appearance': '外观', 'sec-backup': '备份', 'sec-checkup': '体检', 'sec-usage': '成本', 'sec-pages': '页面库', 'sec-about': '关于' };
+    const headOf = (id) => (page.match(new RegExp(`<section class="dsec" id="${id}">\\s*<div class="dsec-head">([^<]+)</div>`)) || [])[1];
+    const homeRows = Object.fromEntries([...page.matchAll(/^ {4}\['(sec-[a-z]+)', '([^']+)', '([^']+)'\],/gm)].map((m) => [m[1], m[2]]));
+    const navWrong = Object.entries(SHORT).filter(([id, name]) => navLabels[id] !== name || (id !== 'sec-home' && (headOf(id) !== name || homeRows[id] !== name)));
+    check('S-NAV1 settings: the left list has the short names - 审批, 边界, 操作记录, 主动, 手机和外网, 成本, 备份… - the same as each section\'s head and the home\'s rows, which add one line on what it is',
+      Object.keys(navLabels).length === Object.keys(SHORT).length && !navWrong.length && Object.keys(homeRows).length === Object.keys(SHORT).length - 1
+      && page.includes("['sec-run', '审批', '什么时候先问你'],") && page.includes("['sec-pair', '手机和外网', '出门在外也能用'],"),
+      JSON.stringify(navWrong.map(([id]) => [id, navLabels[id], headOf(id), homeRows[id]])));
+    check('S-NAV2 settings: the phone\'s list has the same line under each short name (hidden on a computer, which has the home); a page\'s top bar on a phone says the short name only',
+      page.includes("const notes = new Map(SETTINGS_GROUPS.flatMap(([, pages]) => pages.map(([target, , what]) => [target, what])));") && page.includes("text.appendChild(el('small', 'setnav-note', note));")
+      && page.includes('.setnav-note { display: none; }') && page.includes('.settings-modal.set-home .setnav-note { display: block;')
+      && (page.match(/isMobile\(\) && picked \? setnavName\(picked\) : settingsTitle\(\);/g) || []).length === 2 && !page.includes('picked.textContent.trim()'));
     const sec = (id) => (page.match(new RegExp(`<section class="dsec" id="${id}">[\\s\\S]*?</section>`)) || [''])[0];
     const run = sec('sec-run');
     const bounds = sec('sec-bounds');
@@ -11616,8 +11634,8 @@ async function scenarioRoster1544() {
     launcher.includes("home: 'desk.homeHub'") && /if \(!started && state\.hub && \(await openHome\(\)\)\) return;/.test(launcher)
     && launcher.includes("enterMachine(entry, null, { view: 'all', quiet: true })") && launcher.includes("enterMachine(entry, null, { view: 'one' })")
     && launcher.includes("if (name === '@home')") && launcher.includes('if (!up && quiet) return false;') && launcher.includes("void enterMachine(entry, tag, { view: entry.via ? 'one' : 'all' });"));
-  check('R44-10 settings say whose they are: 「<this machine>的设置」 (the desktop and the app alike)',
-    settingsJs.includes('return name ? `${name}的设置` : \'设置\';') && settingsJs.includes("$('settings-title').textContent = settingsTitle();"));
+  check('R44-10 settings say whose they are: 「<this machine>的设置」 (the desktop and the app alike; 1.5.62: 「腾讯云 -ubuntu 的设置」, a space after a Latin ending)',
+    settingsJs.includes('return /[\\x21-\\x7e]$/.test(name) ? `${name} 的设置` : `${name}的设置`;') && settingsJs.includes("$('settings-title').textContent = settingsTitle();"));
   const botsJs = fsSync.readFileSync(new URL('../public/app/main/04-bots.js', import.meta.url), 'utf8');
   check('R44-11 (beginner test) made on another machine after pairing first: the form closes and the new one opens, so it is not made twice; the pairing box says what this step is',
     wiring.includes('state.afterPair.then = (res) => botMadeThere(where, res)') && groupsJs.includes('state.afterPair.then = (res) => groupMadeThere(where, res)')

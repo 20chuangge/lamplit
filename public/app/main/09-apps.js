@@ -476,8 +476,20 @@ function mcpTile(app) {
   const card = el('div', `mcp-app${mcpUi.open === app.id ? ' open' : ''}${appIsOn(app) ? ' on' : ''}`);
   const head = el('button', 'mcp-app-head');
   head.type = 'button';
-  // One plain grey block with a letter for every app (1.5.61, redesign step 5): the brands' own colours and marks made the page loud.
-  const badge = el('div', 'mcp-badge', String(app.badge || app.name).replace(/[（(].*$/, '').slice(0, 1).toUpperCase());
+  // 1.5.62: each app's own icon again, as in 1.5.60 (step 5 had made them grey letter blocks, which nobody asked for).
+  const badge = el('div', 'mcp-badge', app.badge || app.name.slice(0, 1));
+  badge.style.background = app.color || '#5b6474';
+  if (String(app.badge || '').length >= 3) badge.classList.add('small');
+  // The app's own mark, white on its colour; the letters stay for apps without one.
+  if (app.icon) {
+    badge.textContent = '';
+    badge.classList.add('has-icon');
+    const mark = el('span', 'mcp-mark');
+    // On the element itself: a url() inside a CSS variable would resolve against style.css's folder.
+    mark.style.webkitMaskImage = `url("${app.icon}")`;
+    mark.style.maskImage = `url("${app.icon}")`;
+    badge.appendChild(mark);
+  }
   const meta = el('div', 'mcp-app-meta');
   meta.appendChild(el('b', '', app.name));
   meta.appendChild(el('small', '', app.desc || ''));
@@ -962,6 +974,7 @@ function renderPermOverview() {
     ['我的规则', `${(policy.rules || []).length} 条`, false],
     ['禁止命令', `${(policy.extraDeny || []).length} 条自定义`, false],
   ];
+  renderRememberedAll(); // 「以后都允许的」, further down the same page (1.5.62)
   summary.innerHTML = '';
   for (const [key, value, warn] of chips) {
     const chip = el('span', `perm-chip${warn ? ' warn' : ''}`);

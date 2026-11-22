@@ -298,7 +298,7 @@ export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = 
     if (place.ok && spec[1] && !place.write) {
       return { decision: outside, code: 'FOLDER_READ_ONLY', reason: `「${place.where}」只开放了读取，这一步要写入（${abs}）` };
     }
-    return { decision: outside, code: 'FOLDER_NOT_OPEN', reason: `这个位置没有开放给机器人（${abs}）；可以在 设置 → 权限 → 能访问的文件夹 里添加` };
+    return { decision: outside, code: 'FOLDER_NOT_OPEN', reason: `这个位置没有开放给机器人（${abs}）；可以在 设置 → 边界 → 能访问的文件夹 里添加` };
   }
 
   if (name === 'shell') {

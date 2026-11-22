@@ -292,36 +292,36 @@
     <button class="icon-btn" id="settings-close" aria-label="关闭设置">✕</button>
   </div>
   <div class="settings-body">
-    <!-- 1.5.61 (redesign step 5): a home first, then the 4 groups, the names in plain words (08b-settings-home.js) -->
+    <!-- 1.5.61 (redesign step 5): a home first, then the 4 groups (08b-settings-home.js). 1.5.62: the short names again, as on the section heads; the home says what each is. -->
     <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
       <button class="setnav setnav-home active" type="button" data-set-target="sec-home">设置首页</button>
       <div class="setnav-sec">
-        <div class="setnav-group">助手怎么干活</div>
+        <div class="setnav-group">助理</div>
         <button class="setnav" type="button" data-set-target="sec-model">模型</button>
         <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
         <button class="setnav" type="button" data-set-target="sec-memory">记忆</button>
-        <button class="setnav" type="button" data-set-target="sec-initiative">主动找你</button>
+        <button class="setnav" type="button" data-set-target="sec-initiative">主动</button>
       </div>
       <div class="setnav-sec">
         <div class="setnav-group">安全</div>
-        <button class="setnav" type="button" data-set-target="sec-run">什么时候先问你</button>
-        <button class="setnav" type="button" data-set-target="sec-bounds">能碰哪些地方</button>
+        <button class="setnav" type="button" data-set-target="sec-run">审批</button>
+        <button class="setnav" type="button" data-set-target="sec-bounds">边界</button>
         <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
-        <button class="setnav" type="button" data-set-target="sec-audit">做过什么</button>
+        <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
       </div>
       <div class="setnav-sec">
         <div class="setnav-group">连接</div>
         <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
-        <button class="setnav" type="button" data-set-target="sec-pair">手机和出门在外</button>
+        <button class="setnav" type="button" data-set-target="sec-pair">手机和外网</button>
         <button class="setnav" type="button" data-set-target="sec-feishu">飞书</button>
         <button class="setnav" type="button" data-set-target="sec-mcp">连接应用</button>
       </div>
       <div class="setnav-sec">
-        <div class="setnav-group">外观和系统</div>
+        <div class="setnav-group">通用</div>
         <button class="setnav" type="button" data-set-target="sec-appearance">外观</button>
-        <button class="setnav" type="button" data-set-target="sec-backup">备份和恢复</button>
+        <button class="setnav" type="button" data-set-target="sec-backup">备份</button>
         <button class="setnav" type="button" data-set-target="sec-checkup">体检</button>
-        <button class="setnav" type="button" data-set-target="sec-usage">花了多少钱</button>
+        <button class="setnav" type="button" data-set-target="sec-usage">成本</button>
         <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
         <button class="setnav" type="button" data-set-target="sec-about">关于</button>
       </div>
@@ -558,6 +558,10 @@
           <button class="btn" id="rule-add-btn" type="button">添加</button>
         </div>
         <div class="row-note">规则冲突时「先问我」优先；内置的危险命令拦截和机器人的能力限制始终有效。</div>
+        <!-- 1.5.62: every 「以后都允许」, by assistant (it was on each assistant's page only) - 04-bots.js renderRememberedAll -->
+        <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">以后都允许的</div>
+        <div class="row-note">审批卡上点过「以后都允许」的，和在手机上放开的操作，按助手列在这里。撤销后，这类操作又会先问你。</div>
+        <div class="remembered-all" id="remembered-all"></div>
         <div class="dsec-head" style="font-size:13px;margin:20px 0 6px">禁止的命令</div>
         <div class="row-note" id="deny-builtin-note">内置的危险命令始终会拦下：删除整个系统、格式化磁盘、关机、改密码、把桌面暴露到网络等。</div>
         <div class="deny-list" id="deny-list"></div>

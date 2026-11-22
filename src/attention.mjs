@@ -64,7 +64,8 @@ export function createAttention({ file, bus, pending = null }) {
   const asks = new Map();         // approvalId -> {tool, botId, botName, count?}
   const doing = new Map();        // key -> {text, tool} of the work in progress
   const plans = new Map();        // key -> planProgress() of its open checklist / board
-  let saved = { seen: {}, result: {}, waiting: {}, failed: {} };
+  // intro (1.5.62): key -> the result time of a new group's self-introduction, its last result: not work the daily note counts.
+  let saved = { seen: {}, result: {}, waiting: {}, failed: {}, intro: {} };
   let saveTimer = null;
   let changeTimer = null;
 
@@ -108,6 +109,7 @@ export function createAttention({ file, bus, pending = null }) {
     delete saved.result[key];
     delete saved.waiting[key];
     delete saved.failed[key];
+    delete saved.intro[key];
     working.delete(key);
     doing.delete(key);
     plans.delete(key);
@@ -140,6 +142,8 @@ export function createAttention({ file, bus, pending = null }) {
         // A turn a teammate handed to another bot is still that bot's result.
         prevResult.set(key, saved.result[key] || 0);
         saved.result[key] = Date.parse(ev.ts) || Date.now();
+        // A new group's round of introductions (1.5.62): a member's turn there lands in its own chat, but it is not work done for the human.
+        if (ev.kickoff) saved.intro[key] = saved.result[key]; else delete saved.intro[key];
         if (ev.waitingFor) saved.waiting[key] = { kind: ev.waitingFor, text: String(ev.waitingText || ev.summary || '').slice(0, 300) };
         // The chat's last turn is what its face shows: stuck, or fine again.
         if (!working.has(key)) {
@@ -194,7 +198,7 @@ export function createAttention({ file, bus, pending = null }) {
     async load() {
       try {
         const data = JSON.parse(await fsp.readFile(file, 'utf8'));
-        saved = { seen: data.seen || {}, result: data.result || {}, waiting: data.waiting || {}, failed: data.failed || {} };
+        saved = { seen: data.seen || {}, result: data.result || {}, waiting: data.waiting || {}, failed: data.failed || {}, intro: data.intro || {} };
       } catch { /* first run */ }
       bus.subscribe(onEvent);
     },
@@ -213,6 +217,8 @@ export function createAttention({ file, bus, pending = null }) {
           needsYou: open > 0 || Boolean(saved.waiting[key]),
           unread: (saved.result[key] || 0) > (saved.seen[key] || 0),
         };
+        // Its new result is only a group self-introduction (1.5.62): the sidebar still marks it; the daily note does not count it.
+        if (item.unread && saved.intro[key] && saved.intro[key] === saved.result[key]) item.intro = true;
         if (open) item.approvals = open;
         if (saved.waiting[key]) item.waiting = saved.waiting[key];
         if (saved.failed[key] && !item.working) item.failed = saved.failed[key];

@@ -1,7 +1,7 @@
 // 1.5.61: redesign step 5 and the sidebar the user chose. 「群组」 on top with where its members are;
 // bots per machine, pinned on top in the order the human put them and the rest by latest activity, still
 // while you look (pins kept on the hub); the first run says hello with two ways on and ends in 「第一件事」;
-// a settings home with 4 groups; 连接应用 recommends from your assistants, in plain grey letter blocks;
+// a settings home with 4 groups; 连接应用 recommends from your assistants (1.5.62: with each app's own icon again);
 // the machine menu says how this computer reaches each machine.
 // Called from smoke.mjs as one stage; kept in its own file so other work on smoke.mjs does not collide.
 import fs from 'node:fs';
@@ -179,10 +179,12 @@ export async function step5Checks({ check, readText }) {
 
   // --- the settings home ------------------------------------------------------------------
   const groupsOf = [...home.matchAll(/^ {2}\['([^']+)', \[/gm)].map((x) => x[1]);
-  check('H1 settings opens on a home (on a computer; a phone keeps its list): is all well and what it cost, then 4 groups; each page in plain words, one line on what it is, and its value now (「会改东西就问」, 「1 台离线」 in amber)',
+  check('H1 settings opens on a home (on a computer; a phone keeps its list): is all well and what it cost, then 4 groups in plain words; each page by its short name, one line on what it is, and its value now (「会改东西就问」, 「1 台离线」 in amber)',
     JSON.stringify(groupsOf) === JSON.stringify(['助手怎么干活', '安全', '连接', '外观和系统'])
-    && page.includes('data-set-target="sec-home">设置首页</button>') && page.includes('data-set-target="sec-run">什么时候先问你</button>') && page.includes('data-set-target="sec-bounds">能碰哪些地方</button>')
-    && page.includes('data-set-target="sec-audit">做过什么</button>') && page.includes('data-set-target="sec-usage">花了多少钱</button>') && page.includes('<section class="dsec" id="sec-home"></section>')
+    // 1.5.62: the short names in the left list (审批 · 什么时候先问你 on the home); scripts/smoke.mjs S-NAV1 checks every one.
+    && page.includes('data-set-target="sec-home">设置首页</button>') && page.includes('data-set-target="sec-run">审批</button>') && page.includes('data-set-target="sec-bounds">边界</button>')
+    && page.includes('data-set-target="sec-audit">操作记录</button>') && page.includes('data-set-target="sec-usage">成本</button>') && page.includes('<section class="dsec" id="sec-home"></section>')
+    && home.includes("['sec-run', '审批', '什么时候先问你'],") && home.includes("['sec-audit', '操作记录', '做过什么，能撤销的都在这'],")
     && page.includes("const targetId = section || (isMobile() ? 'sec-model' : 'sec-home');") && home.includes("return off ? { text: `${off} 台离线`, warn: true }"), JSON.stringify(groupsOf));
   check('H2 what needs a look is named and opens its page (「还没接模型 →」 to 模型, 「书房电脑关着 →」 to 机器); no public address under the machine\'s name',
     home.includes("issues.push(['还没接模型', 'sec-model']);") && home.includes("issues.push([`${off.join('、')}关着`, 'sec-machines']);") && home.includes("go.addEventListener('click', () => setSettingsNav(target));")
@@ -194,10 +196,11 @@ export async function step5Checks({ check, readText }) {
   const remoteId = (id) => String(id).includes('@');
   const recs = R({ bots: [{ id: 'w', name: '周报', role: '每周写周报' }, { id: 'j', name: '求职助手', role: '看面试邀请' }, { id: 'v@书房电脑', name: '剪辑', role: '' }], peerRoster: [{ bots: [{ id: 'p', name: '发布', role: '发到 X' }] }] }, (a) => a.id === 'email', remoteId)(catalog);
   const recsHere = R({ bots: [{ id: 'v', name: '剪辑', role: '' }] }, () => false, remoteId)(catalog);
-  check('A1 连接应用: 「为你推荐」 from this machine\'s assistants (an app connected here does not serve those elsewhere), each with why (「「周报」可以直接发到飞书群」), not the ones connected already; every app a plain grey letter block, one button',
+  check('A1 连接应用: 「为你推荐」 from this machine\'s assistants (an app connected here does not serve those elsewhere), each with why (「「周报」可以直接发到飞书群」), not the ones connected already; one button; 1.5.62: each app\'s own icon (smoke.mjs A4) and one ✓ on 「✓ 已连接」, not two',
     JSON.stringify(recs.map((r) => `${r.app.id}:${r.why}`)) === JSON.stringify(['feishu:「周报」可以直接发到飞书群'])
     && JSON.stringify(recsHere.map((r) => r.app.id)) === JSON.stringify(['baidu-pan'])
-    && apps.includes("head.appendChild(el('b', null, '为你推荐'));") && !apps.includes("badge.style.background = app.color") && page.includes('.mcp-badge, .mcp-badge.has-icon { background: var(--panel-3) !important;'),
+    && apps.includes("head.appendChild(el('b', null, '为你推荐'));") && apps.includes("badge.style.background = app.color || '#5b6474';")
+    && !page.includes('.mcp-badge, .mcp-badge.has-icon { background: var(--panel-3)') && apps.includes("if (srv.state === 'ready') return `✓ 已连接`;") && !page.includes(".mcp-state.ok::before"),
     JSON.stringify(recs.map((r) => r.why)));
 
   // --- the machine menu: how this computer reaches each machine -----------------------------

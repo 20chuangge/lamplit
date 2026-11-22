@@ -79,6 +79,14 @@ export function safeAvatar(raw, machine, botId) {
   return Object.keys(out).length ? out : null;
 }
 
+/** How long a machine's answer is kept: 15 s; 3 s while something there works or waits (1.5.62). */
+export const ROSTER_KEEP_MS = 15000;
+export const ROSTER_QUICK_MS = 3000;
+/** Something on that machine is under way or waits for the human: worth asking again soon. */
+export function rosterBusy(row) {
+  return Boolean(row?.online) && Object.values(row?.attention || {}).some((i) => i && (i.working || i.needsYou || i.asking));
+}
+
 const isUnreachable = (err) => err?.code === 'PEER_UNREACHABLE' || err?.code === 'PEER_PROXY_ERROR';
 
 export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpload = null, audit = async () => {}, selfName = () => '', streamIdleMs = 45000 } = {}) {
@@ -160,11 +168,18 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
     }
   }
 
-  /** Every other machine, with its bots - the ones it had when it is off. */
-  async function list({ fresh = false } = {}) {
+  /**
+   * Every other machine, with its bots - the ones it had when it is off.
+   * What is asked is kept 15 s; 3 s for a machine where something works or
+   * waits, or for everyone when the page says something may start soon
+   * (`quick`: the human just sent something) - a 10 s job there lit up
+   * nothing at 15-20 s (1.5.62).
+   */
+  async function list({ fresh = false, quick = false } = {}) {
     await load();
     const names = peers.list().map((p) => p.name);
-    const stale = names.filter((n) => fresh || !live.has(n) || Date.now() - live.get(n).at > 15000);
+    const maxAge = (row) => (quick || rosterBusy(row) ? ROSTER_QUICK_MS : ROSTER_KEEP_MS);
+    const stale = names.filter((n) => fresh || !live.has(n) || Date.now() - live.get(n).at > maxAge(live.get(n)));
     if (stale.length) {
       if (!inflight || fresh) inflight = Promise.all(stale.map(askOne)).finally(() => { inflight = null; });
       await inflight;

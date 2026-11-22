@@ -102,5 +102,5 @@ export async function swChecks({ check, readText, rawFetch, base }) {
     page.includes(".replace(/\\bno response within the approval window\\b/gi,") && page.includes(".replace(/\\bapproval window expired after a restart\\b/gi,")
     && page.includes('`备注：${reasonLabel(data.note)}`') && page.includes('`备注：${reasonLabel(note)}`'));
   check('ST3 a card that timed out says so (「等太久没人点，这一步没做。」), not 「它已经收到「不要做」」',
-    page.includes("data.decision === 'timeout' ? '等太久没人点，这一步没做。'"));
+    page.includes("if (decision === 'timeout') return receiptRow('no', '等太久没人点，这一步没做');")); // 1.5.58: the receipt line
 }

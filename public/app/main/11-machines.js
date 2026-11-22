@@ -670,7 +670,7 @@ function syncViewer() {
     wrap.innerHTML = '';
     const frame = document.createElement('iframe');
     frame.src = url;
-    frame.setAttribute('title', `${machineDisplayName()}桌面`);
+    frame.setAttribute('title', `${screenMachineName()}桌面`);
     frame.setAttribute('allow', 'clipboard-read; clipboard-write; fullscreen');
     frame.setAttribute('allowfullscreen', '');
     frame.referrerPolicy = 'no-referrer';
@@ -689,7 +689,7 @@ function syncViewer() {
   }
   if (shield) {
     shield.hidden = takeover;
-    if (!takeover && $('pc-preview-name')) $('pc-preview-name').textContent = `实时画面 · ${machineDisplayName()}`;
+    if (!takeover && $('pc-preview-name')) $('pc-preview-name').textContent = `实时画面 · ${screenMachineName()}`;
   }
   {
     // Light (openbox) and kiosk (cage, Rocky/RHEL 10) screens are empty until a

@@ -17,6 +17,7 @@ export const MAIN_PARTS = [
   'app/main/05-chat.js',
   'app/main/06-live.js',
   'app/main/07-skills-routines.js',
+  'app/main/07b-cards.js',
   'app/main/08-settings.js',
   'app/main/09-apps.js',
   'app/main/10-computer.js',

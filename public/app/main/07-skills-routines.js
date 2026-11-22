@@ -734,7 +734,7 @@ function thinkCardInfo(data) {
   const d = data.draft;
   if (d) {
     const where = d.channel === '邮件' ? '发一封邮件' : d.channel === 'X' ? (d.kind === 'reply' ? '在 X 上回复一条帖子' : '在 X 上发一条帖子') : `发到「${d.channel}」`;
-    return { title: `想${where}`, detail: '', facts: [], impact: data.decision ? '' : '下面是草稿，可以直接改。点「发送」才会发出去，发出去的就是框里的字。' };
+    return { title: `想${where}`, detail: '', facts: [], impact: data.decision ? '' : '下面是草稿，可以直接改；发出去的就是框里的字。' };
   }
   const a = data.adjust;
   if (a) return { title: `想改「${a.botName}」${a.machine ? `（${a.machine}）` : ''}`, detail: '', facts: [], impact: '同意后马上生效。之后可以在对话里点「撤销」改回去。' };
@@ -836,19 +836,12 @@ function adjustDiff(a) {
   return box;
 }
 
-/** What an answered card says it did, in words that fit it. */
-function thinkDoneLabel(data, good) {
-  if (data.draft) return good ? (data.edited ? '已定稿（你改过）' : '已定稿') : '不发了';
-  if (data.adjust) return good ? '已修改' : '没改';
-  if (data.handoff) return good ? '已交过去' : '没交';
-  return '';
-}
-
 /** The buttons' words on a card that is a draft, a change or a hand-off. */
 function thinkButtons(data) {
-  if (data.draft) return { yes: '发送', yesTip: '把框里的字发出去', no: '不发了', noTip: '不发，把「不发了」告诉它' };
+  // Where it goes (1.5.58): 「发到小红书」, 「发出这封邮件」, 「回复」 - never a bare 「发送」.
+  if (data.draft) return { yes: draftYes(data.draft), yesTip: '发出去的就是框里的字', no: '不发了', noTip: '不发，把「不发了」告诉它' };
   if (data.adjust) return { yes: '同意修改', yesTip: '马上生效，之后可以撤销', no: '不改了', noTip: '不改，把「不改了」告诉它' };
-  if (data.handoff) return { yes: '同意，交过去', yesTip: '以后交给这台不再问你', no: '先别交', noTip: '不交，把「不行」告诉它' };
+  if (data.handoff) return { yes: '交过去', yesTip: '以后交给这台不再问你', no: '先别交', noTip: '不交，把「不行」告诉它' };
   return null;
 }
 

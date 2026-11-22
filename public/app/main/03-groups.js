@@ -1477,6 +1477,15 @@ function renderRemoteMemoryNote() {
   $('shared-pre').textContent = note;
 }
 
+/**
+ * Whose screen the 电脑 tab shows (1.5.58): the other machine's name for a bot
+ * there (全部机器), else this page's machine. 11-22: the cloud machine's screen
+ * was labelled 「实时画面 · Windows 电脑」.
+ */
+function screenMachineName() {
+  return state.computer?.remote?.machine || machineDisplayName();
+}
+
 /** A remote bot's screen: through this hub's desktop relay; control is asked for first. */
 async function loadRemoteComputer(id) {
   const far = remoteOf(id);
@@ -1786,7 +1795,8 @@ function changesChip(turnId, all) {
   const deleted = changes.filter((c) => c.kind === 'delete').length;
   const what = deleted && deleted === changes.length ? '删了' : deleted ? '改动了' : '改了';
   const wrap = el('span', 'changes-wrap');
-  const chip = el('button', 'changes-chip', `${what} ${names.length} 个文件`);
+  // Undone (here or from a card's receipt): said on the line too (1.5.58 beginner test).
+  const chip = el('button', 'changes-chip', state.undone.has(turnId) ? `${what} ${names.length} 个文件，已撤销` : `${what} ${names.length} 个文件`);
   chip.type = 'button';
   chip.title = '看这一轮改了哪些文件；7 天内可以撤销';
   const pop = el('div', 'changes-pop');

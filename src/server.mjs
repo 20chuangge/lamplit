@@ -82,7 +82,7 @@ import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './
 import { createMcpManager } from './mcp.mjs';
 import { createProvisioner, derpMapFor, isPublicIpv4, parseNetcheckText } from './remote.mjs';
 import { bridgeWebSocket } from './wsbridge.mjs';
-import { createRelayLink, openRelayForwarder, relayFetch } from './relaylink.mjs';
+import { connectViaRelay, createRelayLink, openRelayForwarder, relayFetch, relayServerName } from './relaylink.mjs';
 import { enableFunnel, disableFunnel, funnelView, funnelPublicUrl, restoreFunnel } from './funnel.mjs';
 import * as voiceModule from './voice.mjs';
 import * as visionModule from './vision.mjs';
@@ -988,8 +988,11 @@ function attachHubUpgrade(server, state, viaPublic) {
  * The screen of a bot on another machine, watched from this window (1.5.42):
  * this hub opens that machine's own desktop socket with that machine's token
  * and passes the bytes both ways. Only the human (like the chat itself), and
- * never for a call another hub passed on. Through the relay there is no socket
- * to open: the window says so.
+ * never for a call another hub passed on. A machine only the relay reaches
+ * (1.5.58): the socket goes through the relay too - the same pinned TLS (and
+ * direct channel when it is up) as every other call to it. 11-22: the cloud
+ * machine's screen said 「无法连接到服务器」 in 全部机器, as this asked for its
+ * address without the relay and refused the viewer.
  */
 async function bridgePeerDesktop(req, socket, head, state, rawMachine, rawBot, refuse) {
   if (req.headers[VIA_HEADER]) return refuse(403, 'Forbidden');
@@ -1001,22 +1004,20 @@ async function bridgePeerDesktop(req, socket, head, state, rawMachine, rawBot, r
   const peer = exactPeer(state, rawMachine);
   const botId = cleanBotId(rawBot);
   if (!peer || !botId) return refuse(404, 'Not Found');
-  let origin = '';
+  // Which way that machine answers: its own address, or only the relay.
+  let way = null;
   try {
-    const res = await state.peers.call(peer, 'GET', '/api/health', { timeoutMs: 5000, noRelay: true });
+    const res = await state.peers.call(peer, 'GET', '/api/health', { timeoutMs: 5000 });
     await res.body?.cancel?.().catch(() => {});
-    origin = new URL(res.url).origin;
+    way = res.viaRelay && peer.relay ? { relay: peer.relay } : { origin: new URL(res.url).origin };
   } catch {
     return refuse(502, 'Bad Gateway');
   }
   if (socket.destroyed) return undefined;
-  const u = new URL(origin);
-  const port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
-  const upstream = u.protocol === 'https:' ? tls.connect({ host: u.hostname, port, servername: u.hostname }) : net.connect(port, u.hostname);
-  upstream.once(u.protocol === 'https:' ? 'secureConnect' : 'connect', () => {
+  const send = (upstream, host) => {
     const lines = [
       `GET /api/bots/${encodeURIComponent(botId)}/desktop/ws HTTP/1.1`,
-      `Host: ${u.host}`,
+      `Host: ${host}`,
       'Upgrade: websocket',
       'Connection: Upgrade',
       `Sec-WebSocket-Key: ${String(req.headers['sec-websocket-key'] || '')}`,
@@ -1029,7 +1030,25 @@ async function bridgePeerDesktop(req, socket, head, state, rawMachine, rawBot, r
     if (head && head.length) upstream.write(head);
     upstream.pipe(socket);
     socket.pipe(upstream);
-  });
+  };
+  if (way.relay) {
+    // Its certificate is checked before anything of ours goes out (connectViaRelay).
+    let upstream;
+    try {
+      upstream = await connectViaRelay(way.relay, { direct: state.peers.directDialer?.() || null });
+    } catch {
+      return refuse(502, 'Bad Gateway');
+    }
+    if (socket.destroyed) { upstream.destroy(); return undefined; }
+    upstream.on('error', () => socket.destroy());
+    socket.on('close', () => upstream.destroy());
+    send(upstream, relayServerName(way.relay.id));
+    return undefined;
+  }
+  const u = new URL(way.origin);
+  const port = Number(u.port) || (u.protocol === 'https:' ? 443 : 80);
+  const upstream = u.protocol === 'https:' ? tls.connect({ host: u.hostname, port, servername: u.hostname }) : net.connect(port, u.hostname);
+  upstream.once(u.protocol === 'https:' ? 'secureConnect' : 'connect', () => send(upstream, u.host));
   upstream.on('error', () => socket.destroy());
   socket.on('close', () => upstream.destroy());
   return undefined;
@@ -3290,7 +3309,15 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
 
 /** The chat with its steps hidden (compact=1): only the tool rows it draws, slim. */
 export function compactChat(items) {
+  // The step right after a card you answered (1.5.58): kept, slim, so the card's receipt can say
+  // what it did after a reload (「没做成：…」, 「已经发到…」). Display only; nothing here decides anything.
+  const afterCard = new Set(items.filter((m, i) => m.role === 'tool' && items[i - 1]?.role === 'approval' && items[i - 1].tool === m.name && items[i - 1].turnId === m.turnId));
   return items.map((m) => {
+    if (afterCard.has(m) && !m.output?.undo && !ACTION_CARD_TOOLS.has(m.name) && !(m.name === 'bot_message' && m.output?.machine)) {
+      const o = m.output && typeof m.output === 'object' ? m.output : {};
+      const err = m.ok ? null : String(o.error?.message || o.message || String(o.stderr || '').trim().split('\n')[0] || (o.exitCode != null ? `exit code ${o.exitCode}` : '')).trim().slice(0, 300);
+      return { id: m.id, role: 'tool', name: m.name, ok: Boolean(m.ok), turnId: m.turnId, ts: m.ts, afterCard: true, output: err === null ? {} : { error: { ...(o.error?.code ? { code: String(o.error.code).slice(0, 40) } : {}), message: err } } };
+    }
     if (m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || !m.ok) return m;
     if (m.output?.undo) return { id: m.id, role: 'tool', name: m.name, ok: true, turnId: m.turnId, ts: m.ts, output: { undo: m.output.undo, path: m.output.path || '' } };
     // Work handed to another machine, back (1.5.52 beginner test): who, and its answer.
@@ -3300,7 +3327,7 @@ export function compactChat(items) {
         output: { machine: m.output.machine, botId: m.output.botId, botName: m.output.botName, status: m.output.status, reply: reply.length > 4000 ? `${reply.slice(0, 4000)}…` : reply } };
     }
     return m;
-  }).filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo || m.handoff).map((m) => (m.handoff ? m : compactToolItem(m)));
+  }).filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo || m.handoff || m.afterCard).map((m) => (m.handoff || m.afterCard ? m : compactToolItem(m)));
 }
 
 /** Tool rows the chat shows even with its steps hidden: the human acts on them. */

@@ -33,7 +33,7 @@ export async function uxChecks({ check, readText }) {
   // --- The first card a newcomer sees (walkthrough 2.2, 2.3, 3.9)
   check('UX1 a command card leads with what it does in plain words (the shell tool takes a purpose; the demo gives one); the command itself is one click away, not the headline',
     tools.includes("purpose: { type: 'string'") && /tool: 'shell', args: \{ command: move, purpose: '/.test(model)
-    && page.includes('if (args.purpose) {') && page.includes("el('summary', null, '看要运行的命令')"));
+    && page.includes('if (args.purpose) {') && page.includes("return args.purpose ? info.title : commandWords(args.command).title;") && page.includes("'要运行的命令'")); // 1.5.58: the command is under 技术细节
   check('UX2 the isolation warning is not shown in the demo (nothing real runs) and is asked about only when 「以后都允许」 is clicked',
     agent.includes("this.model?.provider !== 'mock' && sandboxStatus(this.config.policy).state !== 'on'") && page.includes('if (data.remember.warn && !(await askConfirm(')
     && !page.includes('${data.remember.warn ? ` ${data.remember.warn}` : \'\'}'));

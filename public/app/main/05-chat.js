@@ -99,6 +99,7 @@ function renderMessages() {
   }
 
   if (visible.length) appendStarters(visible);
+  showNextSteps(); // under the newest reply, while nothing runs (1.5.58)
   updateComposerMode();
   renderVideoJobs();
   scrollToBottom(true);
@@ -1594,8 +1595,8 @@ const TOOL_TEXT = {
   fs_write: { label: '写入文件', title: '想写入一个文件', impact: '如果同名文件已经存在，里面的内容会被覆盖。' },
   machine_switch: { label: '交给另一台机器', title: '想把一件事交给另一台机器', impact: '窗口不动，那台上的助手接着做。' },
   machine_note: { label: '记下机器适合干什么', title: '想记下一台机器适合干什么', impact: '主助理以后按这一句挑机器。' },
-  x_post: { label: '在 X 上发帖', title: '想在 X 上发一条帖子', impact: '先给你看草稿，你点「发送」才发。' },
-  post_draft: { label: '给你看草稿', title: '想先给你看要发出去的草稿', impact: '你点「发送」后，它照你定的稿去发。' },
+  x_post: { label: '在 X 上发帖', title: '想在 X 上发一条帖子', impact: '先给你看草稿，你点「发到 X」才发。' },
+  post_draft: { label: '给你看草稿', title: '想先给你看要发出去的草稿', impact: '你同意后，它照你定的稿去发。' },
   follow_up: { label: '约好回头看', title: '想约个时间回头看一眼', impact: '到时候它自己回来看，有新情况才告诉你。' },
   watch_folder: { label: '盯着一个文件夹', title: '想盯着一个文件夹', impact: '里面出现新文件时，它会自己来处理。' },
   bot_adjust: { label: '改助手', title: '想改一个助手', impact: '同意后马上生效，可以撤销。' },
@@ -1917,8 +1918,10 @@ function toolChip(item) {
   const details = el('details', 'chip');
   const summary = el('summary');
 
-  const state = item.pending ? 'pending' : item.ok ? 'ok' : 'fail';
-  const icon = item.pending ? '⋯' : item.ok ? '✓' : '✕';
+  // 「没有要改的」 is not a failure (1.5.58 beginner test: it showed red 「没成功」).
+  const nothing = !item.pending && !item.ok && item.output?.error?.code === 'ADJUST_NOTHING';
+  const state = item.pending ? 'pending' : item.ok || nothing ? 'ok' : 'fail';
+  const icon = item.pending ? '⋯' : nothing ? '–' : item.ok ? '✓' : '✕';
   summary.appendChild(el('span', `chip-icon ${state}`, icon));
 
   const text = el('span', 'chip-text');
@@ -1930,6 +1933,7 @@ function toolChip(item) {
   else if (item.denied) summary.appendChild(el('span', 'chip-state bad', '已拒绝'));
   else if (item.needsApproval) summary.appendChild(el('span', 'chip-state warn', '等你确认'));
   else if (item.ok) summary.appendChild(el('span', 'chip-state', '完成'));
+  else if (nothing) summary.appendChild(el('span', 'chip-state', '没有要改的'));
   else summary.appendChild(el('span', 'chip-state bad', '没成功'));
 
   const args = safeArgs(item.args);

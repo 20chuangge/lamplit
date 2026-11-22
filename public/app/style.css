@@ -3848,3 +3848,84 @@ html.lamp-still .av[data-lamp]::before { animation: none; }
 @keyframes att-ring { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
 .att.failed i { background: var(--danger); }
 .bot-preview.st-failed { color: var(--danger-text); }
+
+/* --- redesign step 3 (1.5.58): cards you answer ---------------------------------------------
+   A plain headline, a risk tag (green / amber / red = the hub's low / medium / high), up to
+   three lines of what will happen, the main button + the common alternative + 不要 as text,
+   a one-line receipt once answered; next-step buttons under a reply; replies together. */
+.approval-side { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.approval-risk {
+  display: inline-flex; align-items: center; font-size: var(--t-xs); font-weight: 500; line-height: 18px;
+  padding: 1px 8px; border-radius: 8px; border: 1px solid; white-space: nowrap;
+}
+.approval-risk.ok { color: var(--ok-text); background: var(--ok-soft); border-color: var(--ok-line); }
+.approval-risk.warn { color: var(--warn-text); background: var(--warn-soft); border-color: var(--warn-line); }
+.approval-risk.danger { color: var(--danger-text); background: var(--danger-soft); border-color: var(--danger-line); }
+.approval .approval-title { font-size: var(--t-lg); font-weight: 600; line-height: var(--lh-snug); margin: 2px 0 4px; overflow-wrap: anywhere; }
+.approval-lines { margin: 10px 0 0; }
+.approval-lines-k { font-size: var(--t-xs); color: var(--dim); margin-bottom: 4px; }
+.approval-lines-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.approval-lines-list li { position: relative; padding-left: 14px; font-size: var(--t-sm); line-height: var(--lh-ui); color: var(--text); overflow-wrap: anywhere; }
+.approval-lines-list li::before { content: ''; position: absolute; left: 2px; top: 0.62em; width: 5px; height: 5px; border-radius: 50%; background: var(--dim); }
+/* 不要: plain text, not a third button */
+.approval-buttons .btn.approval-reject, .approval-buttons .btn.approval-reject:not(.primary) {
+  border-color: transparent; background: transparent; color: var(--muted); font-weight: 500; padding: 0 10px;
+}
+.approval-buttons .btn.approval-reject:hover { color: var(--text); background: var(--panel-2); }
+.approval-tech-k { font-size: var(--t-xs); color: var(--dim); margin: 8px 0 2px; }
+.approval-tech .approval-batch { margin: 0 0 8px; }
+.approval.pending > .approval-tech > summary { display: list-item; }
+.approval:focus { outline: none; }
+.approval.pending:focus-visible { box-shadow: 0 0 0 2px var(--accent-line); }
+.approval-keys { display: none; font-size: var(--t-xs); color: var(--dim); }
+@media (hover: hover) and (pointer: fine) {
+  .approval.pending:focus .approval-keys, .approval.pending:focus-within .approval-keys { display: block; }
+}
+/* the receipt: ✓ + what happened (+ 撤销) */
+.approval-receipts { display: grid; gap: 4px; }
+.approval-receipt { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 8px; font-size: var(--t-sm); line-height: var(--lh-ui); color: var(--text); }
+.approval-receipt-icon { flex: none; width: 16px; text-align: center; font-weight: 600; }
+.approval-receipt.ok .approval-receipt-icon { color: var(--ok-text); }
+.approval-receipt.no .approval-receipt-icon { color: var(--danger-text); }
+.approval-receipt.wait .approval-receipt-icon { color: var(--dim); }
+.approval-receipt.undone .approval-receipt-icon { color: var(--dim); }
+.approval-receipt.undone .approval-receipt-text { color: var(--muted); }
+.approval-receipt.no .approval-receipt-text { color: var(--muted); }
+.approval-receipt-text { min-width: 0; flex: 1 1 0; overflow-wrap: anywhere; }
+.approval-receipt .approval-undo { flex: none; width: auto; min-height: 28px; padding: 0 10px; font-size: var(--t-xs); }
+.approval.resolved .approval-title { font-size: var(--t-md); margin-bottom: 2px; }
+.approval.resolved .approval-actions { margin-top: 8px; }
+/* next steps after a reply: at most 4, the first one suggested */
+.next-steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 10px 46px; }
+.next-step {
+  border: 1px solid var(--border-strong); border-radius: 999px; background: transparent; color: var(--text);
+  font: inherit; font-size: var(--t-sm); line-height: 20px; padding: 5px 14px; cursor: pointer;
+}
+.next-step:hover { background: var(--panel-2); }
+.next-step.first { border-color: var(--accent); color: var(--text); }
+@media (max-width: 860px) { .next-steps { margin-left: 0; } .next-step { padding: 7px 16px; } }
+/* replies together, in 「等你确认」 */
+.reply-group { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--accent-line); border-radius: 14px; background: var(--panel); margin-bottom: 12px; }
+.reply-group-title { font-size: var(--t-md); font-weight: 600; }
+.reply-row { display: grid; gap: 6px; padding: 10px 0 0; border-top: 1px solid var(--border-soft); }
+.reply-row-to { font-size: var(--t-xs); color: var(--dim); }
+.reply-row-ctx { font-size: var(--t-sm); color: var(--muted); line-height: var(--lh-ui); overflow-wrap: anywhere; }
+.reply-row-actions .reply-row-skip { border-color: transparent; background: transparent; color: var(--muted); }
+.reply-row-text { width: 100%; box-sizing: border-box; font: inherit; font-size: var(--t-sm); line-height: var(--lh-ui); resize: vertical; }
+.reply-row-text[readonly] { opacity: 0.85; background: var(--bg); }
+.reply-row-actions { flex-direction: row !important; align-items: center !important; margin-top: 0 !important; justify-content: flex-end; }
+.reply-row.resolved .reply-row-actions { justify-content: flex-start; }
+.reply-group-all { justify-self: start; min-height: 36px; padding: 0 16px; border-radius: 10px; font-weight: 600; }
+.reply-group-link { align-self: flex-start; }
+
+/* 1.5.58: attachment cards fit inside the reply bubble. A video was as wide as the window allowed
+   (min(520px, 100vw - 64px)), not the bubble: with the side panel open or on a phone it and its
+   下载 / 打开位置 row ran past the bubble's edge. Now the bubble is the limit; the name gets the ellipsis. */
+.bubble .att-list { min-width: 0; max-width: 100%; }
+.bubble .att-list > * { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.bubble .att-video { width: min(520px, calc(100vw - 64px)); max-width: 100%; box-sizing: border-box; }
+.bubble .att-video-stage, .bubble .att-video video { max-width: 100%; }
+.bubble .att-video-bar { min-width: 0; max-width: 100%; }
+.bubble .att-video-bar .att-act { flex: none; }
+.bubble .att-file .att-meta, .bubble .att-doc .att-meta { min-width: 0; }
+.bubble .att-file .att-name { max-width: 100%; }

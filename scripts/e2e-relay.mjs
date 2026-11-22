@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import { relayFetch } from '../src/relaylink.mjs';
 import { createPeers } from '../src/peers.mjs';
+import { mockVnc, pageSession, wsClient } from './smoke-vnc1553.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lamplit-e2e-relay-'));
@@ -62,7 +63,7 @@ function startProcess(args, env = {}) {
   });
 }
 
-async function startHub(name) {
+async function startHub(name, env = {}) {
   const home = path.join(tmp, name);
   for (const dir of ['config', 'skills', 'public', 'workspace']) fs.cpSync(path.join(REPO, dir), path.join(home, dir), { recursive: true });
   fs.cpSync(path.join(REPO, 'scripts', 'fixtures', 'bots'), path.join(home, 'config', 'bots'), { recursive: true });
@@ -70,13 +71,14 @@ async function startHub(name) {
     ASSIST_HOME: home, ASSIST_DATA_DIR: path.join(home, 'data'), ASSIST_WORKSPACE_DIR: path.join(home, 'workspace'),
     ASSIST_MODEL_PROVIDER: 'mock', PORT: '0', HOST: '127.0.0.1', DESK_VNC_PORT: '1', ASSIST_PUBLIC_PORT: '24391',
     CHROME_PATH: path.join(home, 'no-browser.exe'),
+    ...env,
   });
   const key = fs.readFileSync(path.join(home, 'data', 'local-key'), 'utf8').trim();
   const api = async (p, { method = 'GET', body } = {}) => {
     const res = await fetch(`${ready.url}${p}`, { method, headers: { 'x-lamplit-local': key, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) }, body: body !== undefined ? JSON.stringify(body) : undefined });
     return { status: res.status, body: await res.json().catch(() => null) };
   };
-  return { name, home, url: ready.url, api, proc };
+  return { name, home, url: ready.url, key, api, proc };
 }
 
 /** An SSE reader over a relay Response. */
@@ -115,6 +117,7 @@ function events(res) {
   };
 }
 
+let vncDone = null;
 async function main() {
   // --- the relay ---------------------------------------------------------------
   const relayData = path.join(tmp, 'relay');
@@ -125,7 +128,11 @@ async function main() {
   check('relay process starts and prints its certificate fingerprint', relayPort > 0 && /^[0-9a-f]{64}$/.test(relayFp));
 
   const A = await startHub('A');
-  const B = await startHub('B');
+  // B's screen (1.5.58): on Windows a mock VNC server stands in for TightVNC (no password set up, the
+  // real one never touched); elsewhere B has no screen and its own "no screen" answer is what comes back.
+  const vnc = process.platform === 'win32' ? await mockVnc() : null;
+  vncDone = vnc ? () => vnc.close() : null;
+  const B = await startHub('B', vnc ? { DESK_VNC_PORT: String(vnc.port), DESK_VNC_SECURE: '0', DESK_SCREEN_WATCH: '0' } : {});
   check('two Lamplit hubs started (loopback only, no LAN, no Tailscale)', Boolean(A.url && B.url));
 
   // --- computer A on the relay -------------------------------------------------
@@ -208,6 +215,17 @@ async function main() {
   check('B: its own id and certificate, not A\'s', descB && descB.id !== descA.id && descB.fp !== descA.fp);
   // A learns B's relay address, then B's direct address goes dead.
   check('A: learned B\'s relay address', await until(async () => (await A.api('/api/peers')).body.peers?.[0]?.relay?.id === descB.id, 10000));
+  // The same screen while B's own address works (a peer on the LAN / Tailscale): straight there, as before.
+  {
+    const wsUrl = `${A.url.replace(/^http/, 'ws')}/api/peers/B/bots/chief/desktop/ws`;
+    if (vnc) {
+      const page = await until(() => wsClient(wsUrl, { origin: A.url, 'x-lamplit-local': A.key }).then(pageSession).catch(() => null), 10000);
+      check('A → B: over B\'s own address the screen of a bot on B opens in A\'s window too', page?.name === 'mock-console', JSON.stringify(page));
+    } else {
+      const status = await wsClient(wsUrl, { origin: A.url, 'x-lamplit-local': A.key }).then(() => 'opened', (e) => e.status);
+      check('A → B: over B\'s own address the screen socket reaches B (its own 404 without a screen)', status === 404, String(status));
+    }
+  }
   await A.api('/api/peers', { method: 'PUT', body: { peers: [{ name: 'B', url: 'http://127.0.0.1:9', token: bPair.token }] } });
   const peers = (await A.api('/api/peers')).body.peers;
   check('A: B\'s relay address survives a new machine list without it', peers?.[0]?.relay?.id === descB.id);
@@ -250,6 +268,22 @@ async function main() {
   const latency = await A.api('/api/peers/latency');
   check('A → B: the network check says B is reached through the relay', latency.body?.machines?.[0]?.via === 'relay', JSON.stringify(latency.body));
 
+  // A bot's screen on B, watched in A's 全部机器 view (1.5.58): the page asks A, A asks B through the
+  // relay, and the viewer's socket goes the same way (11-22: 「无法连接到服务器」 for the cloud machine).
+  const shown = await A.api('/api/peers/B/bots/chief/desktop');
+  const viewer = shown.body?.desktop?.url || '';
+  check('A → B: B\'s screen address comes back through the relay, its socket pointed at A', shown.status === 200 && (!vnc || viewer.includes(`path=${encodeURIComponent('/api/peers/B/bots/chief/desktop/ws')}`)), JSON.stringify(shown.body).slice(0, 300));
+  const wsUrl = `${A.url.replace(/^http/, 'ws')}/api/peers/B/bots/chief/desktop/ws`;
+  if (vnc) {
+    const page = await until(() => wsClient(wsUrl, { origin: A.url, 'x-lamplit-local': A.key }).then(pageSession).catch(() => null), 10000);
+    check('A → B: the screen of a bot on B opens in A\'s window through the relay (the VNC greeting and the desktop arrive)', page?.name === 'mock-console' && /^RFB 003\.008/.test(page.version), JSON.stringify(page));
+  } else {
+    const status = await wsClient(wsUrl, { origin: A.url, 'x-lamplit-local': A.key }).then(() => 'opened', (e) => e.status);
+    check('A → B: the screen socket for a bot on B reaches B through the relay (B\'s own "no screen" 404, not A\'s 502)', status === 404, String(status));
+  }
+  const program = await wsClient(wsUrl, { origin: A.url }).then(() => 'opened', (e) => e.status);
+  check('A → B: without this computer\'s key (a program here) the screen socket is refused, as before', program === 403, String(program));
+
   // Group work across machines (crossmachine.mjs) is peers.json/call: the same
   // calls, made here with a peer list whose only working address is the relay.
   const peersFile = path.join(tmp, 'peers-test.json');
@@ -282,6 +316,7 @@ main()
   .catch((err) => check('e2e ran without throwing', false, err.stack))
   .finally(async () => {
     for (const p of procs) { try { p.kill(); } catch { /* gone */ } }
+    await vncDone?.();
     await sleep(800);
     fs.rmSync(tmp, { recursive: true, force: true });
     const failed = results.filter((r) => !r).length;

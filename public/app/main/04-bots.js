@@ -1023,6 +1023,8 @@ function appendStarters(visible) {
   if (isGroupMode() || !bot?.primary || state.showProcess) return;
   const said = visible.filter((m) => m.role === 'user').length;
   if (said > 1 || !visible.some((m) => m.role === 'assistant')) return;
+  // Still at work on the first thing (a reload while it waits on a card): not now, or they land mid-chat (1.5.58).
+  if (state.attention?.items?.[currentChatKey()]?.working) return;
   const row = el('div', 'starter-row');
   row.appendChild(el('span', 'starter-label', '试试这些：'));
   for (const [, title, , prompt] of STARTER_EXAMPLES) {

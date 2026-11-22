@@ -244,10 +244,12 @@ async function main() {
     await stage('1.5.55: the page always gets new scripts after an update; statuses in words', async () => (await import('./smoke-sw1555.mjs')).swChecks({ check, readText, rawFetch, base }));
     await stage('1.5.56: the living avatar - a face per state, still when asked', async () => (await import('./smoke-lamp1556.mjs')).lampChecks({ check, readText }));
     await stage('1.5.57: the living avatar is seen to live - a 40 px header face, a sidebar that blinks', async () => (await import('./smoke-lamp1557.mjs')).lamp1557Checks({ check, readText }));
+    await stage('1.5.58: cards you answer - plain titles, risk tags, honest receipts, next steps; approval decisions unchanged', async () => (await import('./smoke-cards1558.mjs')).cards1558Checks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
     await stage('1.5.56: on a phone, closing settings goes back where it was opened from', async () => (await import('./smoke-nav1556.mjs')).navChecks({ check, readText }));
+    await stage('1.5.58: a bot\'s screen on another machine, in 全部机器 (through the relay too)', async () => (await import('./smoke-1558.mjs')).remoteScreenChecks({ check }));
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -4014,7 +4016,7 @@ async function scenarioMcp({ home, toolsMod }) {
     check('M26 slow links: with steps hidden the chat comes compact (the steps it does not show are left out, the two cards the human acts on stay; long tool output and arguments cut to a preview); showing steps loads it whole; a phone shows its home page at once and loads the chat behind it; settings, voices and groups load together',
       c.args.path === 'a.md' && /…（共 5000 字）$/.test(c.args.content) && c.output.cut === true && c.output.length > 9000 && c.output.preview.length === 1500
       && small.output.waiting === true && user.text.length === 5000 && full.status === 200 && compact.status === 200 && Array.isArray(compact.json)
-      && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name) && !m.output?.undo) && srcSrv.includes(".filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo")
+      && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name) && !m.output?.undo && !m.afterCard) /* 1.5.58: the step after an answered card stays, slim */ && srcSrv.includes(".filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo")
       && pg.includes("messages?limit=200${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
       && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);'));
   }
@@ -7367,12 +7369,13 @@ async function scenarioV163() {
   const sizes = PS.MAIN_PARTS.map((rel) => fsx.readFileSync(path.join(pub, rel), 'utf8').split('\n').length);
   // 1.5.54: a 13th part, 13-backup.js (设置 → 备份), after wiring.
   // 1.5.56: a 14th, 11b-lamp.js (the living avatar), before wiring, which draws the first faces.
-  check('ENG-04b split: the page script is 14 files by feature (core, avatars, groups, bots, chat, live, skills, settings, apps, computer, machines, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
-    PS.MAIN_PARTS.length === 14 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
+  // 1.5.58: a 15th, 07b-cards.js (the cards you answer: titles, risk tags, receipts, next steps), after skills.
+  check('ENG-04b split: the page script is 15 files by feature (core, avatars, groups, bots, chat, live, skills, cards, settings, apps, computer, machines, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
+    PS.MAIN_PARTS.length === 15 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
     && !fsx.existsSync(path.join(pub, 'app', 'main.js')) && !raw.includes('type="module"'), JSON.stringify(sizes));
   const order = (await import('./check-page-parts.mjs')).checkPageParts(pub);
   check('ENG-04b split: load-time code never needs a later part, no name is declared twice, nothing clashes with the browser (scripts/check-page-parts.mjs)',
-    !order.skipped && order.problems.length === 0 && order.parts === 14, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
+    !order.skipped && order.problems.length === 0 && order.parts === 15, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
   const auth = await import('../src/auth.mjs');
   const part = await fetch(`${base}/app/main/05-chat.js`);
   const body = await part.text();
@@ -7580,7 +7583,7 @@ async function scenarioV160() {
   const whole = PS.pageSource(path.join(REPO, 'public'));
   const i18n = await readText('../scripts/check-i18n.mjs');
   check('ENG-04 checks: the self-tests and the English check read the split page as one text (every part present, in page order)',
-    PS.PAGE_PARTS.length === 18 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
+    PS.PAGE_PARTS.length === 19 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js; 1.5.58: + 07b-cards.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
     && i18n.includes("import { pageSource } from './page-source.mjs';") && (await readText('../public/index.html')) === whole);
 
   const auth = await import('../src/auth.mjs');
@@ -7959,10 +7962,11 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       && pageA.includes("const AVATAR_DEFAULT = { shape: 'squircle', color: '#7c6cf0' };")
       && pageA.includes("const ink = isLightColor(bg) ? '#1c1a17' : '#fff';") && pageA.includes('function isLightColor(hex)'));
     // L4: the approval card in the design's shape - nothing lost (approve once, deny, a note, the raw details).
-    check('L4 approval card: one row 允许这一次 / (以后都允许) / 拒绝 / 看详情 plus the optional note; 看详情 opens the technical details; it still decides through the same call',
-      pageA.includes("const allow = el('button', 'btn primary approval-allow', words ? words.yes : many ? `允许这 ${many.length} 条` : '允许这一次');") && pageA.includes("const reject = el('button', 'btn approval-reject', words ? words.no : '拒绝');")
-      && pageA.includes("const more = el('button', 'btn approval-more', '看详情');") && pageA.includes("note.placeholder = '想补一句话？（可选）';")
-      && pageA.includes("tech.open = !tech.open;") && pageA.includes("allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject, null, data.draft ? draftEdits(card, data) : null));")
+    // 1.5.58 (redesign step 3): 拒绝 reads 不要 and is plain text; 看详情 is gone, 技术细节 opens itself.
+    check('L4 approval card: one row 允许这一次 / (以后都允许) / 不要 plus the optional note; 技术细节 holds the raw details; it still decides through the same call',
+      pageA.includes("const allow = el('button', 'btn primary approval-allow', words.yes);") && pageA.includes("const reject = el('button', 'btn approval-reject', words.no);")
+      && pageA.includes("return { yes: '允许这一次', yesTip: '只批准这一步，下次同样的操作还会问你', no: '不要'") && pageA.includes("note.placeholder = '想补一句话？（可选）';")
+      && pageA.includes("tech.appendChild(el('summary', null, '技术细节'));") && pageA.includes("decide(data.approvalId, 'approve', note.value, card, allow, reject, null, data.draft ? draftEdits(card, data) : null)")
       && pageA.includes("card.classList.remove('pending');"));
     check('L4 phone: a pending approval sits at the bottom of the chat (sticky); home is a list with the main assistant as a row; rows and the search bar stay inside the screen',
       pageA.includes('.messages .approval.pending {\n      position: sticky; bottom: 8px;') && pageA.includes('.sidebar.open .bot.is-primary { flex-direction: row;')
@@ -10223,7 +10227,7 @@ async function scenarioCalm1540() {
     const back = { ...q2.get('ap_x') };
     q2.settle('ap_x', 'denied', 'test over');
     check('C40-5 the card: every command in full, 允许这 N 条, and what allowing covers said before the click; Feishu lists every command too; a restored card is the card for its first command',
-      page.includes("for (const command of many) list.appendChild(el('code', null, String(command)));") && page.includes("many ? `允许这 ${many.length} 条` : '允许这一次'")
+      page.includes("for (const command of commands) list.appendChild(el('code', null, String(command)));") && page.includes("if (many) return { yes: `允许这 ${many.length} 条`")
       && page.includes('这一轮后面只是查看的命令不再问你；会改动东西的照样先问。') && page.includes('...(approval.batch ? { batch: approval.batch } : {}),')
       && fs40.includes('想运行 ${many.length} 条查看类命令：') && !back.batch && !back.lookTurn && !JSON.parse(back.args).commands, JSON.stringify(back));
   }
@@ -11917,8 +11921,9 @@ async function scenarioThink1545() {
   {
     const page = await readText('../public/index.html');
     const en = await readText('../public/i18n-en.js');
-    check('T45-23 the draft card: the text in boxes that can be edited, 「发送」 and 「不发了」, the edits sent with the answer; after it, 「已定稿（你改过）」 (1.5.54: it is posted after that)',
-      page.includes("'approval-draft'") && page.includes("'发送'") && page.includes("'不发了'") && page.includes('edits') && page.includes('已定稿（你改过）') && en.includes('"不发了"'));
+    // 1.5.58: the main button says where it goes (「发到小红书」), not 「发送」.
+    check('T45-23 the draft card: the text in boxes that can be edited, 「发到…」 and 「不发了」, the edits sent with the answer; after it, 「已定稿（你改过）」 (1.5.54: it is posted after that)',
+      page.includes("'approval-draft'") && page.includes("if (data.draft) return { yes: draftYes(data.draft)") && page.includes("'不发了'") && page.includes('edits') && page.includes('已定稿（你改过）') && en.includes('"不发了"'));
     check('T45-24 a change to a bot is shown before and after, line by line; 「撤销」 under it; X in 连接应用 with the callback to paste and 「去 X 登录授权」; 「适合」 on each machine; the daily note\'s switch and time',
       page.includes("'adjust-diff'") && page.includes('/api/adjustments/') && page.includes('去 X 登录授权') && page.includes('/api/x/login') && page.includes('适合：')
       && page.includes('id="nudge-on"') && page.includes('每天告诉我有什么在等你'));
@@ -12157,7 +12162,7 @@ async function scenarioBlocks1545() {
     const page = await readText('../public/index.html');
     const toolsSrc = await readText('../src/tools.mjs');
     check('BT45-2 the first hand-off card names the machine (「以后交给「腾讯云」不再问你」), the reason has one colon at most; a draft answered drops 「下面是草稿…」 and a draft not sent says 「没有发出去」',
-      page.includes('以后交给「${h.machine}」不再问你') && toolsSrc.includes("${reason ? `（${reason}）` : ''}") && page.includes("impact: data.decision ? '' :") && page.includes("if (draft) card.querySelector('.approval-impact')?.remove();") && page.includes('没有发出去，已经告诉它了。'));
+      page.includes('以后交给「${h.machine}」不再问你') && toolsSrc.includes("${reason ? `（${reason}）` : ''}") && page.includes("impact: data.decision ? '' :") && page.includes("card.querySelectorAll('.approval-why, .approval-lines, .adjust-diff').forEach((n) => n.remove());") && page.includes('不发了：没有发出去，已经告诉它了'));
     check('BT45-3 undone changes are struck through; the rules as they are now are on the card; the X portal is a link with what to do without an app; 改 under a machine has 取消; names, not ids, in 最近动态; another machine\'s line follows at once after its card is answered',
       page.includes("wrap.classList.add('undone')") && page.includes('现在的规则（') && toolsSrc.includes('rulesNow:') && page.includes('还没有开发者应用') && page.includes("no.addEventListener('click', show);")
       && page.includes("${ev.botName || botById(ev.botId)?.name || ev.botId} 结束") && page.includes('setTimeout(() => loadRoster({ fresh: true }), 600);'));

@@ -1706,9 +1706,13 @@ export class AgentRuntime {
           trail.push(outcome?.ok === false ? `${call.name}✗` : call.name);
           receipts.push({ name: call.name, args: call.arguments || call.args || {}, ok: outcome?.ok !== false && !outcome?.error });
           if (trail.length > 12) trail.shift();
-          recentCalls.push(`${call.name} ${JSON.stringify(call.args ?? call.arguments ?? '')}`);
-          if (recentCalls.length > 3) recentCalls.shift();
-          if (!stuck && recentCalls.length === 3 && recentCalls.every((c) => c === recentCalls[0])) stuck = call.name;
+          // Only steps that ran count as repeats (1.5.58): a card the human refused, wrote past or let
+          // expire did not run, and a person stands between it and the next try - it is not a loop.
+          if (!outcome?.notRun) {
+            recentCalls.push(`${call.name} ${JSON.stringify(call.args ?? call.arguments ?? '')}`);
+            if (recentCalls.length > 3) recentCalls.shift();
+            if (!stuck && recentCalls.length === 3 && recentCalls.every((c) => c === recentCalls[0])) stuck = call.name;
+          }
           // Roster edits made by a tool are invisible to every other window
           // (and to the sidebar of the very window that ran it), so announce
           // them. The UI re-reads /api/bots instead of guessing the diff.
@@ -3011,7 +3015,7 @@ export class AgentRuntime {
           turnId,
         });
         await audit({ kind: 'tool.approval_denied', botId: bot.id, turnId, tool: name, risk: verdict.risk, decision: resolution.decision });
-        return {};
+        return { notRun: true }; // not a repeat of anything (1.5.58): the loop's stuck check skips it
       }
     }
 

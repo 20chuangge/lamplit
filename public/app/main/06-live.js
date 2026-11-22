@@ -25,6 +25,7 @@ async function send() {
   input.value = '';
   autoGrow(input);
   closeSidebar();
+  dropNextSteps();
 
   // Optimistic user bubble; the authoritative reload happens on turn.end.
   if (messagesEl.querySelector('.empty')) messagesEl.innerHTML = '';
@@ -409,6 +410,7 @@ function handleEvent(ev) {
       break;
 
     case 'tool.result': {
+      settleFromResult(ev); // an answered card says what the step did (1.5.58)
       const chip = messagesEl.querySelector(`[data-call="${cssEscape(ev.callId || '')}"]`);
       if (chip) {
         chip.replaceWith(toolChip({
@@ -498,6 +500,8 @@ function showTyping(botId, label = '正在处理…') {
   }
   // Always under the newest message (a message sent meanwhile goes above it).
   if (messagesEl.lastElementChild !== row) messagesEl.appendChild(row);
+  // At work again: the first things to try and the next-step buttons are not for now (1.5.58).
+  messagesEl.querySelectorAll('.starter-row, .starter-tip, .next-steps').forEach((n) => n.remove());
   row.querySelector('.typing-label').textContent = label;
   // In a group: the face of the bot at work, so the human sees who is busy.
   const who = row.querySelector('.typing-who');
@@ -675,6 +679,9 @@ function appendApprovalCard(ev, sender) {
   } else {
     messagesEl.appendChild(card);
   }
+  // 「等你点头…」 goes under the card it is about, not above it (it was drawn first after a reload).
+  keepTypingLast();
+  focusNewCard(card);
   scrollToBottom(true);
 }
 
@@ -689,6 +696,9 @@ function buildApprovalCard(data) {
   if (!data.from && remoteChatMachine()) data = { ...data, from: { machine: remoteChatMachine(), botName: botById(state.botId)?.name || '' } };
   const card = el('div', 'approval');
   card.dataset.approval = data.approvalId || '';
+  // The step's result finds its card by the call (1.5.58: the receipt says what it did).
+  if (data.callId) card.dataset.callId = data.callId;
+  card.cardData = data;
   // A scheduled run that stopped at this step (1.3.2): not an answered card,
   // and not one anything waits on. While it is still open it offers
   // 现在跑一次（我看着） and 不用了; it was drawn as 已处理 with no buttons.
@@ -698,31 +708,25 @@ function buildApprovalCard(data) {
   // A draft, a change to a bot, the first hand-off to a machine (1.5.45): their own headline.
   const think = thinkCardInfo(data);
   const info = think || describeTool(data.tool, data.args);
-  // Several commands that only look, asked about once (1.5.40): each one shown in full.
+  // Several commands that only look, asked about once (1.5.40): each one shown in full under 技术细节.
   const many = Array.isArray(data.batch?.commands) && data.batch.commands.length > 1 ? data.batch.commands : null;
-  if (many) {
-    info.title = `想运行 ${many.length} 条查看类命令`;
-    info.detail = '';
-    info.facts = [];
-    info.impact = '这些命令只是查看，不会改动任何东西。';
-  }
-  // Look-only commands: said so, and why it asks anyway - not "medium risk" under "changes nothing" (1.5.40 test).
+  // Look-only commands: said so, and why it asks anyway (1.5.40 test).
   const looking = Boolean(many || data.look || data.lookTurn);
-  if (looking && !many) info.impact = '这条命令只是查看，不会改动任何东西。';
-  // Another machine's card says which computer it runs on, not 「这台电脑」 (1.5.41).
-  if (data.from?.machine) {
-    if (info.title === '想在这台电脑上运行一条命令') info.title = `想在「${data.from.machine}」上运行一条命令`;
-    if (info.impact === '文件会保存到这台电脑上。') info.impact = `文件会保存到「${data.from.machine}」上。`;
-  }
+  const words = cardWords(data, many);
 
+  // Top: what kind of card, and on the right 「在等你」 and the risk (green / amber / red, 1.5.58).
   const top = el('div', 'approval-top');
   top.appendChild(el('span', 'approval-kicker', parked ? '定时任务停在了这一步' : resolved ? '已处理' : '需要你确认'));
+  const side = el('span', 'approval-side');
   if (!resolved && !parked) {
     const wait = el('span', 'approval-wait');
     wait.appendChild(el('span', 'dot'));
     wait.appendChild(el('span', null, '在等你'));
-    top.appendChild(wait);
+    side.appendChild(wait);
   }
+  const tag = riskTag(data, looking);
+  if (tag) side.appendChild(tag);
+  top.appendChild(side);
   card.appendChild(top);
 
   // A card from another of your machines (1.5.41 一个待办箱): the same card, one
@@ -733,48 +737,21 @@ function buildApprovalCard(data) {
     card.appendChild(el('div', 'approval-from', `来自：${data.from.machine} · ${data.from.botName || '助手'}`));
   }
 
-  const title = el('div', 'approval-title', info.title);
-  card.appendChild(title);
+  // The headline in plain words (a fixed template per tool and its arguments).
+  card.appendChild(el('div', 'approval-title', cardTitle(data, info, many)));
 
-  // If a fact is just the same value as the headline detail, show that fact's
-  // label as a caption instead of printing the value twice.
-  const detailLabel = info.detail
-    ? (info.facts.find(([, value]) => value === info.detail) || [])[0] || ''
-    : '';
-
-  if (info.detail) {
-    const detail = el('div', 'approval-detail');
-    if (detailLabel) detail.appendChild(el('div', 'approval-detail-k', detailLabel));
-    detail.appendChild(el('code', null, truncate(info.detail, 220)));
-    card.appendChild(detail);
+  if (!resolved) {
+    const why = looking ? (data.from?.machine ? `在「${data.from.machine}」上运行命令前，都先问你一次` : '在这台电脑上运行命令前，都先问你一次') : reasonLabel(data.reason);
+    card.appendChild(el('div', 'approval-why', why ? `为什么停下来问你：${why}` : '这个操作会改动文件或对外发东西，所以先停下来问你。'));
   }
-  if (many) {
-    const list = el('div', 'approval-batch');
-    for (const command of many) list.appendChild(el('code', null, String(command)));
-    card.appendChild(list);
-  }
-  // A command with its purpose said (1.5.54): the code folded under the headline, one click away.
-  if (info.command) {
-    const cmd = el('details', 'approval-command');
-    cmd.appendChild(el('summary', null, '看要运行的命令'));
-    cmd.appendChild(el('code', null, info.command));
-    card.appendChild(cmd);
-  }
+  // A draft's text in boxes you can change right here; a change to a bot, line by line.
   if (data.draft) { card.dataset.draft = '1'; card.appendChild(draftBox(data, { resolved: resolved || parked })); }
-  if (data.adjust) card.appendChild(adjustDiff(data.adjust));
-
-  for (const [label, value] of info.facts) {
-    if (info.detail && value === info.detail) continue;
-    const line = el('div', 'approval-fact');
-    line.appendChild(el('span', 'approval-fact-k', label));
-    line.appendChild(el('span', 'approval-fact-v', value));
-    card.appendChild(line);
+  if (data.adjust && !resolved) card.appendChild(adjustDiff(data.adjust));
+  // 它会做什么: up to three lines; the command and the raw arguments stay under 技术细节.
+  if (!resolved) {
+    const lines = cardLines(data, info, { many, looking, words });
+    if (lines.length) card.appendChild(linesNode(lines));
   }
-
-  if (info.impact) card.appendChild(el('div', 'approval-impact', info.impact));
-
-  const why = looking ? (data.from?.machine ? `在「${data.from.machine}」上运行命令前，都先问你一次` : '在这台电脑上运行命令前，都先问你一次') : reasonLabel(data.reason);
-  card.appendChild(el('div', 'approval-why', why ? `为什么停下来问你：${why}` : '这个操作会改动文件或对外发东西，所以先停下来问你。'));
 
   if (parked) {
     card.classList.add(parkedOpen ? 'parked-open' : 'resolved');
@@ -795,65 +772,62 @@ function buildApprovalCard(data) {
       actions.appendChild(el('div', 'muted tiny', '已收起。'));
     }
     card.appendChild(actions);
-    appendTechnicalDetails(card, data);
+    appendTechnicalDetails(card, data, info, many);
     return card;
   }
 
+  // Answered (the history, a reload): one line saying what actually happened.
   if (resolved) {
     card.classList.add('resolved');
     const actions = el('div', 'approval-actions');
-    const good = data.decision === 'approved' || data.decision === 'approve';
-    const cancelled = !good && /^已取消/.test(String(data.note || ''));
-    const done = el('div', 'approval-done');
-    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : (think && thinkDoneLabel(data, good)) || decisionLabel(data.decision)));
-    done.appendChild(el('span', 'muted tiny', good ? '这一轮已经继续跑了。' : cancelled ? String(data.note).replace(/^已取消[：:]\s*/, '') + '。' : data.decision === 'timeout' ? '等太久没人点，这一步没做。' : data.draft ? '没有发出去，已经告诉它了。' : '它已经收到「不要做」。'));
-    actions.appendChild(done);
-    if (data.note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${reasonLabel(data.note)}`));
+    actions.appendChild(historyReceipt(data));
+    const cancelled = !(data.decision === 'approved' || data.decision === 'approve') && /^已取消/.test(String(data.note || ''));
+    if (data.note && !cancelled && data.decision !== 'timeout') actions.appendChild(el('div', 'muted tiny', `备注：${reasonLabel(data.note)}`));
     card.appendChild(actions);
-    appendTechnicalDetails(card, data);
+    appendTechnicalDetails(card, data, info, many);
     return card;
   }
 
-  // One row of buttons (允许这一次 / 以后都允许 / 拒绝 / 看详情), the optional note under it.
+  // The buttons (1.5.58): the main one says where things go (允许这一次 / 发到小红书 / 交过去),
+  // then the common alternative (以后都允许), then 不要 as plain text; the optional note under them.
   // 允许这一次 approves this one step; 以后都允许 also lets the same kind of
   // step run unasked for this bot (the danger list etc. offer only the first);
-  // 拒绝 tells the bot no, and the next such step asks again.
+  // 不要 tells the bot no, and the next such step asks again.
   card.classList.add('pending');
   const actions = el('div', 'approval-actions');
   const choose = el('div', 'approval-buttons');
 
-  const words = thinkButtons(data);
-  const allow = el('button', 'btn primary approval-allow', words ? words.yes : many ? `允许这 ${many.length} 条` : '允许这一次');
+  const allow = el('button', 'btn primary approval-allow', words.yes);
   allow.type = 'button';
-  allow.title = words ? words.yesTip : many ? '这几条都会运行，不再一条条问' : '只批准这一步，下次同样的操作还会问你';
-  const always = data.remember?.key && !words ? el('button', 'btn approval-always', '以后都允许') : null;
+  allow.title = words.yesTip;
+  const always = data.remember?.key && !thinkButtons(data) ? el('button', 'btn approval-always', '以后都允许') : null;
   if (always) {
     always.type = 'button';
-    always.title = `以后「${data.remember.label}」不再问你（机器人设置里可以撤销）`;
+    always.title = `以后${rememberWords(data.remember)}不再问你（机器人设置里可以撤销）`;
   }
   // What 「以后都允许」 covers, said before the click (1.5.33: it read as "allow everything").
   const still = String(data.remember?.key || '').startsWith('shell:') ? '（危险操作和工作区外的改动照样会问）' : '';
   // The isolation warning is asked about when 「以后都允许」 is clicked, not printed on every card (1.5.54).
-  const scope = data.remember?.key ? el('div', 'approval-scope muted tiny', `「以后都允许」：以后${data.remember.label}都不再问${still}。`) : null;
+  // In words (1.5.58 beginner test): 「以后在工作区里删文件都不再问」, not the folder's whole path.
+  const scope = data.remember?.key ? el('div', 'approval-scope muted tiny', `「以后都允许」：以后${rememberWords(data.remember)}都不再问${still}。`) : null;
   // Allowing a look-only command covers the turn's later ones: said before the click (1.5.40).
   const lookNote = data.lookTurn
     ? el('div', 'approval-scope muted tiny', many ? '允许后这几条都会运行；这一轮后面只是查看的命令也不再问你，会改动东西的照样先问。' : '允许后，这一轮后面只是查看的命令不再问你；会改动东西的照样先问。')
     : many ? el('div', 'approval-scope muted tiny', '允许后这几条都会运行，不再一条条问。') : null;
-  const reject = el('button', 'btn approval-reject', words ? words.no : '拒绝');
+  const reject = el('button', 'btn approval-reject', words.no);
   reject.type = 'button';
-  reject.title = words ? words.noTip : many ? '都不执行，把「不行」告诉它' : '不执行，把「不行」告诉它';
-  const more = el('button', 'btn approval-more', '看详情');
-  more.type = 'button';
+  reject.title = words.noTip;
 
   const note = el('input', 'field approval-note');
   note.placeholder = '想补一句话？（可选）';
   note.setAttribute('aria-label', '审批备注');
 
   // A draft goes with what the human left in its boxes (1.5.45).
-  allow.addEventListener('click', () => decide(data.approvalId, 'approve', note.value, card, allow, reject, null, data.draft ? draftEdits(card, data) : null));
+  allow.addEventListener('click', () => { delete card.dataset.always; decide(data.approvalId, 'approve', note.value, card, allow, reject, null, data.draft ? draftEdits(card, data) : null); });
   if (always) {
     always.addEventListener('click', async () => {
       if (data.remember.warn && !(await askConfirm({ title: '以后都允许？', text: data.remember.warn, confirmLabel: '以后都允许' }))) return;
+      card.dataset.always = '1';
       decide(data.approvalId, 'approve', note.value, card, allow, reject, data.remember);
     });
   }
@@ -862,58 +836,58 @@ function buildApprovalCard(data) {
   choose.appendChild(allow);
   if (always) choose.appendChild(always);
   choose.appendChild(reject);
-  choose.appendChild(more);
   actions.appendChild(choose);
   if (lookNote) actions.appendChild(lookNote);
   if (scope) actions.appendChild(scope);
   actions.appendChild(note);
+  actions.appendChild(armCardKeys(card, allow, reject));
+  const together = replyGroupHint(data);
+  if (together) actions.appendChild(together);
   card.appendChild(actions);
-  appendTechnicalDetails(card, data);
-  const tech = card.querySelector('.approval-tech');
-  more.addEventListener('click', () => {
-    tech.open = !tech.open;
-    more.textContent = tech.open ? '收起详情' : '看详情';
-    if (tech.open) tech.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  });
+  appendTechnicalDetails(card, data, info, many);
   return card;
 }
 
-/** Raw tool + arguments, folded away. Shared by live and resolved cards. */
-function appendTechnicalDetails(card, data) {
+/** The command (or commands) and the raw tool + arguments, folded away. Shared by live and answered cards. */
+function appendTechnicalDetails(card, data, info = null, many = null) {
   const args = safeArgs(data.args);
   const raw = { 工具: data.tool || '', 参数: args };
   if (data.risk) raw['风险'] = String(data.risk);
   const tech = el('details', 'tech approval-tech');
   tech.appendChild(el('summary', null, '技术细节'));
+  const commands = many || (data.tool === 'shell' && args.command ? [String(args.command)] : []);
+  if (commands.length) {
+    tech.appendChild(el('div', 'approval-tech-k', commands.length > 1 ? `要运行的 ${commands.length} 条命令` : '要运行的命令'));
+    const list = el('div', 'approval-batch');
+    for (const command of commands) list.appendChild(el('code', null, String(command)));
+    tech.appendChild(list);
+  }
   tech.appendChild(el('pre', 'tech-pre', JSON.stringify(raw, null, 2)));
   card.appendChild(tech);
 }
 
-/** Turn the card into its settled state without rebuilding the transcript. */
+/** Turn the card into its settled state without rebuilding the transcript: one receipt line. */
 function settleApprovalCard(card, decision, note) {
   if (!card) return;
   hideToast(); // "waiting for you" is no longer true the moment you answer
   card.classList.add('resolved');
   card.classList.remove('pending');
+  card.removeAttribute('tabindex');
+  card.dataset.decision = decision === 'approved' || decision === 'approve' ? 'approve' : 'deny';
   const top = card.querySelector('.approval-top');
   if (top && top.firstChild) top.firstChild.textContent = '已处理';
   const wait = card.querySelector('.approval-wait');
   if (wait) wait.remove();
+  // A draft keeps its boxes, read-only: what it was agreed on (1.5.54: 「已定稿」, it is not posted by this click).
+  card.querySelectorAll('.draft-field').forEach((f) => { f.readOnly = true; });
+  card.querySelectorAll('.approval-why, .approval-lines, .adjust-diff').forEach((n) => n.remove());
   const actions = card.querySelector('.approval-actions');
   if (actions) {
     actions.innerHTML = '';
-    const good = decision === 'approved' || decision === 'approve';
     // Closed by Lamplit (stopped, the bot deleted), not refused by you (1.5.33).
-    const cancelled = !good && /^已取消/.test(String(note || ''));
-    const done = el('div', 'approval-done');
-    // A draft says 已定稿 / 已定稿（你改过） / 不发了 (1.5.54: 「已发送」 read as posted, it is only agreed); its boxes stay, read-only.
-    const draft = card.dataset.draft === '1';
-    card.querySelectorAll('.draft-field').forEach((f) => { f.readOnly = true; });
-    done.appendChild(el('span', `approval-pill ${good ? 'ok' : 'no'}`, cancelled ? '已取消' : draft ? (good ? (card.dataset.edited === '1' ? '已定稿（你改过）' : '已定稿') : '不发了') : decisionLabel(decision)));
-    if (draft) card.querySelector('.approval-impact')?.remove();
-    done.appendChild(el('span', 'muted tiny', good ? '这一轮会继续跑。' : cancelled ? String(note).replace(/^已取消[：:]\s*/, '') + '。' : draft ? '没有发出去，已经告诉它了。' : '已经告诉它不要做。'));
-    actions.appendChild(done);
-    if (note && !cancelled) actions.appendChild(el('div', 'muted tiny', `备注：${reasonLabel(note)}`));
+    const cancelled = !(decision === 'approved' || decision === 'approve') && /^已取消/.test(String(note || ''));
+    actions.appendChild(cardReceipt(card, decision, note));
+    if (note && !cancelled && decision !== 'timeout') actions.appendChild(el('div', 'muted tiny', `备注：${reasonLabel(note)}`));
   }
 }
 
@@ -1050,7 +1024,8 @@ function updateApprovalsPill() {
   const first = foreign[0] || local[0];
   pill.dataset.bot = first?.botId || '';
   pill.dataset.approvalId = first?.id || '';
-  pill.dataset.remote = remote.length ? '1' : '';
+  // Two replies or more waiting (1.5.58): the inbox shows them together, with 「全部回复（N）」.
+  pill.dataset.remote = remote.length || waitingReplies().length >= 2 ? '1' : '';
   pill.title = remote.length ? `其中 ${remote.length} 个在别的机器上，点开就能在这里批` : '有待你确认的操作';
 }
 
@@ -1221,7 +1196,10 @@ function inboxOpen(open) {
   modal.setAttribute('aria-hidden', open ? 'false' : 'true');
   scrim.classList.toggle('show', open);
   if (open) renderInbox();
-  else for (const [key, card] of inboxCards) if (card.classList.contains('resolved')) inboxCards.delete(key);
+  else {
+    for (const [key, card] of inboxCards) if (card.classList.contains('resolved')) inboxCards.delete(key);
+    clearReplyRows();
+  }
 }
 
 /** Open the inbox; with a machine and a card, bring that card into view (a notification tap). */
@@ -1240,8 +1218,12 @@ function renderInbox() {
   const body = $('inbox-body');
   if (!body) return;
   body.innerHTML = '';
-  // This machine's cards stay in their chats: one button per bot takes you there.
-  const local = state.approvals || [];
+  // Replies waiting together, here and on other machines (1.5.58): one list, each with 「回复」, and 「全部回复（N）」.
+  const group = replyGroup();
+  if (group) body.appendChild(group.node);
+  const grouped = (key) => Boolean(group?.keys.has(key));
+  // This machine's other cards stay in their chats: one button per bot takes you there.
+  const local = (state.approvals || []).filter((a) => !grouped(`|${a.id}`));
   if (local.length) {
     const row = el('div', 'inbox-local');
     row.appendChild(el('span', 'muted tiny', local.length === 1 ? '这台电脑上有 1 个，在对话里：' : `这台电脑上有 ${local.length} 个，在各自的对话里：`));
@@ -1263,11 +1245,11 @@ function renderInbox() {
     const key = inboxKey(item);
     if (!inboxCards.has(key)) inboxCards.set(key, buildApprovalCard(inboxCardData(item)));
   }
-  for (const card of inboxCards.values()) body.appendChild(card);
+  for (const [key, card] of inboxCards) if (!grouped(key)) body.appendChild(card);
   if (state.inbox.missing.length) {
     body.appendChild(el('div', 'inbox-missing muted tiny', `连不上：${state.inbox.missing.join('、')}。那边如果有等你的事，连上后会出现在这里。`));
   }
-  if (!local.length && !inboxCards.size) body.appendChild(el('div', 'muted', '没有等你确认的事了。'));
+  if (!local.length && !inboxCards.size && !group) body.appendChild(el('div', 'muted', '没有等你确认的事了。'));
 }
 
 function markApprovalResolved(ev) {

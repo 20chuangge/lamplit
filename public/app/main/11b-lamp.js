@@ -1,5 +1,5 @@
 'use strict';
-// Lamplit page, part 11b (between machines and wiring, which draws the first faces): the living avatar (redesign step 2) - a face that shows what its bot is doing; one animation loop for the few large faces, list faces only change.
+// Lamplit page, part 11b (between machines and wiring, which draws the first faces): the living avatar (redesign step 2) - a face that shows what its bot is doing; CSS moves it on its own layers, no frame loop.
 /* ---------------------------------------------------------------------
    The seven states of the design study (交付/Lamplit-界面设计调研.md §3.3),
    from what the page already knows (attention and the link):
@@ -13,13 +13,13 @@
      stuck    the last turn ended in an error, the budget, no progress or
               the step limit (attention.failed)    half-shut eyes, red badge
      offline  the machine does not answer   eyes shut, lamp off, grey, row faded
-   Large faces (chat header, empty chat, bot page, avatar editor) are inline
-   SVG: the eyes follow the pointer, look at the composer while you type and
-   at the card that waits on you, and blink now and then. One
-   requestAnimationFrame loop for all of them; it stops when the faces are
-   still, when the tab is hidden or the Android app goes to the background,
-   and when motion is off. List faces are the
-   cached face images of 02-avatars.js with other eyes: no timer, no frame.
+   Large faces (chat header, empty chat, bot page, avatar editor): the eyes
+   follow the pointer, look at the composer while you type and at the card
+   that waits on you, and blink now and then - CSS transforms and opacity on
+   layers of their own, no frame loop (see lampSvg). Timers stop when the tab
+   is hidden, the Android app is in the background or motion is off. List
+   faces are the cached face images of 02-avatars.js with other eyes; one page
+   timer makes one row blink now and then.
    Motion is off when the system asks for less motion or 外观 → 头像动起来
    is off (this device only): the state still shows, nothing moves.
    --------------------------------------------------------------------- */
@@ -64,43 +64,90 @@ function lampMarkRow(av, bot, opts = {}) {
   const face = av.querySelector('.av-face');
   const a = avatarOf(faceOf(bot));
   if (face) face.style.backgroundImage = faceSvg(a.color, FACE_ZOOM[a.shape] || 1, LAMP_EYES[st]);
+  // 1.5.57: the shut-eyes face a row shows when it blinks (lampRowBlink below, style.css .av.lamp-blink).
+  av.style.setProperty('--lamp-shut', faceSvg(a.color, FACE_ZOOM[a.shape] || 1, 'shut'));
 }
 
-/* ---- the large faces ---- */
+/* The list blinks: every 3.5-8 s one idle (or waiting) row in view blinks once - a 0.22 s CSS
+   animation on that row only. One timer for the page, none per row, no frames in between.
+   (1.5.57: an endless 9 s blink on every row kept the desktop app drawing frames all the time,
+   about 7% of a core with 30 rows; this costs one short animation now and then.) */
+let lampBlinkTimer = 0;
+function lampRowBlinkSoon() {
+  clearTimeout(lampBlinkTimer);
+  lampBlinkTimer = 0;
+  if (document.hidden || lampAppAway || lampStill()) return;
+  lampBlinkTimer = setTimeout(lampRowBlink, 3500 + Math.random() * 4500);
+}
+function lampRowBlink() {
+  lampBlinkTimer = 0;
+  const list = document.getElementById('bot-list');
+  const box = list?.getBoundingClientRect();
+  const rows = box ? [...list.querySelectorAll('.bot-av[data-lamp="idle"]:not(.has-image), .bot-av[data-lamp="wait"]:not(.has-image)')]
+    .filter((av) => { const r = av.getBoundingClientRect(); return r.height && r.bottom > box.top && r.top < box.bottom; }) : [];
+  const av = rows[Math.floor(Math.random() * rows.length)];
+  if (av) {
+    av.classList.remove('lamp-blink');
+    void av.offsetWidth; // the same row may blink again
+    av.classList.add('lamp-blink');
+    av.addEventListener('animationend', () => av.classList.remove('lamp-blink'), { once: true });
+  }
+  lampRowBlinkSoon();
+}
+
+/** How far the eyes move at a full look, in face units (100 = the face's width): small faces
+    move a larger share, so a 40 px header face looks around visibly (1.5.57: at 30 px it was 2 px). */
+function lampReach(size) {
+  const n = Number(size) || 40;
+  return n <= 44 ? 13 : n <= 64 ? 11.5 : 10;
+}
+
+/* ---- the large faces ----
+   Layers, so that nothing is ever repainted while a face lives (1.5.57: an SVG whose eyes moved
+   was redrawn every frame - 8% of a core at rest in the desktop app, 39% with the pointer moving):
+     .lamp-face   the body: colour, light, picture - an SVG drawn once
+     .lamp-glow   the lamp inside: an HTML layer, only its opacity changes
+     .lamp-eyes   the eyes: an HTML layer, only its transform changes (a CSS transition does the
+                  easing); open eyes blink with transform: scaleY; the happy / half / shut eyes
+                  are a small SVG inside it, shown by state
+     .lamp-ring-wrap  the ring outside the shape: only its opacity changes
+   No frame loop: the pointer sets where the eyes go (at most ~12 times a second, only near the
+   face), one page timer fires the odd glance or blink, CSS animates. */
 let lampUid = 0;
 function lampSvg(a) {
   const shape = AVATAR_SHAPES.find((s) => s.id === a.shape) || AVATAR_SHAPES[0];
   const zoom = FACE_ZOOM[a.shape] || 1;
-  const ink = isLightColor(a.color) ? '#1c1a17' : '#fff';
   const id = `lamp${(lampUid += 1)}`;
-  const eyes = [36.5, 55].map((x) => `<rect class="e-open" x="${x}" y="39" width="8.5" height="15" rx="4.25" fill="${ink}"/>`
-    + `<path class="e-happy" d="M${x - 0.5},50 q4.75,-8 9.5,0" fill="none" stroke="${ink}" stroke-width="3.8" stroke-linecap="round"/>`
-    + `<path class="e-shut" d="M${x},48 h8.5" fill="none" stroke="${ink}" stroke-width="3.4" stroke-linecap="round" opacity=".85"/>`
-    // 卡住: the same drooping lids as the list face (02-avatars.js FACE_EYES.half)
-    + FACE_EYES.half(x, ink).replace('<path ', '<path class="e-half" ').replace(/'/g, '"')).join('');
-  const body = a.hasImage && a.imageUrl
+  const picture = Boolean(a.hasImage && a.imageUrl);
+  const body = picture
     ? `<rect width="100" height="100" fill="${a.color}"/><image class="lamp-img" href="${escapeHtml(a.imageUrl)}" width="100" height="100" preserveAspectRatio="xMidYMid slice"/>`
-    : `<rect width="100" height="100" fill="${a.color}"/><rect width="100" height="100" fill="url(#${id}l)"/>`
-      + `<rect class="lamp-glow" width="100" height="100" fill="url(#${id}g)"/>`
-      + `<g transform="translate(50 50) scale(${zoom}) translate(-50 -50)"><g class="eyes">${eyes}</g></g>`;
-  return `<svg viewBox="0 0 100 100" aria-hidden="true" focusable="false"><defs>`
+    : `<rect width="100" height="100" fill="${a.color}"/><rect width="100" height="100" fill="url(#${id}l)"/>`;
+  const alt = [36.5, 55].map((x) => `<path class="e-happy" d="M${x - 0.5},50 q4.75,-8 9.5,0" fill="none" stroke="currentColor" stroke-width="3.8" stroke-linecap="round"/>`
+    + `<path class="e-shut" d="M${x},48 h8.5" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" opacity=".85"/>`
+    // 卡住: the same drooping lids as the list face (02-avatars.js FACE_EYES.half)
+    + FACE_EYES.half(x, 'currentColor').replace('<path ', '<path class="e-half" ').replace(/'/g, '"')).join('');
+  const eyes = picture ? '' : `<span class="lamp-eyes-clip"><span class="lamp-eyes"><i class="lamp-eye l"></i><i class="lamp-eye r"></i>`
+    + `<svg class="lamp-eyes-alt" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><g transform="translate(50 50) scale(${zoom}) translate(-50 -50)">${alt}</g></svg></span></span>`;
+  return `<svg class="lamp-face" viewBox="0 0 100 100" aria-hidden="true" focusable="false"><defs>`
     + `<clipPath id="${id}c"><path d="${shape.path}"/></clipPath>`
     + `<linearGradient id="${id}l" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".26"/><stop offset=".55" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".16"/></linearGradient>`
-    + `<radialGradient id="${id}g" cx="50%" cy="38%" r="58%"><stop offset="0" stop-color="#fff" stop-opacity=".6"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>`
-    + `</defs><path class="lamp-ring" d="${shape.path}" transform="translate(50 50) scale(1.12) translate(-50 -50)"/>`
-    + `<g class="lamp-body"><g clip-path="url(#${id}c)">${body}</g></g></svg><i class="lamp-badge" aria-hidden="true"></i>`;
+    + `</defs><g clip-path="url(#${id}c)">${body}</g></svg>`
+    + (picture ? '' : '<span class="lamp-glow"></span>')
+    + eyes
+    + `<span class="lamp-ring-wrap"><svg viewBox="0 0 100 100" aria-hidden="true" focusable="false"><path class="lamp-ring" d="${shape.path}" transform="translate(50 50) scale(1.12) translate(-50 -50)"/></svg></span>`
+    + `<i class="lamp-badge" aria-hidden="true"></i>`;
 }
 
 const lampItems = new Set();
-const lampPointer = { x: -1, y: -1, t: 0 };
+const lampPointer = { x: -1, y: -1, t: 0, out: true };
 let lampTyping = 0;
-let lampRaf = 0;
-let lampLast = 0;
-let lampWake = 0;
+let lampGazeAt = 0;
+let lampGazeTimer = 0;
+let lampIdleTimer = 0;
+let lampAppAway = false;
 const lampSeen = 'IntersectionObserver' in window
   ? new IntersectionObserver((entries) => {
     for (const e of entries) if (e.target.lampItem) e.target.lampItem.visible = e.isIntersecting;
-    lampKick();
   })
   : null;
 
@@ -108,9 +155,15 @@ const lampSeen = 'IntersectionObserver' in window
 function lampMount(host, bot, size, extra = '') {
   if (!host || !bot) return;
   const a = avatarOf(faceOf(bot));
-  host.className = `av lamp-live${extra ? ` ${extra}` : ''}`;
+  // av-s-<shape> gives the shape's mask as --av-mask (the host itself is not masked: .av.lamp-live).
+  host.className = `av lamp-live av-s-${a.shape}${extra ? ` ${extra}` : ''}`;
   if (size) host.style.setProperty('--av-size', `${size}px`);
   host.style.setProperty('--av-color', a.color);
+  const px = Number(size) || host.getBoundingClientRect().width || 40;
+  host.style.setProperty('--lamp-zoom', String(FACE_ZOOM[a.shape] || 1));
+  host.style.setProperty('--lamp-r', `${((lampReach(px) * px) / 100).toFixed(2)}px`); // a full look, in px
+  host.style.setProperty('--lamp-blink-ms', `${px <= 44 ? 190 : 150}ms`); // a small face blinks a little slower
+  host.style.color = isLightColor(a.color) ? '#1c1a17' : '#fff'; // the eyes' ink, like the list face's
   host.dataset.shape = a.shape;
   host.toggleAttribute('data-img', Boolean(a.hasImage && a.imageUrl));
   host.innerHTML = lampSvg(a);
@@ -120,11 +173,9 @@ function lampMount(host, bot, size, extra = '') {
   const it = {
     host,
     botId: bot.id,
-    eyes: host.querySelector('.eyes'),
-    open: [...host.querySelectorAll('.e-open')],
-    x: old?.x || 0, y: old?.y || 0, vx: 0, vy: 0,
-    blinkT: -1e9, nextBlink: performance.now() + 1200 + Math.random() * 2800,
-    glance: { x: 0, y: 0, until: 0 },
+    reach: lampReach(px),
+    eyes: host.querySelector('.lamp-eyes'),
+    look: '',
     visible: true,
     doneTimer: 0,
   };
@@ -133,7 +184,7 @@ function lampMount(host, bot, size, extra = '') {
   lampItems.add(it);
   lampSeen?.observe(host);
   lampSetState(it, lampStateFor(lampBot(it) || bot), old?.host === host ? host.dataset.state : '');
-  lampKick();
+  lampIdleSoon();
 }
 
 function lampBot(it) {
@@ -156,8 +207,7 @@ function lampSetState(it, next, prev = it.host.dataset.state || '') {
     void it.host.offsetWidth; // restart the hop
     it.host.classList.add('lamp-hop');
   }
-  it.nextBlink = performance.now() + 400;
-  lampKick();
+  lampGaze(it); // a state that waits on you looks at the card; the others take their pose from CSS
 }
 
 /** Attention, the link or the model changed: every face says it again. */
@@ -176,13 +226,10 @@ function lampRefresh() {
   }
 }
 
-/** Where a face looks: -1..1 on each axis. */
+/** Where a face looks, -1..1 on each axis; null = it does not follow (its state has a pose of its own). */
 function lampTarget(it, now) {
   const st = it.host.dataset.state;
-  if (st === 'offline') return [0, 0.25];
-  if (st === 'stuck') return [0, 0.35];
-  if (st === 'think') return [0.55 + 0.2 * Math.sin(now / 900), -0.75];
-  if (st === 'work') return [0.35 * Math.sin(now / 700), 0.65];
+  if (st !== 'idle' && st !== 'wait') return null;
   const r = it.host.getBoundingClientRect();
   const cx = r.left + r.width / 2;
   const cy = r.top + r.height / 2;
@@ -195,105 +242,113 @@ function lampTarget(it, now) {
     const fr = at.getBoundingClientRect();
     tx = fr.left + Math.min(fr.width / 2, 140);
     ty = fr.top + Math.min(fr.height / 2, 60);
-  } else if (lampPointer.x < 0 || now - lampPointer.t > 5000) {
-    // Nobody moving: now and then it looks around, mostly it rests.
-    if (now > it.glance.until) {
-      const rest = Math.random() < 0.55;
-      it.glance = { x: rest ? 0 : (Math.random() * 2 - 1) * 0.7, y: rest ? 0 : (Math.random() * 2 - 1) * 0.45, until: now + 1400 + Math.random() * 2600 };
-    }
-    return [it.glance.x, it.glance.y];
+  } else if (lampPointer.out || lampPointer.x < 0) {
+    return [0, 0]; // the pointer left the window: it looks ahead
   }
   const dx = tx - cx;
   const dy = ty - cy;
   const d = Math.hypot(dx, dy) || 1;
-  const k = Math.tanh(d / 260); // far away: a full look; close by: a little
+  if (!at && d > 900) return [0, 0]; // far away: it stops following
+  const k = Math.tanh(d / 260); // far: a full look; close by: a little
   return [(dx / d) * k, (dy / d) * k];
 }
 
-/** A still face: the state's own look, no spring, no blink. */
-function lampPose(it) {
-  const st = it.host.dataset.state;
-  const [x, y] = st === 'think' ? [0.5, -0.7] : st === 'work' ? [0, 0.6] : st === 'stuck' || st === 'offline' ? [0, 0.3] : [0, 0];
-  it.x = x; it.y = y; it.vx = 0; it.vy = 0;
-  it.eyes?.setAttribute('transform', `translate(${(x * 7).toFixed(2)} ${(y * 5).toFixed(2)})`);
-  for (const e of it.open) e.style.transform = '';
+/** Point a face's eyes: one transform; the CSS transition eases it on the compositor. */
+function lampLook(it, x, y) {
+  if (!it.eyes) return;
+  // In steps of 1/20 of a full look: a pointer that barely moved changes nothing.
+  x = Math.round(x * 20) / 20;
+  y = Math.round(y * 20) / 20;
+  const value = x || y ? `translate(calc(var(--lamp-r) * ${x.toFixed(3)}), calc(var(--lamp-r) * ${(y * 0.7).toFixed(3)}))` : '';
+  if (value === it.look) return;
+  it.look = value;
+  it.eyes.style.transform = value;
 }
 
-function lampFrame(now) {
-  lampRaf = 0;
-  if (document.hidden || lampAppAway) return; // hidden or in the background: lampPause starts it again
-  const dt = Math.min(0.05, (now - (lampLast || now)) / 1000);
-  lampLast = now;
-  const still = lampStill();
-  let busy = false;
-  let wake = Infinity;
-  for (const it of lampItems) {
-    if (!it.host.isConnected) { lampItems.delete(it); lampSeen?.unobserve(it.host); continue; }
-    if (!it.visible || !it.eyes) continue;
-    if (still) { lampPose(it); continue; }
-    const [tx, ty] = lampTarget(it, now);
-    // A spring: stiffness 120, damping 16 - keeps up without a wobble.
-    it.vx += (120 * (tx - it.x) - 16 * it.vx) * dt;
-    it.vy += (120 * (ty - it.y) - 16 * it.vy) * dt;
-    it.x += it.vx * dt;
-    it.y += it.vy * dt;
-    const st = it.host.dataset.state;
-    let s = 1;
-    if (st !== 'offline') {
-      // A blink every 2.5-6 s, now and then twice.
-      if (now >= it.nextBlink) {
-        it.blinkT = now;
-        it.nextBlink = now + 2500 + Math.random() * 3500;
-        if (Math.random() < 0.18) it.nextBlink = now + 260;
-      }
-      const b = (now - it.blinkT) / 150;
-      if (b >= 0 && b < 1) s = 1 - 0.9 * Math.sin(b * Math.PI);
-      wake = Math.min(wake, it.nextBlink);
-      if (it.glance.until > now) wake = Math.min(wake, it.glance.until);
-      if (lampPointer.t > 0 && now - lampPointer.t < 5000) wake = Math.min(wake, lampPointer.t + 5001);
+function lampGaze(it, now = performance.now()) {
+  if (!it.eyes) return;
+  if (lampStill() || !it.visible) { lampLook(it, 0, 0); return; }
+  const t = lampTarget(it, now);
+  if (t) lampLook(it, t[0], t[1]); else lampLook(it, 0, 0); // posed states: CSS moves the eyes
+}
+
+/** The pointer moved: the faces look, at most ~12 times a second (the CSS transition fills in), and only while it is near. */
+function lampGazeSoon() {
+  if (lampGazeTimer || lampStill() || document.hidden || lampAppAway) return;
+  const wait = Math.max(0, 80 - (performance.now() - lampGazeAt));
+  lampGazeTimer = setTimeout(() => {
+    lampGazeTimer = 0;
+    lampGazeAt = performance.now();
+    for (const it of lampItems) if (it.host.isConnected) lampGaze(it, lampGazeAt);
+  }, wait);
+}
+
+/* Nobody moving: now and then one face glances or blinks - a CSS transition or a CSS animation,
+   fired by this one timer for the whole page. Nothing runs in between. */
+function lampIdleSoon() {
+  clearTimeout(lampIdleTimer);
+  lampIdleTimer = 0;
+  if (document.hidden || lampAppAway || lampStill() || !lampItems.size) return;
+  lampIdleTimer = setTimeout(lampIdle, 4000 + Math.random() * 5000);
+}
+function lampIdle() {
+  lampIdleTimer = 0;
+  const now = performance.now();
+  const faces = [...lampItems].filter((it) => it.host.isConnected && it.visible && it.eyes && it.host.dataset.state !== 'offline');
+  const it = faces[Math.floor(Math.random() * faces.length)];
+  if (it) {
+    const quiet = lampPointer.out || now - lampPointer.t > 5000;
+    if (quiet && it.host.dataset.state === 'idle' && Math.random() < 0.35) {
+      // a glance, then back to rest on the next turn of this timer
+      const away = it.look === '' ? [(Math.random() * 2 - 1) * 0.7, (Math.random() * 2 - 1) * 0.45] : [0, 0];
+      lampLook(it, away[0], away[1]);
+    } else {
+      it.host.classList.remove('lamp-blinking');
+      void it.host.offsetWidth; // the same face may blink again
+      it.host.classList.add('lamp-blinking');
+      it.eyes.addEventListener('animationend', () => it.host.classList.remove('lamp-blinking'), { once: true });
     }
-    it.eyes.setAttribute('transform', `translate(${(it.x * 7).toFixed(2)} ${(it.y * 5).toFixed(2)})`);
-    for (const e of it.open) e.style.transform = s < 1 ? `scaleY(${s.toFixed(3)})` : '';
-    if (Math.abs(it.vx) + Math.abs(it.vy) > 0.002 || Math.abs(tx - it.x) + Math.abs(ty - it.y) > 0.002 || s < 1) busy = true;
-    if (st === 'think' || st === 'work') busy = true; // its eyes keep moving slowly while it works
-    if (st === 'wait' || now - lampTyping < 1600) wake = Math.min(wake, now + 400);
   }
-  clearTimeout(lampWake);
-  if (busy) { lampRaf = requestAnimationFrame(lampFrame); return; }
-  lampLast = 0;
-  // Still: no loop, one alarm for the next blink or glance.
-  if (wake < Infinity && !still) lampWake = setTimeout(lampKick, Math.max(16, wake - now));
-}
-
-let lampAppAway = false;
-function lampKick() {
-  if (!lampRaf && !document.hidden && !lampAppAway && lampItems.size) lampRaf = requestAnimationFrame(lampFrame);
+  lampIdleSoon();
 }
 
 /** Hidden tab, or the Android app in the background: nothing runs until it is back. */
 function lampPause(away) {
-  if (away) { cancelAnimationFrame(lampRaf); lampRaf = 0; clearTimeout(lampWake); return; }
-  lampLast = 0;
-  lampKick();
+  if (away) {
+    clearTimeout(lampIdleTimer); lampIdleTimer = 0;
+    clearTimeout(lampGazeTimer); lampGazeTimer = 0;
+    clearTimeout(lampBlinkTimer); lampBlinkTimer = 0;
+    return;
+  }
+  lampIdleSoon();
+  lampRowBlinkSoon();
 }
 
 function lampApplyMotion() {
   document.documentElement.classList.toggle('lamp-still', lampStill());
   const box = $('lamp-motion');
   if (box) box.checked = lampMotionOn();
-  lampKick();
+  for (const it of lampItems) lampGaze(it); // still: eyes back to rest
+  lampIdleSoon();
+  lampRowBlinkSoon(); // motion off: no more row blinks
 }
 
 window.addEventListener('pointermove', (e) => {
   lampPointer.x = e.clientX;
   lampPointer.y = e.clientY;
   lampPointer.t = performance.now();
-  if (!lampStill()) lampKick();
+  lampPointer.out = false;
+  lampGazeSoon();
 }, { passive: true });
+document.addEventListener('pointerout', (e) => {
+  if (e.relatedTarget) return;
+  lampPointer.out = true; // left the window
+  lampGazeSoon();
+});
 document.addEventListener('input', (e) => {
   if (e.target?.id !== 'composer') return;
   lampTyping = performance.now();
-  if (!lampStill()) lampKick();
+  lampGazeSoon();
 }, true);
 document.addEventListener('visibilitychange', () => lampPause(document.hidden));
 // Capacitor (the Android app): its App plugin says when the app leaves and comes back.

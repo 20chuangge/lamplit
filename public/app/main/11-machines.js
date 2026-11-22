@@ -116,7 +116,7 @@ async function switchMachineFor({ target, message }) {
 /** Work handed over from another machine: give it to this machine's primary bot. */
 async function deliverPendingTask() {
   let text = '';
-  try { text = String((await window.desk?.takePendingMessage?.()) || '').trim(); } catch { return; }
+  try { const got = await window.desk?.takePendingMessage?.(); text = typeof got === 'string' ? got.trim() : ''; } catch { return; } // a refused call is an object, never a message (1.5.57: it was sent as 「[object Object]」)
   if (!text) return;
   const primary = state.bots.find((b) => b.primary) || state.bots[0];
   if (!primary) return;

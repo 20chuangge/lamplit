@@ -215,7 +215,7 @@ function renderChatAvatar(bot) {
   const host = $('chat-avatar');
   if (!host || !bot) return;
   // A living face (14-lamp.js): it looks around and shows what the bot is doing.
-  lampMount(host, bot, 30, 'chat-avatar');
+  lampMount(host, bot, 40, 'chat-avatar'); // 1.5.57: 40 px (design 40-56); at 30 px nobody saw it move
   host.setAttribute('aria-label', `更换 ${bot.name} 的头像`);
   host.title = `更换 ${bot.name} 的头像`;
 }

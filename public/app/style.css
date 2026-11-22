@@ -91,7 +91,7 @@
     --bubble-user-text: var(--text);
     --bubble-bot: #161617;
     --bubble-bot-border: transparent;
-    --bubble-shadow: none;
+    --bubble-shadow: 0 0 transparent;
     /* older names, kept so nothing outside this file breaks */
     --green: var(--ok);
     --amber: var(--warn);
@@ -2108,7 +2108,9 @@
     --scrim: rgba(0, 0, 0, 0.30);
     --float-shadow: 0 8px 24px var(--shade-2);
     --bubble-user: #e8e8eb;
-    --bubble-bot: #eeeef0;
+    --bubble-bot: var(--panel);
+    --bubble-bot-border: var(--border);
+    --bubble-shadow: 0 1px 2px var(--shade-1);
   }
   html[data-theme="light"] body {
     background: var(--bg);
@@ -2809,7 +2811,7 @@
     background: var(--bubble-bot); color: var(--text);
     border: 1px solid var(--bubble-bot-border);
     border-radius: 18px 18px 18px 6px; padding: 10px 15px;
-    max-width: min(680px, 86%); box-shadow: var(--bubble-shadow);
+    max-width: min(680px, 86%); box-shadow: 0 0 0 1px var(--bubble-bot-border), var(--bubble-shadow);
   }
   .row.assistant .bubble.system,
   html[data-theme="light"] .row.assistant .bubble.system {
@@ -3326,7 +3328,7 @@
     }
     .row.assistant .bubble,
     html[data-theme="light"] .row.assistant .bubble {
-      background: var(--bubble-bot); border: 0; box-shadow: none; padding: 10px 16px;
+      background: var(--bubble-bot); border: 0; box-shadow: 0 0 0 1px var(--bubble-bot-border), var(--bubble-shadow); padding: 10px 16px;
       max-width: 88%; border-radius: 20px 20px 20px 6px; font-size: var(--t-lg); line-height: var(--lh-ui);
     }
     .bubble.md .md-h { font-size: var(--t-xl); }
@@ -3697,28 +3699,52 @@ button.roster-head:hover { color: var(--text); }
 .restore-panel .lbl { display: block; margin-top: 14px; }
 .restore-panel .warn-note { margin-top: 10px; }
 /* --- redesign step 2: the living avatar (11b-lamp.js) -------------------------
-   Large faces are inline SVG that clip themselves; the ring sits outside the
-   shape. List faces stay the cached face images: other eyes, a soft glow while
-   it works, grey when its machine is away. Nothing here runs per frame. */
+   A large face is layers (1.5.57): the body SVG is drawn once; the glow, the
+   eyes and the ring are HTML layers that only ever change opacity or transform,
+   so the compositor moves them and nothing is repainted. List faces stay the
+   cached face images: other eyes, a soft glow while it works, grey when away. */
 .av.lamp-live { background: none; overflow: visible; -webkit-mask-image: none; mask-image: none; }
-.lamp-live svg { width: 100%; height: 100%; display: block; overflow: visible; }
-.lamp-live .e-open { transform-box: fill-box; transform-origin: center; }
+.lamp-live .lamp-face, .lamp-live .lamp-glow, .lamp-live .lamp-eyes-clip, .lamp-live .lamp-ring-wrap { position: absolute; inset: 0; pointer-events: none; }
+.lamp-live .lamp-face, .lamp-live .lamp-ring-wrap svg, .lamp-live .lamp-eyes-alt { width: 100%; height: 100%; display: block; overflow: visible; }
+.lamp-live .lamp-glow, .lamp-live .lamp-eyes-clip {
+  -webkit-mask-image: var(--av-mask); mask-image: var(--av-mask);
+  -webkit-mask-size: 100% 100%; mask-size: 100% 100%; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+}
+.lamp-live .lamp-glow {
+  background: radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--on-color) 60%, transparent), transparent 58%);
+  opacity: 0; transition: opacity 600ms var(--ease); will-change: opacity;
+}
+/* The eyes: where they look is one transform (set by 11b-lamp.js, eased by this transition). */
+.lamp-live .lamp-eyes { position: absolute; inset: 0; transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1); will-change: transform; }
+.lamp-live .lamp-eye {
+  position: absolute; top: calc(50% - 11% * var(--lamp-zoom, 1));
+  width: calc(8.5% * var(--lamp-zoom, 1)); height: calc(15% * var(--lamp-zoom, 1));
+  border-radius: 999px; background: currentColor; will-change: transform;
+}
+.lamp-live .lamp-eye.l { left: calc(50% - 13.5% * var(--lamp-zoom, 1)); }
+.lamp-live .lamp-eye.r { left: calc(50% + 5% * var(--lamp-zoom, 1)); }
+.lamp-live.lamp-blinking .lamp-eye { animation: lamp-eye-blink var(--lamp-blink-ms, 150ms) ease-in-out 1; }
+@keyframes lamp-eye-blink { 50% { transform: scaleY(0.1); } }
+.lamp-live .lamp-eyes-alt { position: absolute; inset: 0; }
 .lamp-live .e-happy, .lamp-live .e-shut, .lamp-live .e-half { display: none; }
-.lamp-live[data-state="done"] .e-open { display: none; }
-.lamp-live[data-state="done"] .e-happy { display: inline; }
-.lamp-live[data-state="offline"] .e-open { display: none; }
-.lamp-live[data-state="offline"] .e-shut { display: inline; }
-.lamp-live[data-state="stuck"] .e-open { display: none; }
-.lamp-live[data-state="stuck"] .e-half { display: inline; }
-.lamp-live .lamp-glow { opacity: 0; transition: opacity 600ms var(--ease); }
-.lamp-live .lamp-body { transform-box: fill-box; transform-origin: 50% 60%; }
-.lamp-live .lamp-ring { fill: none; stroke: transparent; stroke-width: 5; transition: stroke 300ms var(--ease); }
-/* 在想: it breathes, eyes up. 在做: the lamp inside glows on and off. */
-.lamp-live[data-state="think"] .lamp-body { animation: lamp-breathe 2.6s ease-in-out infinite; }
+.lamp-live[data-state="done"] .lamp-eye, .lamp-live[data-state="offline"] .lamp-eye, .lamp-live[data-state="stuck"] .lamp-eye { display: none; }
+.lamp-live[data-state="done"] .e-happy, .lamp-live[data-state="offline"] .e-shut, .lamp-live[data-state="stuck"] .e-half { display: inline; }
+/* Poses: 在想 eyes up, 在做 eyes down and scanning, 卡住 / 离线 eyes down. */
+.lamp-live[data-state="think"] .lamp-eyes { transform: translate(calc(var(--lamp-r) * 0.5), calc(var(--lamp-r) * -0.5)); }
+.lamp-live[data-state="work"] .lamp-eyes { animation: lamp-scan 2.8s ease-in-out infinite; }
+.lamp-live[data-state="stuck"] .lamp-eyes, .lamp-live[data-state="offline"] .lamp-eyes { transform: translate(0, calc(var(--lamp-r) * 0.25)); }
+@keyframes lamp-scan {
+  0%, 100% { transform: translate(calc(var(--lamp-r) * -0.35), calc(var(--lamp-r) * 0.45)); }
+  50% { transform: translate(calc(var(--lamp-r) * 0.35), calc(var(--lamp-r) * 0.45)); }
+}
+/* 在想: the whole face breathes, the lamp half lit. 在做: the lamp glows on and off. */
+.lamp-live[data-state="think"] { animation: lamp-breathe 2.6s ease-in-out infinite; will-change: transform; }
 .lamp-live[data-state="think"] .lamp-glow { opacity: 0.45; }
 .lamp-live[data-state="work"] .lamp-glow { animation: lamp-glow 2.2s ease-in-out infinite; }
-/* 等你: a violet ring that slowly brightens, and a violet badge. 卡住: a red badge. */
-.lamp-live[data-state="wait"] .lamp-ring { stroke: var(--accent); animation: lamp-ring 2s ease-in-out infinite; }
+/* The ring: 等你 violet, slowly brighter (its layer's opacity); a picture shows the state on it. */
+.lamp-live .lamp-ring { fill: none; stroke: transparent; stroke-width: 5; }
+.lamp-live[data-state="wait"] .lamp-ring { stroke: var(--accent); }
+.lamp-live[data-state="wait"] .lamp-ring-wrap { animation: lamp-ring 2s ease-in-out infinite; will-change: opacity; }
 .lamp-live .lamp-badge {
   display: none; position: absolute; right: -3px; bottom: -3px; pointer-events: none;
   width: 30%; height: 30%; min-width: 9px; min-height: 9px; max-width: 16px; max-height: 16px;
@@ -3726,31 +3752,35 @@ button.roster-head:hover { color: var(--text); }
 }
 .lamp-live[data-state="wait"] .lamp-badge { display: block; background: var(--accent); }
 .lamp-live[data-state="stuck"] .lamp-badge { display: block; background: var(--danger); }
-/* A picture keeps its picture: only the ring says the state. */
-.lamp-live[data-img][data-state="work"] .lamp-ring, .lamp-live[data-img][data-state="think"] .lamp-ring { stroke: var(--text); animation: lamp-ring 2.2s ease-in-out infinite; }
+.lamp-live[data-img][data-state="work"] .lamp-ring, .lamp-live[data-img][data-state="think"] .lamp-ring { stroke: var(--text); }
+.lamp-live[data-img][data-state="work"] .lamp-ring-wrap, .lamp-live[data-img][data-state="think"] .lamp-ring-wrap { animation: lamp-ring 2.2s ease-in-out infinite; will-change: opacity; }
 .lamp-live[data-img][data-state="done"] .lamp-ring { stroke: var(--ok); }
 /* 机器离线: eyes shut, the lamp off, grey and dim. */
-.lamp-live[data-state="offline"] svg { filter: grayscale(1); opacity: 0.55; }
+.lamp-live[data-state="offline"] { filter: grayscale(1); opacity: 0.55; }
 .lamp-live[data-state="offline"] .lamp-glow { opacity: 0; animation: none; }
-/* 做完了: one hop. */
-.lamp-live.lamp-hop[data-state="done"] .lamp-body { animation: lamp-hop 520ms ease-out 1; }
+/* 做完了: one hop of the whole face. */
+.lamp-live.lamp-hop[data-state="done"] { animation: lamp-hop 520ms ease-out 1; }
 @keyframes lamp-glow { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 @keyframes lamp-breathe { 50% { transform: scale(1.035) translateY(-1.5%); } }
 @keyframes lamp-ring { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
 @keyframes lamp-hop { 30% { transform: translateY(-12%) scale(1.04, 0.97); } 60% { transform: translateY(0) scale(0.98, 1.03); } }
 /* Still (系统「减少动态效果」or 外观 → 头像动起来 off): the state shows, nothing moves. */
-html.lamp-still .lamp-live .lamp-body, html.lamp-still .lamp-live .lamp-glow, html.lamp-still .lamp-live .lamp-ring { animation: none !important; transition: none; }
+html.lamp-still .lamp-live, html.lamp-still .lamp-live * { animation: none !important; transition: none !important; }
 html.lamp-still .lamp-live[data-state="work"] .lamp-glow { opacity: 0.9; }
+html.lamp-still .lamp-live[data-state="work"] .lamp-eyes { transform: translate(0, calc(var(--lamp-r) * 0.45)); }
 @media (prefers-reduced-motion: reduce) {
-  .lamp-live .lamp-body, .lamp-live .lamp-glow, .lamp-live .lamp-ring { animation: none !important; transition: none; }
+  .lamp-live, .lamp-live * { animation: none !important; transition: none !important; }
   .lamp-live[data-state="work"] .lamp-glow { opacity: 0.9; }
+  .lamp-live[data-state="work"] .lamp-eyes { transform: translate(0, calc(var(--lamp-r) * 0.45)); }
 }
 .empty-avatar.lamp-live { border-radius: 0; }
+/* The header face is 40 px (1.5.57) and takes the room the 30 px one took: the header keeps its height. */
+.chat-head .chat-avatar.lamp-live { margin: -2px 0; }
 /* 在想 / 在做 on a large face: the same small turning ring as in the list (1.5.56 beginner test:
    at 30 px in the header the lamp alone was easy to miss). */
 .lamp-live[data-state="work"] .lamp-badge, .lamp-live[data-state="think"] .lamp-badge {
   display: block; box-sizing: border-box; background: var(--bg);
-  border: 2px solid var(--lamp-track); border-top-color: var(--text); animation: lamp-spin 0.9s linear infinite;
+  border: 2px solid var(--lamp-track); border-top-color: var(--text); animation: lamp-spin 0.9s linear infinite; will-change: transform;
 }
 html.lamp-still .lamp-live .lamp-badge { animation: none; }
 @media (prefers-reduced-motion: reduce) { .lamp-live .lamp-badge { animation: none; } }
@@ -3774,7 +3804,20 @@ html.lamp-still .lamp-live .lamp-badge { animation: none; }
   background: radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--on-color) 55%, transparent), transparent 66%);
 }
 /* 在做: the lamp in the face pulses (a CSS opacity change on the few working rows). */
-.av[data-lamp="work"]::after { animation: lamp-glow 2.2s ease-in-out infinite; }
+.av[data-lamp="work"]::after { animation: lamp-glow 2.2s ease-in-out infinite; will-change: opacity; }
+/* An idle or waiting row blinks now and then (1.5.57): lampRowBlink (11b-lamp.js) gives one row
+   at a time .lamp-blink, and the shut-eyes face shows for 0.22 s. Nothing runs in between. */
+.av.lamp-blink[data-lamp="idle"]:not(.has-image)::after, .av.lamp-blink[data-lamp="wait"]:not(.has-image)::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
+  background: var(--lamp-shut) center / 100% 100% no-repeat;
+  animation: lamp-row-blink 220ms linear 1;
+}
+@keyframes lamp-row-blink { 0%, 100% { opacity: 0; } 25%, 75% { opacity: 1; } }
+/* 等你 in the list: the violet ring stays still (1.5.57: a breathing drop-shadow is redrawn every
+   frame - about a third of a core in the desktop app); the ring, the 「!」 dot and the row's own
+   badge say it. The header face's ring still breathes (one face, its own SVG). */
+html.lamp-still .av[data-lamp]::after, html.lamp-still .av[data-lamp="wait"] { animation: none !important; }
+@media (prefers-reduced-motion: reduce) { .av[data-lamp]::after, .av[data-lamp="wait"] { animation: none !important; } }
 html.lamp-still .av[data-lamp="work"]::after { animation: none; opacity: 0.9; }
 @media (prefers-reduced-motion: reduce) { .av[data-lamp="work"]::after { animation: none; opacity: 0.9; } }
 :root { --lamp-track: color-mix(in srgb, var(--dim) 60%, transparent); }
@@ -3784,7 +3827,7 @@ html.lamp-still .av[data-lamp="work"]::after { animation: none; opacity: 0.9; }
 }
 .av[data-lamp="work"]::before, .av[data-lamp="think"]::before {
   content: ""; background: var(--bg-2); border: 2.5px solid var(--lamp-track); border-top-color: var(--text);
-  animation: lamp-spin 0.9s linear infinite;
+  animation: lamp-spin 0.9s linear infinite; will-change: transform;
 }
 .av[data-lamp="wait"]::before {
   content: "!"; background: var(--accent-solid); color: var(--on-accent);

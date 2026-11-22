@@ -95,29 +95,31 @@ export async function lampChecks({ check, readText }) {
     && page.includes('<input type="checkbox" id="lamp-motion" checked />') && page.includes('头像动起来：眼睛跟着你看、会眨眼')
     && en.includes('"头像动起来：眼睛跟着你看、会眨眼": "Living avatars: eyes follow you and blink"')
     && lamp.includes("localStorage.setItem(LAMP_MOTION_KEY, event.target.checked ? 'on' : 'off')"));
-  check('L3 still means still: no spring and no blink (lampPose), CSS animations off under html.lamp-still and prefers-reduced-motion, the state still shows (work keeps its glow)',
-    /if \(still\) \{ lampPose\(it\); continue; \}/.test(lamp) && lamp.includes("document.documentElement.classList.toggle('lamp-still', lampStill());")
-    && page.includes('html.lamp-still .lamp-live .lamp-body, html.lamp-still .lamp-live .lamp-glow, html.lamp-still .lamp-live .lamp-ring { animation: none !important;')
-    && /@media \(prefers-reduced-motion: reduce\) \{\s*\.lamp-live \.lamp-body, \.lamp-live \.lamp-glow, \.lamp-live \.lamp-ring \{ animation: none !important;/.test(page)
+  check('L3 still means still: no glance, no blink, no follow (the timers stop, the eyes rest), every CSS animation and transition of a face off under html.lamp-still and prefers-reduced-motion; the state still shows (work keeps its glow and its eyes down)',
+    lamp.includes("document.documentElement.classList.toggle('lamp-still', lampStill());")
+    && lamp.includes("if (document.hidden || lampAppAway || lampStill() || !lampItems.size) return;")
+    && lamp.includes('if (lampStill() || !it.visible) { lampLook(it, 0, 0); return; }')
+    && page.includes('html.lamp-still .lamp-live, html.lamp-still .lamp-live * { animation: none !important; transition: none !important; }')
+    && /@media \(prefers-reduced-motion: reduce\) \{\s*\.lamp-live, \.lamp-live \* \{ animation: none !important; transition: none !important; \}/.test(page)
     && page.includes('html.lamp-still .lamp-live[data-state="work"] .lamp-glow { opacity: 0.9; }'));
 
   // --- L4 light: one loop for the few large faces, nothing per list row, nothing while hidden
-  const rafCalls = (lamp.match(/requestAnimationFrame\(/g) || []).length;
-  check('L4 one animation loop for all large faces; it stops when they are still (one alarm for the next blink), when the tab is hidden, and for faces out of view',
-    rafCalls === 2 && lamp.includes('if (document.hidden || lampAppAway) return;') && lamp.includes("document.addEventListener('visibilitychange', () => lampPause(document.hidden));")
-    && lamp.includes('if (away) { cancelAnimationFrame(lampRaf); lampRaf = 0; clearTimeout(lampWake); return; }')
-    && lamp.includes('new IntersectionObserver') && lamp.includes('if (!it.visible || !it.eyes) continue;')
-    && /if \(wake < Infinity && !still\) lampWake = setTimeout\(lampKick/.test(lamp));
+  check('L4 no frame loop at all: the eyes are moved by one CSS transform (a transition eases it), blinks are a CSS animation, one page timer for the idle glance or blink; nothing while the tab is hidden, and faces out of view are skipped',
+    !/requestAnimationFrame/.test(lamp) && lamp.includes("document.addEventListener('visibilitychange', () => lampPause(document.hidden));")
+    && /function lampPause\(away\) \{\s*if \(away\) \{\s*clearTimeout\(lampIdleTimer\); lampIdleTimer = 0;\s*clearTimeout\(lampGazeTimer\); lampGazeTimer = 0;\s*clearTimeout\(lampBlinkTimer\); lampBlinkTimer = 0;/.test(lamp)
+    && lamp.includes('new IntersectionObserver') && lamp.includes('if (lampStill() || !it.visible) { lampLook(it, 0, 0); return; }')
+    && (lamp.match(/setTimeout\(lampIdle,/g) || []).length === 1);
   check('L4 list faces: no timer, no frame, no listener per row', !/setTimeout|requestAnimationFrame|addEventListener/.test(fnSource(lamp, 'lampMarkRow')));
-  check('L4 large faces are inline SVG clipped to the bot\'s shape; a picture stays a picture with only a ring; a picture that fails gives the face back',
-    lamp.includes('<clipPath id="${id}c"><path d="${shape.path}"/></clipPath>') && lamp.includes('<image class="lamp-img" href=')
+  check('L4 a large face: its body is an SVG clipped to the bot\'s shape, drawn once; the glow, the eyes and the ring are layers of their own; a picture stays a picture with only a ring; a picture that fails gives the face back',
+    lamp.includes('<clipPath id="') && lamp.includes('c"><path d="') && lamp.includes('<svg class="lamp-face" viewBox="0 0 100 100"') && lamp.includes('<image class="lamp-img" href=')
+    && lamp.includes('<span class="lamp-eyes-clip"><span class="lamp-eyes"><i class="lamp-eye l"></i><i class="lamp-eye r"></i>')
     && page.includes('.lamp-live[data-img][data-state="work"] .lamp-ring') && lamp.includes(".lamp-img')?.addEventListener('error'"));
   check('L4 where the large faces are: the chat header, the empty chat, the bot page, the avatar editor',
-    page.includes("lampMount(host, bot, 30, 'chat-avatar');") && page.includes("lampMount(av, bot, 54, 'empty-avatar');")
+    page.includes("lampMount(host, bot, 40, 'chat-avatar');") && page.includes("lampMount(av, bot, 54, 'empty-avatar');")
     && page.includes("lampMount($('botedit-preview'), bot, 60);") && page.includes('lampMount(host, bot, 96);'));
-  check('L4 the Android app in the background stops the loop too (Capacitor appStateChange, pause / resume), like a hidden tab',
+  check('L4 the Android app in the background stops the timers too (Capacitor appStateChange, pause / resume), like a hidden tab',
     lamp.includes("window.Capacitor?.Plugins?.App?.addListener?.('appStateChange', ({ isActive }) => { lampAppAway = !isActive; lampPause(lampAppAway); });")
-    && lamp.includes("document.addEventListener('pause'") && lamp.includes("if (!lampRaf && !document.hidden && !lampAppAway && lampItems.size)"));
+    && lamp.includes("document.addEventListener('pause'") && lamp.includes('if (lampGazeTimer || lampStill() || document.hidden || lampAppAway) return;'));
 
   // --- L5 how each state shows (design study §3.3)
   check('L5 等你: a violet ring and badge on the large face; on the list face a violet ring outside the shape (the mask moves to the face layer); 卡住: a red badge (large face) and red dot (row); 机器离线: eyes shut, lamp off, the whole row faded',
@@ -136,11 +138,11 @@ export async function lampChecks({ check, readText }) {
     && page.includes('@media (prefers-reduced-motion: reduce) { .av[data-lamp]::before { animation: none; } }')
     && page.includes('.att.working i { background: none; box-shadow: inset 0 0 0 2px var(--text); animation-name: att-ring; }') && page.includes('--lamp-track: color-mix(in srgb, var(--dim) 60%, transparent);') && page.includes('.att.unread i { background: var(--solid); }'));
   check('L5 the face itself tells 在做 from 卡住: the lamp in a working list face pulses (steady and bright when motion is off), stuck eyes are drooping lids (list and large face alike), not short bars',
-    page.includes('.av[data-lamp="work"]::after { animation: lamp-glow 2.2s ease-in-out infinite; }')
+    page.includes('.av[data-lamp="work"]::after { animation: lamp-glow 2.2s ease-in-out infinite; will-change: opacity; }')
     && page.includes('html.lamp-still .av[data-lamp="work"]::after { animation: none; opacity: 0.9; }')
     && page.includes('@media (prefers-reduced-motion: reduce) { .av[data-lamp="work"]::after { animation: none; opacity: 0.9; } }')
     && /half: \(x, ink\) => \(x < 50\s*\? `<path d='M\$\{x - 1\},48\.5 L\$\{x \+ 9\.5\},44\.5/.test(page)
-    && lamp.includes(`FACE_EYES.half(x, ink).replace('<path ', '<path class="e-half" ')`));
+    && lamp.includes(`FACE_EYES.half(x, 'currentColor').replace('<path ', '<path class="e-half" ')`));
   check('L5 the three dots under the chat are gone: the face shows thinking and working, the line says what',
     page.includes(`row.innerHTML = '<span class="typing-label"></span>';`) && !page.includes('<span class="typing-dots"><i></i><i></i><i></i></span><span class="typing-label">'));
   check('L5 「任务」 in the chat header sizes to its icon and word (the 32 px header rule squeezed the icon away and the word spilled out); narrow, it is a square icon',

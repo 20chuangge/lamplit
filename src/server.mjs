@@ -104,7 +104,7 @@ import { buildNudge } from './nudge.mjs';
 import { createInitiative } from './initiative.mjs';
 import { createTailscale, authKeyProblem, safeLoginUrl } from './tailscale.mjs';
 import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
-import { masterKey, sealSecretFiles } from './store.mjs';
+import { masterKey, sealSecretFiles, refusedPlainFiles } from './store.mjs';
 import { createAttention } from './attention.mjs';
 import { toolWords } from './abilities.mjs';
 import { checkSandbox, sandboxStatus } from './sandbox.mjs';
@@ -142,7 +142,7 @@ import {
 } from './auth.mjs';
 import { loadDeviceStore, describeAgent, deviceKind, mayPushUpdate } from './devices.mjs';
 import { realPathOf } from './realpath.mjs';
-import { statInside } from './safefs.mjs';
+import { statInside, mkdirInside, readInside, writeInside } from './safefs.mjs';
 import { createUpdateChecker } from './updates.mjs';
 
 // One version for the hub and the app: package.json (shipped with every hub).
@@ -2926,6 +2926,12 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
   } else if (sb.state === 'off') {
     items.push(checkupItem('isolation', '命令隔离', 'warn', `沙箱没有生效${sb.reason ? `（${sb.reason}）` : ''}：机器人执行的命令看得到 Lamplit 自己的数据。`, { kind: 'settings', target: 'sec-bounds', label: '看看' }));
   }
+  // 1.5.60 (F6): a key file that is not encrypted although this computer's key covers it was not
+  // written by Lamplit (something put it in the data folder): it is not used, and said here.
+  if (refusedPlainFiles.size) {
+    const names = [...refusedPlainFiles.keys()].join('、');
+    items.push(checkupItem('sealed-files', '密钥文件', 'bad', `数据文件夹里的 ${names} 没有加密，不是 Lamplit 写的（Lamplit 有了这台电脑的密钥以后，只会加密保存它们），所以没有用它。可能是有程序或机器人把它放进了数据文件夹。相关的设置如果不见了，重新设一次就会加密保存；那个文件还留在原处，可以交给懂行的人看看。`));
+  }
   // The other machines: answering, and how far.
   const machines = await Promise.all(state.peers.list().map(async ({ name }) => {
     const started = Date.now();
@@ -3448,12 +3454,15 @@ route(
     });
     const day = new Date().toISOString().slice(0, 10);
     const dir = workspaceFile(state, path.join('uploads', day));
-    await fsp.mkdir(dir, { recursive: true });
+    // 1.5.60 (the verifier's F1): uploads/<day> made one level at a time and the file written through
+    // the checked open - a bot's link there must not put an upload (another machine's file, named over
+    // there) into the data folder. A name is free only if nothing is there, not even a dangling link.
+    await mkdirInside(state.workspaceDir, dir).catch((err) => { throw err.code === 'PATH_OUTSIDE_WORKSPACE' ? httpError(400, 'PATH_OUTSIDE_WORKSPACE', 'the uploads folder leads outside the workspace') : err; });
     const ext = path.extname(name);
     const stem = name.slice(0, name.length - ext.length);
     let candidate = name;
-    for (let i = 1; fs.existsSync(path.join(dir, candidate)); i += 1) candidate = `${stem}-${i}${ext}`;
-    await fsp.writeFile(path.join(dir, candidate), bytes);
+    for (let i = 1; fs.existsSync(path.join(dir, candidate)) || (await fsp.lstat(path.join(dir, candidate)).catch(() => null)); i += 1) candidate = `${stem}-${i}${ext}`;
+    await writeInside(state.workspaceDir, path.join(dir, candidate), bytes).catch((err) => { throw err.code === 'PATH_OUTSIDE_WORKSPACE' ? httpError(400, 'PATH_OUTSIDE_WORKSPACE', 'path must stay inside the workspace') : err; });
     return { path: `uploads/${day}/${candidate}`, name: candidate, size: bytes.length, mime: mimeOf(candidate) };
   },
   { rawBody: true },
@@ -3536,8 +3545,11 @@ route(
     if (!rel || rel.startsWith('/') || rel.split('/').includes('..')) throw httpError(400, 'PATH_OUTSIDE_WORKSPACE', 'path must stay inside the workspace');
     const abs = workspaceFile(state, rel);
     const bytes = await readRawBody(req, UPLOAD_MAX_BYTES, { code: 'UPLOAD_TOO_LARGE', message: `a file must be ${UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller` });
-    await fsp.mkdir(path.dirname(abs), { recursive: true });
-    const old = await fsp.readFile(abs).catch(() => null);
+    // 1.5.60 (the verifier's F1): folders one level at a time, the old file read and the new one
+    // written through the checked open; the name finally written to is checked again there.
+    const outsideErr = (err) => (err.code === 'PATH_OUTSIDE_WORKSPACE' ? httpError(400, 'PATH_OUTSIDE_WORKSPACE', 'path must stay inside the workspace') : err);
+    await mkdirInside(state.workspaceDir, path.dirname(abs)).catch((err) => { throw outsideErr(err); });
+    const old = await readInside(state.workspaceDir, abs).catch((err) => { if (err.code === 'ENOENT') return null; throw outsideErr(err); });
     if (old && old.equals(bytes)) return { path: rel, same: true };
     let target = abs;
     if (old) {
@@ -3545,9 +3557,10 @@ route(
       const ext = path.extname(abs);
       const stem = abs.slice(0, abs.length - ext.length);
       target = `${stem}（来自 ${from}）${ext}`;
-      for (let i = 2; fs.existsSync(target); i += 1) target = `${stem}（来自 ${from}-${i}）${ext}`;
+      // Free only if nothing is there at all: a dangling link planted under the new name is not free.
+      for (let i = 2; fs.existsSync(target) || (await fsp.lstat(target).catch(() => null)); i += 1) target = `${stem}（来自 ${from}-${i}）${ext}`;
     }
-    await fsp.writeFile(target, bytes);
+    await writeInside(state.workspaceDir, target, bytes).catch((err) => { throw outsideErr(err); });
     return { path: path.relative(path.resolve(state.workspaceDir), target).replace(/\\/g, '/') };
   },
   { rawBody: true },

@@ -12,6 +12,8 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
+import { readInside, saveInside } from './safefs.mjs';
+
 export const PAGES_DIR = 'pages';
 const MAX_PAGE_BYTES = 8 * 1024 * 1024;
 const MAX_INLINE_BYTES = 5 * 1024 * 1024;
@@ -55,11 +57,11 @@ export function createPages({ workspaceDir }) {
   const metaFile = path.join(dir, '.meta.json');
 
   async function readMeta() {
-    try { return JSON.parse(await fsp.readFile(metaFile, 'utf8')) || {}; } catch { return {}; }
+    try { return JSON.parse(await readInside(workspaceDir, metaFile, 'utf8')) || {}; } catch { return {}; }
   }
   async function writeMeta(meta) {
-    await fsp.mkdir(dir, { recursive: true });
-    await fsp.writeFile(metaFile, JSON.stringify(meta, null, 2), 'utf8');
+    // Folders and files through the checked open (1.5.60, the verifier F1): pages/ a link writes nothing outside.
+    await saveInside(workspaceDir, metaFile, JSON.stringify(meta, null, 2));
   }
 
   /** Workspace images the page points at go inside it, so one file is the whole page. */
@@ -80,7 +82,7 @@ export function createPages({ workspaceDir }) {
         if (abs !== root && !abs.startsWith(root + path.sep)) continue;
         try {
           const st = await fsp.stat(abs);
-          if (st.isFile() && st.size <= MAX_INLINE_BYTES) { bytes = await fsp.readFile(abs); break; }
+          if (st.isFile() && st.size <= MAX_INLINE_BYTES) { bytes = await readInside(workspaceDir, abs); break; }
         } catch { /* try the next */ }
       }
       if (!bytes) continue;
@@ -146,10 +148,9 @@ export function createPages({ workspaceDir }) {
       body = await inlineImages(body);
       const bytes = Buffer.byteLength(body, 'utf8');
       if (bytes > MAX_PAGE_BYTES) throw Object.assign(new Error('a page must be 8 MB or smaller (use fewer or smaller images)'), { code: 'PAGE_TOO_LARGE' });
-      await fsp.mkdir(dir, { recursive: true });
       const file = path.join(dir, `${slug}.html`);
       const updated = await fsp.stat(file).then(() => true, () => false);
-      await fsp.writeFile(file, body, 'utf8');
+      await saveInside(workspaceDir, file, body);
       const now = new Date().toISOString();
       meta[slug] = { title: cleanTitle, botId: bot?.id || meta[slug]?.botId || null, botName: bot?.name || meta[slug]?.botName || null, createdAt: meta[slug]?.createdAt || now, updatedAt: now };
       await writeMeta(meta);

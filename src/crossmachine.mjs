@@ -12,6 +12,8 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
+import { readInside, saveInside } from './safefs.mjs';
+
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const PATH_RE = /(?:^|[\s`'"(（「：:，,])((?:[\w.\-一-鿿]+\/)+[\w.\-一-鿿]+\.[A-Za-z0-9]{1,6})(?=$|[\s`'")）」，。,;；:：、!！?？])/g;
 
@@ -43,7 +45,8 @@ export async function carryFilesOut(peers, peer, text, workspaceDir, { max = 8 }
     const st = await fsp.stat(abs).catch(() => null);
     if (!st?.isFile() || st.size > MAX_FILE_BYTES) continue;
     try {
-      const bytes = await fsp.readFile(abs);
+      // Read through the checked open (1.5.60, the verifier F1): a link on the way does not send the data folder along.
+      const bytes = await readInside(workspaceDir, abs);
       const out = await peers.json(peer, 'POST', '/api/uploads', { raw: bytes, headers: { 'x-file-name': encodeURIComponent(path.basename(abs)) }, timeoutMs: 120000 });
       if (out?.path) sent.push({ from: rel, to: out.path });
     } catch { /* that one stays behind; the bot can still file_send it */ }
@@ -100,7 +103,8 @@ export async function sendFilesKeepingPaths(peers, peer, files, workspaceDir, { 
     const abs = insideWorkspace(workspaceDir, rel);
     if (!abs) continue;
     try {
-      const bytes = await fsp.readFile(abs);
+      // Read through the checked open (1.5.60, the verifier F1): a link on the way does not send the data folder along.
+      const bytes = await readInside(workspaceDir, abs);
       const out = await peers.json(peer, 'PUT', `/api/workspace/file?path=${encodeURIComponent(rel)}${from ? `&from=${encodeURIComponent(from)}` : ''}`, { raw: bytes, headers: { 'content-type': 'application/octet-stream' }, timeoutMs: 120000 });
       if (out?.path) sent.push({ from: rel, to: out.path, ...(out.same ? { same: true } : {}) });
     } catch { /* that one stays here; the task text still names it */ }
@@ -130,8 +134,9 @@ export async function bringFilesBack(peers, peer, reply, workspaceDir, { skip = 
       const bytes = Buffer.from(await res.arrayBuffer());
       if (bytes.length > MAX_FILE_BYTES) continue;
       const to = path.posix.join(dir, path.posix.basename(rel));
-      await fsp.mkdir(path.join(workspaceDir, dir), { recursive: true });
-      await fsp.writeFile(path.join(workspaceDir, to), bytes);
+      // Folders made one level at a time and the file written through the checked open (1.5.60, the
+      // verifier F1): from-machines/<machine>/<day> a link to the data folder writes nothing there.
+      await saveInside(workspaceDir, path.join(workspaceDir, to), bytes);
       fetched.push({ from: rel, to });
     } catch { /* not a file there, or away: the path stays as written */ }
   }

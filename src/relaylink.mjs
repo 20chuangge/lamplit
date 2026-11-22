@@ -32,7 +32,7 @@ import tls from 'node:tls';
 import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, relayFailureDetail, shieldStream } from '../hub/relay/relay.mjs';
 import { createDirectServer } from './direct.mjs';
 import { readRelayUpdate } from './relayupdate.mjs';
-import { masterKey, openSealed, sealText, sealedButLocked } from './store.mjs';
+import { masterKey, openSealed, sealText, sealedButLocked, plainRefused } from './store.mjs';
 
 /** The relay's own report (1.5.47), kept to what Settings shows. */
 function cleanRelayInfo(msg) {
@@ -298,6 +298,7 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
     try {
       let raw = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (raw?.lamplitSealed) raw = JSON.parse(openSealed(raw) || 'null');
+      else if (plainRefused(file, raw)) return {}; // 1.5.60 (F6): a plain copy Lamplit did not write
       return raw && typeof raw === 'object' ? raw : {};
     } catch {
       return {};

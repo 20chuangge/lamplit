@@ -250,6 +250,7 @@ async function main() {
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
     await stage('1.5.59: security - a move through a swapped folder, the way a kernel looks up its two names', async () => (await import('./smoke-sec1559.mjs')).raceChecks({ check }));
+    await stage('1.5.60: security - saves into the workspace checked level by level, the sandbox\'s own pids, plain key files refused', async () => { const m = await import('./smoke-sec1560.mjs'); await m.fsChecks({ check }); await m.routeChecks({ check, apiRaw, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') }); await m.siteChecks({ check, readText }); await m.sandboxArgChecks({ check }); await m.sealChecks({ check, readText }); await m.trashChecks({ check }); const v = await import('./smoke-secv1560.mjs'); await v.writeChecks({ check }); await v.trashVerifyChecks({ check }); });
     await stage('1.5.56: on a phone, closing settings goes back where it was opened from', async () => (await import('./smoke-nav1556.mjs')).navChecks({ check, readText }));
     await stage('1.5.58: a bot\'s screen on another machine, in 全部机器 (through the relay too)', async () => (await import('./smoke-1558.mjs')).remoteScreenChecks({ check }));
   } finally {

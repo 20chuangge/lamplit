@@ -22,6 +22,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { P, readJson, writeJsonAtomic } from './store.mjs';
 import { childEnv } from './childenv.mjs';
+import { saveInside } from './safefs.mjs';
 import { putVault, deleteVault, revealVault, listVault } from './vault.mjs';
 import crypto from 'node:crypto';
 import { discoverOAuth, registerClient, authorizeUrl, exchangeCode, refreshAccess, pkcePair } from './mcpauth.mjs';
@@ -567,8 +568,8 @@ export async function toolResultForBot(result, { workspaceDir, serverId }) {
     else if ((c.type === 'image' || c.type === 'audio') && c.data && workspaceDir) {
       const ext = String(c.mimeType || '').split('/')[1]?.replace(/[^a-z0-9]/gi, '') || (c.type === 'image' ? 'png' : 'bin');
       const rel = path.join('mcp', new Date().toISOString().slice(0, 10), `${serverId}-${Date.now()}-${files.length}.${ext}`);
-      await fsp.mkdir(path.dirname(path.join(workspaceDir, rel)), { recursive: true });
-      await fsp.writeFile(path.join(workspaceDir, rel), Buffer.from(c.data, 'base64'));
+      // Checked folders and a checked write (1.5.60, the verifier F1): mcp/<day> a link writes nothing outside.
+      try { await saveInside(workspaceDir, path.join(workspaceDir, rel), Buffer.from(c.data, 'base64')); } catch (err) { parts.push(`(图片没有保存：${err.code === 'PATH_OUTSIDE_WORKSPACE' ? '保存的文件夹指向工作区外面' : err.message})`); continue; }
       files.push(rel.split(path.sep).join('/'));
     } else if (c.type === 'resource' && c.resource?.text) parts.push(String(c.resource.text));
     else if (c.type === 'resource_link' && c.uri) parts.push(`[${c.name || 'link'}] ${c.uri}`);

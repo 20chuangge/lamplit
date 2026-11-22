@@ -61,7 +61,7 @@ import { getBrowserManager } from './browser.mjs';
 import { grantsForNewBot, isRequestable } from './abilities.mjs';
 import { fetchPublic } from './netguard.mjs';
 import { realPathOf } from './realpath.mjs';
-import { readInside, writeInside } from './safefs.mjs';
+import { readInside, writeInside, mkdirInside } from './safefs.mjs';
 
 const MAX_SHELL_OUTPUT = 20000;
 const MAX_FILE_READ = 200000;
@@ -696,7 +696,9 @@ export function createRegistry(deps) {
       const r = resolvePath(ctx.workspaceDir, args?.path);
       if (!args?.path) throw toolError('FS_BAD_ARGS', 'fs_write needs a path');
       const content = String(args?.content ?? '');
-      await fsp.mkdir(path.dirname(r.abs), { recursive: true });
+      // Inside the workspace its folders are made one level at a time, each checked (1.5.60, the verifier F1).
+      if (r.named) await mkdirInside(ctx.workspaceDir, path.dirname(r.abs)).catch((err) => { throw err.code === 'PATH_OUTSIDE_WORKSPACE' ? toolError('FS_OUTSIDE_WORKSPACE', err.message) : err; });
+      else await fsp.mkdir(path.dirname(r.abs), { recursive: true });
       // What was there first, so the human can undo it (1.5.8).
       const undo = r.named ? await snapshot({ workspaceDir: ctx.workspaceDir, abs: r.abs, rel: r.rel, kind: args?.mode === 'append' ? 'append' : 'write' }) : null;
       await writeResolved(r, ctx, content, args?.mode === 'append');
@@ -724,7 +726,8 @@ export function createRegistry(deps) {
       if (optionLikePath(args?.path)) throw toolError('FS_OPTION_LIKE', `"${args.path}" looks like a command option, not a folder name (on Windows, mkdir makes the folders in between without -p). Use the real folder path.`);
       const r = resolvePath(ctx.workspaceDir, args?.path);
       if (!args?.path) throw toolError('FS_BAD_ARGS', 'fs_mkdir needs a path');
-      await fsp.mkdir(r.abs, { recursive: true });
+      if (r.named) await mkdirInside(ctx.workspaceDir, r.abs).catch((err) => { throw err.code === 'PATH_OUTSIDE_WORKSPACE' ? toolError('FS_OUTSIDE_WORKSPACE', err.message) : err; });
+      else await fsp.mkdir(r.abs, { recursive: true });
       return { path: r.rel, created: true, inWorkspace: r.inWorkspace };
     },
   });
@@ -848,7 +851,7 @@ export function createRegistry(deps) {
         dir = newTaskDir(ctx.workspaceDir);
       }
       try {
-        const res = await runCliAgent({ agent, task, dir, allowShell: Boolean(args?.allowShell), model: args?.model, signal: ctx.signal });
+        const res = await runCliAgent({ agent, task, dir, workspaceDir: ctx.workspaceDir, allowShell: Boolean(args?.allowShell), model: args?.model, signal: ctx.signal });
         return { ...res, dir: path.relative(ctx.workspaceDir, res.dir), outputFile: path.relative(ctx.workspaceDir, res.outputFile) };
       } catch (err) {
         throw toolError(err.code || 'CLI_FAILED', err.message);
@@ -1763,8 +1766,7 @@ export function createRegistry(deps) {
       // link out of the workspace (made by the bot beforehand) must not let this write land in the data folder.
       const dest = resolvePath(ctx.workspaceDir, destRel);
       if (!dest.inWorkspace) throw toolError('FS_OUTSIDE_WORKSPACE', `path resolves outside the shared workspace (${destRel})`);
-      await fsp.mkdir(path.dirname(dest.abs), { recursive: true });
-      try { await writeInside(ctx.workspaceDir, dest.abs, bytes); } catch (err) { throw toolError(err.code === 'PATH_OUTSIDE_WORKSPACE' ? 'FS_OUTSIDE_WORKSPACE' : 'FS_WRITE_FAILED', err.message); }
+      try { await mkdirInside(ctx.workspaceDir, path.dirname(dest.abs)); await writeInside(ctx.workspaceDir, dest.abs, bytes); } catch (err) { throw toolError(err.code === 'PATH_OUTSIDE_WORKSPACE' ? 'FS_OUTSIDE_WORKSPACE' : 'FS_WRITE_FAILED', err.message); }
       return { machine: peer.name, path: destRel, bytes: bytes.length, note: 'Now on this machine at this path: tell the human the path (and the content, if short).' };
     },
   });

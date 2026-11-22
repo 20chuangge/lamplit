@@ -27,9 +27,11 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { P } from './store.mjs';
-import { openInside, writeInside, isBelow } from './safefs.mjs';
+import { spawn, spawnSync } from 'node:child_process';
+
+import { openInside, writeInside, isBelow, mkdirInside } from './safefs.mjs';
 import { realPathOf } from './realpath.mjs';
-import { fencedMover } from './winrunner.mjs';
+import { fencedMover, fencedRemover } from './winrunner.mjs';
 
 export const TRASH_DIR = '.trash';
 export const KEEP_DAYS = 7;
@@ -113,7 +115,10 @@ const moverFor = (ws) => (fenceForTests !== undefined ? fenceForTests : fencedMo
  * then lead to that one folder, checked to be in the workspace, however the
  * names on the way are swapped afterwards. -> {at(name), close()}
  */
-const anchorsWork = () => process.platform === 'linux' && fs.existsSync('/proc/self/fd');
+// Tests can play a Linux without /proc (F3) on any system.
+let noProcForTests = false;
+const onLinux = () => process.platform === 'linux' || noProcForTests;
+const anchorsWork = () => !noProcForTests && process.platform === 'linux' && fs.existsSync('/proc/self/fd');
 function openFolderInside(ws, dir) {
   const fd = fs.openSync(dir, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0));
   let where = '';
@@ -123,15 +128,56 @@ function openFolderInside(ws, dir) {
     throw outsideErr('path resolves outside the shared workspace');
   }
   let open = true;
-  return { at: (name) => `/proc/self/fd/${fd}/${name}`, close: () => { if (open) { open = false; try { fs.closeSync(fd); } catch { /* closed */ } } } };
+  return { fd, at: (name) => `/proc/self/fd/${fd}/${name}`, close: () => { if (open) { open = false; try { fs.closeSync(fd); } catch { /* closed */ } } } };
 }
+
+/**
+ * 1.5.60 (the verifier's F2): a taken-out folder was then removed by Node's
+ * recursive rm, which goes by path - lstat a child, then list it by name: a
+ * child swapped for a link to the data folder in between led the hub's rm in
+ * there. GNU rm walks relative to folders it holds open and never follows a
+ * link; it gets the held-open folder as its fd 3, so even the start of its
+ * path cannot be swapped. -> resolves when `name` (in the folder `fd`) is gone
+ */
+let gnuRm = null;
+const hasGnuRm = () => {
+  if (gnuRm === null) { const r = spawnSync('rm', ['--version'], { encoding: 'utf8' }); gnuRm = r.status === 0 && /GNU coreutils/.test(String(r.stdout || '')); }
+  return gnuRm;
+};
+function rmUnder(fd, name) {
+  return new Promise((resolve, reject) => {
+    if (!hasGnuRm()) { reject(Object.assign(new Error('这台机器上没有 GNU 的 rm：Lamplit 没法稳妥地删掉这个文件夹，所以没删'), { code: 'PATH_UNCHECKABLE' })); return; }
+    if (!name || /[\\/]/.test(name)) { reject(new Error(`not a name: ${name}`)); return; }
+    let said = '';
+    const child = spawn('rm', ['-rf', '--', `/proc/self/fd/3/${name}`], { stdio: ['ignore', 'ignore', 'pipe', fd] });
+    child.stderr.on('data', (c) => { said += c; });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve() : reject(Object.assign(new Error(`rm: ${said.trim().slice(-200)}`), { code: 'ERMFAIL' }))));
+  });
+}
+let removeFenceForTests = undefined;
+_test.setRemoveFence = (fn) => { removeFenceForTests = fn; };
+_test.hasGnuRm = () => hasGnuRm();
+_test.setNoProc = (on) => { noProcForTests = Boolean(on); };
+const removerFor = (ws) => (removeFenceForTests !== undefined ? removeFenceForTests : fencedRemover(ws));
+
+/** Remove a taken-out folder: through the held-open folder (Linux), as the bots' account (Windows), else by its random name. */
+async function removeTree(out, ws) {
+  if (out.removeTree) return out.removeTree();
+  const fenced = removerFor(ws);
+  return onRandomName(out.temp, (p) => (fenced ? fenced(p) : fsp.rm(p, { recursive: true, force: false })));
+}
+
+/** 1.5.60 (F3): Linux without /proc/self/fd (a container, a chroot): no way to check, so a bot's name is not moved. */
+const uncheckable = () => Object.assign(new Error('这台机器没有 /proc（容器或 chroot 里）：Lamplit 没法确认它在工作区里，所以没动'), { code: 'PATH_UNCHECKABLE' });
 
 /** takeOut through the held-open folder (Linux): one folder for both names, nothing to wait for. */
 async function takeOutAnchored(abs, want, ws) {
   const here = openFolderInside(ws, path.dirname(abs));
   try {
     const src = here.at(path.basename(abs));
-    const temp = here.at(randomName('.lamplit-out-'));
+    const tempName = randomName('.lamplit-out-');
+    const temp = here.at(tempName);
     await rawRename(src, temp);
     const got = await fsp.lstat(temp, { bigint: true }).catch(() => null);
     if (got && sameFile(want, got) && !got.isSymbolicLink()) {
@@ -140,7 +186,9 @@ async function takeOutAnchored(abs, want, ws) {
         const there = openFolderInside(ws, path.dirname(to));
         try { await rawRename(from, there.at(path.basename(to))); } finally { there.close(); }
       };
-      return { temp, move, close: here.close };
+      // Refused later (1.5.60, F4): back under its own name through the same held-open folder.
+      const restore = () => rawRename(temp, src);
+      return { temp, move, restore, removeTree: () => rmUnder(here.fd, tempName), close: here.close };
     }
     // Something else was there (the bot swapped the file itself): back under its name, in this same folder.
     if (got) await rawRename(temp, src).catch(() => {});
@@ -153,7 +201,11 @@ async function takeOutAnchored(abs, want, ws) {
 
 async function takeOut(abs, want, ws) {
   const fenced = moverFor(ws);
-  if (!fenced && (anchorForTests !== undefined ? anchorForTests : anchorsWork())) return takeOutAnchored(abs, want, ws);
+  if (!fenced) {
+    if (anchorForTests !== undefined ? anchorForTests : anchorsWork()) return takeOutAnchored(abs, want, ws);
+    // No /proc/self/fd on Linux: refused, never the way by name (1.5.60, F3). Tests may ask for that way on purpose.
+    if (anchorForTests === undefined && onLinux()) throw uncheckable();
+  }
   const name = path.basename(abs);
   const tempName = randomName('.lamplit-out-');
   const temp = path.join(path.dirname(abs), tempName);
@@ -161,7 +213,7 @@ async function takeOut(abs, want, ws) {
   await move(abs, temp);
   for (let i = 0; i < 1000; i += 1) {
     const got = await fsp.lstat(temp, { bigint: true }).catch(() => null);
-    if (got && sameFile(want, got) && !got.isSymbolicLink()) return { temp, move, close: () => {} };
+    if (got && sameFile(want, got) && !got.isSymbolicLink()) return { temp, move, restore: () => move(temp, abs), close: () => {} };
     if (got) {
       // Not what was checked (a link was swapped in on the way): back under its own name, in its own folder.
       try { await move(temp, abs); throw outsideErr('the path changed while it was being removed: nothing was removed'); } catch (err) { if (err.code === 'PATH_OUTSIDE_WORKSPACE') throw err; }
@@ -202,17 +254,27 @@ export async function removeFolderInside(ws, abs) {
   const before = await fsp.lstat(abs, { bigint: true });
   if (before.isSymbolicLink() || !before.isDirectory() || !isBelow(realPathOf(ws), realPathOf(abs))) throw outsideErr('path resolves outside the shared workspace');
   const out = await takeOut(abs, before, ws);
-  try { await onRandomName(out.temp, (p) => fsp.rm(p, { recursive: true, force: false })); } finally { out.close(); }
+  try { await removeTree(out, ws); } finally { out.close(); }
 }
 
 /** Move a folder of the workspace into its .trash place, checked the same way: taken out first, then moved by its random name. */
 async function moveFolderAside(ws, target, kept) {
   const before = await fsp.lstat(target, { bigint: true });
   if (before.isSymbolicLink() || !before.isDirectory() || !isBelow(realPathOf(ws), realPathOf(target))) throw outsideErr('path resolves outside the shared workspace');
-  await fsp.mkdir(path.dirname(kept), { recursive: true });
+  // 1.5.60 (F4): .trash/<day>/<id> made one level at a time and checked - a .trash that is a link
+  // to the data folder is refused before anything is made there or moved at all.
+  await mkdirInside(ws, path.dirname(kept));
   // The second move too: as the account when there is one (a swapped .trash must not lead it into the data folder).
   const out = await takeOut(target, before, ws);
-  try { await onRandomName(out.temp, (p) => out.move(p, kept)); } finally { out.close(); }
+  try {
+    await onRandomName(out.temp, (p) => out.move(p, kept));
+  } catch (err) {
+    // Refused on the way: back under its own name, not left under the random one.
+    await out.restore().catch(() => {});
+    throw err;
+  } finally {
+    out.close();
+  }
 }
 
 /**
@@ -276,11 +338,11 @@ export async function undoChanges(workspaceDir, ids = []) {
         if (fs.existsSync(target)) throw new Error('原来的位置已经有同名的文件或文件夹');
         const kept = path.resolve(ws, m.folder || '');
         if (!inside(kept, path.join(ws, TRASH_DIR))) throw new Error('找不到这次改动的备份');
-        await fsp.mkdir(path.dirname(target), { recursive: true });
+        await mkdirInside(ws, path.dirname(target)); // checked level by level (1.5.60, F4)
         await moveFolderAside(ws, kept, target);
       } else if (m.kind === 'delete' || m.existed) {
         if (m.kind === 'delete' && fs.existsSync(target)) throw new Error('原来的位置已经有同名的文件或文件夹');
-        await fsp.mkdir(path.dirname(target), { recursive: true });
+        await mkdirInside(ws, path.dirname(target)); // checked level by level (1.5.60, F4)
         await writeInside(ws, target, await fsp.readFile(path.join(where.store, 'content')));
       } else if (fs.existsSync(target)) {
         await removeInside(ws, target);
@@ -300,15 +362,35 @@ export async function undoChanges(workspaceDir, ids = []) {
 export async function pruneTrash(workspaceDir, days = KEEP_DAYS) {
   const cutoff = dayOf(new Date(Date.now() - days * 24 * 3600 * 1000));
   let removed = 0;
-  for (const root of [storeRoot(), path.join(path.resolve(workspaceDir), TRASH_DIR)]) {
-    let names = [];
-    try { names = await fsp.readdir(root); } catch { continue; }
-    for (const name of names) {
-      if (/^\d{8}$/.test(name) && name < cutoff) {
-        await fsp.rm(path.join(root, name), { recursive: true, force: true }).catch(() => {});
-        removed += 1;
-      }
+  const old = async (root) => { try { return (await fsp.readdir(root)).filter((n) => /^\d{8}$/.test(n) && n < cutoff); } catch { return []; } };
+  // The records in the data folder: the hub's own, by name.
+  for (const name of await old(storeRoot())) {
+    await fsp.rm(path.join(storeRoot(), name), { recursive: true, force: true }).catch(() => {});
+    removed += 1;
+  }
+  // The workspace's .trash (1.5.60, F2): a bot can swap anything in it, so never Node's rm by path -
+  // GNU rm through the held-open .trash on Linux, the bots' account on Windows. A .trash that is a
+  // link is left alone, and so is everything on a Linux without /proc (F3).
+  const ws = path.resolve(workspaceDir);
+  const trash = path.join(ws, TRASH_DIR);
+  const st = await fsp.lstat(trash).catch(() => null);
+  if (!st || st.isSymbolicLink() || !st.isDirectory()) return removed;
+  const names = await old(trash);
+  if (!names.length) return removed;
+  if (anchorForTests !== undefined ? anchorForTests : anchorsWork()) {
+    let here;
+    try { here = openFolderInside(ws, trash); } catch { return removed; }
+    try {
+      for (const name of names) await rmUnder(here.fd, name).then(() => { removed += 1; }, () => {});
+    } finally {
+      here.close();
     }
+    return removed;
+  }
+  if (onLinux() && anchorForTests === undefined) return removed;
+  const fenced = removerFor(ws);
+  for (const name of names) {
+    await (fenced ? fenced(path.join(trash, name)) : fsp.rm(path.join(trash, name), { recursive: true, force: true })).then(() => { removed += 1; }, () => {});
   }
   return removed;
 }

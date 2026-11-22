@@ -212,11 +212,60 @@ export function openSealed(box, key = masterKey()) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Plain key files once the key is here (1.5.60, F6)
+// ---------------------------------------------------------------------------
+//
+// With a master key every key file is written sealed. A plain one then is not
+// Lamplit's: put there by something else (the verifier's 1.5.59 attack: a
+// browser download planted a plain mcp.json, whose commands the hub runs at
+// its next start, outside the sandbox). So it is not used. But plain files are
+// also how every key file started (before the desktop app had a key, before a
+// name joined SEALED_FILES): those are sealed once, at start, and then the
+// name is "covered". data/sealing.json, sealed itself (so it cannot be made
+// up), lists the covered names; a plain file under a covered name is refused
+// - left as it is, unused, and named in 体检 (refusedPlainFiles).
+
+export const SEALING_FILE = 'sealing.json';
+const sealingCache = new Map();
+/** The names `key` has brought over in `dir` (a Set; empty without a key or a record it opens). */
+function coveredNames(dir, key = masterKey()) {
+  if (!key) return new Set();
+  const file = path.join(dir, SEALING_FILE);
+  let st;
+  try { st = fs.statSync(file); } catch { return new Set(); }
+  const known = sealingCache.get(file);
+  if (known && known.mtimeMs === st.mtimeMs && known.size === st.size && known.key.equals(key)) return known.names;
+  let names = new Set();
+  try {
+    const text = openSealed(JSON.parse(fs.readFileSync(file, 'utf8')), key);
+    if (text) names = new Set(JSON.parse(text).names || []);
+  } catch { /* none it opens */ }
+  sealingCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, key, names });
+  return names;
+}
+
+/** Plain key files refused since start: name -> {file, at}. */
+export const refusedPlainFiles = new Map();
+
+/** Is `value` (read from `file`) a plain copy of a key file this key already covers? Then it is not used. */
+export function plainRefused(file, value) {
+  const name = path.basename(file);
+  if (!SEALED_FILES.has(name) || !masterKey()) return false;
+  if (value && typeof value === 'object' && value.lamplitSealed) return false;
+  if (!coveredNames(path.dirname(file)).has(name)) return false;
+  if (!refusedPlainFiles.has(name)) {
+    refusedPlainFiles.set(name, { file, at: new Date().toISOString() });
+    console.error(`[store] ${name} is not encrypted although this computer's key covers it: Lamplit did not write it, so it is not used (体检 says so)`);
+  }
+  return true;
+}
+
 const sealedWarned = new Set();
-/** Parsed JSON, opening a sealed file; `undefined` when it cannot be opened. */
+/** Parsed JSON, opening a sealed file; `undefined` when it cannot be opened (or is a refused plain key file). */
 function parseMaybeSealed(file, raw) {
   const value = JSON.parse(raw);
-  if (!value || typeof value !== 'object' || !value.lamplitSealed) return value;
+  if (!value || typeof value !== 'object' || !value.lamplitSealed) return plainRefused(file, value) ? undefined : value;
   const text = openSealed(value);
   if (text === null) {
     if (!sealedWarned.has(file)) {
@@ -243,6 +292,9 @@ export async function sealSecretFiles(dir) {
   const key = masterKey();
   const done = [];
   if (!key) return done;
+  // 1.5.60 (F6): only names this key has not covered yet are brought over; a plain file under a
+  // covered name is refused (plainRefused), not sealed - sealing it would make it Lamplit's.
+  const covered = coveredNames(dir, key);
   for (const name of SEALED_FILES) {
     const file = path.join(dir, name);
     let raw;
@@ -250,10 +302,15 @@ export async function sealSecretFiles(dir) {
     let value;
     try { value = JSON.parse(raw); } catch { continue; }
     if (!value || typeof value !== 'object' || value.lamplitSealed) continue;
+    if (covered.has(name)) { plainRefused(file, value); continue; }
     const sealed = sealText(raw, key);
     if (openSealed(JSON.parse(sealed), key) !== raw) continue; // never replace what cannot be read back
     await writeTextAtomic(file, sealed);
     done.push(name);
+  }
+  // Every name is covered from now on (the ones not there yet too: a key file Lamplit makes later is written sealed).
+  if ([...SEALED_FILES].some((n) => !covered.has(n))) {
+    await writeTextAtomic(path.join(dir, SEALING_FILE), sealText(JSON.stringify({ names: [...SEALED_FILES], at: new Date().toISOString() }), key));
   }
   return done;
 }
@@ -286,6 +343,7 @@ function refuseLockedSeal(file) {
 export async function writeJsonAtomic(file, value) {
   refuseLockedSeal(file);
   await writeTextAtomic(file, jsonTextFor(file, value));
+  if (masterKey()) refusedPlainFiles.delete(path.basename(file)); // written sealed again by Lamplit itself
 }
 
 /**
@@ -305,6 +363,7 @@ export function writeJsonSyncAtomic(file, value) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       fs.renameSync(tmp, file);
+      if (masterKey()) refusedPlainFiles.delete(path.basename(file));
       return;
     } catch (err) {
       lastErr = err;

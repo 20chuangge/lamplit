@@ -41,6 +41,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { P, readJson, writeJsonAtomic } from './store.mjs';
 import { childEnv } from './childenv.mjs';
+import { mkdirInside, writeInside, openWriteInside } from './safefs.mjs';
 
 export const CLI_AGENT_TIMEOUT_MS = 20 * 60 * 1000;
 export const CLI_TAIL_CHARS = 8000;
@@ -341,17 +342,26 @@ export function newTaskDir(workspaceDir) {
  * Run the task. -> {agent, dir, exitCode, timedOut, stopped, seconds, summary, outputTail, outputFile, files}
  * `dir` must already be checked to be inside the workspace by the caller.
  */
-export async function runCliAgent({ agent, task, dir, allowShell = false, model = '', signal, timeoutMs = CLI_AGENT_TIMEOUT_MS }) {
+export async function runCliAgent({ agent, task, dir, workspaceDir = '', allowShell = false, model = '', signal, timeoutMs = CLI_AGENT_TIMEOUT_MS }) {
   const spec = CLI_AGENTS[agent];
   if (!spec) throw Object.assign(new Error(`unknown agent "${agent}" (${CLI_AGENT_IDS.join(', ')})`), { code: 'CLI_UNKNOWN' });
   const file = findCli(agent);
   if (!file) throw Object.assign(new Error(`这台机器上没有装 ${spec.label} 的命令行版。装法：${spec.install}，然后自己登录一次：${spec.login}`), { code: 'CLI_NOT_INSTALLED' });
   // No model named: the one the human picked in settings, else the tool's own default.
   const useModel = cleanModelName(model) || (await loadCliConfig()).models[agent] || '';
-  await fsp.mkdir(dir, { recursive: true });
-  if (spec.promptFile) await fsp.writeFile(path.join(dir, TASK_FILE), `${String(task)}\n`, 'utf8');
   const logFile = path.join(dir, 'output.log');
-  const log = fs.createWriteStream(logFile);
+  let log;
+  if (workspaceDir) {
+    // 1.5.60 (the verifier's F1): the folder made one level at a time, the task and the log written
+    // through checked handles - a link on the way does not put them in the data folder.
+    await mkdirInside(workspaceDir, dir);
+    if (spec.promptFile) await writeInside(workspaceDir, path.join(dir, TASK_FILE), `${String(task)}\n`);
+    log = fs.createWriteStream(logFile, { fd: await openWriteInside(workspaceDir, logFile) });
+  } else {
+    await fsp.mkdir(dir, { recursive: true });
+    if (spec.promptFile) await fsp.writeFile(path.join(dir, TASK_FILE), `${String(task)}\n`, 'utf8');
+    log = fs.createWriteStream(logFile);
+  }
   const started = Date.now();
   let tail = '';
   let timedOut = false;

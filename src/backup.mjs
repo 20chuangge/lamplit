@@ -39,7 +39,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { P, readJson, writeJsonAtomic, writeFileAtomic, writeTextAtomic, masterKey, sealText, openSealed, nowIso } from './store.mjs';
+import { P, readJson, writeJsonAtomic, writeFileAtomic, writeTextAtomic, masterKey, sealText, openSealed, plainRefused, nowIso } from './store.mjs';
 import { unwrapVaultKey, wrapVaultKey } from './vault.mjs';
 
 export const BACKUP_FORMAT = 1;
@@ -99,6 +99,8 @@ const SKIPPED = new Set([
   'runner.json', 'runner', 'desktop.json', 'desktop-setup.json', 'vnc.json', 'desktops.passwd', 'phone.json', 'workspace.json',
   'screen.png', 'screen.json', 'turns', 'pending.json', 'browser-profile', 'browser-profiles', 'browser-state.json', 'browser-desktop.cmd',
   'tightvnc.json', 'undo', 'video-jobs.json', 'wire.jsonl', 'backup.json', 'backup-key.json', 'restore-pending.json', '.restore', 'lamplit-update.json', '.update',
+  // 1.5.60: which key files this computer's key covers (sealed with it), and the browser's own download folder.
+  'sealing.json', 'browser-downloads',
 ]);
 const SKIPPED_PATTERNS = [/^browser-state-[\w.-]+\.json$/, /^vnc-secure-/, /^vnc-control-/, /\.tmp$/, /\.partial(-\d+)?$/];
 
@@ -218,7 +220,8 @@ async function openKeyFile(abs) {
   const raw = await fsp.readFile(abs, 'utf8');
   let value;
   try { value = JSON.parse(raw); } catch { return raw; }
-  if (!value || typeof value !== 'object' || !value.lamplitSealed) return raw;
+  // A plain key file this computer's key already covers is not Lamplit's (1.5.60, F6): not carried into a backup either.
+  if (!value || typeof value !== 'object' || !value.lamplitSealed) return plainRefused(abs, value) ? null : raw;
   return openSealed(value);
 }
 

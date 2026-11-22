@@ -18,6 +18,7 @@ import net from 'node:net';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import crypto from 'node:crypto';
+import { saveInside } from './safefs.mjs';
 
 const TIMEOUT_MS = 30000;
 
@@ -782,10 +783,17 @@ export function createMailServer({ env = {}, workspaceDir = '', version = '0', i
         const saved = [];
         if (save_attachments && m.attachments.length && workspaceDir) {
           const dir = path.join('mail', new Date().toISOString().slice(0, 10), String(uid));
-          await fsp.mkdir(path.join(workspaceDir, dir), { recursive: true });
           for (const a of m.attachments) {
             const safe = String(a.filename).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 120) || 'attachment';
-            await fsp.writeFile(path.join(workspaceDir, dir, safe), a.data);
+            // 1.5.60 (the verifier's F1): the sender names the attachment; mail/<day>/<uid> a link to the
+            // data folder must not put it there. Folders one level at a time, the file through the checked open.
+            try {
+              await saveInside(workspaceDir, path.join(workspaceDir, dir, safe), a.data);
+            } catch (err) {
+              if (err.code !== 'PATH_OUTSIDE_WORKSPACE') throw err;
+              saved.push(`（${safe} 没有保存：保存的文件夹指向工作区外面）`);
+              continue;
+            }
             saved.push(path.join(dir, safe).split(path.sep).join('/'));
           }
         }

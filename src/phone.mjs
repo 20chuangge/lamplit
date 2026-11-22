@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { saveInside } from './safefs.mjs';
 
 const LAMPLIT_PACKAGE = 'com.desk.assistant';
 
@@ -297,8 +298,8 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     if (want && !rel.toLowerCase().endsWith(ext)) rel = rel.replace(/\.(png|jpe?g)$/i, '') + ext;
     if (rel.startsWith('/') || rel.split('/').includes('..')) throw fail('PHONE_BAD_ARGS', 'path must stay inside the workspace');
     const abs = path.join(workspaceDir, rel);
-    await fsp.mkdir(path.dirname(abs), { recursive: true });
-    await fsp.writeFile(abs, bytes);
+    // 1.5.60 (the verifier's F1): folders one level at a time, the file through the checked open.
+    try { await saveInside(workspaceDir, abs, bytes); } catch (err) { if (err.code === 'PATH_OUTSIDE_WORKSPACE') throw fail('PHONE_BAD_ARGS', 'path leads outside the workspace through a link'); throw err; }
     const ui = await readUi(serial).catch(() => ({ app: w.app, nodes: [] }));
     const app = w.app || ui.app;
     return {

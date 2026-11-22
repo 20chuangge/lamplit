@@ -33,7 +33,7 @@ import crypto from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { readJson, writeJsonAtomic } from './store.mjs';
-import { writeInside } from './safefs.mjs';
+import { saveInside } from './safefs.mjs';
 import { MiniWebSocket } from './ws-client.mjs';
 
 const OPEN = 'https://open.feishu.cn';
@@ -340,9 +340,8 @@ export function createFeishu(o) {
     const bytes = Buffer.from(await res.arrayBuffer());
     const day = new Date().toISOString().slice(0, 10);
     const rel = path.posix.join('uploads', day, `feishu-${Date.now().toString(36)}.png`);
-    await fsp.mkdir(path.join(o.workspaceDir, path.dirname(rel)), { recursive: true });
-    // Checked (1.5.54, the verifier's M7-F): a folder the bot made a link out of the workspace is refused.
-    await writeInside(o.workspaceDir, path.join(o.workspaceDir, rel), bytes);
+    // Checked (1.5.54, the verifier's M7-F; its folders too since 1.5.60, F1): a folder the bot made a link out of the workspace is refused.
+    await saveInside(o.workspaceDir, path.join(o.workspaceDir, rel), bytes);
     return rel;
   }
 

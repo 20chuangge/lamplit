@@ -27,15 +27,25 @@ import { runnerStatus } from './winrunner.mjs';
 
 const under = (p, dir) => p === dir || p.startsWith(`${dir.replace(/\/+$/, '')}/`);
 
-/** The bwrap arguments before `--`. */
+/**
+ * The bwrap arguments before `--`.
+ *
+ * 1.5.60 (the verifier's F5): --unshare-pid in both modes. Without it the /proc
+ * mounted inside is the machine's own: every process of the same account (the
+ * hub, its browser, the desktop app) is there, and /proc/<pid>/root of any of
+ * them is the real file system - the data folder with it, under the tmpfs that
+ * was meant to hide it. In its own pid namespace a command sees only its own
+ * processes. The cost: a program a command leaves running in the background
+ * ends when the command ends (bwrap is that namespace's first process).
+ */
 export function bwrapArgs({ mode = 'strict', root = P.root, dataDir = P.dataDir, workspaceDir, folders = [], exists = fs.existsSync } = {}) {
   const ws = String(workspaceDir || '');
   if (mode === 'open') {
-    const args = ['--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc'];
+    const args = ['--unshare-pid', '--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc'];
     if (dataDir && exists(dataDir)) args.push('--tmpfs', dataDir);
     return args.concat(['--chdir', ws, '--die-with-parent']);
   }
-  const args = ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--bind', '/tmp', '/tmp', '--tmpfs', '/home', '--tmpfs', '/root'];
+  const args = ['--unshare-pid', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--bind', '/tmp', '/tmp', '--tmpfs', '/home', '--tmpfs', '/root'];
   const homes = (p) => under(p, '/home') || under(p, '/root');
   if (root && !homes(root) && exists(root)) args.push('--tmpfs', root);
   if (dataDir && !homes(dataDir) && !(root && under(dataDir, root)) && exists(dataDir)) args.push('--tmpfs', dataDir);
@@ -78,8 +88,9 @@ export function apparmorInstallCommand() {
   return `printf '%s\\n' ${APPARMOR_PROFILE.map((l) => `'${l}'`).join(' ')} > ${APPARMOR_FILE} && apparmor_parser -r ${APPARMOR_FILE}`;
 }
 
-// The check: $1 must not be visible (one of Lamplit's own files), $2 (the workspace) writable.
-export const PROBE_SCRIPT = '[ ! -e "$1" ] && [ -w "$2" ] && echo sandbox-ok';
+// The check: $1 must not be visible (one of Lamplit's own files), not even through the hub's own
+// /proc entry ($3: its pid; 1.5.60, F5), and $2 (the workspace) writable.
+export const PROBE_SCRIPT = '[ ! -e "$1" ] && [ ! -e "/proc/$3/root$1" ] && [ -w "$2" ] && echo sandbox-ok';
 
 let status = { state: process.platform === 'linux' ? 'unknown' : 'na', reason: '' };
 
@@ -114,7 +125,7 @@ export async function checkSandbox({ workspaceDir = P.workspaceDir, secret = P.s
     }
   }
   const args = bwrapArgs({ mode: 'strict', workspaceDir, folders: [] });
-  const tryIt = () => runImpl('bwrap', [...args, '--', '/bin/sh', '-c', PROBE_SCRIPT, 'probe', secret, workspaceDir]);
+  const tryIt = () => runImpl('bwrap', [...args, '--', '/bin/sh', '-c', PROBE_SCRIPT, 'probe', secret, workspaceDir, String(process.pid)]);
   let probe = await tryIt();
   const blocked = (p) => /namespace|Operation not permitted|setting up uid map|Permission denied/i.test(String(p.out || ''));
   if (!(probe.code === 0 && /sandbox-ok/.test(probe.out)) && blocked(probe)) {

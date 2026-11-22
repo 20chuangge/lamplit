@@ -30,7 +30,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 import { newVncSecret, isVncSecret, vncStoredPassword, rfbClientHandshake, chunkReader } from './vncauth.mjs';
-import { sealText, openSealed } from './store.mjs';
+import { sealText, openSealed, plainRefused } from './store.mjs';
 
 export const VNC_PORT = 5900;
 /** The startup entry a bot made by hand before Nightshift did this itself. */
@@ -338,6 +338,7 @@ export function readVncSecret(dataDir, { key = null } = {}) {
   try {
     let value = JSON.parse(fs.readFileSync(path.join(dataDir, SECRET_FILE), 'utf8'));
     if (value?.lamplitSealed) value = JSON.parse(openSealed(value, key) || 'null');
+    else if (key && plainRefused(path.join(dataDir, SECRET_FILE), value)) return null; // 1.5.60 (F6): a plain copy Lamplit did not write
     return isVncSecret(value) ? value : null;
   } catch {
     return null;

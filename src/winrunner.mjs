@@ -473,4 +473,24 @@ export function fencedMover(workspaceDir = P.workspaceDir) {
   };
 }
 
+/**
+ * Removing a taken-out workspace folder AS the account (1.5.60, the verifier's F2):
+ * a recursive removal goes by name, so a folder inside it swapped for a junction
+ * to the data folder could lead the hub's own removal there. As lamplit-runner
+ * Windows refuses every name in the data folder; rmdir /s does not follow
+ * junctions either. -> async (dir), or null when the account is not on.
+ */
+export const FENCED_REMOVE = 'rmdir /s /q "%LAMPLIT_FROM%"';
+export function fencedRemover(workspaceDir = P.workspaceDir) {
+  if (process.platform !== 'win32' || status.state !== 'on') return null;
+  const runner = readRunner();
+  if (!runner) return null;
+  return async (dir) => {
+    const env = runnerEnv(fencedMoveEnv(dir, ''), { home: runner.home || RUNNER_HOME });
+    const input = helperPayload({ user: runner.user, password: runner.password, cwd: path.resolve(String(workspaceDir)), command: FENCED_REMOVE, env });
+    const r = await run(helperExe(), [], { input, timeoutMs: 120000 });
+    if (r.code !== 0 || fs.existsSync(dir)) throw Object.assign(new Error(`removing as ${RUNNER_USER} was refused: ${String(r.out).trim().slice(-200)}`), { code: 'EFENCE' });
+  };
+}
+
 export const _test = { setStatus: (s) => { status = s; }, osHome: os.homedir };

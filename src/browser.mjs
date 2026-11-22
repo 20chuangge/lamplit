@@ -22,6 +22,7 @@
  * so a tool call can never crash a turn.
  */
 
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -32,6 +33,7 @@ import { spawn, execFile } from 'node:child_process';
 import { P, readJsonSync, writeJsonSyncAtomic } from './store.mjs';
 import { MiniWebSocket } from './ws-client.mjs';
 import { assertPublicUrl } from './netguard.mjs';
+import { saveInside, mkdirInside, copyInside } from './safefs.mjs';
 
 // ---------------------------------------------------------------------------
 // small utilities
@@ -86,6 +88,27 @@ function stamp() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
+/** A name in `dir` nothing has yet: `name`, else "stem (1).ext", "stem (2).ext"… -> its path */
+async function freeNameIn(dir, name) {
+  const ext = path.extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  for (let i = 0; i < 1000; i += 1) {
+    const candidate = path.join(dir, i ? `${stem} (${i})${ext}` : name);
+    if (!(await fsp.lstat(candidate).catch(() => null))) return candidate;
+  }
+  return path.join(dir, `${stem} (${crypto.randomBytes(3).toString('hex')})${ext}`);
+}
+
+/** Staging folders of earlier downloads (data/browser-downloads/*) older than an hour: gone. */
+async function clearOldStaging() {
+  const root = path.join(P.dataDir, 'browser-downloads');
+  const names = await fsp.readdir(root).catch(() => []);
+  for (const n of names) {
+    const st = await fsp.stat(path.join(root, n)).catch(() => null);
+    if (st && Date.now() - st.mtimeMs > 3600000) await fsp.rm(path.join(root, n), { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** Keep the workspace as the only place artifacts can land. */
 function resolveInWorkspace(workspaceDir, relative) {
   const abs = path.resolve(workspaceDir, relative);
@@ -101,32 +124,6 @@ function isHttpUrl(value) {
   } catch {
     return false;
   }
-}
-
-/**
- * Move a downloaded file into place. Windows keeps a handle on a file for a
- * moment after Chrome finishes writing it, so a plain rename can throw EBUSY;
- * retry, then fall back to copy + best-effort delete.
- */
-async function moveFileWithRetry(source, dest, { attempts = 6 } = {}) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      await fsp.rename(source, dest);
-      return;
-    } catch (err) {
-      const recoverable = ['EXDEV', 'EPERM', 'EBUSY', 'EACCES'].includes(err.code);
-      if (!recoverable) throw err;
-      try {
-        await fsp.copyFile(source, dest);
-        await fsp.rm(source, { force: true }).catch(() => {});
-        return;
-      } catch {
-        /* still locked: back off and retry */
-      }
-      await sleep(150 * (attempt + 1));
-    }
-  }
-  await fsp.copyFile(source, dest);
 }
 
 // ---------------------------------------------------------------------------
@@ -1397,8 +1394,14 @@ class BrowserManager {
       if (!target.inside) {
         return errorResult('SCREENSHOT_PATH_OUTSIDE', `screenshots must stay inside the workspace; "${relative}" resolves to ${target.abs}`);
       }
-      await fsp.mkdir(path.dirname(target.abs), { recursive: true });
-      await fsp.writeFile(target.abs, buffer);
+      // Folders one level at a time, the file through the checked open (1.5.60, the verifier F1):
+      // a folder on the way that is a link to the data folder writes nothing there.
+      try {
+        await saveInside(workspaceDir, target.abs, buffer);
+      } catch (err) {
+        if (err.code === 'PATH_OUTSIDE_WORKSPACE') return errorResult('SCREENSHOT_PATH_OUTSIDE', `screenshots must stay inside the workspace; "${relative}" leads outside it through a link`);
+        throw err;
+      }
 
       let viewport = null;
       try {
@@ -1438,11 +1441,23 @@ class BrowserManager {
 
     const workspaceDir = ctx?.workspaceDir || P.workspaceDir;
     const downloadDir = path.join(workspaceDir, 'downloads');
+    // 1.5.60 (the verifier's F1): the browser saves into a folder of the hub's own, in the data
+    // folder under a random name; the file is then COPIED into the workspace through the checked
+    // open. Before, it saved straight into workspace/downloads and was renamed to the path asked
+    // for: either one a link to the data folder put the page's file there (mcp.json: a command
+    // the hub runs at its next start).
+    const staging = path.join(P.dataDir, 'browser-downloads', crypto.randomBytes(8).toString('hex'));
 
     try {
+      const dl = await fsp.lstat(downloadDir).catch(() => null);
+      if (dl && (dl.isSymbolicLink() || !dl.isDirectory())) {
+        return errorResult('DOWNLOAD_FOLDER_LINK', 'workspace/downloads is a link (or not a folder): nothing is downloaded into it');
+      }
       const session = await this.ensureSession();
-      await fsp.mkdir(downloadDir, { recursive: true });
-      const before = new Set(await fsp.readdir(downloadDir).catch(() => []));
+      await mkdirInside(workspaceDir, downloadDir);
+      await clearOldStaging();
+      await fsp.mkdir(staging, { recursive: true });
+      const before = new Set();
 
       // Prefer the browser-level domain (current Chrome); fall back to the
       // older page-level one on builds that dropped it.
@@ -1450,7 +1465,7 @@ class BrowserManager {
       try {
         await session.browser.send('Browser.setDownloadBehavior', {
           behavior: 'allow',
-          downloadPath: downloadDir,
+          downloadPath: staging,
           eventsEnabled: true,
         }, { timeoutMs: 8000 });
         configured = true;
@@ -1459,7 +1474,7 @@ class BrowserManager {
       }
       if (!configured) {
         try {
-          await session.page.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: downloadDir }, { timeoutMs: 8000 });
+          await session.page.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: staging }, { timeoutMs: 8000 });
           configured = true;
         } catch {
           configured = false;
@@ -1508,7 +1523,7 @@ class BrowserManager {
         if (completed === 'canceled') {
           return errorResult('DOWNLOAD_CANCELED', 'the browser canceled the download');
         }
-        file = await this.findDownloadedFile(downloadDir, before, tracker.filename, completed ? 8000 : 0, startedAt);
+        file = await this.findDownloadedFile(staging, before, tracker.filename, completed ? 8000 : 0, startedAt);
       } finally {
         offBegin();
         offProgress();
@@ -1520,22 +1535,28 @@ class BrowserManager {
         });
       }
 
-      const source = path.join(downloadDir, file);
+      const source = path.join(staging, file);
       const stat = await fsp.stat(source);
 
-      let finalPath = source;
-      let finalRel = path.relative(workspaceDir, source).split(path.sep).join('/');
+      // Where it goes: the path asked for, or downloads/<name> (a free one: "name (1).ext", as Chrome did).
       const requested = String(args?.path || '').trim();
+      let target;
       if (requested) {
-        const target = resolveInWorkspace(workspaceDir, requested);
+        target = resolveInWorkspace(workspaceDir, requested);
         if (!target.inside) {
           return errorResult('DOWNLOAD_PATH_OUTSIDE', `downloads must stay inside the workspace; "${requested}" resolves to ${target.abs}`);
         }
-        await fsp.mkdir(path.dirname(target.abs), { recursive: true });
-        await moveFileWithRetry(source, target.abs);
-        finalPath = target.abs;
-        finalRel = target.rel;
+      } else {
+        target = resolveInWorkspace(workspaceDir, path.relative(workspaceDir, await freeNameIn(downloadDir, file)));
       }
+      try {
+        await copyInside(workspaceDir, source, target.abs);
+      } catch (err) {
+        if (err.code === 'PATH_OUTSIDE_WORKSPACE') return errorResult('DOWNLOAD_PATH_OUTSIDE', `downloads must stay inside the workspace; "${target.rel}" leads outside it through a link`);
+        throw err;
+      }
+      const finalPath = target.abs;
+      const finalRel = target.rel;
 
       return {
         ok: true,
@@ -1548,6 +1569,9 @@ class BrowserManager {
       };
     } catch (err) {
       return browserFailure(err);
+    } finally {
+      // The hub's own copy goes; a file the browser still holds is cleared on a later download.
+      await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
     }
   }
 

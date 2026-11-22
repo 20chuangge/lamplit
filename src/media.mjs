@@ -31,6 +31,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { P, readJson, writeJsonAtomic } from './store.mjs';
+import { saveInside } from './safefs.mjs';
 
 const MEDIA_FILE = path.join(P.dataDir, 'media.json');
 
@@ -191,10 +192,10 @@ async function saveResult({ url, b64 }, { workspaceDir, folder, ext, fetchImpl =
   }
   const day = new Date().toISOString().slice(0, 10);
   const dirRel = path.posix.join('generated', day);
-  await fsp.mkdir(path.join(workspaceDir, dirRel), { recursive: true });
   const name = `${folder}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}${ext}`;
   const rel = path.posix.join(dirRel, name);
-  await fsp.writeFile(path.join(workspaceDir, rel), bytes);
+  // Checked folders and a checked write (1.5.60, the verifier F1): generated/<day> a link writes nothing outside.
+  try { await saveInside(workspaceDir, path.join(workspaceDir, rel), bytes); } catch (err) { throw mediaError(400, 'MEDIA_SAVE', err.code === 'PATH_OUTSIDE_WORKSPACE' ? '保存的文件夹指向工作区外面，没有保存' : `保存失败：${err.message}`); }
   return { path: rel, bytes: bytes.length };
 }
 

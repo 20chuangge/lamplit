@@ -62,14 +62,14 @@ export async function openInside(root, abs, flags = 'r', mode = 0o666) {
 async function checkHandle(root, abs, fh) {
   const realRoot = realPathOf(root);
   const mine = await fh.stat({ bigint: true });
-  // Linux: the kernel says where the handle really is.
+  // Linux: the kernel says where the handle really is. Without /proc (a container, a chroot) it
+  // cannot be asked, and the by-name check below can be raced: refused (1.5.60, the verifier's F3).
   if (process.platform === 'linux') {
     let where = '';
-    try { where = fs.readlinkSync(`/proc/self/fd/${fh.fd}`); } catch { /* no /proc: as on other systems */ }
-    if (where) {
-      if (!isBelow(realRoot, where)) throw outside(abs);
-      return;
-    }
+    try { where = fs.readlinkSync(`/proc/self/fd/${fh.fd}`); } catch { /* checked below */ }
+    if (!where) throw Object.assign(new Error(`this system has no /proc: Lamplit cannot check where ${abs} really is, so it does not touch it`), { code: 'PATH_OUTSIDE_WORKSPACE', status: 400 });
+    if (!isBelow(realRoot, where)) throw outside(abs);
+    return;
   }
   // Elsewhere (Windows has no handle-to-path call in Node): what the name leads to must be
   // inside, be the opened file, and still lead to the same place when asked again - a
@@ -133,6 +133,79 @@ export async function writeInside(root, abs, data, { append = false } = {}) {
   } finally {
     await fh.close().catch(() => {});
   }
+}
+
+/**
+ * Make the folder `absDir` inside `root`, one level at a time (1.5.60, the
+ * verifier's F1). mkdir(dirname, {recursive}) follows a link on the way and
+ * makes folders wherever it leads (the data folder); here every level is looked
+ * at before the next is made: it must be a folder (a link only when it leads
+ * to a folder) whose real place is inside `root`. -> undefined; throws code
+ * PATH_OUTSIDE_WORKSPACE. A name swapped after its check can still lead one
+ * mkdir astray (an empty folder at most); what is written goes through
+ * writeInside's own checks.
+ */
+export async function mkdirInside(root, absDir) {
+  const rootAbs = path.resolve(root);
+  const target = path.resolve(absDir);
+  if (!isBelow(rootAbs, target)) throw outside(absDir);
+  await fsp.mkdir(rootAbs, { recursive: true }); // the workspace itself: the hub's own choice
+  const realRoot = realPathOf(root);
+  const rel = path.relative(rootAbs, target);
+  let cur = rootAbs;
+  for (const part of rel ? rel.split(path.sep) : []) {
+    cur = path.join(cur, part);
+    let st = await fsp.lstat(cur).catch(() => null);
+    if (!st) {
+      try { await fsp.mkdir(cur); } catch (err) { if (err.code !== 'EEXIST') throw err; }
+      st = await fsp.lstat(cur).catch(() => null);
+    }
+    if (!st) throw outside(cur);
+    if (st.isSymbolicLink()) {
+      const to = await fsp.stat(cur).catch(() => null);
+      if (!to?.isDirectory()) throw outside(cur);
+    } else if (!st.isDirectory()) {
+      throw Object.assign(new Error(`${cur} is a file, not a folder`), { code: 'ENOTDIR', status: 400 });
+    }
+    let real = '';
+    try { real = fs.realpathSync.native(cur); } catch { throw outside(cur); }
+    if (!isBelow(realRoot, real)) throw outside(cur);
+  }
+}
+
+/** A checked, emptied handle to write `abs` inside `root` through (a log stream); its folders made with mkdirInside. The caller closes it. */
+export async function openWriteInside(root, abs) {
+  await mkdirInside(root, path.dirname(abs));
+  const fh = await openForWrite(root, abs, false);
+  try { await fh.truncate(0); } catch (err) { await fh.close().catch(() => {}); throw err; }
+  return fh;
+}
+
+/** Save `data` at `abs` inside `root`: its folders made with mkdirInside, the file with writeInside. */
+export async function saveInside(root, abs, data) {
+  await mkdirInside(root, path.dirname(abs));
+  await writeInside(root, abs, data);
+}
+
+/**
+ * Copy the file `src` (somewhere the hub keeps to itself) to `abs` inside
+ * `root`, streamed through the checked handle: never a rename (a rename by name
+ * is what a swapped folder turns into a write elsewhere). -> bytes copied
+ */
+export async function copyInside(root, src, abs) {
+  await mkdirInside(root, path.dirname(abs));
+  const fh = await openForWrite(root, abs, false);
+  let bytes = 0;
+  try {
+    await fh.truncate(0);
+    for await (const chunk of fs.createReadStream(src)) {
+      await fh.write(chunk);
+      bytes += chunk.length;
+    }
+  } finally {
+    await fh.close().catch(() => {});
+  }
+  return bytes;
 }
 
 /** A checked handle and its stat, for streaming a file out (the caller closes fh). */

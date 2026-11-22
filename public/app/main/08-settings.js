@@ -941,6 +941,9 @@ function rosterLine(key, { idle = '', last = '', group = false } = {}) {
     if (wait?.kind === 'decision') return { kind: 'needs', text: wait.text ? `问你：${brief(wait.text)}` : '等你拍板', hint: '等你拍板' };
     if (wait?.kind === 'login') return { kind: 'needs', text: '等你填写登录信息' };
     if (wait?.kind === 'takeover') return { kind: 'needs', text: '等你接管屏幕' };
+    // What the card asks, in its own headline (1.5.59): 「等你点头：删除「旧报告.docx」」.
+    const card = group ? '' : waitingCardTitle(key);
+    if (card) return { kind: 'needs', text: `等你点头：${card}` };
     const ask = item.ask || {};
     const who = group && ask.botName ? ask.botName : '';
     if (ask.count > 1) return { kind: 'needs', text: who ? `${who}：想运行 ${ask.count} 条查看命令` : `想运行 ${ask.count} 条查看命令`, hint: '等你点头' };
@@ -961,7 +964,7 @@ function rosterLine(key, { idle = '', last = '', group = false } = {}) {
     if (doing.tool) return { kind: 'working', text: `正在${toolNameLabel(doing.tool)}…` };
     return { kind: 'working', text: '正在工作…' };
   }
-  if (item?.failed) return { kind: 'failed', text: stuckLine(item.failed.status), hint: '上一次没做完' };
+  if (item?.failed) return { kind: 'failed', text: stuckLine(item.failed.status), hint: '上一次' };
   // The chat on screen has no "new result": the human is looking at it.
   if (item?.unread && key !== currentChatKey()) return { kind: 'unread', text: last ? `做完了：${last}` : '做完了，有新结果' };
   return { kind: '', text: idle };
@@ -988,6 +991,9 @@ function othersWaitingLine(ownKey) {
   const others = Object.entries(state.attention?.items || {}).filter(([key]) => key !== ownKey).map(([, item]) => item || {});
   const needs = others.filter((item) => item.needsYou || item.asking).length;
   if (!needs) return '';
+  // Not 「其余都在正常跑」 while another one got stuck (1.5.59 beginner test: 写稿 was red).
+  const stuck = others.filter((item) => item.failed && !item.working && !item.needsYou && !item.asking).length;
+  if (stuck) return `${needs} 件事等你，${stuck} 个出错了`;
   return others.some((item) => item.working && !item.needsYou && !item.asking) ? `${needs} 件事等你，其余都在正常跑` : `${needs} 件事等你`;
 }
 

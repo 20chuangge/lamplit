@@ -245,14 +245,16 @@ function homeTime(ts) {
 /** The home page's search: bots and groups whose name, role or last message match. */
 function filterHome() {
   const q = String($('home-search')?.value || $('roster-search')?.value || '').trim().toLowerCase();
+  // 「N 件等你」 / 「N 个在做」 (1.5.59): only those rows of the list, with the search on top of it.
+  const only = state.rosterFilter || '';
   for (const row of document.querySelectorAll('#bot-list .bot, #bot-list .group, #group-list .group')) {
     const hay = row.dataset.search || row.textContent.toLowerCase();
-    row.hidden = Boolean(q) && !hay.includes(q);
+    row.hidden = (Boolean(q) && !hay.includes(q)) || (Boolean(only) && Boolean(row.closest('#bot-list')) && !rosterFilterMatch(rowKey(row), only));
   }
-  // 「全部机器」 (1.5.43): a search looks inside folded machines too; 「最近」 and empty machines step aside.
+  // 「全部机器」 (1.5.43): a search or a filter looks inside folded machines too; empty machines step aside.
   for (const sec of document.querySelectorAll('#bot-list .roster-sec')) {
-    sec.classList.toggle('searching', Boolean(q));
-    sec.hidden = Boolean(q) && (sec.classList.contains('recent') || !sec.querySelector('.bot:not([hidden]), .group:not([hidden])'));
+    sec.classList.toggle('searching', Boolean(q || only));
+    sec.hidden = Boolean(q || only) && !sec.querySelector('.bot:not([hidden]), .group:not([hidden])');
   }
 }
 

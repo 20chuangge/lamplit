@@ -245,9 +245,11 @@ async function main() {
     await stage('1.5.56: the living avatar - a face per state, still when asked', async () => (await import('./smoke-lamp1556.mjs')).lampChecks({ check, readText }));
     await stage('1.5.57: the living avatar is seen to live - a 40 px header face, a sidebar that blinks', async () => (await import('./smoke-lamp1557.mjs')).lamp1557Checks({ check, readText }));
     await stage('1.5.58: cards you answer - plain titles, risk tags, honest receipts, next steps; approval decisions unchanged', async () => (await import('./smoke-cards1558.mjs')).cards1558Checks({ check, readText }));
+    await stage('1.5.59: the sidebar - 「N 件等你」 / 「N 个在做」, machines with an online dot, status lines, the header counts the chat on screen', async () => (await import('./smoke-sidebar1559.mjs')).sidebar1559Checks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
+    await stage('1.5.59: security - a move through a swapped folder, the way a kernel looks up its two names', async () => (await import('./smoke-sec1559.mjs')).raceChecks({ check }));
     await stage('1.5.56: on a phone, closing settings goes back where it was opened from', async () => (await import('./smoke-nav1556.mjs')).navChecks({ check, readText }));
     await stage('1.5.58: a bot\'s screen on another machine, in 全部机器 (through the relay too)', async () => (await import('./smoke-1558.mjs')).remoteScreenChecks({ check }));
   } finally {
@@ -2629,7 +2631,7 @@ async function scenarioPairing() {
   // 1.5.39: the page's own name does not wait for the other machines; a phone opens on the bot list, not an empty chat.
   {
     const selfOnly = await api('/api/machines?self=1');
-    const mach = await readText('../public/app/main/11-machines.js');
+    const mach = ((await readText('../public/app/main/11-machines.js')) + (await readText('../public/app/main/11a-network.js')));
     const bots = await readText('../public/app/main/04-bots.js');
     const homeAt = bots.indexOf("if (!target && isMobile() && state.bots.length) openSidebar();");
     check('N39 self name at once: /api/machines?self=1 is this machine only; the page asks it first and never names itself 127.0.0.1 through the phone relay; a phone shows the bot list before the page shows',
@@ -4241,7 +4243,7 @@ async function scenarioMcp({ home, toolsMod }) {
   {
     const srv = await readText('../src/server.mjs');
     const bots = await readText('../public/app/main/04-bots.js');
-    const mach = await readText('../public/app/main/11-machines.js');
+    const mach = ((await readText('../public/app/main/11-machines.js')) + (await readText('../public/app/main/11a-network.js')));
     const check1 = (await api('/api/checkup')).json;
     check('K32 isolation: the checkup has 「命令隔离」 on Windows (warn with 「设置单独账户」 until it is on); getting started asks once (on this computer, skippable)',
       srv.includes("checkupItem('isolation', '命令隔离', 'warn', '机器人跑命令时用的是你的账户") && mach.includes("else if (action.kind === 'runner') setupRunnerAccount()")
@@ -4580,7 +4582,7 @@ async function scenarioMcp({ home, toolsMod }) {
         woke && phSrc2.includes("it needs the human\\'s PIN, pattern, fingerprint or face") && svc.includes('case "wake":') && svc.includes('boolean secure = km != null && km.isDeviceLocked();')
         && svc.includes('if (km != null && km.isKeyguardLocked() && !secure)') && svc.includes('if (km != null && km.isKeyguardLocked() && !km.isDeviceLocked()) {') && un.includes('if (km != null && km.isDeviceLocked()) { finish(); return; }') && un.includes('requestDismissKeyguard'), calls.join(' | '));
     }
-    const mach = await readText('../public/app/main/11-machines.js');
+    const mach = ((await readText('../public/app/main/11-machines.js')) + (await readText('../public/app/main/11a-network.js')));
     const html = await readText('../public/index.html');
     check('P17 settings on the phone: with the phone given to the bots and battery optimisation still on, it says why the machines lose it and offers 「允许在后台一直运行」 (and App info on strict brands)',
       html.includes('id="phone-agent-keep"') && html.includes('id="phone-agent-appinfo"') && mach.includes('bat.hidden = !on || free;') && mach.includes('window.NightshiftShell.askBatteryUnrestricted()'));
@@ -6600,7 +6602,7 @@ async function scenarioV140() {
     const cfg = await readText(`${base}res/xml/phone_agent.xml`).catch(() => '');
     const watcher = await readText(`${base}java/com/desk/assistant/NightshiftWatcher.java`);
     const bridge = await readText(`${base}java/com/desk/assistant/ShellBridge.java`);
-    const page = await readText('../public/app/main/11-machines.js');
+    const page = ((await readText('../public/app/main/11-machines.js')) + (await readText('../public/app/main/11a-network.js')));
     check('U5 app: an accessibility service the human turns on (gestures, screenshots, typing straight into the box, never a password box) with a notice to stop it',
       svc.includes('extends AccessibilityService') && svc.includes('dispatchGesture') && svc.includes('takeScreenshot') && svc.includes('ACTION_SET_TEXT') && svc.includes('isPassword()') && svc.includes('disableSelf()')
       && /android\.permission\.BIND_ACCESSIBILITY_SERVICE/.test(manifest) && /@xml\/phone_agent/.test(manifest) && /canPerformGestures="true"/.test(cfg) && /canTakeScreenshot="true"/.test(cfg));
@@ -7370,12 +7372,13 @@ async function scenarioV163() {
   // 1.5.54: a 13th part, 13-backup.js (设置 → 备份), after wiring.
   // 1.5.56: a 14th, 11b-lamp.js (the living avatar), before wiring, which draws the first faces.
   // 1.5.58: a 15th, 07b-cards.js (the cards you answer: titles, risk tags, receipts, next steps), after skills.
-  check('ENG-04b split: the page script is 15 files by feature (core, avatars, groups, bots, chat, live, skills, cards, settings, apps, computer, machines, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
-    PS.MAIN_PARTS.length === 15 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
+  // 1.5.59: a 16th, 11a-network.js (网络诊断, the two relays, 体检), split from 11-machines.js at its cap; a 17th, 04b-sidebar.js (the sidebar's filters, redesign step 4).
+  check('ENG-04b split: the page script is 17 files by feature (core, avatars, groups, bots, sidebar, chat, live, skills, cards, settings, apps, computer, machines, network, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
+    PS.MAIN_PARTS.length === 17 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
     && !fsx.existsSync(path.join(pub, 'app', 'main.js')) && !raw.includes('type="module"'), JSON.stringify(sizes));
   const order = (await import('./check-page-parts.mjs')).checkPageParts(pub);
   check('ENG-04b split: load-time code never needs a later part, no name is declared twice, nothing clashes with the browser (scripts/check-page-parts.mjs)',
-    !order.skipped && order.problems.length === 0 && order.parts === 15, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
+    !order.skipped && order.problems.length === 0 && order.parts === 17, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
   const auth = await import('../src/auth.mjs');
   const part = await fetch(`${base}/app/main/05-chat.js`);
   const body = await part.text();
@@ -7583,7 +7586,7 @@ async function scenarioV160() {
   const whole = PS.pageSource(path.join(REPO, 'public'));
   const i18n = await readText('../scripts/check-i18n.mjs');
   check('ENG-04 checks: the self-tests and the English check read the split page as one text (every part present, in page order)',
-    PS.PAGE_PARTS.length === 19 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js; 1.5.58: + 07b-cards.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
+    PS.PAGE_PARTS.length === 21 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js; 1.5.58: + 07b-cards.js; 1.5.59: + 11a-network.js, 04b-sidebar.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
     && i18n.includes("import { pageSource } from './page-source.mjs';") && (await readText('../public/index.html')) === whole);
 
   const auth = await import('../src/auth.mjs');
@@ -9443,7 +9446,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       check('U28 switching: a chat shows what this browser had at once, then the machine\'s answer',
         coreSrc.includes('function chatCachePut(') && chatSrc.includes('const cached = chatCacheGet(cacheKey);') && groupSrc.includes('const cached = chatCacheGet(cacheKey);'));
       const lat = await api('/api/peers/latency');
-      const machinesSrc = await readText('../public/app/main/11-machines.js');
+      const machinesSrc = ((await readText('../public/app/main/11-machines.js')) + (await readText('../public/app/main/11a-network.js')));
       check('U28 network check: the hub times each other machine, the page times itself and says what a slow path usually is',
         lat.status === 200 && Array.isArray(lat.json?.machines) && machinesSrc.includes('async function runNetCheck()') && machinesSrc.includes('PROCESS-NAME,tailscaled.exe,DIRECT') && pageSrc.includes('id="net-check"'));
       const peersSrc = await readText('../src/peers.mjs');
@@ -9496,7 +9499,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
           && apps29.includes('已删除的助手（${row.count} 个）') && apps29.includes('评测（${row.count} 项）') && apps29.includes("'填官网价'"));
         const css29 = await readText('../public/app/style.css');
         const live29 = await readText('../public/app/main/06-live.js');
-        const mach29 = await readText('../public/app/main/11-machines.js');
+        const mach29 = ((await readText('../public/app/main/11-machines.js')) + (await readText('../public/app/main/11a-network.js')));
         check('U29 composer: two round buttons at a time - 🎤 and 📞 while empty, 📞 gives its place to send once there is text or a file (every way text gets in is watched)',
           css29.includes('.composer-box:not(.has-text) .send-btn { display: none; }') && css29.includes('.composer-box.has-text .call-btn:not(.on) { display: none; }')
           && live29.includes("box.classList.toggle('has-text', Boolean(input.value.trim()) || (state.pendingFiles || []).length > 0);") && live29.includes("Object.defineProperty(input, 'value', {"));
@@ -11304,10 +11307,11 @@ async function scenarioRoster1543() {
     const en = await readText('../public/i18n-en.js');
     check('R43-7 「全部机器」 is the title in that view, with 「N 台 · 这台是 …」 under it; one machine shows its own name',
       page.includes("$('machine-name').textContent = grouped ? '全部机器' : name;") && page.includes('台 · 这台是 ${') && en.includes('"全部机器"'));
-    check('R43-8 the sidebar: 「最近」 (5 chats, bots and groups, each 「· 机器名」), then one section per machine that folds (remembered), groups first, a summary when folded, a search box over 10',
-      page.includes("el('div', 'roster-head recent-head', '最近')") && page.includes('const RECENT_MAX = 5;') && page.includes("const COLLAPSED_KEY = 'lamplit.roster.collapsed';")
+    // 1.5.59 (redesign step 4): 「最近」 is gone - it listed the same chats twice; 「N 件等你」 / 「N 个在做」 on top instead.
+    check('R43-8 the sidebar: one section per machine that folds (remembered), groups first, a summary when folded, a search box over 10; no 「最近」 (1.5.59: the filters on top instead)',
+      !page.includes("el('div', 'roster-head recent-head', '最近')") && !page.includes('const RECENT_MAX') && page.includes("const COLLAPSED_KEY = 'lamplit.roster.collapsed';")
       && page.includes('id="roster-search"') && page.includes('找助手或群组') && page.includes('const SEARCH_FROM = 10;') && page.includes('件事等你') && page.includes('群 · ')
-      && en.includes('"最近"') && en.includes('"找助手或群组"'));
+      && en.includes('"找助手或群组"'));
     check('R43-9 another machine\'s group opens here like a remote bot: its chat, its live stream and its sending go through this hub',
       page.includes("remoteGroupApi(") && page.includes('function remoteGroupById(') && page.includes("'/stream'") && /isRemoteId\(state\.groupId\)/.test(page));
     check('R43-10 adding a machine: how to reach it from outside is a choice of three (Tailscale, 自建中转, Lamplit 中转 即将推出), 「只在家里用」 by default, and the limit is said plainly',
@@ -11582,7 +11586,7 @@ async function scenarioRoster1544() {
   // --- the page: 「建在哪台？」, a machine picked by name, whose settings ----------------------
   const html = fsSync.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const groupsJs = fsSync.readFileSync(new URL('../public/app/main/03-groups.js', import.meta.url), 'utf8');
-  const machinesJs = fsSync.readFileSync(new URL('../public/app/main/11-machines.js', import.meta.url), 'utf8');
+  const machinesJs = (fsSync.readFileSync(new URL('../public/app/main/11-machines.js', import.meta.url), 'utf8') + fsSync.readFileSync(new URL('../public/app/main/11a-network.js', import.meta.url), 'utf8'));
   const wiring = fsSync.readFileSync(new URL('../public/app/main/12-wiring.js', import.meta.url), 'utf8');
   const settingsJs = fsSync.readFileSync(new URL('../public/app/main/08-settings.js', import.meta.url), 'utf8');
   const launcher = fsSync.readFileSync(new URL('../mobile/shell/launcher.js', import.meta.url), 'utf8');
@@ -11839,7 +11843,7 @@ async function scenarioThink1545() {
       queued: [{ machine: '书房电脑', count: 1 }],
     });
     check('T45-15 the daily note: nothing waiting, nothing said; else a short note - the cards (which machine, which bot, what), the work done but not looked at, the messages waiting for a machine that is off',
-      empty === '' && /有 4 件事在等你/.test(text) && /2 张卡等你点头/.test(text) && /腾讯云 · X 账号管家：发一条帖子/.test(text) && /1 件做完了你还没看/.test(text)
+      empty === '' && /2 件等你点头，1 件做完了你还没看，1 条消息在排队：/.test(text) /* 1.5.59: the sidebar's words */ && /2 张卡等你点头/.test(text) && /腾讯云 · X 账号管家：发一条帖子/.test(text) && /1 件做完了你还没看/.test(text)
       && /书房电脑/.test(text) && text.split('\n').length <= 8, text);
     const at = (h, m) => { const d = new Date(2026, 10, 20, h, m); return d.getTime(); };
     check('T45-16 when: on by default at 09:00; not before the time, once a day (a computer that was off says it when it is back the same day), not when switched off',
@@ -12231,7 +12235,7 @@ async function scenarioUi1551() {
     !/上面的助手/.test(notes.get('腾讯云').note) && notes.get('书房电脑').note === '处理照片' && old.get('旧机器').note === '');
   await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
 
-  const machinesJs = await readText('../public/app/main/11-machines.js');
+  const machinesJs = ((await readText('../public/app/main/11-machines.js')) + (await readText('../public/app/main/11a-network.js')));
   check('U51-7 this machine is listed by its own name with a 「这台」 tag, not as 「本机」',
     !machinesJs.includes("name: '本机'") && page.includes("el('span', 'machine-tag here', '这台')"));
   check('U51-8 each row: the name, the address or the way it is reached, online or not; 「适合」 one short line (about 30 characters, the whole line on hover), edited behind 「改」',

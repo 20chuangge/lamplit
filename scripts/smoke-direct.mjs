@@ -115,7 +115,7 @@ function simPair(net, { pcIp, pcNat, phoneIp, phoneNat, session = {}, dialer = {
 export function phoneLabelChecks({ check }) {
   const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
   const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
-  const machines = read('public/app/main/11-machines.js');
+  const machines = (read('public/app/main/11-machines.js') + read('public/app/main/11a-network.js'));
   const launcher = read('mobile/shell/launcher.js');
   const relayLinks = read('mobile/android/app/src/main/java/com/desk/assistant/RelayLinks.java');
   check('phone: 「全部机器」 is titled 全部机器 in the app too (not only on the computer itself), with 「N 台 · 这台是 …」',

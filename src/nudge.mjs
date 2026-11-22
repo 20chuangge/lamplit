@@ -49,7 +49,9 @@ export function buildNudge({ cards = [], unread = [], queued = [], now = Date.no
   if (!total) return '';
   const h = new Date(now).getHours();
   const hello = h < 11 ? '早上好' : h < 18 ? '你好' : '晚上好';
-  const lines = [`${hello}，有 ${total} 件事在等你：`];
+  // The same words as the sidebar (1.5.59 beginner test): 「等你」 is a card to answer; finished work is said apart.
+  const head = [cards.length ? `${cards.length} 件等你点头` : '', unread.length ? `${unread.length} 件做完了你还没看` : '', waitingMsgs ? `${waitingMsgs} 条消息在排队` : ''].filter(Boolean).join('，');
+  const lines = [`${hello}，${head}：`];
   if (cards.length) lines.push(`- ${cards.length} 张卡等你点头：${some(cards, (c) => `${where(c)}${c.botName || '助手'}：${String(c.what || '一个操作').slice(0, 30)}`)}`);
   if (unread.length) lines.push(`- ${unread.length} 件做完了你还没看：${some(unread, (u) => `${where(u)}${u.name}${u.what ? `「${String(u.what).slice(0, 30)}」` : ''}`)}`);
   for (const q of queued.filter((x) => x.count > 0).slice(0, SHOW)) lines.push(`- ${q.count} 条消息在排队，等「${q.machine}」开机`);

@@ -3359,4 +3359,15 @@ window.DESK_I18N_EN = {
   "不回这条": "Skip this one",
   "这条不发，把「不发了」告诉它": "Do not send this one; tell it “Don't send”",
   "每条都能直接改；点「回复」只发那一条，「不回这条」就不发。": "You can edit each one here; “Reply” sends only that one, “Skip this one” sends nothing.",
+  // 1.5.59 redesign step 4: the sidebar
+  "{0} 个在做": "{0} working",
+  "只看一部分": "Show only some",
+  "再点一下：显示全部": "Tap again to show all",
+  "只看等你点头、等你回复的": "Only the ones waiting for your OK or your answer",
+  "只看正在做事的": "Only the ones at work",
+  "在「{0}」上，点开就能在这里批": "On “{0}”; open it to answer here",
+  "这个对话里有操作等你确认": "Something in this chat is waiting for your OK",
+  "等你点头：{0}": "Waiting for your OK: {0}",
+  "上一次": "Last time",
+  "{0} 件事等你，{1} 个出错了": "{0} waiting for you, {1} got stuck",
 };

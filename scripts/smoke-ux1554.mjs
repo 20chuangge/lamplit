@@ -99,8 +99,9 @@ export async function uxChecks({ check, readText }) {
   }
 
   // --- The sidebar and the machine menu (walkthrough 3.1, 3.2, 3.4, 3.6)
-  check('UX15 the machine menu in a browser also ends with 「添加一台机器…」; a new assistant opens when made; 最近 shows only when there are many chats; this machine\'s chat title names it when there are others',
-    page.includes('data-machine-add="1">添加一台机器…</button>') && page.includes('selectBot(made.id)') && page.includes('const RECENT_FROM = 9;') && page.includes('all.length >= RECENT_FROM')
+  // 1.5.59: no 「最近」 at all (the same chats twice): the filters 「N 件等你」 / 「N 个在做」 instead.
+  check('UX15 the machine menu in a browser also ends with 「添加一台机器…」; a new assistant opens when made; no 「最近」 listing chats twice (1.5.59); this machine\'s chat title names it when there are others',
+    page.includes('data-machine-add="1">添加一台机器…</button>') && page.includes('selectBot(made.id)') && !page.includes('RECENT_FROM') && page.includes('renderRosterFilters(list)')
     && page.includes('rosterChats().length > 1 ? `${bot.name} · ${machineDisplayName()}`'));
   check('UX16 a self-made assistant\'s first buttons: 「你会做什么？」 and one 「帮我…」 from its role, not fragments like 「打分排序」',
     page.includes("const starts = ['你会做什么？'"));

@@ -173,7 +173,10 @@ function daySeparator(ts) {
 
 function emptyState() {
   if (state.unconfigured && !state.mockAck && !remoteChatMachine()) return onboardingCard();
-  return welcomeCard();
+  const card = welcomeCard();
+  const bot = botById(state.botId); // its machine is off: said first (1.5.59 beginner test, a phone)
+  if (!isGroupMode() && bot?.remote && !bot.remote.online) card.prepend(el('div', 'status-line link-down-line', `离线 · ${OFFLINE_WORDS}`));
+  return card;
 }
 
 /* One row of an A/B choice card. Same shape in the empty state and in

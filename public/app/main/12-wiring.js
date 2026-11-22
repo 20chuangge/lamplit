@@ -188,6 +188,8 @@ function wireChrome() {
     renderMachineMenu();
     toggleMenu($('machine-menu'), $('machine-btn'));
     refreshMachines();
+    // What each machine is for (1.5.59): the notes, when not read in the last minute.
+    if (Date.now() - machineNotesUi.at > 60000) loadMachineNotes().then(() => { if (!$('machine-menu').hidden) renderMachineMenu(); });
   });
   $('machine-menu').addEventListener('click', (event) => {
     const item = event.target.closest('button');

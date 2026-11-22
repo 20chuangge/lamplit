@@ -93,19 +93,75 @@ async function putBackInData(tempName, name) {
  * below stay, for what the account may move (another workspace file swapped in).
  */
 let fenceForTests = undefined;
-export const _test = { setFence: (fn) => { fenceForTests = fn; }, putBackInData: (tempName, name) => putBackInData(tempName, name) };
+let anchorForTests = undefined;
+// The system's rename, one call per move (tests put in one that resolves the two names the way a kernel may).
+let rawRename = (a, b) => fsp.rename(a, b);
+export const _test = {
+  setFence: (fn) => { fenceForTests = fn; },
+  putBackInData: (tempName, name) => putBackInData(tempName, name),
+  setAnchor: (on) => { anchorForTests = on; },
+  setRawRename: (fn) => { rawRename = fn || ((a, b) => fsp.rename(a, b)); },
+};
 const moverFor = (ws) => (fenceForTests !== undefined ? fenceForTests : fencedMover(ws));
 
+/**
+ * 1.5.59 (CI, Linux): rename(2) looks up the old name's folder and the new
+ * name's folder one after the other too, so the same swap worked there: a data
+ * file moved into the workspace, and the rename back put it in the real
+ * workspace folder. On Linux a folder can be held open and its names reached
+ * through the open folder itself (/proc/self/fd/N/name): both names of a move
+ * then lead to that one folder, checked to be in the workspace, however the
+ * names on the way are swapped afterwards. -> {at(name), close()}
+ */
+const anchorsWork = () => process.platform === 'linux' && fs.existsSync('/proc/self/fd');
+function openFolderInside(ws, dir) {
+  const fd = fs.openSync(dir, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0));
+  let where = '';
+  try { where = fs.readlinkSync(`/proc/self/fd/${fd}`); } catch { /* checked below */ }
+  if (!where || !isBelow(realPathOf(ws), where)) {
+    try { fs.closeSync(fd); } catch { /* closed */ }
+    throw outsideErr('path resolves outside the shared workspace');
+  }
+  let open = true;
+  return { at: (name) => `/proc/self/fd/${fd}/${name}`, close: () => { if (open) { open = false; try { fs.closeSync(fd); } catch { /* closed */ } } } };
+}
+
+/** takeOut through the held-open folder (Linux): one folder for both names, nothing to wait for. */
+async function takeOutAnchored(abs, want, ws) {
+  const here = openFolderInside(ws, path.dirname(abs));
+  try {
+    const src = here.at(path.basename(abs));
+    const temp = here.at(randomName('.lamplit-out-'));
+    await rawRename(src, temp);
+    const got = await fsp.lstat(temp, { bigint: true }).catch(() => null);
+    if (got && sameFile(want, got) && !got.isSymbolicLink()) {
+      // The second move (a folder into .trash, or back on 撤销): its target's folder held open and checked too.
+      const move = async (from, to) => {
+        const there = openFolderInside(ws, path.dirname(to));
+        try { await rawRename(from, there.at(path.basename(to))); } finally { there.close(); }
+      };
+      return { temp, move, close: here.close };
+    }
+    // Something else was there (the bot swapped the file itself): back under its name, in this same folder.
+    if (got) await rawRename(temp, src).catch(() => {});
+    throw outsideErr('the path changed while it was being removed: nothing was removed');
+  } catch (err) {
+    here.close();
+    throw err;
+  }
+}
+
 async function takeOut(abs, want, ws) {
+  const fenced = moverFor(ws);
+  if (!fenced && (anchorForTests !== undefined ? anchorForTests : anchorsWork())) return takeOutAnchored(abs, want, ws);
   const name = path.basename(abs);
   const tempName = randomName('.lamplit-out-');
   const temp = path.join(path.dirname(abs), tempName);
-  const fenced = moverFor(ws);
-  const move = fenced || ((a, b) => fsp.rename(a, b));
+  const move = fenced || rawRename;
   await move(abs, temp);
   for (let i = 0; i < 1000; i += 1) {
     const got = await fsp.lstat(temp, { bigint: true }).catch(() => null);
-    if (got && sameFile(want, got) && !got.isSymbolicLink()) return { temp, move };
+    if (got && sameFile(want, got) && !got.isSymbolicLink()) return { temp, move, close: () => {} };
     if (got) {
       // Not what was checked (a link was swapped in on the way): back under its own name, in its own folder.
       try { await move(temp, abs); throw outsideErr('the path changed while it was being removed: nothing was removed'); } catch (err) { if (err.code === 'PATH_OUTSIDE_WORKSPACE') throw err; }
@@ -137,16 +193,16 @@ export async function removeInside(ws, abs) {
   const fh = await openInside(ws, abs, 'r');
   const want = await fh.stat({ bigint: true });
   await fh.close();
-  const { temp } = await takeOut(abs, want, ws);
-  await onRandomName(temp, (p) => fsp.unlink(p));
+  const out = await takeOut(abs, want, ws);
+  try { await onRandomName(out.temp, (p) => fsp.unlink(p)); } finally { out.close(); }
 }
 
 /** Remove a folder of the workspace: taken out (checked), then removed by its random name. */
 export async function removeFolderInside(ws, abs) {
   const before = await fsp.lstat(abs, { bigint: true });
   if (before.isSymbolicLink() || !before.isDirectory() || !isBelow(realPathOf(ws), realPathOf(abs))) throw outsideErr('path resolves outside the shared workspace');
-  const { temp } = await takeOut(abs, before, ws);
-  await onRandomName(temp, (p) => fsp.rm(p, { recursive: true, force: false }));
+  const out = await takeOut(abs, before, ws);
+  try { await onRandomName(out.temp, (p) => fsp.rm(p, { recursive: true, force: false })); } finally { out.close(); }
 }
 
 /** Move a folder of the workspace into its .trash place, checked the same way: taken out first, then moved by its random name. */
@@ -155,8 +211,8 @@ async function moveFolderAside(ws, target, kept) {
   if (before.isSymbolicLink() || !before.isDirectory() || !isBelow(realPathOf(ws), realPathOf(target))) throw outsideErr('path resolves outside the shared workspace');
   await fsp.mkdir(path.dirname(kept), { recursive: true });
   // The second move too: as the account when there is one (a swapped .trash must not lead it into the data folder).
-  const { temp, move } = await takeOut(target, before, ws);
-  await onRandomName(temp, (p) => move(p, kept));
+  const out = await takeOut(target, before, ws);
+  try { await onRandomName(out.temp, (p) => out.move(p, kept)); } finally { out.close(); }
 }
 
 /**

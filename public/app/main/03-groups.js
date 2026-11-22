@@ -306,6 +306,7 @@ async function openGroup(id) {
   renderBots();
   renderGroups();
   renderGroupHead(group);
+  updateApprovalsPill(); // its members' cards only (1.5.59)
   updateComposerMode();
   // The group's screen, its members' routines, what it waits on you for.
   followScreen();
@@ -1110,7 +1111,7 @@ async function loadRoster({ fresh = false } = {}) {
     const far = remoteOf(state.botId);
     if (far && !isGroupMode()) {
       const bot = botById(state.botId);
-      if (bot) $('chat-sub').textContent = remoteChatSub(bot);
+      if (bot) { $('chat-sub').textContent = remoteChatSub(bot); $('chat-sub').classList.toggle('off', Boolean(bot.remote && !bot.remote.online)); }
     }
   }
   // What the sidebar says is what the chat says, on every look (1.5.42 test: grey name, no line in the chat).
@@ -1133,15 +1134,12 @@ function remoteChatSub(bot) {
 }
 
 /*
- * 「全部机器」's sidebar (1.5.43, the layout the user picked): 「最近」 - the last
- * five chats, bots and groups of every machine, each 「· 机器名」 - then one
- * section per machine that folds (remembered per machine), its groups first,
- * then its bots. Folded, its row says what is in it and what waits. Over ten
- * chats, a search box finds one on any machine.
+ * 「全部机器」's sidebar (1.5.43; redesign step 4, 1.5.59): one section per machine
+ * that folds (remembered per machine), an online dot in its heading, its groups
+ * first, then its bots. 「最近」 is gone (it listed the same chats twice): the
+ * filters on top (「N 件等你」 / 「N 个在做」) find what matters. Folded, its row says
+ * what is in it and what waits. Over ten chats, a search box finds one on any machine.
  */
-const RECENT_MAX = 5;
-// 最近 only when there are many chats: with a few, it listed the same assistants twice (1.5.54, walkthrough 3.4).
-const RECENT_FROM = 9;
 const SEARCH_FROM = 10;
 const COLLAPSED_KEY = 'lamplit.roster.collapsed';
 function collapsedMachines() {
@@ -1195,20 +1193,6 @@ function renderRosterSidebar(list) {
   $('bot-count').textContent = String(all.length);
   const wrap = $('roster-search-wrap');
   if (wrap) wrap.hidden = all.length <= SEARCH_FROM;
-  // 最近: the newest five, whichever machine.
-  const recent = all.length >= RECENT_FROM ? all.filter((i) => i.ts).sort((a, b) => b.ts - a.ts).slice(0, RECENT_MAX) : [];
-  if (recent.length) {
-    const sec = el('div', 'roster-sec recent');
-    sec.appendChild(el('div', 'roster-head recent-head', '最近'));
-    for (const item of recent) {
-      const row = item.row();
-      row.classList.add('recent-row');
-      row.querySelector('.bot-name')?.appendChild(el('span', 'recent-machine', `· ${item.machine}`));
-      row.dataset.search = `${row.dataset.search || ''} ${item.machine}`.toLowerCase();
-      sec.appendChild(row);
-    }
-    list.appendChild(sec);
-  }
   const folded = collapsedMachines();
   for (const m of machines) {
     const items = [...m.groups, ...m.bots];
@@ -1218,6 +1202,10 @@ function renderRosterSidebar(list) {
     head.type = 'button';
     head.setAttribute('aria-expanded', folded[m.machine] ? 'false' : 'true');
     head.appendChild(el('span', 'rh-caret', folded[m.machine] ? '▸' : '▾'));
+    // Online or not, at a glance (1.5.59): a green dot, or a grey one.
+    const dot = el('i', `rh-dot ${m.online ? 'on' : 'off'}`);
+    dot.setAttribute('aria-label', m.online ? '在线' : '离线');
+    head.appendChild(dot);
     head.appendChild(el('span', 'rh-name', m.machine));
     if (m.self) head.appendChild(el('span', 'rh-tag', '· 这台'));
     if (!m.online && !folded[m.machine]) head.appendChild(el('span', 'rh-tag off', '离线')); // folded, the summary says it (once)
@@ -1225,7 +1213,9 @@ function renderRosterSidebar(list) {
     // Folded, the row says what is inside and what waits (「2 群 · 9 个 · 1 件事等你」).
     const summary = !m.online ? '离线'
       : [m.groups.length ? `${m.groups.length} 群` : '', `${m.bots.length} 个`, waits ? `${waits} 件事等你` : ''].filter(Boolean).join(' · ');
-    head.appendChild(el('span', `rh-count${waits ? ' needs' : ''}`, folded[m.machine] ? summary : `${items.length} 个`));
+    // Open, what waits there first (1.5.59), else how many: the name keeps its room in a narrow list.
+    const open = m.online && waits ? `${waits} 件等你` : `${items.length} 个`;
+    head.appendChild(el('span', `rh-count${waits && m.online ? ' needs' : ''}`, folded[m.machine] ? summary : open));
     head.title = m.self ? `${m.machine}：你正在用的这台电脑` : m.online ? `「${m.machine}」上的助手和群组：点开就聊，不用切换窗口` : `「${m.machine}」现在连不上。给它的助手发消息，开机后会接着做。`;
     head.addEventListener('click', () => { setCollapsed(m.machine, !sec.classList.contains('collapsed')); renderBots(); });
     sec.appendChild(head);

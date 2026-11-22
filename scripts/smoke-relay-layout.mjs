@@ -201,7 +201,7 @@ export async function relayLayoutChecks({ check }) {
       /没有更新/.test(words({ relay: { version: '1.5.47', auto: true, last: failed }, relayUpdate: { version: '1.5.49' } })));
     check(`card: once ${NEXT} is offered, it says the update is coming instead of the old failure`,
       /会自己更新到 1\.5\.50/.test(words({ relay: { version: '1.5.47', auto: true, last: failed }, relayUpdate: { version: NEXT } })) && /正在更新到 1\.5\.50/.test(words({ relay: { version: '1.5.47', auto: true, fetching: true, last: failed }, relayUpdate: { version: NEXT } })));
-    const machines = fs.readFileSync(path.join(ROOT, 'public', 'app', 'main', '11-machines.js'), 'utf8');
+    const machines = (fs.readFileSync(path.join(ROOT, 'public', 'app', 'main', '11-machines.js'), 'utf8') + fs.readFileSync(path.join(ROOT, 'public', 'app', 'main', '11a-network.js'), 'utf8'));
     check('card: 「看原因」 shows the detail folded, only for a failed update', page.includes("box.appendChild(el('summary', '', '看原因（中转最后打印的几行）'));") && page.includes("box.appendChild(el('pre', '', last.detail));") && machines.includes('const whyNode = relayFailureNode(view);'));
 
     // The same, when the supervisor in /opt is the old one (no detail of its own): the

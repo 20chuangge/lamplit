@@ -56,7 +56,7 @@ export async function lamp1557Checks({ check, readText }) {
     && page.includes('html.lamp-still .av[data-lamp]::before { animation: none; }') && page.includes('html.lamp-still .av[data-lamp="work"]::after { animation: none; opacity: 0.9; }'));
   // Found while checking 1.5.57 in the desktop app: a refused shell call came back as an object
   // and was sent to the main assistant as 「[object Object]」 on every page load.
-  const machines = await readText('../public/app/main/11-machines.js');
+  const machines = ((await readText('../public/app/main/11-machines.js')) + (await readText('../public/app/main/11a-network.js')));
   check('A3 work handed over by the desktop shell is sent only when it is text: a refused call (an object) is never sent as 「[object Object]」',
     machines.includes("const got = await window.desk?.takePendingMessage?.(); text = typeof got === 'string' ? got.trim() : '';")
     && !machines.includes('String((await window.desk?.takePendingMessage?.()) ||'));

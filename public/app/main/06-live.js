@@ -1013,31 +1013,32 @@ async function decide(approvalId, decision, note, card, approve, deny, remember 
 function updateApprovalsPill() {
   const pill = $('approvals-pill');
   if (!pill) return;
-  const local = state.approvals || [];
-  const remote = state.inbox?.items || [];
+  // The chat on screen only (1.5.59): its bot's cards, or its members' in a group. What waits in
+  // other chats is in the list (「N 件等你」, the 「!」 on each row), not counted up here.
+  const { local, remote } = openChatApprovals();
   const count = local.length + remote.length;
   pill.hidden = count === 0;
   pill.textContent = count === 1 ? '1 个操作等你确认' : `${count} 个操作等你确认`;
-  // A delegated bot can be blocked on an approval while you are looking at a
-  // different transcript. Without this badge the coordinator just looks dead.
-  const foreign = local.filter((a) => a.botId && a.botId !== state.botId);
-  const first = foreign[0] || local[0];
+  const first = local[0];
   pill.dataset.bot = first?.botId || '';
   pill.dataset.approvalId = first?.id || '';
-  // Two replies or more waiting (1.5.58): the inbox shows them together, with 「全部回复（N）」.
+  // Another machine's card, or two replies or more (1.5.58): the inbox shows them, with 「全部回复（N）」.
   pill.dataset.remote = remote.length || waitingReplies().length >= 2 ? '1' : '';
-  pill.title = remote.length ? `其中 ${remote.length} 个在别的机器上，点开就能在这里批` : '有待你确认的操作';
+  pill.title = remote.length ? `在「${remote[0].machine}」上，点开就能在这里批` : '这个对话里有操作等你确认';
 }
 
 async function refreshPendingApprovals() {
   // Approvals belong to a 1:1 transcript; the group view shows them via SSE.
   if (isGroupMode()) return;
+  const before = (state.approvals || []).map((a) => a.id).join();
   try {
     state.approvals = await api('/api/approvals?status=pending');
   } catch {
     return;
   }
   updateApprovalsPill();
+  // The list says what each card asks (1.5.59): drawn again when the cards change.
+  if (before !== state.approvals.map((a) => a.id).join()) renderBots();
   if (inboxIsOpen()) renderInbox();
   // A bot on another machine: its cards come from the inbox and are answered through it (1.5.42).
   if (isRemoteId(state.botId)) { appendRemoteCards(); return; }

@@ -31,7 +31,7 @@ function extract(text, name, helpers = {}) {
 
 export async function remoteScreenChecks({ check }) {
   const groups = read('public/app/main/03-groups.js');
-  const machines = read('public/app/main/11-machines.js');
+  const machines = (read('public/app/main/11-machines.js') + read('public/app/main/11a-network.js'));
   const state = { computer: null };
   const name = extract(groups, 'screenMachineName', { state, machineDisplayName: () => 'Windows 电脑' });
   state.computer = { remote: { machine: '腾讯云 -ubuntu', botId: 'resume' }, desktop: { url: '/novnc/vnc.html?path=x' } };

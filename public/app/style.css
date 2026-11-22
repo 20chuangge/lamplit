@@ -3929,3 +3929,46 @@ html.lamp-still .av[data-lamp]::before { animation: none; }
 .bubble .att-video-bar .att-act { flex: none; }
 .bubble .att-file .att-meta, .bubble .att-doc .att-meta { min-width: 0; }
 .bubble .att-file .att-name { max-width: 100%; }
+
+/* --- redesign step 4 (1.5.59): the sidebar --------------------------------------------------
+   On top 「N 件等你」 / 「N 个在做」 (a tap shows only those, another shows all); one section per
+   machine with an online dot; an offline machine's whole section fades; each machine in a few
+   words in the machine menu. */
+.roster-filters { display: flex; gap: 8px; padding: 6px 8px 8px; flex-wrap: wrap; }
+.roster-filter {
+  display: inline-flex; align-items: center; height: 30px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: transparent; color: var(--muted); font: inherit; font-size: var(--t-sm); cursor: pointer;
+  transition: background 120ms var(--ease), color 120ms var(--ease), border-color 120ms var(--ease);
+}
+.roster-filter:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+.roster-filter.needs:not(.none) { color: var(--accent); border-color: var(--accent-line); }
+.roster-filter.working:not(.none) { color: var(--text); }
+.roster-filter.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); font-weight: 600; }
+.roster-filter.working.on { background: var(--panel-3); border-color: var(--border-strong); }
+.roster-filter:disabled { opacity: 0.55; cursor: default; }
+.roster-head .rh-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.roster-head .rh-dot.off { background: var(--dim); opacity: 0.6; }
+.roster-sec.machine.off .roster-body, .roster-sec.machine.off .rh-name { opacity: 0.55; }
+.roster-sec.machine.off .roster-head .rh-name { color: var(--dim); }
+#machine-menu .mm-item { flex-wrap: wrap; row-gap: 2px; }
+#machine-menu .mm-item .mm-meta { flex: 1 0 100%; color: var(--muted); white-space: normal; line-height: var(--lh-ui); }
+#machine-menu .mm-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
+@media (max-width: 860px) { .roster-filters { padding: 8px 14px 6px; } .roster-filter { height: 34px; font-size: var(--t-md); } }
+
+/* 1.5.59 after the beginner test: a filter that is on is filled and ends in ✕; what waits for you may take two lines;
+   the filters stay on top of a phone's list; one 「!」 per row (the face has it); offline is faint, not gone, in light. */
+.roster-filter { white-space: nowrap; gap: 6px; }
+.roster-filter.on, .roster-filter.working.on, .roster-filter.needs.on:not(.none) { background: var(--accent-solid); border-color: var(--accent-solid); color: var(--on-accent); font-weight: 600; }
+.roster-filter .rf-clear { font-size: var(--t-xs); opacity: 0.85; }
+.bot-preview.st-needs .bp-text { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.sidebar.open .bot-preview.st-needs { white-space: normal; }
+.bot:has(.bot-av[data-lamp="wait"]) > .att.needs, .bot:has(.bot-av[data-lamp="stuck"]) > .att.failed { display: none; }
+#machine-menu .mm-dot.off { background: var(--dim); opacity: 0.6; }
+html[data-theme="light"] .roster-sec.machine.off .roster-body, html[data-theme="light"] .roster-sec.machine.off .rh-name { opacity: 0.75; }
+@media (max-width: 860px) {
+  .roster-filters { position: sticky; top: 0; z-index: 3; background: var(--bg); }
+  html[data-theme="light"] .roster-filters { background: var(--bg-2); } /* the list's own grey in light */
+}
+@media (max-width: 420px) {
+  .chat-head .sub.off { display: block; color: var(--warn-text); }
+}

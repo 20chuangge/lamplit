@@ -52,7 +52,7 @@ export async function directBlockerChecks({ check }) {
   const main = read('desktop/main.mjs');
   check('firewall fix: it now also allows UDP for Lamplit on every network (direct), and still removes this program\'s Block rules (1.5.54: only those Windows made for Lamplit, not the user\'s own)',
     /-Protocol UDP -Profile Any/.test(main) && main.includes("Where-Object { $_.Action -eq 'Block' -and $_.DisplayName -match '^(Lamplit|Evenlight|Nightshift)' } | Remove-NetFirewallRule") && /Get-NetFirewallPortFilter/.test(main));
-  const page = read('public/app/main/11-machines.js') + read('public/app/main/08-settings.js');
+  const page = (read('public/app/main/11-machines.js') + read('public/app/main/11a-network.js')) + read('public/app/main/08-settings.js');
   check('firewall: 体检 checks UDP when direct is on, and the fix asks first with the list of changes', /fw\.udp/.test(page) && /firewallPlan|plan\.join/.test(page) && /window\.confirm\(/.test(page));
 
   // --- a proxy's TUN (Clash Verge / mihomo) ------------------------------------

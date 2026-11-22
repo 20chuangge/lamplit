@@ -1269,11 +1269,12 @@ function renderBots() {
   const grouped = rosterGrouped();
   const sideHead = list.parentElement?.querySelector('.side-head'); if (sideHead) sideHead.hidden = grouped;
   if ($('roster-search-wrap') && !grouped) $('roster-search-wrap').hidden = true;
-  if (grouped) { renderRosterSidebar(list); filterHome(); if ($('perm-summary')) renderPermOverview(); return; }
+  if (grouped) { renderRosterSidebar(list); renderRosterFilters(list); filterHome(); if ($('perm-summary')) renderPermOverview(); return; }
   // The primary bot is always on top; the rest by their newest message (like a chat app).
   const when = (b) => Date.parse(b.preview?.ts || '') || 0;
   const ordered = [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || when(b) - when(a));
   for (const bot of ordered) list.appendChild(botRow(bot));
+  renderRosterFilters(list); // 「N 件等你」 / 「N 个在做」 (1.5.59)
   filterHome();
   if ($('perm-summary')) renderPermOverview();
 }
@@ -1407,6 +1408,7 @@ async function selectBot(id, { keepHome = false } = {}) {
   const far = remoteOf(id);
   refreshChatTitle();
   $('chat-sub').textContent = far ? remoteChatSub(bot) : (bot.role || '还没有设定职责');
+  $('chat-sub').classList.toggle('off', Boolean(far && bot.remote && !bot.remote.online)); // shown on a phone too (1.5.59)
   $('bot-memory-title').textContent = `${bot.name} 的记忆`;
   state.liveTurn = null;
   setWorking(false);

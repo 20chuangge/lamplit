@@ -102,9 +102,10 @@ function machineOverview(name) {
 }
 
 /** The menu row's second line: what it is for, then its bots and what waits there. */
-function machineOverviewHtml(name) {
+/** A machine in a few words: its note (not in the machine menu: 1.5.61, the user found it useless there) and its counts. */
+function machineOverviewHtml(name, { note = true } = {}) {
   const o = machineOverview(name);
-  const parts = [o.note, o.counts].filter(Boolean);
+  const parts = [note ? o.note : '', o.counts].filter(Boolean);
   return parts.length ? `<small class="mm-meta">${escapeHtml(parts.join(' · '))}</small>` : '';
 }
 

@@ -8,8 +8,11 @@ sign in, fill a form, download the invoice.
 
 `src/browser.mjs` implements that. It keeps **one Chromium process alive** with a
 **persistent profile** and drives it over the **DevTools Protocol (CDP)**. No
-Playwright, no Puppeteer, no npm packages: Node's global `WebSocket` is the whole
-transport.
+Playwright, no Puppeteer, no npm packages. Since 1.5.61 the transport is the pipe
+Chrome is started with (`--remote-debugging-pipe`: fds 3 and 4, one JSON message per
+NUL-ended write), with the page as a flattened session on it; no debugging port is
+opened, so no other program on the machine - a bot's own command included - can
+drive the browser.
 
 ```
 agent turn
@@ -57,7 +60,7 @@ Edge is Chromium, so it speaks the same protocol.
 ## Launch flags and the profile
 
 ```
---remote-debugging-port=<free port>
+--remote-debugging-pipe
 --user-data-dir=<data>/browser-profile
 --no-first-run --no-default-browser-check
 --disable-blink-features=AutomationControlled
@@ -73,9 +76,17 @@ about:blank
 * **`--disable-blink-features=AutomationControlled`** stops
   `navigator.webdriver === true`, which is the cheapest bot signal. It does not
   make the bot invisible — see *Honest limits*.
-* The port is chosen from a free port, then written to `data/browser-state.json`.
-  After a server restart the manager **reconnects to the browser that is still
-  running** instead of launching a second Chrome onto a locked profile.
+* `data/browser-state-<bot>.json` notes the browser's pid and program. A pipe
+  cannot be taken over by a restarted server: a browser a crashed server left
+  running is stopped (only while that pid is still that browser) and a new one
+  starts on the same profile, so the logins stay.
+* The environment is `childEnv` (none of the hub's own settings or anything named
+  like a key); on Linux its `TMPDIR` is `data/tmp/browser-<bot>`.
+* A Windows hub in the service session puts the window on the console user's
+  desktop through a scheduled task that runs `src/browser-bridge.mjs`: it starts
+  Chrome with the pipe and dials back to the hub on 127.0.0.1 with a one-time
+  token from a ticket in `data/`. Chrome listens on nothing; when the bridge goes
+  away, the next call starts the browser again.
 
 ---
 
@@ -91,7 +102,7 @@ about:blank
 | `browser_download` | MEDIUM | `{url, path?}` | `{ok, path, absolutePath, filename, bytes, url, downloadsDir}` |
 | `browser_eval` | HIGH | `{expression}` | `{ok, value, type}` |
 | `browser_close` | LOW | `{}` | `{ok, closed, pid}` |
-| `browser_status` | LOW | `{}` | `{running, pid, profileDir, cdpUrl, headless, adopted, executable, detectedBy, supported, pageUrl}` |
+| `browser_status` | LOW | `{}` | `{running, pid, profileDir, cdpUrl (null since 1.5.61), channel ('pipe' or 'bridge'), headless, adopted, executable, detectedBy, supported, pageUrl}` |
 
 There is **one page for the whole process**, and it is reused across calls and
 across turns. That is what lets a turn take a snapshot and then click a ref from
@@ -259,10 +270,8 @@ What still fails on real sites, in rough order of how often it bites:
    computer — but it is also a source of surprises).
 9. **`browser_eval` returns JSON only.** DOM nodes, functions and circular
    structures come back as `{}` or `null`; stringify them in the expression.
-10. **Local-only today.** The CDP port is bound to `127.0.0.1`, so the browser
-    must be on the same machine as the server. Driving a *remote* browser would
-    need the port exposed over an SSH tunnel or a small relay — out of scope for
-    this task.
+10. **Local only.** The browser is driven over its pipe (or the desktop bridge on
+    127.0.0.1), so it must be on the same machine as the server.
 
 ---
 

@@ -476,22 +476,13 @@ function mcpTile(app) {
   const card = el('div', `mcp-app${mcpUi.open === app.id ? ' open' : ''}${appIsOn(app) ? ' on' : ''}`);
   const head = el('button', 'mcp-app-head');
   head.type = 'button';
-  const badge = el('div', 'mcp-badge', app.badge || app.name.slice(0, 1));
-  badge.style.background = app.color || '#5b6474';
-  if (String(app.badge || '').length >= 3) badge.classList.add('small');
-  // The app's own mark, white on its colour; the letters stay for apps without one.
-  if (app.icon) {
-    badge.textContent = '';
-    badge.classList.add('has-icon');
-    const mark = el('span', 'mcp-mark');
-    // On the element itself: a url() inside a CSS variable would resolve against style.css's folder.
-    mark.style.webkitMaskImage = `url("${app.icon}")`;
-    mark.style.maskImage = `url("${app.icon}")`;
-    badge.appendChild(mark);
-  }
+  // One plain grey block with a letter for every app (1.5.61, redesign step 5): the brands' own colours and marks made the page loud.
+  const badge = el('div', 'mcp-badge', String(app.badge || app.name).replace(/[（(].*$/, '').slice(0, 1).toUpperCase());
   const meta = el('div', 'mcp-app-meta');
   meta.appendChild(el('b', '', app.name));
   meta.appendChild(el('small', '', app.desc || ''));
+  // Recommended: why, from the assistants you have.
+  if (app.why) meta.appendChild(el('small', 'mcp-why', app.why));
   head.append(badge, meta);
   const xs = app.detail === 'x' ? xTileState(srv) : null;
   const status = xs
@@ -560,9 +551,53 @@ function renderMcp() {
   // Switched on first, then the ones switched off, then the rest.
   const rank = (a) => (appIsOn(a) ? 0 : a.server || (a.detail === 'x' && xUi.view?.configured) ? 1 : 2);
   apps.sort((x, y) => rank(x) - rank(y));
+  // 为你推荐 (1.5.61): not a chart of popular apps - what the assistants you have would use, each with why.
+  const recs = mcpUi.cat === '全部' && !q ? mcpRecommendations(apps) : [];
+  if (recs.length) {
+    const head = el('div', 'mcp-sec-head');
+    head.appendChild(el('b', null, '为你推荐'));
+    head.appendChild(el('small', null, '按你的助手挑的'));
+    list.appendChild(head);
+    const rec = el('div', 'mcp-grid mcp-rec');
+    recs.forEach((r) => rec.appendChild(mcpTile({ ...r.app, why: r.why })));
+    list.appendChild(rec);
+    const all = el('div', 'mcp-sec-head');
+    all.appendChild(el('b', null, '全部应用'));
+    all.appendChild(el('small', null, `${apps.length - recs.length} 个`));
+    list.appendChild(all);
+  }
   const grid = el('div', 'mcp-grid');
-  apps.forEach((app) => grid.appendChild(mcpTile(app)));
+  apps.filter((a) => !recs.some((r) => r.app.id === a.id)).forEach((app) => grid.appendChild(mcpTile(app)));
   list.appendChild(grid);
+}
+
+/**
+ * 为你推荐: an app that a bot of yours plainly needs, from the words of its name and job
+ * (「周报」 -> 飞书, 「求职」 -> 邮箱, 「剪辑」 -> 网盘); not connected yet; at most 4.
+ */
+const APP_HINTS = [
+  ['feishu', /周报|日报|飞书|群聊|通知|同事/, (n) => `「${n}」可以直接发到飞书群`],
+  ['email', /邮件|邮箱|求职|面试|简历|招聘|客户/, (n) => `「${n}」能自动看邮件、回邮件`],
+  ['baidu-pan', /素材|网盘|剪辑|照片|备份/, (n) => `「${n}」的素材可以从网盘取`],
+  ['x', /小红书|发布|运营|推特|帖子|社媒/, (n) => `「${n}」的内容也能发到 X`],
+  ['github', /代码|开发|程序|仓库|编程/, (n) => `「${n}」能看仓库、提问题`],
+  ['notion', /笔记|知识库|文档/, (n) => `「${n}」能读写你的笔记`],
+  ['amap', /旅行|出行|路线|地图/, (n) => `「${n}」能查地点、算路线`],
+  ['dingtalk', /钉钉|考勤/, (n) => `「${n}」能在钉钉里发消息`],
+];
+function mcpRecommendations(apps) {
+  // This machine's bots only: an app connected here serves them, not those elsewhere (1.5.61 beginner test).
+  const bots = (state.bots || []).filter((b) => !isRemoteId(b.id));
+  const out = [];
+  for (const [id, words, why] of APP_HINTS) {
+    const app = apps.find((a) => a.id === id);
+    if (!app || appIsOn(app)) continue;
+    const bot = bots.find((b) => words.test(`${b.name || ''} ${b.role || ''}`));
+    if (!bot) continue;
+    out.push({ app, why: why(bot.name) });
+    if (out.length >= 4) break;
+  }
+  return out;
 }
 
 function setupMcpForm() {
@@ -994,7 +1029,7 @@ function renderSandboxState(s) {
   else if (state === 'unknown') box.textContent = '正在检查这台机器能不能用沙箱…';
   else if (state === 'off') box.textContent = `没有生效：${s.reason || '原因不明'}。命令照常运行，但看得到 Lamplit 自己的数据。`;
   else if (s.mode === 'open') box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。这台机器交给了机器人（放手），其他位置照常可用。用 sudo 的命令不在沙箱里。';
-  else box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）；系统只读，个人文件夹里只看得到工作区和开放的文件夹。用 sudo 的命令、你批准越过边界的那一步不在沙箱里。';
+  else box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）；系统只读，个人文件夹里只看得到工作区和开放的文件夹。每个机器人有自己的 /tmp，看不到你的 /tmp、你的屏幕和登录会话；它启动的图形程序只会开在它自己的屏幕上，这台机器没给它开屏幕时就打不开图形窗口。用 sudo 的命令、你批准越过边界的那一步不在沙箱里。';
 }
 
 async function applyStrictPermissions() {

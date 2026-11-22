@@ -15,12 +15,11 @@ import net from 'node:net';
 // The TightVNC MSI (cached here, uploaded to new Windows machines; also this computer's own screen).
 import { tightVncInstaller } from './localvnc.mjs';
 import crypto from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { uid, nowIso, P } from './store.mjs';
+import { uid, nowIso, P, hubTmp } from './store.mjs';
 import { packApp, cleanupPack } from './bundle.mjs';
 import { checkRelay } from './relaylink.mjs';
 
@@ -82,7 +81,12 @@ async function joinHubOverSsh(client, { sudoPrefix = '', password = '', isRoot =
   if (put.code !== 0) return 'error:没能把设置交给那台服务器';
   try {
     await uploadFile(client, TUNNEL_JOIN_SCRIPT, script);
-    const ran = await execStream(client, `${sudoPrefix}/bin/bash ${script} ${body}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 90000 });
+    const files = [
+      { at: script, name: 'relay-hub-join.sh', sha256: await sha256OfFile(TUNNEL_JOIN_SCRIPT) },
+      { at: body, name: 'settings.json', sha256: sha256Text(JSON.stringify(settings)) },
+    ];
+    const command = rootRunCommand(files, (d) => `/bin/bash ${d}/relay-hub-join.sh ${d}/settings.json`, { drop: [body] });
+    const ran = await execStream(client, `${sudoPrefix}${command}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 90000 });
     return (/^DESK_HUB_RELAY=(.*)$/m.exec(ran.output)?.[1] || '').trim() || `error:exit ${ran.code}`;
   } finally {
     await execStream(client, `rm -f ${body} ${script}`, { timeoutMs: 15000 }).catch(() => {});
@@ -200,6 +204,48 @@ export async function firstAnswering(urls, probe = probeHttp) {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+const sha256Text = (text) => crypto.createHash('sha256').update(Buffer.from(String(text), 'utf8')).digest('hex');
+async function sha256OfFile(file) {
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+/**
+ * What runs as root on a machine Lamplit sets up, from files it uploaded to
+ * that machine's /tmp (1.5.61, F8). /tmp there is shared by everything of the
+ * SSH account - a Lamplit already on that machine and its bots too (adding a
+ * machine again, a relay server that runs a Lamplit). Between the upload and
+ * `sudo bash` they could swap the file, and what they put there would run as
+ * root. So root first copies each file into a folder of its own (mktemp -d:
+ * root's, mode 700), checks the copies against the sha256 this computer
+ * worked out before uploading, and runs only the copies; a file changed on the
+ * way is not run (DESK_VERIFY=failed, exit 97).
+ *
+ *   files: [{at: '/tmp/x', name: 'x', sha256}]   run(d): the command, d the folder (a shell word)
+ *   keep:  the folder stays (a job that goes on in the background removes it)
+ *   drop:  uploaded files removed right after the copy (one that holds a key)
+ * -> `sh -c '…'`, to put after the sudo prefix
+ */
+const VERIFY_FAILED = '上传到这台机器的文件在运行之前被改过，没有运行';
+export function rootRunCommand(files, run, { keep = false, drop = [] } = {}) {
+  for (const f of files) {
+    if (!/^[A-Za-z0-9._-]+$/.test(f.name) || !/^[0-9a-f]{64}$/.test(f.sha256)) throw new Error(`rootRunCommand: bad file ${f.name}`);
+  }
+  const sums = files.map((f) => shellQuote(`${f.sha256}  ${f.name}`)).join(' ');
+  const lines = [
+    'set -e',
+    'umask 077',
+    'd=$(mktemp -d /tmp/lamplit-root.XXXXXXXX)',
+    ...(keep ? [] : [`trap 'rm -rf "$d"' EXIT`]),
+    ...files.map((f) => `cp -- ${shellQuote(f.at)} "$d/${f.name}"`),
+    ...(drop.length ? [`rm -f -- ${drop.map(shellQuote).join(' ')}`] : []),
+    `if ! (cd "$d" && printf '%s\\n' ${sums} | sha256sum -c - >/dev/null 2>&1); then echo 'DESK_VERIFY=failed'; echo ${shellQuote(`[desk] ${VERIFY_FAILED}`)} >&2; rm -rf "$d"; exit 97; fi`,
+    run('"$d"'),
+  ];
+  return `sh -c ${shellQuote(lines.join('\n'))}`;
 }
 
 /** SSH errors are accurate but unreadable; say what the human can act on. */
@@ -436,29 +482,37 @@ async function shareRelay(hubUrl, pairCode, settings) {
  * of an install. kind: 'linux' (tar.gz) | 'win' (zip); arch: x64 | arm64.
  * Returns {file, bytes} or null (the target then downloads it itself).
  */
-export async function nodePackage(kind, arch = 'x64') {
+export async function nodePackage(kind, arch = 'x64', { dir = hubTmp('cache'), fetchImpl = fetch } = {}) {
   const ext = kind === 'win' ? 'zip' : 'tar.gz';
-  const dir = path.join(os.tmpdir(), 'nightshift-cache');
-  await fsp.mkdir(dir, { recursive: true });
   const re = new RegExp(`^node-v22\\.[0-9.]+-${kind}-${arch}\\.${ext.replace('.', '\\.')}$`);
+  // 1.5.61 (the verifier's N5): the cache is data/tmp/cache, not the system's /tmp that the bots
+  // share on Linux; and a cached package is used only while it still matches the SHASUMS256 line
+  // kept next to it (<name>.sha256) - one that does not is removed and fetched again.
+  const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
   const cached = (await fsp.readdir(dir).catch(() => [])).filter((n) => re.test(n)).sort().pop();
   if (cached) {
-    const st = await fsp.stat(path.join(dir, cached));
-    if (st.size > 10 * 1024 * 1024) return { file: path.join(dir, cached), bytes: st.size };
+    const file = path.join(dir, cached);
+    const want = String(await fsp.readFile(`${file}.sha256`, 'utf8').catch(() => '')).trim().split(/\s+/)[0].toLowerCase();
+    const bytes = await fsp.readFile(file).catch(() => null);
+    if (bytes && bytes.length > 10 * 1024 * 1024 && /^[0-9a-f]{64}$/.test(want) && sha(bytes) === want) return { file, bytes: bytes.length };
+    await fsp.rm(file, { force: true }).catch(() => {});
+    await fsp.rm(`${file}.sha256`, { force: true }).catch(() => {});
   }
   for (const base of ['https://npmmirror.com/mirrors/node/latest-v22.x', 'https://nodejs.org/dist/latest-v22.x']) {
     try {
-      const sums = await (await fetch(`${base}/SHASUMS256.txt`, { signal: AbortSignal.timeout(20000) })).text();
+      const sums = await (await fetchImpl(`${base}/SHASUMS256.txt`, { signal: AbortSignal.timeout(20000) })).text();
       const line = sums.split('\n').find((l) => re.test(l.trim().split(/\s+/).pop() || ''));
       if (!line) continue;
       const [hash, name] = line.trim().split(/\s+/);
-      const res = await fetch(`${base}/${name}`, { signal: AbortSignal.timeout(300000) });
+      if (!re.test(name) || !/^[0-9a-f]{64}$/i.test(hash)) continue;
+      const res = await fetchImpl(`${base}/${name}`, { signal: AbortSignal.timeout(300000) });
       if (!res.ok) continue;
       const bytes = Buffer.from(await res.arrayBuffer());
-      if (crypto.createHash('sha256').update(bytes).digest('hex') !== hash.toLowerCase()) continue;
+      if (sha(bytes) !== hash.toLowerCase()) continue;
       const file = path.join(dir, name);
       await fsp.writeFile(`${file}.part`, bytes);
       await fsp.rename(`${file}.part`, file);
+      await fsp.writeFile(`${file}.sha256`, `${hash.toLowerCase()}  ${name}\n`);
       return { file, bytes: bytes.length };
     } catch { /* next source */ }
   }
@@ -578,7 +632,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
     // garbles the Chinese progress text; ship it with a UTF-8 BOM.
     const source = await fsp.readFile(SETUP_SCRIPTS.windows);
     const bom = Buffer.from([0xef, 0xbb, 0xbf]);
-    const withBom = path.join(os.tmpdir(), `desk-setup-${process.pid}-${Date.now()}.ps1`);
+    const withBom = path.join(hubTmp('setup'), `desk-setup-${process.pid}-${Date.now()}.ps1`);
     await fsp.writeFile(withBom, source.subarray(0, 3).equals(bom) ? source : Buffer.concat([bom, source]));
     try {
       await uploadFile(client, withBom, 'desk-setup.ps1');
@@ -625,10 +679,11 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       phase(job, '上传并开始安装');
       await uploadFile(client, RELAY_SCRIPT, '/tmp/desk-derp.sh');
       // Building takes minutes: it goes on by itself after this connection ends.
-      const inner = `/bin/bash /tmp/desk-derp.sh ${shellQuote(publicIp)} ${RELAY_PORT} > /var/log/lamplit-derp-setup.log 2>&1`;
+      // 1.5.61 (F8): root runs its own checked copy (rootRunCommand), kept for the background job, which removes it.
+      const derpFiles = [{ at: '/tmp/desk-derp.sh', name: 'desk-derp.sh', sha256: await sha256OfFile(RELAY_SCRIPT) }];
       const started = await execStream(
         client,
-        `${sudoPrefix}sh -c ${shellQuote(`if command -v systemd-run >/dev/null 2>&1; then systemd-run --unit=lamplit-derp-setup --collect --quiet /bin/bash -c ${shellQuote(inner)}; else nohup /bin/bash -c ${shellQuote(inner)} >/dev/null 2>&1 & fi`)}`,
+        `${sudoPrefix}${rootRunCommand(derpFiles, (d) => `inner="/bin/bash ${d}/desk-derp.sh ${shellQuote(publicIp)} ${Number(RELAY_PORT)} > /var/log/lamplit-derp-setup.log 2>&1; rm -rf ${d}"; if command -v systemd-run >/dev/null 2>&1; then systemd-run --unit=lamplit-derp-setup --collect --quiet /bin/bash -c "$inner"; else nohup /bin/bash -c "$inner" >/dev/null 2>&1 & fi`, { keep: true })}`,
         { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 30000 },
       );
       if (started.code !== 0) throw remoteError('REMOTE_RELAY_FAILED', `没能开始安装中转（${cleanLine(started.output).slice(0, 160) || `exit ${started.code}`}）`);
@@ -684,7 +739,8 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         await joinHubOverSsh(client, sudo, { enabled: false }).catch(() => 'error');
         setProgress(job, '停掉并删除中转服务…');
         await uploadFile(client, TUNNEL_SCRIPT, '/tmp/lamplit-relay-setup.sh');
-        const ran = await execStream(client, `${sudoPrefix}/bin/bash /tmp/lamplit-relay-setup.sh --uninstall`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 120000 });
+        const setupFiles = [{ at: '/tmp/lamplit-relay-setup.sh', name: 'relay-linux.sh', sha256: await sha256OfFile(TUNNEL_SCRIPT) }];
+        const ran = await execStream(client, `${sudoPrefix}${rootRunCommand(setupFiles, (d) => `/bin/bash ${d}/relay-linux.sh --uninstall`)}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 120000 });
         await execStream(client, 'rm -f /tmp/lamplit-relay-setup.sh', { timeoutMs: 15000 }).catch(() => {});
         const field = (k) => (new RegExp(`^${k}=(.*)$`, 'm').exec(ran.output)?.[1] || '').trim();
         if (field('DESK_RELAY') !== 'removed') throw remoteError('REMOTE_RELAY_FAILED', field('DESK_RELAY_ERROR') || `没能卸载中转（exit ${ran.code}）`);
@@ -703,7 +759,12 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       await uploadFile(client, TUNNEL_SCRIPT, '/tmp/lamplit-relay-setup.sh');
       setProgress(job, '安装并启动中转服务…');
       // 1.5.51: the script may install Node.js first (minutes on a slow server); its 「[desk] …」 lines are the progress.
-      const ran = await execStream(client, `${sudoPrefix}/bin/bash /tmp/lamplit-relay-setup.sh /tmp/lamplit-relay.mjs ${Number(port)}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 600000, onLine: (line) => { const m = /^\[desk\] (.+)/.exec(line); if (m) setProgress(job, m[1]); } });
+      // 1.5.61 (F8): root runs its own checked copies (rootRunCommand).
+      const relayFiles = [
+        { at: '/tmp/lamplit-relay.mjs', name: 'relay.mjs', sha256: await sha256OfFile(TUNNEL_PROGRAM) },
+        { at: '/tmp/lamplit-relay-setup.sh', name: 'relay-linux.sh', sha256: await sha256OfFile(TUNNEL_SCRIPT) },
+      ];
+      const ran = await execStream(client, `${sudoPrefix}${rootRunCommand(relayFiles, (d) => `/bin/bash ${d}/relay-linux.sh ${d}/relay.mjs ${Number(port)}`)}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 600000, onLine: (line) => { const m = /^\[desk\] (.+)/.exec(line); if (m) setProgress(job, m[1]); } });
       await execStream(client, 'rm -f /tmp/lamplit-relay.mjs /tmp/lamplit-relay-setup.sh', { timeoutMs: 15000 }).catch(() => {});
       const out = ran.output;
       const field = (k) => (new RegExp(`^${k}=(.*)$`, 'm').exec(out)?.[1] || '').trim();
@@ -804,6 +865,11 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           const remoteScript = '/tmp/desk-setup.sh';
           await uploadFile(client, packed.file, remotePkg);
           await uploadFile(client, SETUP_SCRIPTS.linux, remoteScript);
+          // 1.5.61 (F8): what root runs is its own checked copy of each upload (rootRunCommand).
+          const setupFiles = [
+            { at: remotePkg, name: 'desk-hub.tar.gz', sha256: await sha256OfFile(packed.file) },
+            { at: remoteScript, name: 'desk-setup.sh', sha256: await sha256OfFile(SETUP_SCRIPTS.linux) },
+          ];
           let nodeArg = '';
           const machine = await execStream(client, 'uname -m', { timeoutMs: 15000 }).catch(() => ({ output: '' }));
           const arch = /aarch64|arm64/.test(machine.output) ? 'arm64' : /x86_64|amd64/.test(machine.output) ? 'x64' : '';
@@ -811,7 +877,8 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           if (nodeTar) {
             setProgress(job, `上传 Node.js（${Math.max(1, Math.round(nodeTar.bytes / 1024 / 1024))} MB，目标机器不用再下载）…`);
             await uploadFile(client, nodeTar.file, '/tmp/desk-node.tar.gz');
-            nodeArg = ' --node /tmp/desk-node.tar.gz';
+            setupFiles.push({ at: '/tmp/desk-node.tar.gz', name: 'desk-node.tar.gz', sha256: await sha256OfFile(nodeTar.file) });
+            nodeArg = ' --node "$d"/desk-node.tar.gz';
           }
 
           // Optional Tailscale key: written over the SSH channel into a file only
@@ -821,7 +888,11 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
             setProgress(job, '把 Tailscale 密钥交给那台机器…');
             const put = await execStream(client, 'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin: `${tailscaleKey}\n`, endInput: true, timeoutMs: 15000 })
               .catch((err) => ({ code: 1, output: err.message }));
-            if (put.code === 0) tsArg += ' --tailscale-key-file /tmp/desk-tailscale.key';
+            if (put.code === 0) {
+              setupFiles.push({ at: '/tmp/desk-tailscale.key', name: 'desk-tailscale.key', sha256: sha256Text(`${tailscaleKey}\n`) });
+              // The copy in root's folder; hub/tailscale-linux.sh moves it to a root-only file and removes it.
+              tsArg += ' --tailscale-key-file "$d"/desk-tailscale.key';
+            }
             // Never skip it silently: the human asked for it.
             else job.tailscale = `Tailscale 没装：密钥没能交给那台机器（${cleanLine(String(put.output || '')).slice(0, 120) || `exit ${put.code}`}）`;
           }
@@ -829,7 +900,9 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
           setProgress(job, '安装并启动（首次 3-10 分钟）…');
           result = await execStream(
             client,
-            `${sudoPrefix}bash ${remoteScript} --port ${shellQuote(String(hubPort))} --pkg ${remotePkg}${nodeArg}${tsArg}${desktop === 'full' || desktop === 'light' ? ` --desktop ${desktop}` : ''}`,
+            // Kept: the Tailscale key in it is read by a job that goes on in the background (and removes
+            // it); the rest goes when the script is done. The uploads in /tmp go right after the copy.
+            `${sudoPrefix}${rootRunCommand(setupFiles, (d) => `rc=0; bash ${d}/desk-setup.sh --port ${shellQuote(String(hubPort))} --pkg ${d}/desk-hub.tar.gz${nodeArg}${tsArg}${desktop === 'full' || desktop === 'light' ? ` --desktop ${desktop}` : ''} || rc=$?; rm -f ${d}/desk-hub.tar.gz ${d}/desk-setup.sh ${d}/desk-node.tar.gz; exit $rc`, { keep: true, drop: setupFiles.map((f) => f.at) })}`,
             {
               stdin: isRoot ? '' : `${password}\n`,
               onLine: (line) => {

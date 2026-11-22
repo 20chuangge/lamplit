@@ -608,6 +608,7 @@ function setSettingsNav(sectionId) {
   if (scroller) scroller.scrollTop = 0;
   const drawer = $('settings-drawer');
   drawer?.classList.remove('set-home');
+  if (sectionId === 'sec-home') renderSettingsHome(); // 1.5.61: the home first (08b-settings-home.js)
   const picked = document.querySelector(`.setnav[data-set-target="${sectionId}"]`);
   $('settings-title').textContent = isMobile() && picked ? picked.textContent.trim() : settingsTitle();
 }
@@ -636,6 +637,7 @@ function showSettingsHome() {
 
 /** Line icons for the settings list, one per page (Lucide shapes, ISC licence). */
 const SETNAV_ICONS = {
+  'sec-home': '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>',
   'sec-model': '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>',
   'sec-run': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
   'sec-initiative': '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
@@ -798,10 +800,10 @@ function openSettings(section) {
   $('settings-drawer').setAttribute('aria-hidden', 'false');
   $('settings-scrim').classList.add('show');
   normalizeOverlays();
-  const targetId = section || 'sec-model';
+  // Opened with nothing picked: the home (a computer; 1.5.61), the list (a phone).
+  const targetId = section || (isMobile() ? 'sec-model' : 'sec-home');
   setSettingsNav(targetId);
   if (isMobile() && !section) showSettingsHome();
-  if (!isMobile() && !section) setTimeout(() => $('set-provider').focus(), 120);
 }
 
 /* Linux machines: each bot has a screen of its own; light or full, and idle ones stop. */
@@ -1003,7 +1005,9 @@ function loadAttention() {
     const before = currentChatKey();
     const wasWorking = Boolean(state.attention?.items?.[before]?.working);
     const hadResult = new Set(Object.entries(state.attention?.items || {}).filter(([, item]) => item?.unread).map(([k]) => k));
+    const prevItems = state.attention?.items || {};
     try { state.attention = await api('/api/attention'); } catch { return; /* older hub */ }
+    noteActivity(prevItems, state.attention?.items, 'here'); // a new card, a result: that chat moves up (1.5.61)
     // 「做完了：…」 quotes its last words, and those come with the roster: fetch it when a result is new.
     if (Object.entries(state.attention.items || {}).some(([k, item]) => item?.unread && !hadResult.has(k))) {
       Promise.resolve(refreshRoster()).then(() => { renderBots(); renderGroups(); }).catch(() => {});

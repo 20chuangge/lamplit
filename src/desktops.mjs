@@ -22,6 +22,8 @@ import fsp from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 
+import { vncStoredPassword, randomVncPassword } from './vncauth.mjs';
+
 const BASE_DISPLAY = 120;      // :120 .. :159
 const BASE_VNC_PORT = 5900 + 20; // 5920 ..
 const BASE_WEB_PORT = 6100;    // 6100 ..
@@ -91,11 +93,12 @@ export async function ensureViewer(botId) {
   if (!entry || typeof entry.startViewer !== 'function') return Boolean(entry);
   if (entry.viewerStarting) return entry.viewerStarting;
   entry.lastViewerAt = Date.now();
-  if ((entry.viewProcs || []).length && entry.viewProcs.every(alive) && (await portReady(entry.webPort))) return true;
+  const port = entry.viewPort || entry.webPort;
+  if ((entry.viewProcs || []).length && entry.viewProcs.every(alive) && (await portReady(port))) return true;
   entry.viewerStarting = (async () => {
     for (const proc of entry.viewProcs || []) { try { proc.kill(); } catch { /* gone */ } }
     entry.viewProcs = await entry.startViewer();
-    return portReady(entry.webPort);
+    return portReady(port);
   })().finally(() => { entry.viewerStarting = null; });
   return entry.viewerStarting;
 }
@@ -407,7 +410,9 @@ async function ensureDesktopOnce(botId) {
   try { fs.rmSync(`/tmp/.X11-unix/X${display}`, { force: true }); } catch { /* fine */ }
 
   // 1) the virtual display
-  procs.push(spawnChild('Xvfb', [`:${display}`, '-screen', '0', '1400x900x24', '-nolisten', 'tcp'], {
+  // 1.5.61: no abstract socket either (-nolisten local): what a bot's sandboxed command can
+  // reach of this display is the socket file bound into its own sandbox only.
+  procs.push(spawnChild('Xvfb', [`:${display}`, '-screen', '0', '1400x900x24', '-nolisten', 'tcp', '-nolisten', 'local'], {
     stdio: ['ignore', childLog(botId, 'xvfb'), childLog(botId, 'xvfb')],
     detached: false,
   }));
@@ -470,33 +475,34 @@ async function ensureDesktopOnce(botId) {
     }
   }
 
-  // 2) VNC server on that display, localhost only
-  // No VNC password on purpose: the display is bound to 127.0.0.1 and each bot
-  // has its own websockify bridge, so "type a password to see your own bot"
-  // would be friction with no real protection.
+  // 2) VNC server on that display, localhost only, with a password (1.5.61, the verifier's
+  // F12). "Only 127.0.0.1" was no protection: the bots' sandboxes share this machine's
+  // network, so another bot's command could open this screen and use it (its browser's
+  // logins with it). Each start of the viewer part gets a new random password, in a file
+  // under data/ (hidden from every sandbox); the hub signs in with it itself and offers the
+  // page no password (wsbridge.mjs, as for TightVNC on Windows), so the human types none.
+  // No websockify any more: the hub speaks WebSocket to x11vnc directly.
   // Started only while someone watches (ensureViewer), stopped after.
   const startViewer = async () => {
     const view = [];
     killByPattern(`x11vnc -display :${display} `);
     killByPattern(`websockify.* 127.0.0.1:${webPort} `);
+    const password = randomVncPassword();
+    const authFile = viewerAuthFile(botId);
+    fs.mkdirSync(path.dirname(authFile), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(authFile, vncStoredPassword(password), { mode: 0o600 });
+    entry.viewerPassword = password;
     // -nonap: with nobody connected x11vnc naps and picks up a new viewer
     // seconds late (seen: 4 s); it only runs while someone watches anyway.
     // -nolookup: no reverse DNS for the (always local) client.
-    const args = ['-display', `:${display}`, '-localhost', '-nopw', '-forever', '-shared', '-noxdamage', '-repeat', '-noshm', '-nonap', '-nolookup', '-threads', '-rfbport', String(vncPort)];
+    const args = ['-display', `:${display}`, '-localhost', '-rfbauth', authFile, '-forever', '-shared', '-noxdamage', '-repeat', '-noshm', '-nonap', '-nolookup', '-threads', '-rfbport', String(vncPort)];
     view.push(spawnChild('x11vnc', args, { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')] }));
     for (let i = 0; i < 50 && !(await portReady(vncPort)); i += 1) await sleep(100);
-    // 3) WebSocket bridge for that one display, loopback only. Viewers never
-    // reach it directly: the hub relays /api/bots/<id>/desktop/ws to it after
-    // the same pairing check as the API, so nobody on the LAN can open a bot's
-    // screen without being paired.
-    view.push(spawnChild('websockify', [`127.0.0.1:${webPort}`, `127.0.0.1:${vncPort}`], {
-      stdio: ['ignore', childLog(botId, 'web'), childLog(botId, 'web')],
-    }));
-    for (let i = 0; i < 50 && !(await portReady(webPort)); i += 1) await sleep(100);
     return view;
   };
 
-  const entry = { display, vncPort, webPort, procs, viewProcs: [], startViewer, startedAt: new Date().toISOString(), mode: sessionMode, viewers: 0, lastUsed: Date.now(), lastViewerAt: 0 };
+  // viewPort: what the viewer part serves on (x11vnc itself); signIn: the hub signs in to it.
+  const entry = { display, vncPort, webPort, viewPort: vncPort, signIn: true, procs, viewProcs: [], startViewer, startedAt: new Date().toISOString(), mode: sessionMode, viewers: 0, lastUsed: Date.now(), lastViewerAt: 0 };
   desktops.set(botId, entry);
   startReaper();
   return { ...publicInfo(botId, entry), started: true };
@@ -582,6 +588,17 @@ function publicInfo(botId, entry) {
   };
 }
 
+
+/** Where a bot screen's VNC password file is (x11vnc -rfbauth): under data/, which every sandbox hides. */
+export function viewerAuthFile(botId) {
+  return path.join(dataDir || process.cwd(), 'desktop-vnc', `${String(botId).replace(/[^a-zA-Z0-9_-]/g, '') || 'bot'}.passwd`);
+}
+
+/** The password the hub signs in to a bot's screen with (1.5.61), or '' (Wayland: wayvnc has none). Never in an API answer. */
+export function desktopViewerPassword(botId) {
+  const entry = desktops.get(botId);
+  return entry?.signIn ? String(entry.viewerPassword || '') : '';
+}
 
 /** Info for a bot's desktop without starting one. */
 export function desktopInfo(botId) {

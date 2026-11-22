@@ -25,12 +25,11 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 import { newVncSecret, isVncSecret, vncStoredPassword, rfbClientHandshake, chunkReader } from './vncauth.mjs';
-import { sealText, openSealed, plainRefused } from './store.mjs';
+import { sealText, openSealed, plainRefused, untrusted, noteNow, hubTmp } from './store.mjs';
 
 export const VNC_PORT = 5900;
 /** The startup entry a bot made by hand before Nightshift did this itself. */
@@ -129,8 +128,7 @@ export async function tightVncInstaller({ fetchImpl = fetch } = {}) {
     const st = await fsp.stat(override).catch(() => null);
     return st?.isFile() ? { file: override, bytes: st.size } : null;
   }
-  const dir = path.join(os.tmpdir(), 'nightshift-cache');
-  await fsp.mkdir(dir, { recursive: true });
+  const dir = hubTmp('cache'); // 1.5.61 (F8): not the system's temp folder
   const cached = (await fsp.readdir(dir).catch(() => [])).filter((n) => /^tightvnc-[\d.]+-gpl-setup-64bit\.msi$/.test(n)).sort().pop();
   if (cached) {
     const st = await fsp.stat(path.join(dir, cached));
@@ -336,7 +334,9 @@ export const APP_KEY = 'HKCU:\\Software\\TightVNC\\Server';
 /** The passwords this machine set, or null. `key`: the master key (sealed file). */
 export function readVncSecret(dataDir, { key = null } = {}) {
   try {
-    let value = JSON.parse(fs.readFileSync(path.join(dataDir, SECRET_FILE), 'utf8'));
+    const raw = fs.readFileSync(path.join(dataDir, SECRET_FILE), 'utf8');
+    if (untrusted(path.join(dataDir, SECRET_FILE), raw)) return null; // 1.5.61 (F9): not what Lamplit wrote there
+    let value = JSON.parse(raw);
     if (value?.lamplitSealed) value = JSON.parse(openSealed(value, key) || 'null');
     else if (key && plainRefused(path.join(dataDir, SECRET_FILE), value)) return null; // 1.5.60 (F6): a plain copy Lamplit did not write
     return isVncSecret(value) ? value : null;
@@ -352,6 +352,7 @@ export function writeVncSecret(dataDir, secret, { key = null } = {}) {
   const text = `${JSON.stringify(secret, null, 2)}\n`;
   fs.writeFileSync(`${file}.tmp`, key ? sealText(text, key) : text, { mode: 0o600 });
   fs.renameSync(`${file}.tmp`, file);
+  noteNow(file); // 1.5.61 (F9): Lamplit's own, noted (written here, not through store's writers)
   if (process.platform === 'win32') {
     // Windows' own whoami (not one a PATH may put first). Without this account's SID the
     // file keeps the data folder's rules (the bots' account is denied there too).

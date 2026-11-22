@@ -65,6 +65,20 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
   // time. A LAN address that cannot be reached from here (another network) made
   // every call wait for its timeout before trying the Tailscale one.
   const lastGood = new Map();
+  // And how it went (1.5.61, the machine menu): that address, or through the relay - directly or not.
+  const lastWay = new Map();
+
+  /** How this machine reached a peer last: {kind: lan|tailscale|public, address} | {kind: direct|relay}; null before any answer. */
+  function way(name) {
+    const w = lastWay.get(name);
+    if (!w) return null;
+    if (w.base.startsWith('relay:')) return { kind: w.direct ? 'direct' : 'relay' };
+    let host = '';
+    try { host = new URL(w.base).hostname; } catch { return null; }
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host) || /\.ts\.net$/i.test(host)) return { kind: 'tailscale', address: host };
+    if (/^(10|127)\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\.|^169\.254\.|\.local$|^localhost$/i.test(host)) return { kind: 'lan', address: host };
+    return { kind: 'public', address: host };
+  }
 
   /** One request to a peer: the address that worked last, else its LAN address, then its Tailscale address.
    *  `base` forces a single address (the machine list probes both in parallel). */
@@ -93,6 +107,7 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
           throw Object.assign(new Error(`HTTP ${res.status}（不是那台机器回的，多半是代理）`), { code: 'PEER_PROXY_ERROR' });
         }
         if (known.includes(candidate)) lastGood.set(peer.name, candidate);
+        lastWay.set(peer.name, { base: candidate, direct: Boolean(res.viaDirect) });
         // Which way it went (第 2 步: the desktop app says "through the relay").
         if (candidate.startsWith('relay:')) {
           try { Object.defineProperty(res, 'viaRelay', { value: true }); } catch { /* frozen */ }
@@ -171,6 +186,7 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
     find,
     call,
     json,
+    way,
     /** The direct dialer while 「先试直连」 is on, else null (1.5.47: the desktop window's relay door uses it too). */
     directDialer: () => (directWanted() ? dialer : null),
     /** 直连 (1.5.46): 'direct' | 'relay' for a machine's relay address. */

@@ -292,40 +292,44 @@
     <button class="icon-btn" id="settings-close" aria-label="关闭设置">✕</button>
   </div>
   <div class="settings-body">
+    <!-- 1.5.61 (redesign step 5): a home first, then the 4 groups, the names in plain words (08b-settings-home.js) -->
     <nav class="settings-nav" id="settings-nav" aria-label="设置分类">
+      <button class="setnav setnav-home active" type="button" data-set-target="sec-home">设置首页</button>
       <div class="setnav-sec">
-        <div class="setnav-group">助理</div>
-        <button class="setnav active" type="button" data-set-target="sec-model">模型</button>
+        <div class="setnav-group">助手怎么干活</div>
+        <button class="setnav" type="button" data-set-target="sec-model">模型</button>
         <button class="setnav" type="button" data-set-target="sec-skills">技能</button>
         <button class="setnav" type="button" data-set-target="sec-memory">记忆</button>
-        <button class="setnav" type="button" data-set-target="sec-initiative">主动</button>
+        <button class="setnav" type="button" data-set-target="sec-initiative">主动找你</button>
       </div>
       <div class="setnav-sec">
         <div class="setnav-group">安全</div>
-        <button class="setnav" type="button" data-set-target="sec-run">审批</button>
-        <button class="setnav" type="button" data-set-target="sec-bounds">边界</button>
+        <button class="setnav" type="button" data-set-target="sec-run">什么时候先问你</button>
+        <button class="setnav" type="button" data-set-target="sec-bounds">能碰哪些地方</button>
         <button class="setnav" type="button" data-set-target="sec-vault">保险箱</button>
-        <button class="setnav" type="button" data-set-target="sec-audit">操作记录</button>
+        <button class="setnav" type="button" data-set-target="sec-audit">做过什么</button>
       </div>
       <div class="setnav-sec">
         <div class="setnav-group">连接</div>
         <button class="setnav" type="button" data-set-target="sec-machines">机器</button>
-        <button class="setnav" type="button" data-set-target="sec-pair">手机和外网</button>
+        <button class="setnav" type="button" data-set-target="sec-pair">手机和出门在外</button>
         <button class="setnav" type="button" data-set-target="sec-feishu">飞书</button>
         <button class="setnav" type="button" data-set-target="sec-mcp">连接应用</button>
       </div>
       <div class="setnav-sec">
-        <div class="setnav-group">通用</div>
-        <button class="setnav" type="button" data-set-target="sec-checkup">体检</button>
+        <div class="setnav-group">外观和系统</div>
         <button class="setnav" type="button" data-set-target="sec-appearance">外观</button>
-        <button class="setnav" type="button" data-set-target="sec-usage">成本</button>
-        <button class="setnav" type="button" data-set-target="sec-backup">备份</button>
+        <button class="setnav" type="button" data-set-target="sec-backup">备份和恢复</button>
+        <button class="setnav" type="button" data-set-target="sec-checkup">体检</button>
+        <button class="setnav" type="button" data-set-target="sec-usage">花了多少钱</button>
         <button class="setnav" type="button" data-set-target="sec-pages">页面库</button>
         <button class="setnav" type="button" data-set-target="sec-about">关于</button>
       </div>
     </nav>
     <div class="settings-scroll" id="settings-scroll">
       <div class="notice-inline" id="settings-note" hidden></div>
+
+      <section class="dsec" id="sec-home"></section>
 
       <section class="dsec" id="sec-model">
         <div class="dsec-head">模型</div>
@@ -1508,11 +1512,13 @@
 <script defer src="app/main/03-groups.js"></script>
 <script defer src="app/main/04-bots.js"></script>
 <script defer src="app/main/04b-sidebar.js"></script>
+<script defer src="app/main/04c-order.js"></script>
 <script defer src="app/main/05-chat.js"></script>
 <script defer src="app/main/06-live.js"></script>
 <script defer src="app/main/07-skills-routines.js"></script>
 <script defer src="app/main/07b-cards.js"></script>
 <script defer src="app/main/08-settings.js"></script>
+<script defer src="app/main/08b-settings-home.js"></script>
 <script defer src="app/main/09-apps.js"></script>
 <script defer src="app/main/10-computer.js"></script>
 <script defer src="app/main/11-machines.js"></script>

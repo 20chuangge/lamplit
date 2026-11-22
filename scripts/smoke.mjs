@@ -246,6 +246,7 @@ async function main() {
     await stage('1.5.57: the living avatar is seen to live - a 40 px header face, a sidebar that blinks', async () => (await import('./smoke-lamp1557.mjs')).lamp1557Checks({ check, readText }));
     await stage('1.5.58: cards you answer - plain titles, risk tags, honest receipts, next steps; approval decisions unchanged', async () => (await import('./smoke-cards1558.mjs')).cards1558Checks({ check, readText }));
     await stage('1.5.59: the sidebar - 「N 件等你」 / 「N 个在做」, machines with an online dot, status lines, the header counts the chat on screen', async () => (await import('./smoke-sidebar1559.mjs')).sidebar1559Checks({ check, readText }));
+    await stage('1.5.61: redesign step 5 - groups on top, a stable order kept on the hub, the first run, the settings home, 连接应用', async () => (await import('./smoke-step5-1561.mjs')).step5Checks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -253,6 +254,7 @@ async function main() {
     await stage('1.5.60: security - saves into the workspace checked level by level, the sandbox\'s own pids, plain key files refused', async () => { const m = await import('./smoke-sec1560.mjs'); await m.fsChecks({ check }); await m.routeChecks({ check, apiRaw, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') }); await m.siteChecks({ check, readText }); await m.sandboxArgChecks({ check }); await m.sealChecks({ check, readText }); await m.trashChecks({ check }); const v = await import('./smoke-secv1560.mjs'); await v.writeChecks({ check }); await v.trashVerifyChecks({ check }); });
     await stage('1.5.56: on a phone, closing settings goes back where it was opened from', async () => (await import('./smoke-nav1556.mjs')).navChecks({ check, readText }));
     await stage('1.5.58: a bot\'s screen on another machine, in 全部机器 (through the relay too)', async () => (await import('./smoke-1558.mjs')).remoteScreenChecks({ check }));
+    await stage('1.5.61: security - the browser over a pipe (no debugging port), the hub\'s temp files in data, the bots\' own /tmp, checked root runs, the trust note', async () => { await (await import('./smoke-sec1561.mjs')).sec1561Checks({ check, skip }); await (await import('./smoke-secv1560b.mjs')).verifyChecks({ check, skip }); await (await import('./smoke-secv1561.mjs')).verifyChecks({ check, skip }); });
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -2128,8 +2130,8 @@ async function scenarioBrowser({ toolsMod, browserMod, home }) {
     // --- status + close --------------------------------------------------------------
     const running = await call('browser_status');
     check(
-      'browser_status: reports running with a pid and a cdp url',
-      running.running === true && running.pid > 0 && /^http:\/\/127\.0\.0\.1:\d+$/.test(running.cdpUrl || ''),
+      'browser_status: reports running with a pid, over the pipe (1.5.61: no debugging port, no cdp url)',
+      running.running === true && running.pid > 0 && running.cdpUrl === null && running.channel === 'pipe',
       JSON.stringify(running).slice(0, 200),
     );
     const closed = await call('browser_close');
@@ -4477,9 +4479,10 @@ async function scenarioMcp({ home, toolsMod }) {
   // 1.5.21: Chrome that does not open its port is tried once more (fresh port, longer wait).
   {
     const br = await readText('../src/browser.mjs');
-    check('B21 browser: when Chrome never opens its debugging port it is stopped and launched once more on a fresh port with a longer wait, before the error',
-      br.includes('if (!version && !inWindowsServiceSession()) {') && br.includes('args = buildLaunchArgs({ port, profileDir: profile, headless, wayland: Boolean(wayland) });\n      stderr =') && br.includes('version = await waitForVersion(port, 45000);')
-      && br.indexOf('version = await waitForVersion(port, 45000);') < br.indexOf('never opened a debugging port'));
+    // 1.5.61 (F7): over the pipe - no port to change, the same second try with a longer wait.
+    check('B21 browser: when Chrome never answers on its debugging pipe it is stopped and launched once more with a longer wait, before the error',
+      br.includes('if (!version && !inWindowsServiceSession()) {') && br.includes("stderr = '';\n      child = launch();\n      version = await pipeReady(browser, 45000, child);")
+      && br.indexOf('version = await pipeReady(browser, 45000, child);') < br.indexOf('never answered on its debugging pipe'));
   }
   // 1.5.20: 「让机器人用这部手机」 turned off by an update or a cleaner comes back on; the bot says why when it is off.
   {
@@ -4987,6 +4990,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
     const list = JSON.parse(before);
     list.push({ id: 'mold1', name: '我的文件', transport: 'stdio', command: 'npx', args: ['-y', '@x/fake-fs@latest', 'D:/somewhere'], env: {}, enabled: false, trust: 'always', bots: 'all' });
     await fsp.writeFile(file, JSON.stringify(list));
+    (await import('../src/store.mjs')).noteNow(file); // 1.5.61 (F9): what an older Lamplit wrote there (this test writes it directly)
     const m2 = mcp.createMcpManager({ registry: toolsMod.createRegistry({ workspaceDir: path.join(home, 'workspace'), config: {} }), workspaceDir: path.join(home, 'workspace'),
       catalog: [...catalog, { id: 'fake-fs', name: '假文件', category: '本机', auth: 'none', transport: 'stdio', command: 'npx', args: ['-y', '@x/fake-fs', '{workspace}'] }] });
     await m2.load();
@@ -5731,10 +5735,11 @@ async function scenarioApps1512() {
   // The apps' own marks (simple-icons, CC0): a file for each app that has one, the licence next to them.
   const fsMod = await import('node:fs');
   const withIcon = mcp.MCP_CATALOG.filter((e) => e.icon);
-  check('A4 icons: the apps with a mark have its SVG (plain paths, no script) and the page draws it as a mask; the licence is shipped',
+  // 1.5.61 (redesign step 5): the page shows one plain grey letter block per app; the marks stay shipped, with their licence.
+  check('A4 icons: the apps with a mark have its SVG (plain paths, no script) and the licence is shipped; the page shows a plain letter block (1.5.61)',
     withIcon.length >= 12 && withIcon.every((e) => { const f = new URL(`../public/vendor/app-icons/${e.id}.svg`, import.meta.url); return fsMod.existsSync(f) && !/<script|on\w+=/i.test(fsMod.readFileSync(f, 'utf8')); })
     && fsMod.existsSync(new URL('../public/vendor/LICENSE-simple-icons.txt', import.meta.url))
-    && apps.includes("mark.style.maskImage = `url(\"${app.icon}\")`;"));
+    && apps.includes("const badge = el('div', 'mcp-badge', String(app.badge || app.name)"));
 }
 
 /**
@@ -5982,9 +5987,10 @@ async function scenarioDist158() {
 
   const botsPart = await readText('../public/app/main/04-bots.js');
   const onboarding = botsPart.slice(botsPart.indexOf('const ONBOARD_PROVIDERS'), botsPart.indexOf('// end of first run'));
-  check('O1 first run: three steps - provider (DeepSeek first, a link to get a key), the key, then test and the first sentence; demo still one click away',
+  // 1.5.61 (redesign step 5): hello first, two ways on; three providers; the key; then 第一件事 to tap.
+  check('O1 first run: hello with two ways on (the demo first), then the provider (DeepSeek first, a link to get a key), the key, the test; then 第一件事',
     onboarding.includes("'deepseek'") && onboarding.indexOf("'deepseek'") < onboarding.indexOf("'moonshot'") && onboarding.includes('keyUrl')
-    && onboarding.includes("'/api/settings/test'") && onboarding.includes('第一句') && onboarding.includes('先用演示模式看看') && onboarding.includes('step'));
+    && onboarding.includes("'/api/settings/test'") && onboarding.includes('先看看演示（不用填任何东西）') && onboarding.includes('接好了。先让我做第一件事？') && onboarding.includes('step'));
 
   const signer = await readText('./android-release.mjs');
   const pkg = JSON.parse(await readText('../package.json'));
@@ -6247,7 +6253,9 @@ async function scenarioV153() {
     at(strict, '--ro-bind', '/') >= 0 && at(strict, '--tmpfs', '/home') >= 0 && at(strict, '--tmpfs', '/root') >= 0
     && at(strict, '--bind', '/home/u/desk-hub/workspace') > at(strict, '--tmpfs', '/home')
     && at(strict, '--ro-bind', '/srv/photos') >= 0 && at(strict, '--bind', '/home/u/notes') >= 0
-    && at(strict, '--bind', '/tmp') >= 0 && strict.includes('--die-with-parent') && at(strict, '--proc', '/proc') >= 0, JSON.stringify(strict));
+    // 1.5.61 (F8): never the real /tmp - an empty one, or the bot's own folder (below); /run/user empty.
+    && at(strict, '--tmpfs', '/tmp') >= 0 && at(strict, '--bind', '/tmp') < 0 && at(strict, '--tmpfs', '/run/user') >= 0 && strict.includes('--die-with-parent') && at(strict, '--proc', '/proc') >= 0
+    && (() => { const own = SB.bwrapArgs({ ...base, mode: 'strict', folders: [], tmpDir: '/home/u/desk-hub/data/sandbox-tmp/b1' }); return own.findIndex((x, i) => x === '--bind' && own[i + 1] === '/home/u/desk-hub/data/sandbox-tmp/b1' && own[i + 2] === '/tmp') >= 0; })(), JSON.stringify(strict));
   const open = SB.bwrapArgs({ ...base, mode: 'open', folders: [] });
   check('V1 open (a 放手 machine): everything stays as it was except Lamplit\'s data, which is empty',
     at(open, '--bind', '/') >= 0 && at(open, '--tmpfs', '/home/u/desk-hub/data') > at(open, '--bind', '/') && at(open, '--ro-bind', '/') < 0 && at(open, '--tmpfs', '/home') < 0, JSON.stringify(open));
@@ -7173,7 +7181,7 @@ async function scenarioV165() {
     const att = await readText('../src/attention.mjs');
     const agentSrc = await readText('../src/agent.mjs');
     check('T4 decision: a chat waiting for your decision shows a strip on top with the question; clicking it goes to the message; the strip goes once you answer',
-      page.includes('id="decision-strip"') && page.includes('function renderDecisionStrip()') && /loadAttention[\s\S]{0,1300}renderDecisionStrip\(\);/.test(page)
+      page.includes('id="decision-strip"') && page.includes('function renderDecisionStrip()') && /loadAttention[\s\S]{0,1500}renderDecisionStrip\(\);/.test(page)
       && att.includes('text: String(ev.waitingText || ev.summary') && agentSrc.includes('live.waitingText = said;') && agentSrc.includes('...(live.waitingText ? { waitingText: live.waitingText } : {})'));
   }
   // --- T5: one bot, one turn at a time for the human --------------------------------
@@ -7374,12 +7382,13 @@ async function scenarioV163() {
   // 1.5.56: a 14th, 11b-lamp.js (the living avatar), before wiring, which draws the first faces.
   // 1.5.58: a 15th, 07b-cards.js (the cards you answer: titles, risk tags, receipts, next steps), after skills.
   // 1.5.59: a 16th, 11a-network.js (网络诊断, the two relays, 体检), split from 11-machines.js at its cap; a 17th, 04b-sidebar.js (the sidebar's filters, redesign step 4).
-  check('ENG-04b split: the page script is 17 files by feature (core, avatars, groups, bots, sidebar, chat, live, skills, cards, settings, apps, computer, machines, network, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
-    PS.MAIN_PARTS.length === 17 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
+  // 1.5.61: 04c-order.js (the sidebar's stable order) and 08b-settings-home.js (the settings home).
+  check('ENG-04b split: the page script is 19 files by feature (core, avatars, groups, bots, sidebar, order, chat, live, skills, cards, settings, settings home, apps, computer, machines, network, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
+    PS.MAIN_PARTS.length === 19 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
     && !fsx.existsSync(path.join(pub, 'app', 'main.js')) && !raw.includes('type="module"'), JSON.stringify(sizes));
   const order = (await import('./check-page-parts.mjs')).checkPageParts(pub);
   check('ENG-04b split: load-time code never needs a later part, no name is declared twice, nothing clashes with the browser (scripts/check-page-parts.mjs)',
-    !order.skipped && order.problems.length === 0 && order.parts === 17, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
+    !order.skipped && order.problems.length === 0 && order.parts === 19, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
   const auth = await import('../src/auth.mjs');
   const part = await fetch(`${base}/app/main/05-chat.js`);
   const body = await part.text();
@@ -7557,9 +7566,10 @@ async function scenarioV161() {
     check('U2 chat: @机器人名 in a message shows as a chip with that bot\'s face; in a group, "正在…" shows the face of the bot at work',
       page.includes('function decorateMentions(node)') && page.includes('decorateMentions(bubble);') && page.includes("const chip = el('span', 'mention');")
       && page.includes("if (isGroupMode() && botId) {") && page.includes("row.querySelector('.typing-who')"));
-    check('U3 sidebar: a last message is shown as plain text (no **, `, #), and bots with the newest message come first; the main bot stays on top',
+    // 1.5.61 (the user's choice): a stable order - rows never jump when a message comes in.
+    check('U3 sidebar: a last message is shown as plain text (no **, `, #); pinned rows on top (the main bot by default), the rest by latest activity - changed only when nobody is looking (1.5.61)',
       page.includes('function plainPreview(text)') && page.includes("return text ? plainPreview(text) : '';") && page.includes('const last = lastLine(group);')
-      && page.includes("const when = (b) => Date.parse(b.preview?.ts || '') || 0;") && page.includes('|| when(b) - when(a)'));
+      && page.includes('function sortSection(section, items)') && !page.includes('|| when(b) - when(a)'));
     check('U4 settings: on a computer the settings list has the same icons as the phone',
       /@media \(min-width: 861px\) \{\s*\.setnav \{ display: flex; align-items: center; gap: 9px; \}\s*\.setnav-icon \{ display: block;/.test(page));
     check('U5 connected apps: the "已连接" page names its own icon, so a browser does not keep an old cached one',
@@ -7587,7 +7597,7 @@ async function scenarioV160() {
   const whole = PS.pageSource(path.join(REPO, 'public'));
   const i18n = await readText('../scripts/check-i18n.mjs');
   check('ENG-04 checks: the self-tests and the English check read the split page as one text (every part present, in page order)',
-    PS.PAGE_PARTS.length === 21 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js; 1.5.58: + 07b-cards.js; 1.5.59: + 11a-network.js, 04b-sidebar.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
+    PS.PAGE_PARTS.length === 23 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js; 1.5.58: + 07b-cards.js; 1.5.59: + 11a-network.js, 04b-sidebar.js; 1.5.61: + 04c-order.js, 08b-settings-home.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
     && i18n.includes("import { pageSource } from './page-source.mjs';") && (await readText('../public/index.html')) === whole);
 
   const auth = await import('../src/auth.mjs');
@@ -7718,7 +7728,7 @@ async function scenarioV158() {
     check('X3 chat: after a reload, a bot that is still working shows "正在处理…" again (also when the sidebar learns it is working)',
       render.includes("const working = Boolean(state.attention?.items?.[currentChatKey()]?.working);")
       && render.includes("if (working) showTyping(typingBotId(), att?.needsYou || att?.asking ? '等你点头…' : '正在处理…');") // 1.5.54: a waiting card says so
-      && page.includes('function syncTypingWithAttention()') && /state\.attention = await api\('\/api\/attention'\);[\s\S]{0,900}syncTypingWithAttention\(\);/.test(page));
+      && page.includes('function syncTypingWithAttention()') && /state\.attention = await api\('\/api\/attention'\);[\s\S]{0,1100}syncTypingWithAttention\(\);/.test(page));
   }
 }
 
@@ -7761,13 +7771,14 @@ async function scenarioV156() {
     const nav = (page.match(/<nav class="settings-nav" id="settings-nav"[\s\S]*?<\/nav>/) || [''])[0];
     const groups = [...nav.matchAll(/<div class="setnav-sec"[^>]*>\s*<div class="setnav-group">([^<]+)<\/div>([\s\S]*?)<\/div>\s*(?=<div class="setnav-sec"|<\/nav>)/g)]
       .map((m) => [m[1], [...m[2].matchAll(/data-set-target="([^"]+)"/g)].map((x) => x[1]).join(',')]);
-    check('S1 settings: four groups with titles - 助理 / 安全 / 连接 / 通用 - in the design\'s order',
+    // 1.5.61 (redesign step 5): the groups in plain words, 外观和系统 in the design's order; a home on top.
+    check('S1 settings: four groups with titles - 助手怎么干活 / 安全 / 连接 / 外观和系统 - in the design\'s order',
       JSON.stringify(groups) === JSON.stringify([
-        ['助理', 'sec-model,sec-skills,sec-memory,sec-initiative'],
+        ['助手怎么干活', 'sec-model,sec-skills,sec-memory,sec-initiative'],
         ['安全', 'sec-run,sec-bounds,sec-vault,sec-audit'],
         ['连接', 'sec-machines,sec-pair,sec-feishu,sec-mcp'],
-        // 1.5.54: 备份 joins 通用, after 成本.
-        ['通用', 'sec-checkup,sec-appearance,sec-usage,sec-backup,sec-pages,sec-about'],
+        // 1.5.54: 备份 joins 通用; 1.5.61: 外观和系统, in the design's order.
+        ['外观和系统', 'sec-appearance,sec-backup,sec-checkup,sec-usage,sec-pages,sec-about'],
       ]), JSON.stringify(groups));
     const sec = (id) => (page.match(new RegExp(`<section class="dsec" id="${id}">[\\s\\S]*?</section>`)) || [''])[0];
     const run = sec('sec-run');
@@ -8577,7 +8588,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     // Tailscale key when adding a Linux machine.
     const sh = await readText('../hub/setup-linux.sh');
     const rm = await readText('../src/remote.mjs');
-    check('tailscale key: sent over SSH stdin into a private file, never on a command line', rm.includes("'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin:") && !/tskey.*\$\{tailscaleKey\}.*bash/.test(rm) && rm.includes("--tailscale-key-file /tmp/desk-tailscale.key"));
+    check('tailscale key: sent over SSH stdin into a private file, never on a command line', rm.includes("'umask 077; cat > /tmp/desk-tailscale.key && test -s /tmp/desk-tailscale.key', { stdin:") && !/tskey.*\$\{tailscaleKey\}.*bash/.test(rm) && rm.includes("tsArg += ' --tailscale-key-file \"$d\"/desk-tailscale.key';") && rm.includes("setupFiles.push({ at: '/tmp/desk-tailscale.key', name: 'desk-tailscale.key', sha256: sha256Text(`${tailscaleKey}\\n`) });"));
     const tsl = await readText('../hub/tailscale-linux.sh');
     const setupWin = await readText('../hub/setup-windows.ps1');
     const funnelSrc = await readText('../src/funnel.mjs');
@@ -8797,7 +8808,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const unlabelled = [...toolSrc.matchAll(/name: '([a-z_]+)',\n\s+description/g)].map((m) => m[1]).filter((n) => !labelled.has(n));
     check('working hint: every tool has a Chinese name (no "正在image_view…")', unlabelled.length === 0, unlabelled.join(','));
     check('fullscreen: the "我弄好了，继续" button is readable (not white on the near-white accent)', /\.pc-done \{[^}]*background: var\(--media-text\); color: var\(--media-bg\);/.test(page));
-    check('new bots: a specialist\'s empty chat is its own greeting with starts from its role; the primary bot is listed first', page.includes('if (bot && !bot.primary) return specialistWelcome(bot);') && page.includes('Number(Boolean(b.primary)) - Number(Boolean(a.primary))'));
+    check('new bots: a specialist\'s empty chat is its own greeting with starts from its role; the primary bot is listed first', page.includes('if (bot && !bot.primary) return specialistWelcome(bot);') && page.includes('(Boolean(it.primary) && !(o.unpinned || []).includes(it.key))')); // 1.5.61: the primary bot is pinned on top unless taken off
     const main = await readText('../desktop/main.mjs');
     check('open files: the desktop app opens a workspace file or shows it in its folder, only inside the workspace, only on this computer', main.includes("handle('desk:open-file'") && main.includes("if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: 'outside the workspace' };") && page.includes('return Boolean(window.desk?.openFile) && onLocalMachine();'));
     const jobs = await api('/api/media/jobs?botId=chief');
@@ -9872,7 +9883,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
   // Bot desktops are reachable only through the hub's authenticated relay.
   {
     const desktopsSrc = await readText('../src/desktops.mjs');
-    check('websockify binds loopback only', /spawnChild\('websockify', \[`127\.0\.0\.1:\$\{webPort\}`/.test(desktopsSrc));
+    // 1.5.61 (F12): x11vnc on loopback with a password the hub signs in with; no websockify; wayvnc on loopback.
+    check('bot screens: VNC on loopback only - x11vnc asks for a password (no websockify), wayvnc binds 127.0.0.1', desktopsSrc.includes("'-localhost', '-rfbauth', authFile,") && !/spawnChild\('websockify'/.test(desktopsSrc) && desktopsSrc.includes("vnc: ['wayvnc', ['-w', '-r', '127.0.0.1', String(webPort)]]"));
     check('the bot desktop URL goes through the hub relay', desktopsSrc.includes('desktop/ws') && !/http:\/\/\$\{lanAddress\(\)\}:\$\{entry\.webPort\}/.test(desktopsSrc));
     const unauth = await new Promise((resolve) => {
       const req = http.request(`${base}/api/bots/chief/desktop/ws`, {
@@ -10147,7 +10159,7 @@ async function scenarioCalm1540() {
     await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
     const page = await readText('../public/index.html');
     check('C40-1 the page: bots and groups draw that line (working: the step and n/m; waiting: 等你点头 and what; unread: 做完了; idle: the role / the members); the main assistant sums up who waits',
-      page.includes("let line = rosterLine(`bot:${bot.id}`, { idle: bot.role || last || '还没有消息', last });") && page.includes('const line = rosterLine(`group:${group.id}`, {')
+      page.includes("let line = rosterLine(`bot:${bot.id}`, { idle: bot.role || last || '还没有消息', last });") && page.includes('const line = groupLine(rosterLine(`group:${group.id}`, { idle, last, group: true }), idle);') /* 1.5.61: a group's new result is its dot */
       && page.includes("text: brief(doing.step, 40), tail: `${doing.done}/${doing.total}`, hint: '正在做' }") && page.includes("if (line.tail) node.appendChild(el('span', 'bp-tail', line.tail));") && page.includes("text: who ? `${who}：想${TOOL_TEXT[ask.tool].label}` : `想${TOOL_TEXT[ask.tool].label}`, hint: '等你点头' }") && page.includes("text: last ? `做完了：${last}` : '做完了，有新结果'")
       && page.includes("const waiting = bot.primary && !line.kind ? othersWaitingLine(`bot:${bot.id}`) : '';") && (page.match(/function statusLine\(/g) || []).length === 1);
     check('C40-2/3 the page: a hand-over is one line with its words behind a click and 做完了 / 在做; a group\'s board is one line of counts until opened (a bot\'s own checklist is not folded)',
@@ -11311,7 +11323,7 @@ async function scenarioRoster1543() {
     // 1.5.59 (redesign step 4): 「最近」 is gone - it listed the same chats twice; 「N 件等你」 / 「N 个在做」 on top instead.
     check('R43-8 the sidebar: one section per machine that folds (remembered), groups first, a summary when folded, a search box over 10; no 「最近」 (1.5.59: the filters on top instead)',
       !page.includes("el('div', 'roster-head recent-head', '最近')") && !page.includes('const RECENT_MAX') && page.includes("const COLLAPSED_KEY = 'lamplit.roster.collapsed';")
-      && page.includes('id="roster-search"') && page.includes('找助手或群组') && page.includes('const SEARCH_FROM = 10;') && page.includes('件事等你') && page.includes('群 · ')
+      && page.includes('id="roster-search"') && page.includes('找助手或群组') && page.includes('const SEARCH_FROM = 10;') && page.includes('件事等你') /* 1.5.61: groups have their own section, a machine's summary counts bots */
       && en.includes('"找助手或群组"'));
     check('R43-9 another machine\'s group opens here like a remote bot: its chat, its live stream and its sending go through this hub',
       page.includes("remoteGroupApi(") && page.includes('function remoteGroupById(') && page.includes("'/stream'") && /isRemoteId\(state\.groupId\)/.test(page));

@@ -103,13 +103,15 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
     try { await fsp.chmod(outboxFile, 0o600); } catch { /* Windows */ }
   };
 
-  const slimBot = (b) => ({ id: String(b.id), name: String(b.name || b.id).slice(0, 80), role: String(b.role || '').slice(0, 200), primary: Boolean(b.primary), ...(b.avatar ? { avatar: b.avatar } : {}) });
+  // createdAt (1.5.61): the sidebar lists a machine's bots in the order they were made, never by the latest message.
+  const slimBot = (b) => ({ id: String(b.id), name: String(b.name || b.id).slice(0, 80), role: String(b.role || '').slice(0, 200), primary: Boolean(b.primary), ...(b.createdAt ? { createdAt: String(b.createdAt).slice(0, 40) } : {}), ...(b.avatar ? { avatar: b.avatar } : {}) });
   const slimPreview = (p) => (p && typeof p === 'object' ? { preview: { ts: String(p.ts || ''), role: String(p.role || ''), text: String(p.text || '').slice(0, 200) } } : {});
   /** A group of that machine: its name and members (their ids there), the coordinator, the last line. */
   const slimGroup = (g, machine) => ({
     id: String(g.id),
     name: String(g.name || '未命名群组').slice(0, 80),
     coordinatorId: String(g.coordinatorId || ''),
+    ...(g.createdAt ? { createdAt: String(g.createdAt).slice(0, 40) } : {}),
     members: (Array.isArray(g.members) ? g.members : []).filter((m) => m && typeof m === 'object' && m.id).slice(0, 12).map((m) => {
       const avatar = safeAvatar(m.avatar, machine, m.id);
       return { id: String(m.id), name: String(m.name || m.id).slice(0, 80), role: String(m.role || '').slice(0, 200), ...(avatar ? { avatar } : {}) };
@@ -121,8 +123,11 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
     const peer = peers.find(name);
     if (!peer) return null;
     try {
+      // How long its list took to come: the machine menu's latency, from a request made anyway (1.5.61).
+      const asked = Date.now();
+      let ms = 0;
       const [data, att, grp] = await Promise.all([
-        peers.json(peer, 'GET', '/api/bots', { timeoutMs: 5000 }),
+        peers.json(peer, 'GET', '/api/bots', { timeoutMs: 5000 }).then((d) => { ms = Date.now() - asked; return d; }),
         peers.json(peer, 'GET', '/api/attention', { timeoutMs: 5000 }).catch(() => null),
         peers.json(peer, 'GET', '/api/groups', { timeoutMs: 5000 }).catch(() => []),
       ]);
@@ -137,15 +142,19 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
         if (!m || !item || typeof item !== 'object') continue;
         if (m[1] === 'bot' ? bots.some((b) => b.id === m[2]) : groups.some((g) => g.id === m[2])) attention[`${m[1]}:${m[2]}@${name}`] = item;
       }
-      const row = { at: Date.now(), online: true, bots, groups, attention };
+      const now = Date.now();
+      const row = { at: now, online: true, bots, groups, attention, ms, seenAt: now };
       live.set(name, row);
       const slim = { bots: bots.map(slimBot), groups: groups.map(({ preview, ...g }) => g) };
-      if (JSON.stringify(known[name] || {}) !== JSON.stringify(slim)) { known[name] = slim; void saveKnown(); }
+      // When it was last seen is kept too (「离线 · 上次在线 …」 after a restart), written at most every 10 minutes.
+      const { seenAt: seenBefore = 0, ...knownBefore } = known[name] || {};
+      if (JSON.stringify(knownBefore) !== JSON.stringify(slim) || now - seenBefore > 10 * 60 * 1000) { known[name] = { ...slim, seenAt: now }; void saveKnown(); }
       return row;
     } catch {
       const was = live.get(name) || known[name] || {};
       // Their last lines stay (1.5.43 test: its bots dropped out of 「最近」 while it was off).
-      const row = { at: Date.now(), online: false, bots: (was.bots || []).map((b) => ({ ...slimBot(b), ...slimPreview(b.preview) })), groups: was.groups || [], attention: {} };
+      const seenAt = live.get(name)?.seenAt || known[name]?.seenAt || 0;
+      const row = { at: Date.now(), online: false, bots: (was.bots || []).map((b) => ({ ...slimBot(b), ...slimPreview(b.preview) })), groups: was.groups || [], attention: {}, seenAt };
       live.set(name, row);
       return row;
     }
@@ -161,9 +170,12 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
       await inflight;
     }
     const out = names.map((machine) => {
-      const row = live.get(machine) || { online: false, bots: (known[machine]?.bots || []), groups: known[machine]?.groups || [], attention: {} };
+      const row = live.get(machine) || { online: false, bots: (known[machine]?.bots || []), groups: known[machine]?.groups || [], attention: {}, seenAt: known[machine]?.seenAt || 0 };
       const queued = queue.filter((i) => i.machine === machine).length;
-      return { machine, online: Boolean(row.online), bots: row.bots, groups: row.groups || [], attention: row.attention || {}, ...(queued ? { queued } : {}) };
+      // How this machine reaches it now (the way its last answer came, and how long that took), or when it was last seen (1.5.61, the machine menu).
+      const way = row.online ? peers.way?.(machine) || null : null;
+      const reach = row.online ? { ...(way ? { way } : {}), ...(row.ms ? { ms: row.ms } : {}) } : { ...(row.seenAt ? { seenAt: new Date(row.seenAt).toISOString() } : {}) };
+      return { machine, online: Boolean(row.online), bots: row.bots, groups: row.groups || [], attention: row.attention || {}, ...reach, ...(queued ? { queued } : {}) };
     });
     // A machine that is back gets what waited for it.
     if (out.some((m) => m.online && m.queued)) void flush().catch(() => {});

@@ -110,9 +110,10 @@ function renderGroups() {
   // point the sidebar needs; the header comes back as soon as one exists.
   const section = $('groups-section');
   if (section) section.hidden = state.groups.length === 0 && state.groupsSupported;
-  // 「全部机器」 (1.5.43): the groups are in their machine's section of the list above.
-  if (rosterGrouped()) { if (section) section.hidden = true; list.innerHTML = ''; renderBots(); return; }
-  for (const group of state.groups) list.appendChild(groupRow(group));
+  // The groups are in the list above, in their own 「群组」 section on top (1.5.61): with or without other machines.
+  if (section && state.groupsSupported) section.hidden = true;
+  list.innerHTML = '';
+  renderBots();
 }
 
 /** One of this machine's groups in the sidebar. */
@@ -131,11 +132,10 @@ function groupRow(group) {
     text.appendChild(nameRow);
     // The same line a bot has (1.5.40); with nothing going on, who is in the group.
     const last = lastLine(group);
-    const line = rosterLine(`group:${group.id}`, {
-      idle: members.length ? `${members.length} 位成员 · ${members.map((b) => b.name).join('、')}` : (last || '还没有消息'),
-      last,
-      group: true,
-    });
+    // With nothing going on: how many, and on which machines (1.5.61: 「4 位成员 · 客厅电脑 + 腾讯云」).
+    const idle = members.length ? groupWhereLine(members, machineDisplayName()) : (last || '还没有消息');
+    // A new result is the row's dot; the line keeps saying where the group is (1.5.61).
+    const line = groupLine(rosterLine(`group:${group.id}`, { idle, last, group: true }), idle);
     row.dataset.search = `${group.name || ''} ${members.map((b) => b.name).join(' ')} ${last} ${line.text}`.toLowerCase();
     text.appendChild(rosterLineNode(line));
     row.appendChild(text);
@@ -190,9 +190,15 @@ function renderGroupHead(group) {
     stack.appendChild(cell);
   }
   $('chat-title').textContent = group.name || '未命名群组';
-  $('chat-sub').textContent = coordinator
-    ? `${members.length} 位成员 · 协调者 ${coordinator.name}`
-    : `${members.length} 位成员`;
+  // Its machine, or a member's, off: said at the top, as for one bot (1.5.59; 1.5.61 beginner test).
+  const host = isRemoteId(group.id) ? remoteOf(group.id).machine : machineDisplayName();
+  const away = groupOfflineMembers(members, host);
+  const hostOff = isRemoteId(group.id) && machineOffline(host);
+  $('chat-sub').textContent = hostOff ? `所在机器离线 · ${OFFLINE_WORDS}`
+    : away.length ? `${members.length} 位成员 · ${away.join('、')}离线，那里的成员这会儿用不了`
+      : coordinator ? `${members.length} 位成员 · 协调者 ${coordinator.name}`
+        : `${members.length} 位成员`;
+  $('chat-sub').classList.toggle('off', hostOff || away.length > 0);
   // Members and delete live in the group's details (click the title).
   $('group-members-pill').hidden = true;
   if ($('group-delete-btn')) $('group-delete-btn').hidden = true;
@@ -418,8 +424,15 @@ function renderGroupMessages() {
 
   if (!items.length) {
     const wrap = el('div', 'empty');
-    wrap.appendChild(el('h2', null, '群聊还没开始'));
-    wrap.appendChild(el('p', null, '在这里发第一条消息，协调者会分配给合适的成员。'));
+    // Its machine off: not 「send the first message」 (1.5.61 beginner test).
+    const host = isRemoteId(state.groupId) ? remoteOf(state.groupId).machine : '';
+    if (host && machineOffline(host)) {
+      wrap.appendChild(el('h2', null, '所在机器离线'));
+      wrap.appendChild(el('p', null, `这个群在「${host}」上，那台电脑连上以后才能用。现在发的消息会先存着，连上后再送过去。`));
+    } else {
+      wrap.appendChild(el('h2', null, '群聊还没开始'));
+      wrap.appendChild(el('p', null, '在这里发第一条消息，协调者会分配给合适的成员。'));
+    }
     messagesEl.appendChild(wrap);
   } else {
     let lastDay = '';
@@ -1098,12 +1111,18 @@ function rosterGrouped() {
 async function loadRoster({ fresh = false } = {}) {
   let data;
   try { data = await api(`/api/peers/roster${fresh ? '?fresh=1' : ''}`); } catch { return; }
-  const before = JSON.stringify(state.peerRoster);
+  // How long a machine's last answer took changes on every look: not a reason to draw the list again (1.5.61).
+  const sig = (list) => JSON.stringify((list || []).map(({ ms, ...m }) => m));
+  const before = sig(state.peerRoster);
   state.peerRoster = Array.isArray(data?.machines) ? data.machines : [];
+  if (!$('machine-menu')?.hidden && !$('machine-menu').contains(document.activeElement)) renderMachineMenu(); // its route lines, while it is open (not under the keys)
+  const prevAttention = state.peerAttention || {};
   state.peerAttention = Object.assign({}, ...state.peerRoster.map((m) => m.attention || {}));
+  noteActivity(prevAttention, state.peerAttention, 'peers'); // the other machines' chats too (1.5.61)
+  loadRosterOrder(); // the sidebar's order, the same on every device (1.5.61)
   if (state.peerRoster.some((m) => m.queued)) await loadOutbox({ render: false });
   else state.outbox = [];
-  if (before !== JSON.stringify(state.peerRoster)) {
+  if (before !== sig(state.peerRoster)) {
     renderBots();
     refreshChatTitle();
     syncMachineBranding();
@@ -1134,10 +1153,10 @@ function remoteChatSub(bot) {
 }
 
 /*
- * 「全部机器」's sidebar (1.5.43; redesign step 4, 1.5.59): one section per machine
- * that folds (remembered per machine), an online dot in its heading, its groups
- * first, then its bots. 「最近」 is gone (it listed the same chats twice): the
- * filters on top (「N 件等你」 / 「N 个在做」) find what matters. Folded, its row says
+ * 「全部机器」's sidebar (1.5.43; redesign step 4, 1.5.59; 1.5.61): 「群组」 on top, then
+ * one section per machine that folds (remembered per machine), an online dot in its
+ * heading, its bots in a stable order. 「最近」 is gone (it listed the same chats twice):
+ * the filters on top (「N 件等你」 / 「N 个在做」) find what matters. Folded, its row says
  * what is in it and what waits. Over ten chats, a search box finds one on any machine.
  */
 const SEARCH_FROM = 10;
@@ -1151,7 +1170,7 @@ function setCollapsed(machine, on) {
   try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(all)); } catch { /* this time only */ }
 }
 
-/** Every chat of every machine, as the sidebar lists them. */
+/** Every chat of every machine, as the sidebar lists them (1.5.61: in the order they were made, never by the latest message). */
 function rosterChats() {
   const here = machineDisplayName();
   const ts = (x) => Date.parse(x?.preview?.ts || '') || 0;
@@ -1159,19 +1178,19 @@ function rosterChats() {
     machine: here,
     self: true,
     online: true,
-    groups: (state.groups || []).map((g) => ({ kind: 'group', id: g.id, key: `group:${g.id}`, ts: ts(g), row: () => groupRow(g) })),
-    bots: [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || ts(b) - ts(a))
-      .map((b) => ({ kind: 'bot', id: b.id, key: `bot:${b.id}`, ts: ts(b), row: () => botRow(b) })),
+    section: 'machine:self',
+    groups: (state.groups || []).map((g) => ({ kind: 'group', id: g.id, key: `group:${g.id}`, ts: ts(g), createdAt: g.createdAt, machine: here, online: true, row: () => groupRow(g) })),
+    bots: (state.bots || []).map((b) => ({ kind: 'bot', id: b.id, key: `bot:${b.id}`, ts: ts(b), createdAt: b.createdAt, primary: Boolean(b.primary), row: () => botRow(b) })),
   }];
   for (const m of state.peerRoster || []) {
     machines.push({
       machine: m.machine,
       self: false,
       online: Boolean(m.online),
+      section: `machine:${m.machine}`,
       // A message waiting for that machine counts as the chat's latest (1.5.43 test: 「最近」 left it out until it went).
-      groups: (m.groups || []).map((g) => ({ kind: 'group', id: `${g.id}@${m.machine}`, key: `group:${g.id}@${m.machine}`, ts: Math.max(ts(g), waitingAt(m.machine, '', g.id)), row: () => remoteGroupRow(m, g) })),
-      bots: [...(m.bots || [])].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || ts(b) - ts(a))
-        .map((b) => ({ kind: 'bot', id: `${b.id}@${m.machine}`, key: `bot:${b.id}@${m.machine}`, ts: Math.max(ts(b), waitingAt(m.machine, b.id, '')), row: () => remoteBotRow(m, b) })),
+      groups: (m.groups || []).map((g) => ({ kind: 'group', id: `${g.id}@${m.machine}`, key: `group:${g.id}@${m.machine}`, ts: Math.max(ts(g), waitingAt(m.machine, '', g.id)), createdAt: g.createdAt, machine: m.machine, online: Boolean(m.online), row: () => remoteGroupRow(m, g) })),
+      bots: (m.bots || []).map((b) => ({ kind: 'bot', id: `${b.id}@${m.machine}`, key: `bot:${b.id}@${m.machine}`, ts: Math.max(ts(b), waitingAt(m.machine, b.id, '')), createdAt: b.createdAt, primary: Boolean(b.primary), row: () => remoteBotRow(m, b) })),
     });
   }
   return machines;
@@ -1187,15 +1206,53 @@ function waitingIn(items) {
   return items.filter((i) => { const it = attentionItem(i.key); return it?.needsYou || it?.asking; }).length;
 }
 
-function renderRosterSidebar(list) {
-  const machines = rosterChats();
-  const all = machines.flatMap((m) => [...m.groups, ...m.bots].map((i) => ({ ...i, machine: m.machine })));
+/** A section's rows: pinned ones on top (movable), the rest by latest activity (04c-order.js). */
+function orderedRows(body, section, items) {
+  for (const item of sortSection(section, items)) {
+    const row = item.row();
+    armRowOrder(row, { key: item.key, section, primary: item.primary, pinned: isPinnedItem(item) });
+    body.appendChild(row);
+  }
+}
+
+/**
+ * The sidebar (1.5.61, the user's choice): 「群组」 on top - every group, wherever
+ * it runs, its second line saying where its members are - then the bots, one
+ * section per machine: this one first, the others by name, offline ones last.
+ * Only this machine: the same, without the machine headings. In each section the
+ * pinned rows come first, the rest by latest activity, and nothing moves while
+ * the human is looking at the list (04c-order.js).
+ */
+function renderRosterSidebar(list, { single = false } = {}) {
+  const machines = single ? rosterChats().slice(0, 1) : rosterChats();
+  const all = machines.flatMap((m) => [...m.groups, ...m.bots]);
   $('bot-count').textContent = String(all.length);
   const wrap = $('roster-search-wrap');
   if (wrap) wrap.hidden = all.length <= SEARCH_FROM;
   const folded = collapsedMachines();
-  for (const m of machines) {
-    const items = [...m.groups, ...m.bots];
+  // 群组: the groups of every machine, together.
+  const groups = machines.flatMap((m) => m.groups);
+  if (groups.length) {
+    const sec = el('div', `roster-sec groups${folded['群组'] ? ' collapsed' : ''}`);
+    const head = el('button', 'roster-head groups-head');
+    head.type = 'button';
+    head.setAttribute('aria-expanded', folded['群组'] ? 'false' : 'true');
+    head.appendChild(el('span', 'rh-caret', folded['群组'] ? '▸' : '▾'));
+    head.appendChild(el('span', 'rh-name', '群组'));
+    const waits = waitingIn(groups);
+    head.appendChild(el('span', `rh-count${waits ? ' needs' : ''}`, waits ? `${waits} 件等你` : `${groups.length} 个`));
+    head.addEventListener('click', () => { setCollapsed('群组', !sec.classList.contains('collapsed')); renderBots(); });
+    sec.appendChild(head);
+    const body = el('div', 'roster-body');
+    orderedRows(body, 'groups', groups);
+    sec.appendChild(body);
+    list.appendChild(sec);
+  }
+  // The bots, per machine: this one first, then by name, offline ones last.
+  const [self, ...others] = machines;
+  const order = [self, ...others.sort((a, b) => Number(b.online) - Number(a.online) || a.machine.localeCompare(b.machine, 'zh'))];
+  for (const m of order) {
+    const items = m.bots;
     const sec = el('div', `roster-sec machine${folded[m.machine] ? ' collapsed' : ''}${m.online ? '' : ' off'}`);
     sec.dataset.machine = m.machine;
     const head = el('button', 'roster-head machine-head');
@@ -1205,22 +1262,22 @@ function renderRosterSidebar(list) {
     // Online or not, at a glance (1.5.59): a green dot, or a grey one.
     const dot = el('i', `rh-dot ${m.online ? 'on' : 'off'}`);
     dot.setAttribute('aria-label', m.online ? '在线' : '离线');
-    head.appendChild(dot);
-    head.appendChild(el('span', 'rh-name', m.machine));
-    if (m.self) head.appendChild(el('span', 'rh-tag', '· 这台'));
+    if (!single) head.appendChild(dot);
+    // Only this machine: its bots under 「助手」, as before.
+    head.appendChild(el('span', 'rh-name', single ? '助手' : m.machine));
+    if (m.self && !single) head.appendChild(el('span', 'rh-tag', '· 这台'));
     if (!m.online && !folded[m.machine]) head.appendChild(el('span', 'rh-tag off', '离线')); // folded, the summary says it (once)
     const waits = waitingIn(items);
-    // Folded, the row says what is inside and what waits (「2 群 · 9 个 · 1 件事等你」).
-    const summary = !m.online ? '离线'
-      : [m.groups.length ? `${m.groups.length} 群` : '', `${m.bots.length} 个`, waits ? `${waits} 件事等你` : ''].filter(Boolean).join(' · ');
+    // Folded, the row says what is inside and what waits (「9 个 · 1 件事等你」).
+    const summary = !m.online ? '离线' : [`${items.length} 个`, waits ? `${waits} 件事等你` : ''].filter(Boolean).join(' · ');
     // Open, what waits there first (1.5.59), else how many: the name keeps its room in a narrow list.
     const open = m.online && waits ? `${waits} 件等你` : `${items.length} 个`;
     head.appendChild(el('span', `rh-count${waits && m.online ? ' needs' : ''}`, folded[m.machine] ? summary : open));
-    head.title = m.self ? `${m.machine}：你正在用的这台电脑` : m.online ? `「${m.machine}」上的助手和群组：点开就聊，不用切换窗口` : `「${m.machine}」现在连不上。给它的助手发消息，开机后会接着做。`;
+    head.title = m.self ? `${m.machine}：你正在用的这台电脑` : m.online ? `「${m.machine}」上的助手：点开就聊，不用切换窗口` : `「${m.machine}」现在连不上。给它的助手发消息，开机后会接着做。`;
     head.addEventListener('click', () => { setCollapsed(m.machine, !sec.classList.contains('collapsed')); renderBots(); });
     sec.appendChild(head);
     const body = el('div', 'roster-body');
-    for (const item of items) body.appendChild(item.row());
+    orderedRows(body, m.section, items);
     if (!items.length) body.appendChild(el('div', 'roster-empty', m.self ? '还没有助手' : '还不知道它上面有哪些助手'));
     sec.appendChild(body);
     list.appendChild(sec);
@@ -1278,14 +1335,14 @@ function remoteGroupRow(m, g) {
   const text = el('div', 'bot-text');
   const nameRow = el('div', 'bot-name');
   nameRow.appendChild(el('span', 'bot-name-text', g.name || '未命名群组'));
-  if (!m.online) nameRow.appendChild(el('span', 'bot-off-tag', '离线'));
   text.appendChild(nameRow);
   const last = g.preview?.text ? truncate(plainPreview(g.preview.text), 60) : '';
   const waiting = (state.outbox || []).filter((q) => q.machine === m.machine && q.groupId === g.id).length;
+  const where = members.length ? groupWhereLine(members, m.machine) : '';
   const line = waiting
     ? { kind: 'needs', text: `有 ${waiting} 条消息等它那台电脑开机` }
-    : m.online ? rosterLine(`group:${id}`, { idle: members.length ? `${members.length} 位成员 · ${members.map((b) => b.name).join('、')}` : (last || '还没有消息'), last, group: true })
-      : { kind: '', text: '那台电脑现在连不上' };
+    : m.online ? groupLine(rosterLine(`group:${id}`, { idle: where || last || '还没有消息', last, group: true }), where || last || '还没有消息')
+      : { kind: '', text: where ? `所在机器离线 · ${where}` : '所在机器离线' }; // its machine is off (1.5.61): the group fades
   text.appendChild(rosterLineNode(line));
   row.dataset.search = `${g.name || ''} ${members.map((b) => b.name).join(' ')} ${m.machine} ${last}`.toLowerCase();
   row.appendChild(text);

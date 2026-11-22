@@ -5,7 +5,9 @@
 //   strict - the human's own Linux computer, or any machine not set to 放手:
 //            the system read-only, /home and /root empty, Lamplit's folder
 //            empty; the workspace (read-write) and the opened folders
-//            (read-only or read-write, as set) come back. /tmp is shared.
+//            (read-only or read-write, as set) come back. /tmp is the bot's
+//            own (1.5.61), /run/user empty: no screen or login session of
+//            the human's (or the hub's) is reachable from inside.
 //   open   - a machine given to the bots and set to 放手: everything as it
 //            was, except Lamplit's data (keys, pairing tokens, the vault),
 //            which is an empty folder.
@@ -24,6 +26,7 @@ import { P } from './store.mjs';
 import { effectivePolicy, machineMode } from './approvals.mjs';
 import { SUDO } from './boundary.mjs';
 import { runnerStatus } from './winrunner.mjs';
+import { desktopEnv } from './desktops.mjs';
 
 const under = (p, dir) => p === dir || p.startsWith(`${dir.replace(/\/+$/, '')}/`);
 
@@ -38,14 +41,28 @@ const under = (p, dir) => p === dir || p.startsWith(`${dir.replace(/\/+$/, '')}/
  * processes. The cost: a program a command leaves running in the background
  * ends when the command ends (bwrap is that namespace's first process).
  */
-export function bwrapArgs({ mode = 'strict', root = P.root, dataDir = P.dataDir, workspaceDir, folders = [], exists = fs.existsSync } = {}) {
+/**
+ * 1.5.61 (the verifier's N5, F8): strict mode no longer binds the real /tmp. That one is
+ * shared by everything of this account: the hub's own files, the human's ssh-agent
+ * socket (/tmp/ssh-*), their screen (/tmp/.X11-unix), a running Chrome's single-instance
+ * socket. `tmpDir` (the bot's own folder under data/sandbox-tmp, which the sandbox hides
+ * otherwise) becomes /tmp, so files stay from one command to the next; without one, an
+ * empty tmpfs. /run/user (the login session's D-Bus - systemd-run --user starts a program
+ * outside any sandbox - keyring, Wayland) is an empty tmpfs. `screen` (botScreen): the
+ * socket of the bot's own screen (its Xvfb display, or its cage's Wayland socket) is bound
+ * back in, read-only - so a graphical program a command starts opens there; never the
+ * human's display, an ssh-agent or a browser's single-instance socket.
+ */
+export function bwrapArgs({ mode = 'strict', root = P.root, dataDir = P.dataDir, workspaceDir, folders = [], tmpDir = '', screen = null, exists = fs.existsSync } = {}) {
   const ws = String(workspaceDir || '');
   if (mode === 'open') {
     const args = ['--unshare-pid', '--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc'];
     if (dataDir && exists(dataDir)) args.push('--tmpfs', dataDir);
     return args.concat(['--chdir', ws, '--die-with-parent']);
   }
-  const args = ['--unshare-pid', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--bind', '/tmp', '/tmp', '--tmpfs', '/home', '--tmpfs', '/root'];
+  const args = ['--unshare-pid', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', ...(tmpDir ? ['--bind', tmpDir, '/tmp'] : ['--tmpfs', '/tmp']), '--tmpfs', '/home', '--tmpfs', '/root'];
+  if (exists('/run/user')) args.push('--tmpfs', '/run/user');
+  for (const sock of screen?.bind || []) args.push('--ro-bind', sock, sock);
   const homes = (p) => under(p, '/home') || under(p, '/root');
   if (root && !homes(root) && exists(root)) args.push('--tmpfs', root);
   if (dataDir && !homes(dataDir) && !(root && under(dataDir, root)) && exists(dataDir)) args.push('--tmpfs', dataDir);
@@ -160,5 +177,61 @@ export function sandboxFor(command, ctx = {}) {
   const eff = effectivePolicy(policy);
   const mode = sandboxMode({ remote: machineMode() === 'remote', autonomous: eff.autonomous });
   const workspaceDir = path.resolve(String(ctx.workspaceDir || P.workspaceDir));
-  return { mode, args: bwrapArgs({ mode, workspaceDir, folders: policy.folders || [] }) };
+  const botId = ctx.botId || ctx.bot?.id;
+  const tmpDir = mode === 'strict' ? botTmp(botId) : '';
+  // Strict: the bot's own screen, or none (then DISPLAY and WAYLAND_DISPLAY are taken away).
+  const screen = mode === 'strict' ? botScreen(botId) : null;
+  return { mode, args: bwrapArgs({ mode, workspaceDir, folders: policy.folders || [], tmpDir, screen }), env: mode === 'strict' ? (screen?.env || null) : null, screen: Boolean(screen) };
+}
+
+/**
+ * The bot's own screen (1.5.61): {env, bind} with the socket to bind into its sandbox, or
+ * null when this machine runs no screen for it (desktops.mjs: Xvfb :120+, or cage).
+ */
+export function botScreen(botId, { envOf = desktopEnv, exists = fs.existsSync } = {}) {
+  let e = {};
+  try { e = (botId && envOf(botId)) || {}; } catch { e = {}; }
+  if (e.WAYLAND_DISPLAY && e.XDG_RUNTIME_DIR) {
+    const sock = path.join(e.XDG_RUNTIME_DIR, e.WAYLAND_DISPLAY);
+    if (exists(sock)) return { env: { WAYLAND_DISPLAY: e.WAYLAND_DISPLAY, XDG_RUNTIME_DIR: e.XDG_RUNTIME_DIR }, bind: [sock] };
+  }
+  const m = /^:(\d+)$/.exec(String(e.DISPLAY || ''));
+  if (m) {
+    const sock = `/tmp/.X11-unix/X${m[1]}`;
+    if (exists(sock)) return { env: { DISPLAY: e.DISPLAY }, bind: [sock] };
+  }
+  return null;
+}
+
+/** The environment of a command in that sandbox: the bot's own screen, or no display at all (strict). */
+export function sandboxEnv(base, sandbox) {
+  const env = { ...base };
+  if (sandbox?.mode !== 'strict') return env;
+  delete env.DISPLAY;
+  delete env.WAYLAND_DISPLAY;
+  delete env.XAUTHORITY;
+  return { ...env, ...(sandbox.env || {}) };
+}
+
+/** A bot's own /tmp in strict mode: data/sandbox-tmp/<bot> (mode 700), hidden from every other sandbox. */
+export function botTmp(botId = '', dataDir = P.dataDir) {
+  const dir = path.join(dataDir, 'sandbox-tmp', String(botId || '').replace(/[^a-zA-Z0-9_-]/g, '') || 'shared');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+/**
+ * At start, before any command runs: what the bots left in their /tmp more than `maxAgeMs`
+ * ago goes. fsp.rm takes a link away and never follows it (and no command of a bot is
+ * running yet to swap anything).
+ */
+export async function clearOldBotTmp(maxAgeMs = 7 * 24 * 3600 * 1000, dataDir = P.dataDir) {
+  const root = path.join(dataDir, 'sandbox-tmp');
+  for (const bot of await fs.promises.readdir(root).catch(() => [])) {
+    const dir = path.join(root, bot);
+    for (const name of await fs.promises.readdir(dir).catch(() => [])) {
+      const st = await fs.promises.lstat(path.join(dir, name)).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > maxAgeMs) await fs.promises.rm(path.join(dir, name), { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }

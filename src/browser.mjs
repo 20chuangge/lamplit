@@ -28,9 +28,11 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-import { P, readJsonSync, writeJsonSyncAtomic } from './store.mjs';
+import { P, readJsonSync, writeJsonSyncAtomic, hubTmp } from './store.mjs';
+import { childEnv } from './childenv.mjs';
 import { MiniWebSocket } from './ws-client.mjs';
 import { assertPublicUrl } from './netguard.mjs';
 import { saveInside, mkdirInside, copyInside } from './safefs.mjs';
@@ -214,8 +216,8 @@ export function profileDir(key = '') {
 }
 
 /**
- * Where a bot's running browser is noted (port, pid), so a restarted hub
- * picks it up again. One per bot (1.5.26): with one file for all, every bot
+ * Where a bot's running browser is noted (pid, program), so a restarted hub
+ * can stop one a crash left running (1.5.61: no port, nothing to take over). One per bot (1.5.26): with one file for all, every bot
  * took over whichever browser another bot had started - one Chrome, on that
  * other bot's screen, for everyone (11-17: 「接管屏幕」 showed an empty desktop,
  * logins seemed lost, two bots asked to log in to the same page).
@@ -246,7 +248,8 @@ function installHint() {
 // over a login. When someone is signed in at the console (what the takeover
 // view shows) and it is the hub's own account, the browser is started in that
 // interactive session through a one-off scheduled task (/IT needs no password
-// for the task owner) and attached over its debugging port like any other.
+// for the task owner). 1.5.61: the task starts a bridge that runs Chrome with its
+// debugging pipe and dials back to the hub (launchBridged): no port.
 
 let consoleUserCache = { at: 0, user: null };
 
@@ -270,13 +273,8 @@ function inWindowsServiceSession() {
 
 const sameAccount = (a, b) => String(a || '').split('\\').pop().toLowerCase() === String(b || '').split('\\').pop().toLowerCase();
 
-/** Start the browser in the console user's session. Resolves true if the task ran. */
-async function launchOnWindowsDesktop(exe, args, user) {
-  const quote = (a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a);
-  const script = path.join(P.dataDir, 'browser-desktop.cmd');
-  await fsp.mkdir(P.dataDir, { recursive: true });
-  // A .cmd file keeps the task's command line short (schtasks /TR is limited).
-  await fsp.writeFile(script, `@echo off\r\nstart "" ${[exe, ...args].map(quote).join(' ')}\r\n`, 'utf8');
+/** Run `script` (a .cmd) in the console user's session through a scheduled task. Resolves true if the task ran. */
+async function runOnWindowsDesktop(script, user) {
   const run = (cmdArgs) => new Promise((resolve) => {
     execFile('schtasks.exe', cmdArgs, { timeout: 20000, windowsHide: true }, (err, stdout, stderr) => resolve({ ok: !err, out: String(stdout || stderr || '') }));
   });
@@ -286,9 +284,15 @@ async function launchOnWindowsDesktop(exe, args, user) {
   return started.ok;
 }
 
-export function buildLaunchArgs({ port, profileDir: profile, headless = false, wayland = false, extraArgs = [] } = {}) {
+/**
+ * Chrome's command line. 1.5.61 (the verifier's N1): the DevTools protocol goes
+ * over a pipe (fds 3 and 4), never a port: a debugging port has no password, and
+ * a bot's own program on this machine could find it and drive the browser - which
+ * runs as the hub - to read or download into Lamplit's data. (`port` is ignored.)
+ */
+export function buildLaunchArgs({ profileDir: profile, headless = false, wayland = false, extraArgs = [] } = {}) {
   const args = [
-    `--remote-debugging-port=${port}`,
+    '--remote-debugging-pipe',
     `--user-data-dir=${profile}`,
     '--no-first-run',
     '--no-default-browser-check',
@@ -337,10 +341,50 @@ class CdpConnection {
     this.pending = new Map();
     this.listeners = new Map();
     this.closed = false;
+    /** sessionId -> the socket of a page attached to this (browser) connection (flatten). */
+    this.sessions = new Map();
 
     ws.addEventListener('message', (event) => this.onMessage(event));
     ws.addEventListener('close', () => this.onClose());
     ws.addEventListener('error', () => this.onClose());
+  }
+
+  /**
+   * The browser over the pipe Chrome was started with (1.5.61, the verifier's
+   * N1): fd 3 is what it reads, fd 4 what it writes. No port is opened, so no
+   * program on the machine - a bot's command included - can reach it.
+   */
+  static overPipe(writable, readable, { label = 'browser' } = {}) {
+    return new CdpConnection(new PipeSocket(writable, readable), label);
+  }
+
+  /** A page attached with Target.attachToTarget {flatten:true}: its messages go over this connection. */
+  session(sessionId, label = 'page') {
+    const root = this;
+    const listeners = { message: [], close: [], error: [] };
+    let gone = false;
+    const sock = {
+      addEventListener(type, fn) { listeners[type]?.push(fn); },
+      send(text) {
+        if (root.closed) throw new Error('the browser connection is closed');
+        const msg = JSON.parse(text);
+        root.ws.send(JSON.stringify({ ...msg, sessionId }));
+      },
+      close() {
+        if (gone) return;
+        root.send('Target.detachFromTarget', { sessionId }, { timeoutMs: 3000 }).catch(() => {});
+        sock.ended();
+      },
+      deliver(msg) { for (const fn of listeners.message) fn({ data: msg }); },
+      ended() {
+        if (gone) return;
+        gone = true;
+        root.sessions.delete(sessionId);
+        for (const fn of listeners.close) fn();
+      },
+    };
+    this.sessions.set(sessionId, sock);
+    return new CdpConnection(sock, label);
   }
 
   static async connect(wsUrl, { timeoutMs = 10000, label = 'cdp' } = {}) {
@@ -373,11 +417,21 @@ class CdpConnection {
 
   onMessage(event) {
     let msg;
-    try {
-      msg = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data));
-    } catch {
+    if (event.data && typeof event.data === 'object' && !Buffer.isBuffer(event.data) && !(event.data instanceof ArrayBuffer)) {
+      msg = event.data; // handed on by the browser connection to a page session, already parsed
+    } else {
+      try {
+        msg = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data));
+      } catch {
+        return;
+      }
+    }
+    // A page session's message (flatten): that page's connection handles it.
+    if (msg.sessionId && this.sessions.has(msg.sessionId)) {
+      this.sessions.get(msg.sessionId).deliver(msg);
       return;
     }
+    if (msg.method === 'Target.detachedFromTarget' && msg.params?.sessionId) this.sessions.get(msg.params.sessionId)?.ended();
     if (msg.id !== undefined) {
       const waiter = this.pending.get(msg.id);
       if (!waiter) return;
@@ -403,6 +457,7 @@ class CdpConnection {
 
   onClose() {
     this.closed = true;
+    for (const sock of [...this.sessions.values()]) sock.ended();
     for (const [, waiter] of this.pending) {
       clearTimeout(waiter.timer);
       waiter.reject(Object.assign(new Error('CDP connection closed'), { code: 'CDP_CLOSED' }));
@@ -447,36 +502,267 @@ class CdpConnection {
   }
 }
 
-async function fetchJson(url, timeoutMs = 2000) {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
+/**
+ * A WebSocket-shaped object over Chrome's --remote-debugging-pipe: one JSON
+ * message per write, each ended by a NUL byte, both ways (also what the
+ * desktop bridge relays over its socket).
+ */
+class PipeSocket {
+  constructor(writable, readable) {
+    this.writable = writable;
+    this.listeners = { message: [], close: [], error: [] };
+    this.done = false;
+    let buf = Buffer.alloc(0);
+    readable.on('data', (chunk) => {
+      buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+      let at;
+      while ((at = buf.indexOf(0)) !== -1) {
+        const text = buf.subarray(0, at).toString('utf8');
+        buf = buf.subarray(at + 1);
+        for (const fn of this.listeners.message) fn({ data: text });
+      }
+    });
+    const end = () => {
+      if (this.done) return;
+      this.done = true;
+      for (const fn of this.listeners.close) fn();
+    };
+    readable.on('end', end);
+    readable.on('close', end);
+    readable.on('error', end);
+    writable.on?.('error', end);
+    writable.on?.('close', end);
+  }
+
+  addEventListener(type, fn) { this.listeners[type]?.push(fn); }
+
+  send(text) {
+    if (this.done) throw new Error('the browser pipe is closed');
+    this.writable.write(`${text}\0`);
+  }
+
+  close() {
+    try { this.writable.end?.(); } catch { /* gone */ }
+    if (!this.done) {
+      this.done = true;
+      for (const fn of this.listeners.close) fn();
+    }
   }
 }
 
-async function waitForVersion(port, timeoutMs) {
+/** A page the hub's tools read or type into: http(s), or the blank page (1.5.61). */
+function isWebPageUrl(url) {
+  return /^https?:\/\//i.test(String(url)) || url === 'about:blank' || url === '';
+}
+
+/** The environment the bot's browser starts with (1.5.61, F7/F8): childEnv, and its temp files in data/tmp. */
+export function browserEnv(base = process.env, key = '') {
+  const env = childEnv(base);
+  if (process.platform !== 'win32') env.TMPDIR = hubTmp(`browser-${key || 'shared'}`);
+  return env;
+}
+
+/** Does the browser answer on `browser` within `timeoutMs`? -> its version, or null. */
+async function pipeReady(browser, timeoutMs, child = null) {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const version = await fetchJson(`http://127.0.0.1:${port}/json/version`, 1200);
-    if (version?.webSocketDebuggerUrl) return version;
+  while (Date.now() < deadline && !browser.closed) {
+    if (child && (child.exitCode !== null || child.signalCode)) return null;
+    try {
+      return await browser.send('Browser.getVersion', {}, { timeoutMs: Math.max(1000, Math.min(5000, deadline - Date.now())) });
+    } catch (err) {
+      if (err.code === 'CDP_CLOSED' || browser.closed) return null;
+    }
     await sleep(200);
   }
   return null;
 }
 
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
+// ---------------------------------------------------------------------------
+// The browser on the Windows desktop through a bridge (1.5.61, F7)
+// ---------------------------------------------------------------------------
+//
+// A hub in Windows' service session (a machine Lamplit set up, started at
+// boot) puts the bot's browser on the desktop of whoever is signed in at the
+// console, through a scheduled task, so the human can see and take it over. A
+// scheduled task cannot hand Chrome a pipe. So the task runs a small bridge
+// (src/browser-bridge.mjs) in that session: it starts Chrome with the pipe and
+// dials back to the hub - the hub listens on 127.0.0.1 for one minute or two,
+// for one connection that presents the one-time token. The token is in a
+// ticket in data/ (which the bots' account cannot read), never on a command
+// line; Chrome itself listens on nothing. A connection without the token gets
+// nothing. When the bridge goes away the pipe ends: the session is closed and
+// the next call starts the browser again.
+
+const BRIDGE_WAIT_MS = 150000; // Edge took 141 s on a 1-core VM with the CPU at 100%
+
+/**
+ * Wait on 127.0.0.1 for the bridge holding `token`. -> {port, connected: Promise<{socket, pid}|null>, close()}
+ * Exported for the tests (_test.bridgeListener).
+ */
+async function bridgeListener(token, { waitMs = BRIDGE_WAIT_MS } = {}) {
+  const want = Buffer.from(token, 'utf8');
+  let settle;
+  const connected = new Promise((resolve) => { settle = resolve; });
+  let finished = false;
+  const server = net.createServer((socket) => {
+    if (finished) { socket.destroy(); return; }
+    let head = Buffer.alloc(0);
+    const timer = setTimeout(() => socket.destroy(), 5000);
+    const onData = (chunk) => {
+      head = Buffer.concat([head, chunk]);
+      const first = head.indexOf(10);
+      const second = first === -1 ? -1 : head.indexOf(10, first + 1);
+      if (second === -1) { if (head.length > 512) socket.destroy(); return; }
+      socket.off('data', onData);
+      clearTimeout(timer);
+      const got = head.subarray(0, first);
+      const ok = got.length === want.length && crypto.timingSafeEqual(got, want);
+      if (!ok || finished) { socket.destroy(); return; }
+      finished = true;
+      server.close();
+      const pid = Number(head.subarray(first + 1, second).toString('utf8')) || 0;
+      const rest = head.subarray(second + 1);
+      socket.pause();
+      if (rest.length) socket.unshift(rest);
+      settle({ socket, pid });
+    };
+    socket.on('data', onData);
+    socket.on('error', () => {});
   });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const timer = setTimeout(() => { finished = true; server.close(); settle(null); }, waitMs);
+  timer.unref?.();
+  connected.then(() => clearTimeout(timer));
+  return { port: server.address().port, connected, close: () => { finished = true; try { server.close(); } catch { /* closed */ } settle(null); } };
+}
+
+/** Where the bridge is, and how the scheduled task starts it. */
+const BRIDGE_SCRIPT = new URL('./browser-bridge.mjs', import.meta.url);
+
+/**
+ * Start Chrome on the console user's desktop through the bridge. -> {browser, pid} or null.
+ * `start(cmdFile)`: runs the .cmd in that session (the scheduled task; tests run it directly).
+ */
+async function launchBridged(exe, args, { start, env = {} } = {}) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const listener = await bridgeListener(token);
+  const ticket = path.join(P.dataDir, `browser-bridge-${crypto.randomBytes(8).toString('hex')}.json`);
+  try {
+    await fsp.mkdir(P.dataDir, { recursive: true });
+    await fsp.writeFile(ticket, JSON.stringify({ port: listener.port, token, exe, args, env }), { encoding: 'utf8', mode: 0o600 });
+    const quote = (a) => `"${String(a).replace(/"/g, '""')}"`;
+    const script = path.join(P.dataDir, 'browser-desktop.cmd');
+    // A .cmd file keeps the task's command line short (schtasks /TR is limited). The bridge
+    // starts minimised, hands itself to a copy with no window and ends.
+    await fsp.writeFile(script, `@echo off\r\n${process.versions.electron ? 'set ELECTRON_RUN_AS_NODE=1\r\n' : ''}start "" /min ${quote(process.execPath)} ${quote(fileURLToPath(BRIDGE_SCRIPT))} ${quote(ticket)}\r\n`, 'utf8');
+    if (!(await start(script))) { listener.close(); return null; }
+    const got = await listener.connected;
+    if (!got) return null;
+    const browser = new CdpConnection(new PipeSocket(got.socket, got.socket), 'browser (desktop)');
+    got.socket.resume();
+    return { browser, pid: got.pid, socket: got.socket };
+  } finally {
+    listener.close();
+    await fsp.rm(ticket, { force: true }).catch(() => {}); // the bridge removes it once read; never left behind
+  }
+}
+
+/** Is `pid` still the browser `exe` (a browser a crashed hub left running)? */
+function stillTheBrowser(pid, exe) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); } catch { return false; }
+  const want = path.basename(String(exe || '')).toLowerCase();
+  if (!want) return false;
+  try {
+    if (process.platform === 'linux') return path.basename(fs.readlinkSync(`/proc/${pid}/exe`)).toLowerCase().startsWith(want.replace(/\.exe$/, ''));
+    if (process.platform === 'win32') {
+      const out = execFileSync('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+      return out.toLowerCase().includes(`"${want}"`);
+    }
+  } catch { /* cannot tell: leave it */ }
+  return false;
+}
+
+/** The --user-data-dir a command line names, or '' (quoted whole, quoted value, or bare). */
+export function userDataDirOf(cmdline) {
+  const s = String(cmdline || '');
+  const at = s.indexOf('--user-data-dir=');
+  if (at < 0) return '';
+  let rest = s.slice(at + '--user-data-dir='.length);
+  if (s[at - 1] === '"') return rest.slice(0, rest.indexOf('"') >= 0 ? rest.indexOf('"') : undefined);
+  if (rest[0] === '"') { rest = rest.slice(1); return rest.slice(0, rest.indexOf('"') >= 0 ? rest.indexOf('"') : undefined); }
+  return rest.split(/\s/)[0];
+}
+
+/** Every process of this machine: [{pid, ppid, profile}] with the --user-data-dir it names (only those that name one). */
+function browserProcesses() {
+  const out = [];
+  if (process.platform === 'win32') {
+    let text = '';
+    try {
+      // UTF-8 out (a profile under C:\Users\<a Chinese name> must come back as it is), and the
+      // script encoded (no quoting on the way to PowerShell).
+      const script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter \"CommandLine like '%user-data-dir%'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.CommandLine)\" }";
+      text = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+        { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    } catch { return out; }
+    for (const line of text.split(/\r?\n/)) {
+      const [pid, ppid, ...cmd] = line.split('\t');
+      const profile = userDataDirOf(cmd.join('\t'));
+      if (Number(pid) && profile) out.push({ pid: Number(pid), ppid: Number(ppid) || 0, profile });
+    }
+  } else if (process.platform === 'linux') {
+    for (const d of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
+      try {
+        const args = fs.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0');
+        const arg = args.find((a) => a.startsWith('--user-data-dir='));
+        if (!arg) continue;
+        const stat = fs.readFileSync(`/proc/${d}/stat`, 'utf8');
+        out.push({ pid: Number(d), ppid: Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]) || 0, profile: arg.slice('--user-data-dir='.length) });
+      } catch { /* gone, or not ours to read */ }
+    }
+  }
+  return out;
+}
+
+/**
+ * Stop every browser that runs on one of Lamplit's bot profiles (1.5.61, the verifier's F11):
+ * `only`: those profiles; else any under data/browser-profile(s). Not this process's own.
+ * An upgrade from 1.5.60 left its browser running with its debugging port open (noted with
+ * pid 0 on the Windows desktop path): found by its command line, not by a noted pid or port.
+ * -> pids stopped
+ */
+export function stopLeftoverBrowsers({ only = null } = {}) {
+  const norm = (p) => { const r = path.resolve(String(p || '')); return process.platform === 'win32' ? r.toLowerCase() : r; };
+  const single = norm(profileDir(''));
+  const many = norm(path.join(P.dataDir, 'browser-profiles'));
+  const want = only ? new Set(only.map(norm)) : null;
+  const ours = (p) => (want ? want.has(norm(p)) : (norm(p) === single || norm(p).startsWith(many + path.sep)));
+  // Spared: this process, and the browser this hub started itself (with its helpers).
+  const own = new Set([process.pid, launchedChild?.exitCode === null ? launchedChild.pid : 0].filter(Boolean));
+  const procs = browserProcesses().filter((p) => ours(p.profile) && !own.has(p.pid) && !(launchedChild?.pid && p.ppid === launchedChild.pid && own.has(launchedChild.pid)));
+  const hit = new Set(procs.map((p) => p.pid));
+  const roots = procs.filter((p) => !hit.has(p.ppid)); // the browser itself; its tree goes with it
+  for (const p of roots) stopProcessTree(p.pid);
+  if (roots.length) console.error(`[browser] stopped ${roots.length} browser(s) left running on Lamplit's bot profiles (an older Lamplit's, or a crash's)`);
+  return roots.map((p) => p.pid);
+}
+
+/** At hub start, before any bot runs anything: no browser of an earlier run is left, and their notes go. */
+export async function sweepLeftoverBrowsers() {
+  const stopped = stopLeftoverBrowsers();
+  for (const n of await fsp.readdir(P.dataDir).catch(() => [])) {
+    if (/^browser-state(-[\w-]+)?\.json$/.test(n)) await fsp.rm(path.join(P.dataDir, n), { force: true }).catch(() => {});
+  }
+  if (stopped.length) await sleep(1000);
+  return stopped;
+}
+
+function stopProcessTree(pid) {
+  try {
+    if (process.platform === 'win32') execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 15000, stdio: 'ignore' });
+    else process.kill(pid, 'SIGTERM');
+  } catch { /* gone */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +912,13 @@ function resolveExpression({ ref, selector }) {
 // the manager
 // ---------------------------------------------------------------------------
 
+/**
+ * Test hooks. desktop: {user, start(cmdFile) -> Promise<boolean>, headless} takes the
+ * Windows desktop path (the bridge) with `start` in place of the scheduled task.
+ * extraArgs: more launch arguments (a test's window off the screen).
+ */
+export const _test = { desktop: null, extraArgs: null, bridgeListener: (...a) => bridgeListener(...a), launchBridged: (...a) => launchBridged(...a) };
+
 /** The Chrome process this module started, if any (killed on process exit). */
 let launchedChild = null;
 let exitHookRegistered = false;
@@ -665,6 +958,15 @@ class BrowserManager {
   async _ensureSession() {
     if (this.session && this.session.page && !this.session.page.closed) return this.session;
     if (this.launching) return this.launching;
+    // 1.5.61: the page went (its tab closed, the session detached) but the browser is there:
+    // attach again - to the hub's own page, or a new one - instead of starting the browser
+    // again (which closed the human's other tabs too).
+    if (this.session?.browser && !this.session.browser.closed) {
+      try {
+        this.session.page = await this.attachPage(this.session.browser);
+        return this.session;
+      } catch { /* start it again below */ }
+    }
 
     this.launching = this._boot().finally(() => {
       this.launching = null;
@@ -720,46 +1022,43 @@ class BrowserManager {
       });
     }
 
-    // Reuse a browser we launched before a server restart. This is what makes
-    // the profile "persistent" across restarts instead of launching a second
-    // Chrome onto a locked profile directory.
-    const adopted = await this.tryAdopt();
-    if (adopted) {
-      this.session = adopted;
-      return adopted;
-    }
+    // 1.5.61 (F7): a browser over a pipe cannot be taken over by a hub that restarted (the
+    // pipe was the old hub's). One a crashed hub left running still holds the profile: it
+    // is stopped (only while that pid is still that browser), then a new one starts with
+    // the same profile - the logins are in the profile, not in the process.
+    await this.stopLeftover();
+    this.pageTargetId = '';
 
-    let port = await findFreePort();
     let headless = process.env.BROWSER_HEADLESS === '1';
     const profile = profileDir(this.key);
     await fsp.mkdir(profile, { recursive: true });
 
     // Windows hub in session 0 with someone signed in at the console: put the
-    // window on that desktop so the human can see it and take over.
+    // window on that desktop so the human can see it and take over (through the bridge).
     let onDesktop = false;
-    if (inWindowsServiceSession()) {
-      const user = await windowsConsoleUser().catch(() => null);
-      if (user && sameAccount(user, os.userInfo().username)) {
-        const desktopArgs = buildLaunchArgs({ port, profileDir: profile, headless: false });
-        if (await launchOnWindowsDesktop(executable.path, desktopArgs, user)) {
-          // Edge took 141 s on a 1-core VM with the CPU at 100%; a normal
-          // machine needs about 2 s.
-          const version = await waitForVersion(port, 150000);
-          if (version) {
-            const browser = await CdpConnection.connect(version.webSocketDebuggerUrl, { label: 'browser (desktop)' });
-            const page = await this.attachPage(browser, port);
-            this.session = {
-              port, pid: 0, child: null, exe: executable.path, headless: false, adopted: false,
-              display: 'console', profile, key: this.key, browser, page, pageUrl: 'about:blank', onDesktop: true,
-            };
-            this.inFlight = 0;
-            this.lastActivity = Date.now();
-            await fsp.writeFile(stateFile(this.key), JSON.stringify({ port, pid: 0, executable: executable.path, headless: false, onDesktop: true, startedAt: new Date().toISOString() }, null, 2), 'utf8');
-            return this.session;
-          }
+    const desktopUser = _test.desktop ? _test.desktop.user : (inWindowsServiceSession() ? await windowsConsoleUser().catch(() => null) : null);
+    if (_test.desktop || inWindowsServiceSession()) {
+      if (desktopUser && (_test.desktop || sameAccount(desktopUser, os.userInfo().username))) {
+        const desktopArgs = buildLaunchArgs({ profileDir: profile, headless: Boolean(_test.desktop?.headless) });
+        const start = _test.desktop ? _test.desktop.start : (script) => runOnWindowsDesktop(script, desktopUser);
+        const bridged = await launchBridged(executable.path, desktopArgs, { start }).catch(() => null);
+        const version = bridged ? await pipeReady(bridged.browser, 30000) : null;
+        if (version) {
+          const page = await this.attachPage(bridged.browser, { start: true });
+          await this.watchTargets(bridged.browser, { headless: Boolean(_test.desktop?.headless) });
+          await this.denyDownloads({ browser: bridged.browser, page });
+          this.session = {
+            pid: bridged.pid, child: null, exe: executable.path, headless: false, adopted: false, channel: 'bridge',
+            display: 'console', profile, key: this.key, browser: bridged.browser, page, pageUrl: 'about:blank', onDesktop: true,
+          };
+          this.inFlight = 0;
+          this.lastActivity = Date.now();
+          await this.noteState({ pid: bridged.pid, executable: executable.path, headless: false, onDesktop: true });
+          return this.session;
         }
+        try { bridged?.browser.close(); } catch { /* gone */ }
       }
-      // Nobody signed in (or another account): stay invisible and say so.
+      // Nobody signed in (or another account), or the bridge did not come: stay invisible and say so.
       headless = true;
       onDesktop = false;
     }
@@ -778,8 +1077,8 @@ class BrowserManager {
       } catch { /* desktops unavailable: fall back to the inherited display */ }
     }
 
-    let args = buildLaunchArgs({ port, profileDir: profile, headless, wayland: Boolean(wayland) });
-    let launchEnv = process.env;
+    const args = buildLaunchArgs({ profileDir: profile, headless, wayland: Boolean(wayland), extraArgs: _test.extraArgs || [] });
+    let launchEnv = { ...process.env };
     if (wayland) {
       launchEnv = { ...process.env, ...wayland };
       delete launchEnv.DISPLAY;
@@ -787,10 +1086,17 @@ class BrowserManager {
     } else if (display) {
       launchEnv = { ...process.env, DISPLAY: display };
     }
+    // 1.5.61 (F7): the browser gets what a bot's program gets - none of the hub's own
+    // settings (ASSIST_MASTER_KEY, ASSIST_PROXY_SECRET...) or anything named like a key.
+    // Its temporary files (the single-instance socket among them) go to data/tmp, not the
+    // /tmp a Linux sandbox shares (F8).
+    launchEnv = browserEnv(launchEnv, this.key);
     let stderr = '';
+    let browser = null;
     const launch = () => {
       const c = spawn(executable.path, args, {
-        stdio: ['ignore', 'ignore', 'pipe'],
+        // 3: what Chrome reads (the hub's commands), 4: what it writes (replies, events).
+        stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'],
         windowsHide: true,
         env: launchEnv,
       });
@@ -802,11 +1108,12 @@ class BrowserManager {
       // hook for the whole process, so repeated launches cannot leak listeners.
       launchedChild = c;
       ensureExitHook();
+      browser = CdpConnection.overPipe(c.stdio[3], c.stdio[4], { label: 'browser' });
       return c;
     };
     let child = launch();
 
-    let version = await waitForVersion(port, inWindowsServiceSession() ? 120000 : 25000);
+    let version = await pipeReady(browser, inWindowsServiceSession() ? 120000 : 25000, child);
     if (version && wayland) {
       // Seen on Rocky 10: after the hub restarted, Chromium opened its debug
       // port and then crashed (SIGSEGV) on that compositor every time, until
@@ -821,20 +1128,18 @@ class BrowserManager {
           Object.assign(launchEnv, desk.desktopEnv(this.key) || {});
         } catch { /* the relaunch below reports what is wrong */ }
         child = launch();
-        version = await waitForVersion(port, 25000);
+        version = await pipeReady(browser, 25000, child);
       }
     }
     if (!version && !inWindowsServiceSession()) {
       // One more try (1.5.21): a cold machine (seen on the Windows CI runner)
-      // can take longer than 25 s, or the port can be taken meanwhile. Stop
-      // the silent one, take a fresh port, and wait longer.
+      // can take longer than 25 s. Stop the silent one and wait longer.
       try { child.kill(); } catch { /* ignore */ }
+      try { browser?.close(); } catch { /* ignore */ }
       await new Promise((r) => setTimeout(r, 1500));
-      port = await findFreePort();
-      args = buildLaunchArgs({ port, profileDir: profile, headless, wayland: Boolean(wayland) });
       stderr = '';
       child = launch();
-      version = await waitForVersion(port, 45000);
+      version = await pipeReady(browser, 45000, child);
     }
     if (!version) {
       try {
@@ -842,26 +1147,28 @@ class BrowserManager {
       } catch {
         /* ignore */
       }
+      try { browser?.close(); } catch { /* ignore */ }
       const detail = stderr.trim().split('\n').slice(-3).join(' / ');
       throw Object.assign(
         new Error(
-          `Chrome started but never opened a debugging port on 127.0.0.1:${port}. ` +
+          'Chrome started but never answered on its debugging pipe. ' +
             `Its profile may already be in use by another window (${profile}).${detail ? ` Chrome said: ${detail}` : ''}`,
         ),
         { code: 'browser_launch_failed' },
       );
     }
 
-    const browser = await CdpConnection.connect(version.webSocketDebuggerUrl, { label: 'browser' });
-    const page = await this.attachPage(browser, port);
+    const page = await this.attachPage(browser, { start: true });
+    await this.watchTargets(browser, { headless });
+    await this.denyDownloads({ browser, page });
 
     this.session = {
-      port,
       pid: child.pid ?? 0,
       child,
       exe: executable.path,
       headless,
       adopted: false,
+      channel: 'pipe',
       display,
       profile,
       key: this.key,
@@ -872,70 +1179,66 @@ class BrowserManager {
     this.inFlight = 0;
     this.lastActivity = Date.now();
 
-    await fsp.mkdir(P.dataDir, { recursive: true });
-    await fsp.writeFile(
-      stateFile(this.key),
-      JSON.stringify({ port, pid: child.pid ?? 0, executable: executable.path, headless, startedAt: new Date().toISOString() }, null, 2),
-      'utf8',
-    );
+    await this.noteState({ pid: child.pid ?? 0, executable: executable.path, headless });
 
     return this.session;
   }
 
-  /** Reconnect to a browser this installation started earlier. */
-  async tryAdopt() {
+  /** The running browser, noted so a hub that crashed can stop it (pid, program; no port: 1.5.61). */
+  async noteState(state) {
+    await fsp.mkdir(P.dataDir, { recursive: true });
+    await fsp.writeFile(stateFile(this.key), JSON.stringify({ ...state, channel: 'pipe', startedAt: new Date().toISOString() }, null, 2), 'utf8');
+  }
+
+  /** A browser of this bot a crashed hub left running (it holds the profile): stopped. */
+  async stopLeftover() {
     let state;
     try {
       state = JSON.parse(await fsp.readFile(stateFile(this.key), 'utf8'));
     } catch {
-      return null;
+      return;
     }
-    if (!state?.port) return null;
-    const version = await waitForVersion(state.port, 1200);
-    if (!version?.webSocketDebuggerUrl) return null;
-    try {
-      const browser = await CdpConnection.connect(version.webSocketDebuggerUrl, { label: 'browser (adopted)' });
-      const page = await this.attachPage(browser, state.port);
-      return {
-        port: state.port,
-        pid: state.pid ?? 0,
-        child: null,
-        exe: state.executable || detectBrowserExecutable().path || '',
-        headless: Boolean(state.headless),
-        adopted: true,
-        onDesktop: Boolean(state.onDesktop),
-        browser,
-        page,
-        pageUrl: 'about:blank',
-      };
-    } catch {
-      return null;
+    await fsp.rm(stateFile(this.key), { force: true }).catch(() => {});
+    const pid = Number(state?.pid) || 0;
+    let stopped = false;
+    if (pid && pid !== process.pid && stillTheBrowser(pid, state.executable)) {
+      stopProcessTree(pid);
+      stopped = true;
     }
+    // 1.5.61 (F11): also one on this profile with no pid noted (1.5.60's desktop path: pid 0, a port).
+    if (stopLeftoverBrowsers({ only: [profileDir(this.key)] }).length) stopped = true;
+    if (stopped) await sleep(1000);
   }
 
   /**
    * Attach to the single page we drive. We keep exactly one page for the whole
    * process, so a turn can take a snapshot and then click the ref it found.
+   * 1.5.61: a session over the browser's own connection (flatten), not a socket of its own.
+   *
+   * 1.5.61 (the verifier's section 十三): only the page the hub made itself, by its id,
+   * never "the first page". A windowed Chrome takes a second `chrome.exe --user-data-dir=<same>
+   * file:///<data>/…` from another program as a new tab; taking the first (newest) page on
+   * a re-attach handed that file's content to the bot's next snapshot. At start the hub makes
+   * a page of its own (what was there - the launch's blank tab, anything put there - is
+   * closed); later, its page or, when that is gone, a new one.
    */
-  async attachPage(browser, port) {
-    let targets = (await fetchJson(`http://127.0.0.1:${port}/json/list`, 3000)) || [];
-    let pageTarget = targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
-
-    if (!pageTarget) {
+  async attachPage(browser, { start = false } = {}) {
+    const listed = await browser.send('Target.getTargets', {}, { timeoutMs: 8000 });
+    const pages = (listed?.targetInfos || []).filter((t) => t.type === 'page');
+    let targetId = this.pageTargetId && pages.some((t) => t.targetId === this.pageTargetId) ? this.pageTargetId : '';
+    if (!targetId) {
       const created = await browser.send('Target.createTarget', { url: 'about:blank' });
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        targets = (await fetchJson(`http://127.0.0.1:${port}/json/list`, 1500)) || [];
-        pageTarget = targets.find((t) => t.id === created.targetId) || targets.find((t) => t.type === 'page');
-        if (pageTarget?.webSocketDebuggerUrl) break;
-        await sleep(120);
-      }
+      targetId = created?.targetId || '';
+      this.pageTargetId = targetId;
+      if (start) for (const t of pages) if (t.targetId !== targetId) browser.send('Target.closeTarget', { targetId: t.targetId }, { timeoutMs: 5000 }).catch(() => {});
     }
-    if (!pageTarget?.webSocketDebuggerUrl) {
+    if (!targetId) {
       throw Object.assign(new Error('the browser has no page target to drive'), { code: 'CDP_NO_PAGE' });
     }
+    const attached = await browser.send('Target.attachToTarget', { targetId, flatten: true }, { timeoutMs: 10000 });
+    if (!attached?.sessionId) throw Object.assign(new Error('could not attach to the page'), { code: 'CDP_NO_PAGE' });
 
-    const page = await CdpConnection.connect(pageTarget.webSocketDebuggerUrl, { label: 'page' });
+    const page = browser.session(attached.sessionId, 'page');
     await page.send('Page.enable');
     await page.send('Runtime.enable');
     await page.send('Network.enable', { maxTotalBufferSize: 20000000 });
@@ -1005,13 +1308,55 @@ class BrowserManager {
     return { ok: true, value: result.result?.value ?? null, type: result.result?.type || 'undefined' };
   }
 
-  async ensurePage() {
+  async ensurePage({ navigating = false } = {}) {
     const session = await this.ensureSession();
     if (!session.page || session.page.closed) {
-      // Page socket died but the browser is alive: re-attach once.
-      session.page = await this.attachPage(session.browser, session.port);
+      // Page socket died but the browser is alive: re-attach once (to the hub's own page).
+      session.page = await this.attachPage(session.browser);
     }
+    await this.guardPage(session, { navigating });
     return session.page;
+  }
+
+  /**
+   * 1.5.61 (the verifier's section 十三): before a snapshot, an eval, a screenshot, a click
+   * or typing, the page must be a web page (http, https) or about:blank. Anything else
+   * (file://, chrome://, view-source:...) is not read: the page is sent back to
+   * about:blank, and the call says why - browser_open only ever opens http(s).
+   * `navigating`: browser_open itself, which goes on from about:blank.
+   */
+  async guardPage(session, { navigating = false } = {}) {
+    if (!this.pageTargetId) return;
+    const info = await session.browser.send('Target.getTargetInfo', { targetId: this.pageTargetId }, { timeoutMs: 5000 }).catch(() => null);
+    const url = String(info?.targetInfo?.url ?? '');
+    if (isWebPageUrl(url)) return;
+    await session.page.send('Page.navigate', { url: 'about:blank' }, { timeoutMs: 10000 }).catch(() => {});
+    if (navigating) return;
+    throw Object.assign(new Error(`the page was at ${url.split(':')[0] || 'an unknown'}: address, not a web page Lamplit opened, so it is not read; it is back at about:blank. Open the page again with browser_open (http or https).`), { code: 'PAGE_NOT_WEB' });
+  }
+
+  /**
+   * 1.5.61 (F7): the browser says when a page appears or moves (Target.setDiscoverTargets).
+   * Pages the hub did not make go: in a browser with no human at it (headless) every one
+   * except what the hub's own page opened (a sign-in popup); in a window a human may take
+   * over, those that are not a web page or a new tab (a file:// one handed over by another
+   * program, above) - the human's own tabs stay.
+   */
+  async watchTargets(browser, { headless = false } = {}) {
+    const police = (info) => {
+      if (!info || info.type !== 'page' || !info.targetId || info.targetId === this.pageTargetId) return;
+      const url = String(info.url || '');
+      const ours = info.openerId && info.openerId === this.pageTargetId;
+      const ok = isWebPageUrl(url) || /^(chrome|edge):\/\/(newtab|new-tab-page)\/?$/i.test(url);
+      if (ok && (ours || !headless)) return;
+      if (!ok || headless) {
+        browser.send('Target.closeTarget', { targetId: info.targetId }, { timeoutMs: 5000 }).catch(() => {});
+        console.error(`[browser] closed a page Lamplit did not open (${url.split(':')[0] || 'blank'}: ${headless ? 'no human at this browser' : 'not a web page'})`);
+      }
+    };
+    browser.on('Target.targetCreated', (e) => police(e.targetInfo));
+    browser.on('Target.targetInfoChanged', (e) => police(e.targetInfo));
+    await browser.send('Target.setDiscoverTargets', { discover: true }, { timeoutMs: 8000 }).catch(() => {});
   }
 
   /**
@@ -1043,7 +1388,7 @@ class BrowserManager {
   }
 
   async goto(url, { waitForLoad = true } = {}) {
-    const page = await this.ensurePage();
+    const page = await this.ensurePage({ navigating: true });
     this.inFlight = 0;
     this.lastActivity = Date.now();
     let nav;
@@ -1570,8 +1915,20 @@ class BrowserManager {
     } catch (err) {
       return browserFailure(err);
     } finally {
+      // 1.5.61 (the verifier's F14): downloads are off again - one the hub did not ask for (a
+      // page's own, a URL another program handed over) must not land in its staging folder.
+      if (this.session) await this.denyDownloads(this.session);
       // The hub's own copy goes; a file the browser still holds is cleared on a later download.
       await fsp.rm(staging, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /** Downloads refused (from start, and again after each browser_download). */
+  async denyDownloads(session) {
+    try {
+      await session.browser.send('Browser.setDownloadBehavior', { behavior: 'deny' }, { timeoutMs: 8000 });
+    } catch {
+      await session.page?.send('Page.setDownloadBehavior', { behavior: 'deny' }, { timeoutMs: 8000 }).catch(() => {});
     }
   }
 
@@ -1704,7 +2061,9 @@ class BrowserManager {
       running,
       pid: running ? session.pid : null,
       profileDir: session?.profile || profileDir(this.key),
-      cdpUrl: running ? `http://127.0.0.1:${session.port}` : null,
+      // 1.5.61 (F7): no debugging port any more - the browser is driven over a pipe.
+      cdpUrl: null,
+      channel: running ? (session.channel || 'pipe') : null,
       headless: running ? session.headless : process.env.BROWSER_HEADLESS === '1',
       adopted: running ? session.adopted : false,
       executable: executable.path,

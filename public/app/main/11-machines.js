@@ -68,8 +68,33 @@ function pageRouteWords() {
   if (throughPhoneRelay() || (/^127\.0\.0\.\d+$/.test(h) && h !== '127.0.0.1')) return state.relayHere ? '经中转（中转就在这台上）' : '中转'; // 1.5.48: on purpose there
   if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return 'Tailscale';
   if (/^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.\d+\.\d+/.test(h)) return '局域网';
-  if (/^(127\.0\.0\.1|localhost|\[::1\])$/.test(h)) return '这台电脑'; // not its address (1.5.59 beginner test)
-  return h;
+  if (/^(127\.0\.0\.1|localhost|\[::1\])$/.test(h) || /\.localhost$/.test(h)) return '这台电脑'; // not its address (1.5.59 beginner test)
+  return '外网'; // a public name or address is not put on screen either (1.5.61 beginner test)
+}
+
+/** The hub this page talks to is this computer: its way to the other machines is this computer's. */
+function hubIsHere() {
+  return machineBridge ? Boolean(machineBridge.local) : onLocalMachine();
+}
+
+/**
+ * How this computer reaches a machine right now, in parts (1.5.61, the machine menu - the user
+ * found 「你的电脑，有你的个人文件」 there useless): 局域网 / Tailscale / 直连 with the address it
+ * answered on, 中转, and how long its last answer took; 「离线 · 上次在线 …」 when it is off. From
+ * what the hub learned on the requests it makes anyway (the roster): no probe of its own.
+ */
+function machineRouteParts(name) {
+  const m = (state.peerRoster || []).find((x) => x.machine === name);
+  if (!m) return [];
+  if (!m.online) return m.seenAt ? ['离线', `上次在线 ${fmtWhen(m.seenAt)}`] : ['离线'];
+  const w = m.way || {};
+  const words = { lan: '局域网', tailscale: 'Tailscale', public: '直连', direct: '直连', relay: '中转' }[w.kind] || '';
+  return [words, w.address || '', m.ms ? `${m.ms} ms` : ''].filter(Boolean);
+}
+
+/** The same as a menu line: each part its own text, so each is translated on its own. */
+function routeLineHtml(parts) {
+  return parts.map((p) => `<span>${escapeHtml(p)}</span>`).join(' · ');
 }
 
 /** Everything that names "where am I": switcher, account chip, About. */
@@ -189,11 +214,13 @@ function renderMachineMenu() {
     // "离线" tag when it does not answer, and its address. No arrow, no label -
     // it is just one more machine in the list.
     // Each machine in a few words too (1.5.59): what it is for, its bots, what waits and works there.
-    const row = (name, address, { off = false, current = false, attrs = '', key = '', meta = '', dot = false } = {}) => `
+    // Its second line is how this computer reaches it (1.5.61), on a line of its own: the name is never cut short.
+    const row = (name, address, { off = false, current = false, attrs = '', key = '', meta = '', dot = false, subHtml = '' } = {}) => `
       <button type="button" role="menuitem" class="mm-item ${current ? 'current' : ''}" ${attrs} ${key ? `data-row="${escapeHtml(key)}"` : ''}>
-        <b>${dot ? `<i class="mm-dot ${off ? 'off' : 'on'}"></i>` : ''}${escapeHtml(name)}</b>${off ? '<small class="off">离线</small>' : ''}
-        <small>${escapeHtml(address)}</small>${meta}
+        <b>${dot ? `<i class="mm-dot ${off ? 'off' : 'on'}"></i>` : ''}${escapeHtml(name)}</b>${off && !subHtml ? '<small class="off">离线</small>' : ''}
+        <small class="mm-sub">${subHtml || escapeHtml(address)}</small>${meta}
       </button>`;
+    const here = hubIsHere();
     // Inside the Lamplit phone app: the way back to the app's own machine list
     // (the Back key does the same, but nobody sees a key; 第 2 步, seen on a phone).
     const appList = typeof window.NightshiftShell?.showMachines === 'function'
@@ -212,18 +239,22 @@ function renderMachineMenu() {
     // Opened by name from another machine (1.5.44): 「全部机器」 is the way back there.
     if (list.some((m) => !m.self) || (singleVisit() && canGoHome())) rows.push(row('全部机器', singleVisit() ? '回到全部机器' : '每台机器上的助手都在左边', { current: state.view === 'all', attrs: 'data-view="all"' }));
     for (const m of list) {
+      // This computer says so; the others, how this computer reaches them (the phone app still asks its own way, below).
+      const mine = here ? '这台电脑' : selfSub();
+      const route = here && !m.self ? routeLineHtml(machineRouteParts(m.name)) : '';
       rows.push(
         m.self
-          ? row(m.name, list.some((x) => !x.self) ? `${selfSub()} · 只看这台` : selfSub(), { current: state.view !== 'all' || !list.some((x) => !x.self), attrs: 'data-view="local"', meta: machineOverviewHtml(m.name), dot: true })
-          : row(m.name, '检测中…', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"`, meta: machineOverviewHtml(m.name), dot: true }),
+          ? row(m.name, list.some((x) => !x.self) ? `${mine} · 只看这台` : mine, { current: state.view !== 'all' || !list.some((x) => !x.self), attrs: 'data-view="local"', meta: machineOverviewHtml(m.name, { note: false }), dot: true })
+          : row(m.name, '检测中…', { off: !m.online, attrs: `data-handoff-menu="${escapeHtml(m.name)}"`, meta: machineOverviewHtml(m.name, { note: false }), dot: true, subHtml: route }),
       );
     }
     const add = /* 添加 from here too (1.5.54) */ onLocalMachine() && !window.NightshiftShell ? '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加一台机器…</button>' : '';
     menu.innerHTML = rows.join('') + add + appList;
     // How this phone or browser would get there, in words (局域网 / Tailscale /
     // 中转), not an address: 127.x, 100.x and IP:port meant nothing (1.5.37).
-    for (const m of list.filter((x) => !x.self)) {
-      const small = [...menu.querySelectorAll('[data-handoff-menu]')].find((b) => b.dataset.handoffMenu === m.name)?.querySelector('small:not(.off):not(.mm-meta)');
+    // On this computer the hub's own way is the answer (above); a phone or another device asks its own.
+    for (const m of list.filter((x) => !x.self && !(here && machineRouteParts(x.name).length))) {
+      const small = [...menu.querySelectorAll('[data-handoff-menu]')].find((b) => b.dataset.handoffMenu === m.name)?.querySelector('.mm-sub');
       // Off already says 离线: not 「连不上」 next to it (1.5.59 beginner test).
       if (small) void routeWords(m).then((words) => { if (small.isConnected) small.textContent = !m.online && words === '连不上' ? '' : words; });
     }
@@ -247,13 +278,15 @@ function renderMachineMenu() {
   if (others.length) rows.push({ view: 'all', name: '全部机器', sub: '每台机器上的助手都在左边', current: Boolean(machineBridge.local) && state.view === 'all' });
   rows.push({ url: '', view: 'local', name: machineBridge.localName || (machineBridge.local ? machineDisplayName() : '这台电脑'), sub: others.length ? '这台电脑 · 只看这台' : '这台电脑', current: Boolean(machineBridge.local) && (state.view !== 'all' || !others.length) });
   for (const m of others) {
-    // How it is reached, in words (中转 / Tailscale / 局域网) for the one on screen; never an address.
-    const route = m.url === machineBridge.current ? pageRouteWords() : '';
-    rows.push({ url: m.url, name: m.name, sub: /^(中转|经中转|直连|Tailscale|局域网)/.test(route) ?`${route} · 只看这台` : '只看这台', current: m.url === machineBridge.current });
+    // How this computer reaches it now (1.5.61): the hub here knows from its own requests; when the
+    // window shows another machine, only the way to that one is known (how this page came).
+    const parts = machineBridge.local ? machineRouteParts(m.name) : [];
+    const route = !parts.length && m.url === machineBridge.current ? pageRouteWords() : '';
+    rows.push({ url: m.url, name: m.name, subHtml: parts.length ? routeLineHtml(parts) : '', sub: /^(中转|经中转|直连|Tailscale|局域网)/.test(route) ? `${route} · 只看这台` : '只看这台', off: parts[0] === '离线', current: m.url === machineBridge.current });
   }
   menu.innerHTML = rows.map((m) => `
     <button type="button" role="menuitem" class="mm-item ${m.current ? 'current' : ''}" ${m.url !== undefined ? `data-machine="${escapeHtml(m.url)}"` : ''} ${m.view ? `data-view="${m.view}"` : ''}>
-      <b>${escapeHtml(m.name)}</b>${m.url !== undefined ? machineAttLabel(m.url) : ''}<small>${escapeHtml(m.sub)}</small>${m.view === 'all' ? '' : machineOverviewHtml(m.name)}
+      <b>${escapeHtml(m.name)}</b>${m.url !== undefined && !m.off ? machineAttLabel(m.url) : ''}<small class="mm-sub">${m.subHtml || escapeHtml(m.sub)}</small>${m.view === 'all' ? '' : machineOverviewHtml(m.name, { note: false })}
     </button>`).join('')
     + '<div class="menu-sep"></div><button type="button" role="menuitem" data-machine-add="1">添加一台机器…</button>';
 }

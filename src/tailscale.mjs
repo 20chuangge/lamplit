@@ -21,6 +21,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn as nodeSpawn } from 'node:child_process';
 
+import { hubTmp } from './store.mjs';
+
 /** A Tailscale login link, and nothing else, is ever shown or opened. */
 const LOGIN_URL_RE = /^https:\/\/login\.tailscale\.com\/[A-Za-z0-9/_?=&.%-]{1,300}$/;
 export function safeLoginUrl(raw) {
@@ -108,7 +110,8 @@ export function createTailscale({
   hubDir = '',
   cli = () => 'tailscale',
   name = () => '',
-  tmpDir = os.tmpdir(),
+  // 1.5.61 (F8): a pasted key waits in data/tmp, never in the system's /tmp (the bots' too on Linux).
+  tmpDir = hubTmp('keys'),
 } = {}) {
   let job = { kind: '', state: 'idle', detail: '' };
   let login = { url: '', at: 0, child: null };

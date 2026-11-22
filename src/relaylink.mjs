@@ -32,7 +32,7 @@ import tls from 'node:tls';
 import { CONTROL_NAME, DEFAULT_PORT, ID_RE, certFingerprint, loadOrMakeIdentity, openTunnel, relayFailureDetail, shieldStream } from '../hub/relay/relay.mjs';
 import { createDirectServer } from './direct.mjs';
 import { readRelayUpdate } from './relayupdate.mjs';
-import { masterKey, openSealed, sealText, sealedButLocked, plainRefused } from './store.mjs';
+import { masterKey, openSealed, sealText, sealedButLocked, plainRefused, untrusted, noteNow } from './store.mjs';
 
 /** The relay's own report (1.5.47), kept to what Settings shows. */
 function cleanRelayInfo(msg) {
@@ -296,7 +296,9 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
   // Sealed with the desktop app's master key where there is one (1.5.54, review L6): the key and join secret.
   function readConfig() {
     try {
-      let raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const text = fs.readFileSync(file, 'utf8');
+      if (untrusted(file, text)) return {}; // 1.5.61 (F9): not what Lamplit wrote there
+      let raw = JSON.parse(text);
       if (raw?.lamplitSealed) raw = JSON.parse(openSealed(raw) || 'null');
       else if (plainRefused(file, raw)) return {}; // 1.5.60 (F6): a plain copy Lamplit did not write
       return raw && typeof raw === 'object' ? raw : {};
@@ -312,6 +314,7 @@ export function createRelayLink({ dataDir, handler, upgrade, log = (line) => con
     const text = JSON.stringify(cfg, null, 2);
     fs.writeFileSync(`${file}.tmp`, masterKey() ? sealText(text) : text, { mode: 0o600 });
     fs.renameSync(`${file}.tmp`, file);
+    noteNow(file); // 1.5.61 (F9): Lamplit's own, noted (written here, not through store's writers)
     try { fs.chmodSync(file, 0o600); } catch { /* Windows */ }
   }
 

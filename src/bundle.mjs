@@ -14,9 +14,10 @@
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { hubTmp } from './store.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,8 +31,12 @@ export function appRoot() {
 // able to provision further machines instead of being a dead end.
 const INCLUDE = ['src', 'public', 'config', 'skills', 'hub', 'node_modules', 'package.json'];
 
-/** Build <tmp>/desk-hub-<stamp>.tar.gz and return its path. */
-export function packApp({ root = appRoot(), outDir = os.tmpdir() } = {}) {
+/**
+ * Build <data>/tmp/pack/desk-hub-<stamp>.tar.gz and return its path. Not the system's
+ * temp folder (1.5.61, F8): on Linux that is the bots' /tmp too, and the package for a
+ * new machine waits there between tar and the upload.
+ */
+export function packApp({ root = appRoot(), outDir = hubTmp('pack') } = {}) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const out = path.join(outDir, `desk-hub-${stamp}.tar.gz`);
   const present = INCLUDE.filter((entry) => fs.existsSync(path.join(root, entry)));

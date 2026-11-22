@@ -990,13 +990,6 @@ function refreshMockState() {
   renderMessages();
 }
 
-/*
- * First run (1.5.8, report 7.1 #1): three steps in the empty chat.
- *   1 pick a provider - DeepSeek first, each with where to get a key
- *   2 paste the key
- *   3 Lamplit saves it, tests it and sends the first sentence
- * The demo is still one click away; Settings → 模型 has everything else.
- */
 /**
  * First things to try (1.5.30): everyday work, not system reports. Shown in
  * an empty chat, and under the first exchange - the first-run guide sends
@@ -1092,43 +1085,114 @@ async function secureScreen(replace = false) {
   toast(r?.state === 'secured' ? '屏幕密码设好了。' : `没设好：${r?.reason || r?.state || ''}`, r?.state !== 'secured');
 }
 
-const ONBOARD_PROVIDERS = ['deepseek', 'moonshot', 'zhipu', 'qwen', 'siliconflow', 'openai'];
-const ONBOARD_FIRST = '你好！用两三句话介绍一下你能帮我做什么。';
-const onboard = { step: 1, provider: '', error: '', busy: false };
+/*
+ * First run (1.5.8; redesign step 5, 1.5.61): the face says hello first, two ways on -
+ * 「先随便看看」 (the demo, nothing to fill in) or 「接上我自己的模型」 - then three
+ * providers with the one recommended said why (the rest under 「更多」), the key with
+ * where to get it, and once it works, four 「第一件事」 to tap instead of an empty box.
+ */
+const ONBOARD_PROVIDERS = ['deepseek', 'moonshot', 'qwen'];
+const ONBOARD_MORE = ['zhipu', 'siliconflow', 'openai'];
+const ONBOARD_WHY = {
+  deepseek: '推荐：中文好、便宜；新账号充 10 块钱能用很久',
+  moonshot: '长文章、读文件强',
+  qwen: '阿里云账号直接用',
+};
+const onboard = { step: 0, provider: '', error: '', busy: false, more: false, justConnected: false, reopened: false };
+
+/**
+ * 「接入真实模型」 (the demo's bar): with no model yet, the first run's three brains in the chat
+ * (1.5.61 beginner test: it went to settings' list of 21, no advice, no 「去哪拿」); with one, settings.
+ */
+function connectRealModel() {
+  if (!state.unconfigured) { openSettings('sec-model'); return; }
+  state.mockAck = false;
+  try { sessionStorage.removeItem('desk.mockAck'); } catch { /* private mode */ }
+  Object.assign(onboard, { step: 1, error: '', more: false, reopened: true });
+  if (state.settingsOpen) closeSettings();
+  const primary = (state.bots || []).find((b) => b.primary);
+  if ((isGroupMode() || remoteChatMachine()) && primary) { selectBot(primary.id).then(refreshMockState); return; }
+  refreshMockState();
+}
+
+/** Three dots on top: 打招呼 · 选模型 · 第一件事. */
+function onboardDots(at) {
+  const dots = el('div', 'onboard-dots');
+  dots.setAttribute('aria-label', `第 ${at + 1} 步，共 3 步`);
+  for (let i = 0; i < 3; i += 1) dots.appendChild(el('i', i === at ? 'on' : i < at ? 'done' : ''));
+  return dots;
+}
 
 function onboardingCard() {
   const wrap = el('div', 'empty onboard');
   // The guide starts at its top (1.5.30: the chat scrolled it to the middle, title and steps out of sight).
-  requestAnimationFrame(() => { if (messagesEl.querySelector('.onboard')) messagesEl.scrollTop = 0; });
-  wrap.appendChild(emptyMark());
-  const steps = el('div', 'onboard-steps');
-  ['选服务商', '填密钥', '试一句'].forEach((name, i) => steps.appendChild(el('span', `onboard-step${onboard.step === i + 1 ? ' on' : onboard.step > i + 1 ? ' done' : ''}`, `${i + 1} ${name}`)));
-  wrap.appendChild(steps);
+  // Under a chat (「接入真实模型」 from the demo), it is brought into view instead.
+  requestAnimationFrame(() => {
+    const card = messagesEl.querySelector('.onboard');
+    if (card && card === messagesEl.firstElementChild) messagesEl.scrollTop = 0;
+    else card?.scrollIntoView({ block: 'nearest' });
+  });
   const providers = (state.providers || []);
   const preset = (name) => providers.find((p) => p.name === name) || null;
   if (!state.providers) ensureProviderOptions().then(() => { if (state.unconfigured && !state.mockAck) renderMessages(); }).catch(() => {});
 
-  if (onboard.step === 1) {
-    wrap.appendChild(el('h2', null, '先接入一个模型'));
-    wrap.appendChild(el('p', null, '现在用的是内置演示，回答由脚本生成，不会真的理解你的话。选一家模型服务商，填上密钥，它就开始正经干活。'));
-    const choices = el('div', 'choice-list');
-    ONBOARD_PROVIDERS.forEach((name, i) => {
-      const p = preset(name);
-      if (!p && providers.length) return;
-      const label = p?.label || name;
-      const desc = name === 'deepseek' ? '推荐：中文好、便宜；新账号先充几块钱就能用' : (p?.blurb || '');
-      choices.appendChild(choiceButton(String.fromCharCode(65 + i), label, desc, () => { onboard.provider = name; onboard.step = 2; onboard.error = ''; renderMessages(); }));
-    });
-    choices.appendChild(choiceButton('·', '先用演示模式看看', '不填任何东西，先熟悉界面和审批流程', () => {
+  // 0: hello, and two ways on.
+  if (onboard.step === 0) {
+    wrap.classList.add('onboard-hello');
+    wrap.appendChild(onboardDots(0));
+    wrap.appendChild(emptyMark());
+    wrap.appendChild(el('h2', null, '你好，我是你的助理'));
+    wrap.appendChild(el('p', null, '告诉我一件要做的事，我在这台电脑上替你办完。动文件、发东西、花钱之前，都先问你。'));
+    const ways = el('div', 'onboard-ways');
+    const look = el('button', 'btn primary onboard-look', '先看看演示（不用填任何东西）');
+    look.type = 'button';
+    look.addEventListener('click', () => {
       state.mockAck = true;
       try { sessionStorage.setItem('desk.mockAck', '1'); } catch { /* private mode */ }
       refreshMockState();
-    }));
+    });
+    const mine = el('button', 'btn onboard-mine', '接上我自己的模型');
+    mine.type = 'button';
+    mine.addEventListener('click', () => { onboard.step = 1; onboard.error = ''; renderMessages(); });
+    ways.append(look, mine);
+    wrap.appendChild(ways);
+    const promise = el('div', 'onboard-promise');
+    for (const s of ['要动东西先问你', '数据在你自己电脑上', '随时能停下']) promise.appendChild(el('span', null, s));
+    wrap.appendChild(promise);
+    return wrap;
+  }
+
+  wrap.appendChild(onboardDots(1));
+  if (onboard.step === 1) {
+    wrap.appendChild(el('h2', null, '选一个「大脑」'));
+    wrap.appendChild(el('p', null, '我自己不会思考，要接一个 AI 模型。按用量付费，一般一个月几块到几十块钱。'));
+    const choices = el('div', 'choice-list');
+    const names = onboard.more ? [...ONBOARD_PROVIDERS, ...ONBOARD_MORE] : ONBOARD_PROVIDERS;
+    names.forEach((name, i) => {
+      const p = preset(name);
+      if (!p && providers.length) return;
+      const label = p?.label || name;
+      const desc = ONBOARD_WHY[name] || p?.blurb || '';
+      const btn = choiceButton(String.fromCharCode(65 + i), label, desc, () => { onboard.provider = name; onboard.step = 2; onboard.error = ''; renderMessages(); });
+      if (name === 'deepseek') btn.classList.add('recommended');
+      choices.appendChild(btn);
+    });
     wrap.appendChild(choices);
-    const more = el('button', 'btn ghost tiny', '其他服务商、自己的地址：去设置 → 模型');
-    more.type = 'button';
-    more.addEventListener('click', () => openSettings('sec-model'));
-    wrap.appendChild(more);
+    const row = el('div', 'onboard-row');
+    if (!onboard.more) {
+      const more = el('button', 'btn ghost tiny', '更多（智谱、硅基流动、OpenAI…）');
+      more.type = 'button';
+      more.addEventListener('click', () => { onboard.more = true; renderMessages(); });
+      row.appendChild(more);
+    }
+    const own = el('button', 'btn ghost tiny', '自己的地址：去设置 → 模型');
+    own.type = 'button';
+    own.addEventListener('click', () => openSettings('sec-model'));
+    const back = el('button', 'btn ghost tiny', '← 返回');
+    back.type = 'button';
+    back.addEventListener('click', () => { onboard.step = 0; renderMessages(); });
+    row.append(own, back);
+    wrap.appendChild(row);
     return wrap;
   }
 
@@ -1137,7 +1201,7 @@ function onboardingCard() {
   const how = el('p', null, `在服务商的网站登录，新建一个 API Key，复制回来贴在下面。密钥只存在这台电脑上，加密保存。${onboard.provider === 'deepseek' ? '新账号要先充值（几块钱就够用很久），否则会提示余额不足。' : ''}`);
   wrap.appendChild(how);
   if (p.keyUrl) {
-    const get = el('button', 'btn tiny', `去 ${p.label} 拿密钥 ↗`);
+    const get = el('button', 'btn tiny', `去哪拿？去 ${p.label} 拿密钥 ↗`);
     get.type = 'button';
     get.addEventListener('click', () => openSignInPage(p.keyUrl));
     wrap.appendChild(get);
@@ -1148,10 +1212,10 @@ function onboardingCard() {
   key.autocomplete = 'off';
   key.spellcheck = false;
   wrap.appendChild(key);
-  const go = el('button', 'btn primary', onboard.busy ? '正在连接…' : '连接并试一句');
+  const go = el('button', 'btn primary', onboard.busy ? '正在连接…' : '试一下，接上');
   go.type = 'button';
   go.disabled = onboard.busy;
-  const msg = el('div', `onboard-msg${onboard.error ? ' bad' : ''}`, onboard.error || (onboard.busy ? '保存密钥，测试连接，然后替你发第一句话…' : ''));
+  const msg = el('div', `onboard-msg${onboard.error ? ' bad' : ''}`, onboard.error || (onboard.busy ? '保存密钥，测试连接…' : ''));
   const back = el('button', 'btn ghost tiny', '← 换一家');
   back.type = 'button';
   back.addEventListener('click', () => { onboard.step = 1; onboard.error = ''; renderMessages(); });
@@ -1167,15 +1231,13 @@ function onboardingCard() {
       await putSettings(model);
       await loadSettings();
       try { state.config = await api('/api/config'); } catch { /* non-fatal */ }
-      onboard.busy = false; onboard.step = 1;
+      onboard.busy = false; onboard.step = 0;
+      // The last step: 第一件事, to tap - not an empty box to stare at.
+      onboard.justConnected = true;
       updateModelUi();
       renderMessages();
       // One model for every machine, as when saved in Settings.
       if (machineBridge?.local && (machineBridge.machines || []).length && window.desk?.syncModel) window.desk.syncModel().catch(() => {});
-      // The first sentence, so the human sees it work.
-      const composer = $('composer');
-      composer.value = ONBOARD_FIRST;
-      send();
     } catch (err) {
       onboard.busy = false; onboard.step = 2;
       // The machine already says what it means and what to do (1.5.30); only an unexplained one gets the old hint.
@@ -1192,6 +1254,30 @@ function onboardingCard() {
   wrap.appendChild(msg);
   wrap.appendChild(back);
   if (!onboard.busy) setTimeout(() => key.focus(), 50);
+  return wrap;
+}
+
+/** Connected: 「先让我做第一件事？」 - four to tap, each starts at once; or look around first. */
+function firstThingsCard() {
+  const wrap = el('div', 'empty onboard first-things');
+  wrap.appendChild(onboardDots(2));
+  wrap.appendChild(emptyMark());
+  wrap.appendChild(el('h2', null, '接好了。先让我做第一件事？'));
+  wrap.appendChild(el('p', null, '点一个就开始；以后想到什么，直接跟我说就行。'));
+  const choices = el('div', 'choice-list');
+  for (const [k, title, desc, prompt] of STARTER_EXAMPLES) {
+    choices.appendChild(choiceButton(k, title, desc, () => {
+      onboard.justConnected = false;
+      const composer = $('composer');
+      composer.value = prompt;
+      send();
+    }));
+  }
+  wrap.appendChild(choices);
+  const skip = el('button', 'btn ghost tiny', '先不用，我自己看看');
+  skip.type = 'button';
+  skip.addEventListener('click', () => { onboard.justConnected = false; renderMessages(); $('composer')?.focus(); });
+  wrap.appendChild(skip);
   return wrap;
 }
 // end of first run
@@ -1265,15 +1351,12 @@ function renderBots() {
     list.appendChild(row);
   }
 
-  // 「全部机器」 (1.5.42, laid out in 1.5.43): 「最近」, then one section per machine, groups first.
+  // 「全部机器」 (1.5.42; 1.5.61): 「群组」 on top, then one section per machine, in a stable order.
+  // Only this machine: the same list, 「群组」 then 「助手」 (never by the latest message).
   const grouped = rosterGrouped();
-  const sideHead = list.parentElement?.querySelector('.side-head'); if (sideHead) sideHead.hidden = grouped;
+  const sideHead = list.parentElement?.querySelector('.side-head'); if (sideHead) sideHead.hidden = true;
   if ($('roster-search-wrap') && !grouped) $('roster-search-wrap').hidden = true;
-  if (grouped) { renderRosterSidebar(list); renderRosterFilters(list); filterHome(); if ($('perm-summary')) renderPermOverview(); return; }
-  // The primary bot is always on top; the rest by their newest message (like a chat app).
-  const when = (b) => Date.parse(b.preview?.ts || '') || 0;
-  const ordered = [...state.bots].sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)) || when(b) - when(a));
-  for (const bot of ordered) list.appendChild(botRow(bot));
+  renderRosterSidebar(list, { single: !grouped });
   renderRosterFilters(list); // 「N 件等你」 / 「N 个在做」 (1.5.59)
   filterHome();
   if ($('perm-summary')) renderPermOverview();

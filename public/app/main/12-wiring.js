@@ -75,7 +75,7 @@ function wireChrome() {
     btn.addEventListener('click', () => { settingsNav.sectionPicked(btn.dataset.setTarget); setSettingsNav(btn.dataset.setTarget); });
   });
 
-  $('mock-banner-btn').addEventListener('click', () => openSettings('sec-model'));
+  $('mock-banner-btn').addEventListener('click', connectRealModel); // the first run's three brains (1.5.61)
   $('group-delete-btn')?.addEventListener('click', deleteCurrentGroup);
   $('confirm-ok')?.addEventListener('click', () => settleConfirm(true));
   $('confirm-input')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); settleConfirm(true); } });

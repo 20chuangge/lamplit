@@ -76,7 +76,7 @@ import * as groups from './groups.mjs';
 import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
-import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled, desktopEnv } from './desktops.mjs';
+import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled, desktopEnv, desktopViewerPassword } from './desktops.mjs';
 import { loadPlan } from './plans.mjs';
 import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './clipboard.mjs';
 import { createMcpManager } from './mcp.mjs';
@@ -99,15 +99,16 @@ import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.
 import { createRoster, cleanBotId } from './roster.mjs';
 import { createXAccount, X_DEVELOPER_URL } from './xpost.mjs';
 import { createMachineNotes, suggestNote, machinesPrompt } from './machinenotes.mjs';
+import { readOrder, writeOrder } from './rosterorder.mjs';
 import { createAdjustments, undoAdjust, undoNote } from './adjust.mjs';
 import { buildNudge } from './nudge.mjs';
 import { createInitiative } from './initiative.mjs';
 import { createTailscale, authKeyProblem, safeLoginUrl } from './tailscale.mjs';
 import { listVault, putVault, deleteVault, sealVaultKey } from './vault.mjs';
-import { masterKey, sealSecretFiles, refusedPlainFiles } from './store.mjs';
+import { masterKey, sealSecretFiles, refusedPlainFiles, noteTrustedFiles, noteNow, clearOldHubTmp } from './store.mjs';
 import { createAttention } from './attention.mjs';
 import { toolWords } from './abilities.mjs';
-import { checkSandbox, sandboxStatus } from './sandbox.mjs';
+import { checkSandbox, sandboxStatus, clearOldBotTmp } from './sandbox.mjs';
 import { checkRunner, setupRunner, syncGrants, autoSetupOnHub, isElevated } from './winrunner.mjs';
 import { undoChanges, pruneTrash } from './trash.mjs';
 import * as modelsModule from './models.mjs';
@@ -234,12 +235,20 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   config.workspaceDir = workspaceDir;
 
   // The desktop app's master key is here: seal key files still in plain text (SEC-14).
+  // 1.5.61 (F11): no browser of an earlier run (1.5.60's had a debugging port) is left on a bot profile.
+  await (await import('./browser.mjs')).sweepLeftoverBrowsers().catch((err) => console.error('[assistant] could not look for leftover browsers:', err.message));
+  // 1.5.61 (F8): the hub's own temporary files are in data/tmp; a crash's leftovers go.
+  await clearOldHubTmp().catch(() => {});
+  await clearOldBotTmp().catch(() => {}); // the bots' own /tmp (strict sandbox), before any command runs
   if (masterKey()) {
     const sealedNow = await sealSecretFiles(P.dataDir).catch((err) => { console.error('[assistant] could not seal key files:', err.message); return []; });
     const vaultOk = await sealVaultKey();
     if (sealedNow.length) console.error(`[assistant] key files encrypted: ${sealedNow.join(', ')}`);
     if (!vaultOk) console.error('[assistant] the vault key cannot be opened with this computer\'s key; the vault stays locked');
   }
+  // 1.5.61 (F9): what Lamplit last wrote in the files that decide what it trusts (made from what is there at the first start).
+  const notedNow = await noteTrustedFiles(P.dataDir).catch((err) => { console.error('[assistant] could not note the trusted files:', err.message); return []; });
+  if (notedNow.length) console.error(`[assistant] trusted files noted: ${notedNow.join(', ')}`);
   // Settings + secret are read once at boot; PUT /api/settings rewrites both and
   // swaps the live model client without a restart.
   const settings = await settingsModule.loadSettings();
@@ -969,6 +978,12 @@ function attachHubUpgrade(server, state, viaPublic) {
     // The VNC part runs only while someone watches: start it now if needed.
     void ensureViewer(safeDecode(match[1])).catch(() => false).then((ok) => {
     if (!ok || socket.destroyed) { refuse(503, 'Service Unavailable'); return; }
+    // 1.5.61 (F12): x11vnc asks for a password; the hub signs in and offers the page none.
+    const viewerPassword = desktopViewerPassword(safeDecode(match[1]));
+    if (viewerPassword) {
+      if (!bridgeWebSocket(req, socket, head, { port: info.vncPort, vnc: { password: viewerPassword } })) refuse(400, 'Bad Request');
+      return;
+    }
     const upstream = net.connect(info.webPort, '127.0.0.1', () => {
       // Replay the client's handshake to websockify; it answers the upgrade.
       const lines = ['GET / HTTP/1.1'];
@@ -2922,15 +2937,21 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
       : checkupItem('isolation', '命令隔离', 'warn', '机器人跑命令时用的是你的账户。点一下，让它用一个单独的账户，更安全（要点一次管理员确认）。', { kind: 'runner', label: '设置单独账户' }));
   } else if (sb.state === 'on') {
     // Linux with the sandbox working (1.5.33): said as it is, in green.
-    items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。'));
+    // 1.5.61 (F8): strict mode gives each bot a /tmp of its own; no screen is reachable from inside.
+    if (sb.mode === 'strict') items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱），也看不到你的 /tmp、你的屏幕和登录会话。每个机器人有自己的 /tmp；图形程序只能开在它自己的屏幕上，这台机器没给机器人开屏幕时就打不开图形窗口。'));
+    else items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。'));
   } else if (sb.state === 'off') {
     items.push(checkupItem('isolation', '命令隔离', 'warn', `沙箱没有生效${sb.reason ? `（${sb.reason}）` : ''}：机器人执行的命令看得到 Lamplit 自己的数据。`, { kind: 'settings', target: 'sec-bounds', label: '看看' }));
   }
   // 1.5.60 (F6): a key file that is not encrypted although this computer's key covers it was not
   // written by Lamplit (something put it in the data folder): it is not used, and said here.
-  if (refusedPlainFiles.size) {
-    const names = [...refusedPlainFiles.keys()].join('、');
-    items.push(checkupItem('sealed-files', '密钥文件', 'bad', `数据文件夹里的 ${names} 没有加密，不是 Lamplit 写的（Lamplit 有了这台电脑的密钥以后，只会加密保存它们），所以没有用它。可能是有程序或机器人把它放进了数据文件夹。相关的设置如果不见了，重新设一次就会加密保存；那个文件还留在原处，可以交给懂行的人看看。`));
+  const refusedBy = (reason) => [...refusedPlainFiles].filter(([, v]) => (v.reason || 'plain') === reason).map(([n]) => n).join('、');
+  if (refusedBy('plain')) {
+    items.push(checkupItem('sealed-files', '密钥文件', 'bad', `数据文件夹里的 ${refusedBy('plain')} 没有加密，不是 Lamplit 写的（Lamplit 有了这台电脑的密钥以后，只会加密保存它们），所以没有用它。可能是有程序或机器人把它放进了数据文件夹。相关的设置如果不见了，重新设一次就会加密保存；那个文件还留在原处，可以交给懂行的人看看。`));
+  }
+  // 1.5.61 (F9): a file that decides what Lamplit trusts, other than what Lamplit last wrote there.
+  if (refusedBy('changed')) {
+    items.push(checkupItem('trusted-files', '关键文件', 'bad', `数据文件夹里的 ${refusedBy('changed')} 不是 Lamplit 最后一次写下的样子，可能是有程序或机器人放进去或改过，所以没有用它。相关的设置（模型和应用的钥匙、连接的应用、工作区）如果不见了，在设置里重新设一次就好；那个文件还留在原处，可以交给懂行的人看看。`));
   }
   // The other machines: answering, and how far.
   const machines = await Promise.all(state.peers.list().map(async ({ name }) => {
@@ -4032,7 +4053,7 @@ route('PUT', /^\/api\/workspace$/, async (_req, _res, { body, state }) => {
     throw httpError(400, 'WORKSPACE_NOT_WRITABLE', `这个文件夹建不了或写不进去：${err.message}`);
   }
   if (raw) writeJsonSyncAtomic(WORKSPACE_FILE, { path: target.path, updatedAt: nowIso() });
-  else { try { fs.unlinkSync(WORKSPACE_FILE); } catch { /* already default */ } }
+  else { try { fs.unlinkSync(WORKSPACE_FILE); } catch { /* already default */ } noteNow(WORKSPACE_FILE); }
   const same = path.resolve(target.path) === path.resolve(state.workspaceDir);
   if (!same && process.env.ASSIST_UPDATE_NO_EXIT !== '1') setTimeout(() => process.exit(0), 800).unref?.();
   return { ok: true, path: target.path, restarting: !same };
@@ -4723,6 +4744,17 @@ route('PUT', /^\/api\/machine-notes$/, async (_req, _res, { body, state }) => {
   const saved = await state.machineNotes.set(machine, body?.note, 'human');
   state.bus.emit({ type: 'settings.changed', section: 'machines' });
   return { machine, note: saved, notes: state.machineNotes.all() };
+});
+
+// The sidebar's pins (1.5.61): pinned chats and their order, kept here so every device
+// shows the same (src/rosterorder.mjs); the rest go by latest activity, in the page.
+//   GET /api/roster-order -> {pinned:[key], unpinned:[key], order:{section:[key]}}
+//   PUT /api/roster-order {pinned, unpinned, order} -> the same, cleaned
+route('GET', /^\/api\/roster-order$/, async () => readOrder());
+route('PUT', /^\/api\/roster-order$/, async (_req, _res, { body, state }) => {
+  const saved = await writeOrder(body || {});
+  state.bus.emit({ type: 'settings.changed', section: 'roster-order' });
+  return saved;
 });
 
 // A change made to a bot by talking: the list, and undo (the human's).

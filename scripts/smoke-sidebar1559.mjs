@@ -38,7 +38,7 @@ export async function sidebar1559Checks({ check, readText }) {
     page.includes("(Boolean(only) && Boolean(row.closest('#bot-list')) && !rosterFilterMatch(rowKey(row), only))")
     && page.includes("sec.hidden = Boolean(q || only) && !sec.querySelector('.bot:not([hidden]), .group:not([hidden])');")
     && side.includes("if ((state.rosterFilter === 'needs' && !needs) || (state.rosterFilter === 'working' && !working)) state.rosterFilter = '';")
-    && !page.includes("'roster-sec recent'") && !page.includes('RECENT_FROM') && page.includes('renderRosterFilters(list); filterHome();'));
+    && !page.includes("'roster-sec recent'") && !page.includes('RECENT_FROM') && page.includes('renderRosterFilters(list); // 「N 件等你」 / 「N 个在做」 (1.5.59)')); // 1.5.61: one list in both layouts
 
   // --- the status line ----------------------------------------------------------
   const att = {
@@ -71,9 +71,9 @@ export async function sidebar1559Checks({ check, readText }) {
     (k) => items[k] || null, { notes: { 客厅电脑: { note: '家里一直开着的电脑' } } }, (s) => s, (s) => s);
   const here = O('客厅电脑');
   const far = O('腾讯云');
-  check('S4 each machine in a few words (the machine menu): what it is for, how many bots, what waits and works there; an offline machine counts nothing as waiting or working; the way there (局域网 / 直连 / 中转) as before',
+  check('S4 each machine in a few words (the machine menu): how many bots, what waits and works there (its note stays in Settings - 1.5.61: the user found it useless in the menu); an offline machine counts nothing as waiting or working; the way there (局域网 / 直连 / 中转 - 1.5.61: how this computer reaches it, smoke-step5-1561 R1)',
     here.note === '家里一直开着的电脑' && here.counts === '3 个助手 · 1 件等你 · 1 个在做' && far.counts === '1 个助手' && far.online === false
-    && machines.includes('meta: machineOverviewHtml(m.name), dot: true') && machines.includes('void routeWords(m).then((words) =>'),
+    && machines.includes('meta: machineOverviewHtml(m.name, { note: false }), dot: true') && machines.includes('void routeWords(m).then((words) =>'),
     JSON.stringify({ here, far }));
 
   // --- the header's count ---------------------------------------------------------

@@ -60,16 +60,27 @@ esac
 GO="$BASE/go/bin/go"
 if [ ! -x "$GO" ]; then
   say "下载 Go…"
-  V=$(curl -fsSL --max-time 20 'https://golang.google.cn/dl/?mode=json' 2>/dev/null | grep -o '"version": *"go[0-9.]*"' | head -1 | grep -o 'go[0-9.]*')
+  # 1.5.61 (F13): into a folder of root's own (mktemp -d, not a fixed name in /tmp that another
+  # account of this server could have put there first), and checked against the SHA-256 Go
+  # publishes for that file before it is unpacked.
+  GOJSON=$(curl -fsSL --max-time 20 'https://golang.google.cn/dl/?mode=json' 2>/dev/null | tr -d '\n' || true)
+  V=$(printf '%s' "$GOJSON" | grep -o '"version": *"go[0-9.]*"' | head -1 | grep -o 'go[0-9.]*')
   [ -n "$V" ] || V=go1.25.0
+  FILE="$V.linux-$ARCH.tar.gz"
+  SUM=$(printf '%s' "$GOJSON" | grep -o "\"filename\": *\"$FILE\"[^}]*" | grep -o '"sha256": *"[0-9a-f]\{64\}"' | grep -o '[0-9a-f]\{64\}' | head -1)
+  [ -n "$SUM" ] || SUM=$(curl -fsSL --max-time 20 "https://golang.google.cn/dl/$FILE.sha256" 2>/dev/null | grep -o '^[0-9a-f]\{64\}' | head -1)
+  [ -n "$SUM" ] || fail "拿不到 Go 安装包的校验值（golang.google.cn 连不上），不装没核对过的 Go"
   mkdir -p "$BASE"
+  GOTMP=$(mktemp -d) || fail "建不了临时文件夹"
+  trap 'rm -rf "$GOTMP"' EXIT
   ok=0
-  for url in "https://golang.google.cn/dl/$V.linux-$ARCH.tar.gz" "https://mirrors.aliyun.com/golang/$V.linux-$ARCH.tar.gz"; do
-    if curl -fsSL --max-time 600 "$url" -o /tmp/lamplit-go.tgz; then ok=1; break; fi
+  for url in "https://golang.google.cn/dl/$FILE" "https://mirrors.aliyun.com/golang/$FILE"; do
+    if curl -fsSL --max-time 600 "$url" -o "$GOTMP/go.tgz" && printf '%s  %s\n' "$SUM" "$GOTMP/go.tgz" | sha256sum -c - >/dev/null 2>&1; then ok=1; break; fi
+    rm -f "$GOTMP/go.tgz"
   done
-  [ "$ok" = 1 ] || fail "下载不了 Go（golang.google.cn 和阿里云镜像都连不上）"
-  rm -rf "$BASE/go" && tar -C "$BASE" -xzf /tmp/lamplit-go.tgz || fail "Go 解压失败"
-  rm -f /tmp/lamplit-go.tgz
+  [ "$ok" = 1 ] || fail "下载不了 Go，或者下载的文件和官方校验值对不上（golang.google.cn 和阿里云镜像都试过）"
+  rm -rf "$BASE/go" && tar -C "$BASE" -xzf "$GOTMP/go.tgz" || fail "Go 解压失败"
+  rm -rf "$GOTMP"
 fi
 
 # 3. derper（Tailscale 官方的中转程序）

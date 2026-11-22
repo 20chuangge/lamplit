@@ -127,7 +127,7 @@ export async function uxChecks({ check, readText }) {
     const doubao = cat.find((p) => p.name === 'doubao');
     check('UX19 豆包 is in the provider list (Volcengine Ark, OpenAI-compatible), as the site says; the first screen says each provider in a few plain words, not a model name; the demo says it costs nothing',
       doubao && doubao.baseUrl === 'https://ark.cn-beijing.volces.com/api/v3' && /豆包/.test(doubao.label) && cat.find((p) => p.name === 'moonshot')?.blurb
-      && page.includes("(p?.blurb || '')") && !page.includes('`默认模型 ${p.models[0]}`') && /不花钱/.test(cat.find((p) => p.name === 'mock')?.note || ''), JSON.stringify(doubao || null));
+      && page.includes("ONBOARD_WHY[name] || p?.blurb || ''") /* 1.5.61: three providers, said why */ && !page.includes('`默认模型 ${p.models[0]}`') && /不花钱/.test(cat.find((p) => p.name === 'mock')?.note || ''), JSON.stringify(doubao || null));
     check('UX20 the model page in the demo hides 接口地址 / 模型 / API 密钥',
       page.includes("const demo = provider === 'mock';") && page.includes("for (const id of ['set-baseurl', 'set-model', 'set-apikey'])"));
     check('UX21 成本 leads with one line of money (「大约花了」, 「一个月约」), or what to do when the price is unknown; the details fold; 「按助手」 not 「按机器人」; Lamplit\'s own calls are named',

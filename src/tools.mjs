@@ -15,7 +15,7 @@
  */
 
 import os from 'node:os';
-import { sandboxFor } from './sandbox.mjs';
+import { sandboxFor, sandboxEnv } from './sandbox.mjs';
 import { runnerFor } from './winrunner.mjs';
 import { snapshot, TRASH_DIR, removeInside, removeFolderInside } from './trash.mjs';
 import { P, readJsonSync } from './store.mjs';
@@ -231,7 +231,7 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
     // In the sandbox on Linux (1.5.3): bwrap runs the shell, Lamplit's data out of sight.
     // On Windows (1.5.7): lamplit-run.exe runs it as the lamplit-runner account.
     const child = sandbox
-      ? spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command], { cwd, env, detached: true })
+      ? spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command], { cwd, env: sandboxEnv(env, sandbox), detached: true })
       : runner
         ? spawn(runner.exe, [], { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
         : spawn(process.platform === 'win32' ? `chcp 65001 >nul & ${command}` : command, {
@@ -808,7 +808,7 @@ export function createRegistry(deps) {
       if (sandbox) {
         result.sandbox = sandbox.mode === 'open'
           ? 'ran in the sandbox: everything as usual except Lamplit\'s own data, which is not visible'
-          : 'ran in the sandbox: the system is read-only and only the workspace, /tmp and the opened folders are visible; Lamplit\'s data is not. Anything else needs the human (ask, or use sudo where allowed).';
+          : `ran in the sandbox: the system is read-only and only the workspace, the opened folders and a /tmp of your own (kept between your commands) are visible; Lamplit's data, the human's /tmp, screen and login session are not. ${sandbox.screen ? 'A graphical program opens on your own screen.' : 'This machine runs no screen for you, so a graphical program has no display here ("cannot open display").'} Anything else needs the human (ask, or use sudo where allowed).`;
       }
       return result;
     },

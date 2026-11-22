@@ -520,7 +520,8 @@ const INTENTS = [
 const ROUTINE_TURN_LINE = 'This turn runs one of your scheduled tasks (a routine): do what its instruction says.';
 
 /** Said at the end of every scripted demo (1.5.32). */
-const DEMO_END = '这是演示脚本。接入模型后，你可以用自己的话说任何事。';
+// Each demo answer already says what a real model would do; this only marks it as scripted (1.5.61 beginner test: 「接入模型后」 came twice).
+const DEMO_END = '（这是演示脚本写好的回答。）';
 
 function detectIntent(text) {
   for (const intent of INTENTS) {

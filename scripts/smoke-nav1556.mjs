@@ -195,8 +195,8 @@ export async function navChecks({ check, readText }) {
     check('NAV11 desktop: nothing is added to the history and nothing is restored (it closes back to the same screen as before)',
       t.pushed.length === 0 && from === null && t.backs() === 0);
   }
-  check('NAV12 the page: the 设置 button no longer shuts the home list before 设置 sees it; the demo banner opens 模型 (not its click event); the back key pops a step (popstate); desktop focus goes back to the 设置 button',
-    !/\$\('settings-btn'\)\.addEventListener\('click', \(\) => \{\s*closeSidebar\(\);/.test(wiring) && wiring.includes("$('mock-banner-btn').addEventListener('click', () => openSettings('sec-model'));")
+  check('NAV12 the page: the 设置 button no longer shuts the home list before 设置 sees it; the demo banner opens the model picker (connectRealModel takes no argument, so its click event is not passed on as a section; 1.5.61: the three brains of the first run while no model is connected); the back key pops a step (popstate); desktop focus goes back to the 设置 button',
+    !/\$\('settings-btn'\)\.addEventListener\('click', \(\) => \{\s*closeSidebar\(\);/.test(wiring) && wiring.includes("$('mock-banner-btn').addEventListener('click', connectRealModel);")
     && wiring.includes("window.addEventListener('popstate', onNavPopState);") && settings.includes("if (!isMobile()) $('settings-btn').focus();")
     && page.includes('settingsNav.sectionPicked(btn.dataset.setTarget)') && page.includes('settingsNav.toHome()'));
 }

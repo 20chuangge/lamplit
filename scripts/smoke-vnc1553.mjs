@@ -252,7 +252,10 @@ export async function vncHubChecks({ check, serverPath = path.join(REPO, 'src', 
       const items = (await (await fetch(`${base}/api/checkup`, { headers: { 'x-lamplit-local': key } })).json()).items || [];
       const item = items.find((i) => i.id === 'vnc');
       check('VNC-E2E-3 体检 says the screen has a password', item?.state === 'ok', JSON.stringify(item));
-      await fsp.writeFile(path.join(home, 'data', 'tightvnc.json'), JSON.stringify(V.newVncSecret()));
+      // 1.5.61 (F9): the secret as Lamplit would have kept it (this test writes it directly, so it notes it too).
+      const stale = JSON.stringify(V.newVncSecret());
+      await fsp.writeFile(path.join(home, 'data', 'tightvnc.json'), stale);
+      { const tf = path.join(home, 'data', 'trust.json'); const note = JSON.parse(fsSync.readFileSync(tf, 'utf8')); note.hashes['tightvnc.json'] = [crypto.createHash('sha256').update(stale).digest('hex')]; fsSync.writeFileSync(tf, JSON.stringify(note)); }
       const wrong = (await (await fetch(`${base}/api/checkup`, { headers: { 'x-lamplit-local': key } })).json()).items?.find((i) => i.id === 'vnc');
       check('VNC-E2E-4 体检 says so when the screen does not take Lamplit\'s password, with the one-click 「设好密码」', wrong?.state === 'warn' && wrong?.action?.kind === 'vnc', JSON.stringify(wrong));
       const program = await wsClient(`ws://127.0.0.1:${ready.port}/api/bots/chief/desktop/ws`, { origin: base }).then(() => 'opened', (e) => e.status);

@@ -99,6 +99,8 @@ function renderMessages() {
   }
 
   if (visible.length) appendStarters(visible);
+  // 「接入真实模型」 from the demo: the same three brains as the first run, under the chat (1.5.61 beginner test).
+  if (visible.length && onboard.reopened && state.unconfigured && !state.mockAck && !remoteChatMachine()) messagesEl.appendChild(onboardingCard());
   showNextSteps(); // under the newest reply, while nothing runs (1.5.58)
   updateComposerMode();
   renderVideoJobs();
@@ -173,6 +175,7 @@ function daySeparator(ts) {
 
 function emptyState() {
   if (state.unconfigured && !state.mockAck && !remoteChatMachine()) return onboardingCard();
+  if (onboard.justConnected && !remoteChatMachine()) return firstThingsCard(); // 1.5.61: 第一件事, once connected
   const card = welcomeCard();
   const bot = botById(state.botId); // its machine is off: said first (1.5.59 beginner test, a phone)
   if (!isGroupMode() && bot?.remote && !bot.remote.online) card.prepend(el('div', 'status-line link-down-line', `离线 · ${OFFLINE_WORDS}`));

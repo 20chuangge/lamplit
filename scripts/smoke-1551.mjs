@@ -163,7 +163,7 @@ export async function installerChecks({ check }) {
   check('installer: it says what it does, in plain words, before and after', /正在安装 Node\.js/.test(sh) && sh.includes('Node.js $("$NODE" -v) 装好了') && /改用 Node\.js 官网推荐的软件源（NodeSource）/.test(sh) && /用系统软件源里的 Node\.js/.test(sh));
   const remote = read('src/remote.mjs');
   check('installer: the computer shows its lines as progress, and waits long enough for Node to install (10 minutes)',
-    remote.split('\n').some((l) => l.includes('lamplit-relay-setup.sh /tmp/lamplit-relay.mjs ${Number(port)}') && l.includes('timeoutMs: 600000') && l.includes("onLine: (line) => { const m = /^\\[desk\\] (.+)/.exec(line); if (m) setProgress(job, m[1]); }")));
+    remote.split('\n').some((l) => l.includes('relay-linux.sh ${d}/relay.mjs ${Number(port)}') && l.includes('timeoutMs: 600000') && l.includes("onLine: (line) => { const m = /^\\[desk\\] (.+)/.exec(line); if (m) setProgress(job, m[1]); }")));
   await runInstallerCases({ check, sh });
 
   const relayDoc = read('docs/RELAY.md');

@@ -258,6 +258,7 @@ function handleEvent(ev) {
     const section = ev.section || 'model';
     if (section === 'model' && state.settings && ev.settings) state.settings.model = ev.settings;
     if (section === 'model') updateModelUi();
+    if (section === 'roster-order') { loadRosterOrder(); return; } // another device moved a row (1.5.61)
     const drawer = $('settings-drawer');
     if (!drawer?.classList.contains('open')) return;
     const active = document.querySelector('.setnav.active')?.dataset.setTarget || 'sec-model';

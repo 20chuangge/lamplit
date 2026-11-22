@@ -39,7 +39,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { P, readJson, writeJsonAtomic, writeFileAtomic, writeTextAtomic, masterKey, sealText, openSealed, plainRefused, nowIso } from './store.mjs';
+import { P, readJson, writeJsonAtomic, writeFileAtomic, writeTextAtomic, masterKey, sealText, openSealed, plainRefused, untrusted, noteNow, nowIso } from './store.mjs';
 import { unwrapVaultKey, wrapVaultKey } from './vault.mjs';
 
 export const BACKUP_FORMAT = 1;
@@ -74,7 +74,7 @@ const DATA_DIRS = new Set(['memory', 'sessions', 'groups', 'avatars', 'deleted-b
 const DATA_FILES = new Set([
   'routines.json', 'audit.jsonl', 'usage.jsonl', 'usage-settings.json', 'usage-budget.json', 'usage-alert.json', 'balance-history.json',
   'machine.json', 'machine-notes.json', 'initiative.json', 'bot-adjustments.json', 'former-bot-names.json', 'feishu-apps.json',
-  'cliagents.json', 'attention.json', 'known-hosts.json',
+  'cliagents.json', 'attention.json', 'known-hosts.json', 'roster-order.json',
 ]);
 /** Key files: opened here, sealed again where they are restored. */
 const SECRET_FILES = new Set(['secrets.json', 'voice.json', 'media.json', 'vision.json', 'feishu.json', 'mcp.json', 'x-account.json', 'browser-logins.json', 'model-keys.json']);
@@ -101,8 +101,12 @@ const SKIPPED = new Set([
   'tightvnc.json', 'undo', 'video-jobs.json', 'wire.jsonl', 'backup.json', 'backup-key.json', 'restore-pending.json', '.restore', 'lamplit-update.json', '.update',
   // 1.5.60: which key files this computer's key covers (sealed with it), and the browser's own download folder.
   'sealing.json', 'browser-downloads',
+  // 1.5.61: what Lamplit last wrote in the files that decide what it trusts (F9), its own temporary files and the bots' own /tmp (F8).
+  'trust.json', 'trust-sealed.json', 'tmp', 'sandbox-tmp',
+  // A bot screen's VNC password (made new each time someone watches).
+  'desktop-vnc',
 ]);
-const SKIPPED_PATTERNS = [/^browser-state-[\w.-]+\.json$/, /^vnc-secure-/, /^vnc-control-/, /\.tmp$/, /\.partial(-\d+)?$/];
+const SKIPPED_PATTERNS = [/^browser-state-[\w.-]+\.json$/, /^browser-bridge-[\w.-]+\.json$/, /^vnc-secure-/, /^vnc-control-/, /\.tmp$/, /\.partial(-\d+)?$/];
 
 /** 'dir' | 'file' | 'secret' | 'vault' | 'vault-key' | 'skip', or null for a name this version does not know. */
 export function classifyDataName(name) {
@@ -218,6 +222,7 @@ export async function workspaceSize({ capFiles = 200000, capMs = 4000 } = {}) {
 /** The opened text of a key file, or null when this computer cannot open it. */
 async function openKeyFile(abs) {
   const raw = await fsp.readFile(abs, 'utf8');
+  if (untrusted(abs, raw)) return null; // 1.5.61 (F9): not what Lamplit wrote there, not carried into a backup
   let value;
   try { value = JSON.parse(raw); } catch { return raw; }
   // A plain key file this computer's key already covers is not Lamplit's (1.5.60, F6): not carried into a backup either.
@@ -819,6 +824,7 @@ async function moveFile(from, to) {
     await fsp.copyFile(from, to);
     await fsp.rm(from, { force: true }).catch(() => {});
   }
+  noteNow(to); // 1.5.61 (F9): a file Lamplit restored into data/ is Lamplit's
 }
 
 async function listStaged(root) {
@@ -852,7 +858,12 @@ const vaultSeal = (key, value) => {
  */
 export async function applyPendingRestore() {
   let pending;
-  try { pending = JSON.parse(await fsp.readFile(pendingFile(), 'utf8')); } catch { return null; }
+  try {
+    const raw = await fsp.readFile(pendingFile(), 'utf8');
+    // 1.5.61 (F9): a restore-pending.json Lamplit did not write (the restore it names would rewrite config/, data/ and the workspace) is not done.
+    if (untrusted(pendingFile(), raw)) return null;
+    pending = JSON.parse(raw);
+  } catch { return null; }
   const dir = path.resolve(P.dataDir, String(pending?.dir || ''));
   const problems = [];
   let plan = null;
@@ -1005,6 +1016,7 @@ export async function applyPendingRestore() {
   }
   const result = { at: nowIso(), ok: !problems.some((p) => p.startsWith('恢复没做完')), mode: plan?.mode || null, from: plan?.from || null, preBackup: plan?.preBackup || null, restored, problems: problems.slice(0, 20) };
   await fsp.rm(pendingFile(), { force: true }).catch(() => {});
+  noteNow(pendingFile());
   await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
   await saveState({ lastRestore: result }).catch(() => {});
   return result;

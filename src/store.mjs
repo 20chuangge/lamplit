@@ -41,7 +41,11 @@ export const DEFAULT_WORKSPACE_DIR = path.join(ROOT, 'workspace');
 export const WORKSPACE_FILE = path.join(DATA_DIR, 'workspace.json');
 function chosenWorkspace() {
   try {
-    const p = String(JSON.parse(fs.readFileSync(WORKSPACE_FILE, 'utf8')).path || '').trim();
+    const raw = fs.readFileSync(WORKSPACE_FILE, 'utf8');
+    // 1.5.61 (F9): a workspace.json Lamplit did not write does not move the bots' workspace.
+    // (Read while this module loads: the note is checked with hoisted functions only.)
+    if (noteRefuses(DATA_DIR, 'workspace.json', raw)) { chosenWorkspace.refused = WORKSPACE_FILE; return ''; }
+    const p = String(JSON.parse(raw).path || '').trim();
     return p && path.isAbsolute(p) ? path.resolve(p) : '';
   } catch {
     return '';
@@ -134,10 +138,12 @@ export async function writeFileAtomic(file, data, encoding = null) {
   await fsp.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   await fsp.writeFile(tmp, data, encoding);
+  noteBefore(file, data);
   let lastErr;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       await fsp.rename(tmp, file);
+      noteAfter(file, data);
       return;
     } catch (err) {
       lastErr = err;
@@ -255,15 +261,186 @@ export function plainRefused(file, value) {
   if (value && typeof value === 'object' && value.lamplitSealed) return false;
   if (!coveredNames(path.dirname(file)).has(name)) return false;
   if (!refusedPlainFiles.has(name)) {
-    refusedPlainFiles.set(name, { file, at: new Date().toISOString() });
+    refusedPlainFiles.set(name, { file, at: new Date().toISOString(), reason: 'plain' });
     console.error(`[store] ${name} is not encrypted although this computer's key covers it: Lamplit did not write it, so it is not used (体检 says so)`);
   }
   return true;
+}
+if (chosenWorkspace.refused) refusedPlainFiles.set('workspace.json', { file: chosenWorkspace.refused, at: new Date().toISOString(), reason: 'changed' });
+
+// ---------------------------------------------------------------------------
+// Files that decide what the hub trusts, with or without a key (1.5.61, F9)
+// ---------------------------------------------------------------------------
+//
+// F6 refuses a plain key file once the desktop app's key covers it; a hub with
+// no key (a Linux server, start-hub) had nothing: a file put in data/ by
+// something else (the verifier's 1.5.60 attack: the hub's own browser told to
+// download there) was used. Two more files decide a lot and are not key files,
+// so they stay plain even with a key: restore-pending.json (at its next start
+// the hub restores the "backup" it names into config/, data/ and the workspace)
+// and workspace.json (where the bots' workspace is).
+//
+// Now Lamplit notes the sha256 of what it last wrote under each such name (null:
+// it made none). At read, a file other than noted is not used and 体检 says so.
+// The note: data/trust.json, or with a key data/trust-sealed.json (sealed, so it
+// cannot be made up; it covers the two plain names, F6 covers the key files).
+// It starts at the first 1.5.61 start from the files there (trusted once, as
+// F6's first sealing). Neither note can be replaced by what is left to an
+// attacker in data/: making a new (empty) file, never replacing one.
+
+const EXTRA_TRUST = ['restore-pending.json', 'workspace.json'];
+export const TRUST_FILE = 'trust.json';
+export const TRUST_SEALED_FILE = 'trust-sealed.json';
+
+/** Is `name` noted? `key`: with a key the key files are F6's. */
+function tracked(name, key = masterKey()) {
+  return EXTRA_TRUST.includes(name) || (!key && SEALED_FILES.has(name));
+}
+const sameDir = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+function trackedFile(file, key = masterKey()) {
+  const abs = path.resolve(String(file));
+  return sameDir(path.dirname(abs), path.resolve(DATA_DIR)) && tracked(path.basename(abs), key) ? path.basename(abs) : '';
+}
+function sha256Of(data) {
+  return crypto.createHash('sha256').update(typeof data === 'string' ? Buffer.from(data, 'utf8') : data).digest('hex');
+}
+
+// Hoisted (function declarations): chosenWorkspace() asks while the module loads.
+/** The note this mode reads in `dir` ({hashes}), or null when there is none yet. sealed: the key's. */
+function readNote(dir, sealed = Boolean(masterKey())) {
+  const file = path.join(dir, sealed ? 'trust-sealed.json' : 'trust.json');
+  let st;
+  try { st = fs.statSync(file); } catch { return null; }
+  const cache = (readNote.cache ||= new Map());
+  const known = cache.get(file);
+  const key = sealed ? masterKey() : null;
+  if (known && known.mtimeMs === st.mtimeMs && known.size === st.size && String(known.key) === String(key?.toString('hex'))) return known.note;
+  let note = null;
+  try {
+    let text = fs.readFileSync(file, 'utf8');
+    if (sealed) text = openSealed(JSON.parse(text), key);
+    const value = text ? JSON.parse(text) : null;
+    if (value && typeof value.hashes === 'object' && value.hashes) note = value;
+  } catch { /* none it can read */ }
+  cache.set(file, { mtimeMs: st.mtimeMs, size: st.size, key: key?.toString('hex'), note });
+  return note;
+}
+/** Does the note say Lamplit did not write `raw` as `name`? */
+function noteRefuses(dir, name, raw) {
+  const note = readNote(dir);
+  if (!note || !Object.prototype.hasOwnProperty.call(note.hashes, name)) return false; // not noted yet: the first start notes it
+  const ok = note.hashes[name];
+  return !(Array.isArray(ok) && ok.includes(sha256Of(raw)));
+}
+function writeNote(dir, note, sealed) {
+  const file = path.join(dir, sealed ? TRUST_SEALED_FILE : TRUST_FILE);
+  const text = sealed ? sealText(JSON.stringify(note)) : `${JSON.stringify(note, null, 2)}\n`;
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, text, 'utf8');
+  fs.renameSync(tmp, file);
+  readNote.cache?.delete(file);
+}
+/** Change what the notes there say about `name` (each note that exists; the sealed one only with the key). */
+function changeNotes(name, change) {
+  for (const sealed of [false, true]) {
+    if (sealed && !masterKey()) continue;
+    if (!sealed && !tracked(name, null)) continue;
+    const note = readNote(DATA_DIR, sealed);
+    if (!note) continue;
+    const next = { ...note, hashes: { ...note.hashes, [name]: change(note.hashes[name]) }, at: new Date().toISOString() };
+    try { writeNote(DATA_DIR, next, sealed); } catch (err) { console.error(`[store] could not note ${name}: ${err.message}`); }
+  }
+}
+// Lamplit writes: the new hash is noted before the rename (the old one stays, so a crash in
+// between leaves a file the note still knows), and alone after it.
+function noteBefore(file, data) {
+  const name = trackedFile(file, null);
+  if (name) changeNotes(name, (was) => [...new Set([...(Array.isArray(was) ? was : []), sha256Of(data)])].slice(-3));
+}
+function noteAfter(file, data) {
+  const name = trackedFile(file, null);
+  if (!name) return;
+  changeNotes(name, () => [sha256Of(data)]);
+  if (refusedPlainFiles.get(name)?.reason === 'changed') refusedPlainFiles.delete(name);
+}
+/** For the tests: the two halves of a write's noting (smoke-sec1561 SEC-F9a). */
+export const _trust = { noteBefore: (file, data) => noteBefore(file, data), noteAfter: (file, data) => noteAfter(file, data) };
+
+/** Lamplit took `file` away (or put it there other than through these writers): note what is there now. */
+export function noteNow(file) {
+  const name = trackedFile(file, null);
+  if (!name) return;
+  let raw = null;
+  try { raw = fs.readFileSync(file); } catch { /* gone */ }
+  changeNotes(name, () => (raw === null ? null : [sha256Of(raw)]));
+  if (raw !== null && refusedPlainFiles.get(name)?.reason === 'changed') refusedPlainFiles.delete(name);
+}
+
+/** Is `raw`, read from `file`, other than what Lamplit last wrote there? Then it is not used (named in 体检). */
+export function untrusted(file, raw) {
+  const name = trackedFile(file);
+  if (!name || !noteRefuses(path.resolve(DATA_DIR), name, raw)) return false;
+  if (!refusedPlainFiles.has(name)) {
+    refusedPlainFiles.set(name, { file: path.resolve(file), at: new Date().toISOString(), reason: 'changed' });
+    console.error(`[store] ${name} is not what Lamplit last wrote there: something else put it in the data folder, so it is not used (体检 says so)`);
+  }
+  return true;
+}
+
+/**
+ * At start: the note for this mode, made from the files there now where it has
+ * no word yet about a name (the first 1.5.61 start; a name a later version
+ * adds). -> names newly noted
+ */
+export async function noteTrustedFiles(dir = DATA_DIR) {
+  const key = masterKey();
+  const sealed = Boolean(key);
+  const note = readNote(dir, sealed) || { hashes: {} };
+  const names = [...EXTRA_TRUST, ...(sealed ? [] : SEALED_FILES)];
+  const added = [];
+  const hashes = { ...note.hashes };
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(hashes, name)) continue;
+    let raw = null;
+    try { raw = await fsp.readFile(path.join(dir, name)); } catch { /* not there: Lamplit made none */ }
+    hashes[name] = raw === null ? null : [sha256Of(raw)];
+    added.push(name);
+  }
+  if (added.length || !readNote(dir, sealed)) {
+    await fsp.mkdir(dir, { recursive: true });
+    writeNote(dir, { hashes, at: new Date().toISOString() }, sealed);
+  }
+  return added;
+}
+
+/**
+ * The hub's own temporary files (1.5.61, the verifier's F8): never the
+ * system's temp folder, which on Linux is the bots' too (strict and open
+ * sandboxes share it, as the same account). data/tmp/<sub>, which every
+ * sandbox hides. -> its path
+ */
+export function hubTmp(sub = '') {
+  const dir = sub ? path.join(DATA_DIR, 'tmp', String(sub).replace(/[^a-zA-Z0-9_.-]/g, '_')) : path.join(DATA_DIR, 'tmp');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+/** At start: what is in data/tmp older than `maxAgeMs` goes (a crash's leftovers). */
+export async function clearOldHubTmp(maxAgeMs = 24 * 3600 * 1000) {
+  const root = path.join(DATA_DIR, 'tmp');
+  for (const sub of await fsp.readdir(root).catch(() => [])) {
+    const dir = path.join(root, sub);
+    for (const name of await fsp.readdir(dir).catch(() => [])) {
+      const st = await fsp.lstat(path.join(dir, name)).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > maxAgeMs) await fsp.rm(path.join(dir, name), { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 const sealedWarned = new Set();
 /** Parsed JSON, opening a sealed file; `undefined` when it cannot be opened (or is a refused plain key file). */
 function parseMaybeSealed(file, raw) {
+  if (untrusted(file, raw)) return undefined; // 1.5.61 (F9)
   const value = JSON.parse(raw);
   if (!value || typeof value !== 'object' || !value.lamplitSealed) return plainRefused(file, value) ? undefined : value;
   const text = openSealed(value);
@@ -358,11 +535,14 @@ export function writeJsonSyncAtomic(file, value) {
   refuseLockedSeal(file);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, jsonTextFor(file, value), 'utf8');
+  const text = jsonTextFor(file, value);
+  fs.writeFileSync(tmp, text, 'utf8');
+  noteBefore(file, text);
   let lastErr;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       fs.renameSync(tmp, file);
+      noteAfter(file, text);
       if (masterKey()) refusedPlainFiles.delete(path.basename(file));
       return;
     } catch (err) {

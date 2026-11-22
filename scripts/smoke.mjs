@@ -6279,7 +6279,7 @@ async function scenarioV153() {
   const setup = await readText('../hub/setup-linux.sh');
   const page = await readText('../public/index.html');
   check('V3 shell: a sandboxed command runs as bwrap … -- /bin/sh -c <command>; the agent says when the human let a step past the fence',
-    toolsSrc.includes("spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command]") && toolsSrc.includes('const sandbox = sandboxFor(command, ctx);')
+    toolsSrc.includes("spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command]") && toolsSrc.includes('sandbox = sandboxFor(command, ctx);') && toolsSrc.includes("code: 'SANDBOX_UNAVAILABLE'")
     && agentSrc.includes('ctx.shellUnfenced = name === \'shell\' && Boolean(shellFence);'));
   check('V3 ready: the machine checks once that the sandbox works (bwrap starts, Lamplit\'s data is not visible, the workspace is writable) before using it, and says why not',
     typeof SB.checkSandbox === 'function' && SB.PROBE_SCRIPT.includes('[ ! -e "$1" ]') && SB.PROBE_SCRIPT.includes('[ -w "$2" ]')

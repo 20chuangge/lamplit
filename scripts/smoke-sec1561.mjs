@@ -466,8 +466,9 @@ async function f8sandbox() {
   try {
     for (const p of [ownSock, humanSock]) {
       try { fs.rmSync(p, { force: true }); } catch { /* none */ }
-      const srv = net.createServer((c) => c.end('X'));
+      const srv = net.createServer((c) => { c.on('error', () => {}); c.end('X'); });
       await new Promise((resolve, reject) => { srv.once('error', reject); srv.listen(p, resolve); });
+      srv.on('error', () => {});
       servers.push(srv);
     }
     const node = process.execPath;
@@ -481,6 +482,11 @@ async function f8sandbox() {
       });
       out.screen = { own: await run(probe(ownSock)), human: await run(probe(humanSock)) };
     }
+    // The guard: bwrap asked to bind a screen socket that is not there refuses; the runner says so.
+    const { runShellCommand } = await import(src('tools.mjs'));
+    const gone = { mode: 'strict', args: bwrapArgs({ mode: 'strict', root: '', dataDir: data, workspaceDir: ws, folders: [], tmpDir: botTmp('a', data), screen: { env: { DISPLAY: ':999' }, bind: ['/tmp/.X11-unix/X-not-there'] } }) };
+    const refused = await runShellCommand('echo SHOULD-NOT-RUN', { cwd: ws, timeoutMs: 20000, sandbox: gone });
+    out.refusedClearly = refused.ok === false && /sandbox could not start this command/.test(refused.sandboxError || '') && !String(refused.stdout).includes('SHOULD-NOT-RUN');
   } catch (err) { out.screen = `could not set up: ${err.message}`; } finally {
     for (const s of servers) s.close();
     for (const p of [ownSock, humanSock]) { try { fs.rmSync(p, { force: true }); } catch { /* gone */ } }
@@ -599,7 +605,7 @@ export async function sec1561Checks({ check, skip = (n, why) => console.log(`SKI
     if (!T) dropFolder(home);
     try { return JSON.parse(String(r.stdout || '').trim().split(/\r?\n/).pop()); } catch { return { failedToRun: `${r.stdout}${r.stderr}`.slice(-800) }; }
   };
-  const J = (o) => JSON.stringify(o).slice(0, 600);
+  const J = (o) => String(JSON.stringify(o) ?? String(o)).slice(0, 600);
 
   // F7
   const p = run('f7pipe');
@@ -646,7 +652,10 @@ export async function sec1561Checks({ check, skip = (n, why) => console.log(`SKI
   if (s.skipped && process.platform === 'linux' && process.env.CI) check('SEC-F8d Linux (CI): the bots\' sandbox starts here, so the /tmp checks run', false, s.skipped);
   else if (s.skipped) skip('SEC-F8d', s.skipped);
   else check('SEC-F8d Linux strict sandbox: each bot\'s own /tmp, kept between its commands, not another bot\'s, not the real /tmp; the hub\'s /tmp files and /run/user not visible', s.keptForSameBot && !s.otherBotSees && !s.realTmpHasIt && !s.hubFileSeen && s.runUserEmpty, J(s));
-  if (s && !s.skipped) check('SEC-F8f Linux strict sandbox: a GUI program reaches the bot\'s own screen socket, not another display\'s (the human\'s)', typeof s.screen === 'object' ? s.screen.own === 'OPEN' && s.screen.human === 'NO' : false, J(s.screen));
+  if (s && !s.skipped) {
+    check('SEC-F8f Linux strict sandbox: a GUI program reaches the bot\'s own screen socket, not another display\'s (the human\'s)', typeof s.screen === 'object' && s.screen !== null ? s.screen.own === 'OPEN' && s.screen.human === 'NO' : false, J(s.failedToRun ? s : s.screen));
+    check('SEC-F8g Linux: a sandbox bwrap cannot set up (a bind it cannot make) gives the bot a clear error and runs nothing', s.refusedClearly === true, J(s.failedToRun ? s : { refusedClearly: s.refusedClearly }));
+  }
 
   // F9
   for (const [label, key] of [['no key', ''], ['with the key', KEY]]) {

@@ -288,7 +288,10 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
     let lingering = false;
     const done = () => {
       if (signal) signal.removeEventListener('abort', onAbort);
+      // 1.5.61: bwrap itself refused (a bind it could not make, no user namespaces): nothing ran.
+      const bwrapSaid = sandbox && exitCode !== 0 ? (/^bwrap: (.+)$/m.exec(text('stderr')) || [])[1] || '' : '';
       finish({
+        ...(bwrapSaid ? { sandboxError: `the sandbox could not start this command (bwrap: ${bwrapSaid.slice(0, 200)}), so nothing ran. Tell the human: Settings → 审批 shows the sandbox.` } : {}),
         ok: exitCode === 0 && !timedOut,
         exitCode,
         signal: exitSignal || null,
@@ -792,7 +795,14 @@ export function createRegistry(deps) {
       const command = String(args?.command ?? '').trim();
       if (!command) throw toolError('SHELL_BAD_ARGS', 'shell needs a command');
       const timeoutMs = Math.min(Math.max(Number(args?.timeoutMs) || 30000, 1000), 120000);
-      const sandbox = sandboxFor(command, ctx);
+      let sandbox = null;
+      try {
+        sandbox = sandboxFor(command, ctx);
+      } catch (err) {
+        // 1.5.61: the bot's own /tmp or screen could not be set up - say so; nothing runs (and
+        // never outside the sandbox instead).
+        return { ok: false, error: { code: 'SANDBOX_UNAVAILABLE', message: `the sandbox for this command could not be set up (${err.message}); nothing ran. Tell the human (Settings → 审批 shows the sandbox).` }, command };
+      }
       const runner = sandbox ? null : runnerFor(command, ctx, childEnv());
       const result = await runShellCommand(command, {
         cwd: ctx.workspaceDir,

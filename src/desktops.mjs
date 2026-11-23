@@ -3,10 +3,13 @@
  *
  * The product claim is "bots with their own computer", so a bot must not share
  * a screen with its siblings: whatever bot A opens, bot B must not see. This
- * module gives every bot its own X display, its own VNC server and its own
- * noVNC bridge, all as children of the hub process (no systemd juggling).
+ * module gives every bot its own X display and its own VNC server, all as
+ * children of the hub process (no systemd juggling). The hub itself is the
+ * noVNC bridge (wsbridge.mjs): it signs in to the VNC server and offers the
+ * page no password - no websockify (1.5.61).
  *
- *   bot  ── display :120+N  ── x11vnc 127.0.0.1:59<N>  ── websockify :61<N>
+ *   bot ── display :120+N ── x11vnc 127.0.0.1:59<N> (-rfbauth, data/desktop-vnc) ── hub ── page
+ *   bot ── cage (Rocky 10) ── wayvnc on data/desktop-vnc/w<N>.sock (1.5.63)       ── hub ── page
  *
  * Linux only: this needs Xvfb. On macOS/Windows the manager reports
  * unavailable and callers fall back to the single shared desktop, which is what
@@ -80,27 +83,41 @@ export function desktopViewerOpened(botId) {
   };
 }
 
-// The part of a screen only a viewer needs (x11vnc + websockify, or wayvnc on
-// Rocky): memory that did nothing while nobody watched. It starts when someone
+// The part of a screen only a viewer needs (x11vnc, or wayvnc on Rocky): memory
+// that did nothing while nobody watched. It starts when someone
 // opens the screen and stops this long after the last one leaves; the screen
 // itself (and the bot's browser on it) keeps running.
 export const VIEWER_IDLE_MS = Math.max(0.5, Number(process.env.DESK_VIEWER_IDLE_MIN) || 2) * 60 * 1000;
 const alive = (proc) => Boolean(proc) && !proc.killed && proc.exitCode === null;
 
-/** Start the viewer part of a running screen if it is not up. -> true when it serves. */
-export async function ensureViewer(botId) {
+/**
+ * Start the viewer part of a running screen if it is not up. -> true when it serves.
+ * viewOnly (1.5.63): 接管桌面 is 「只能看」 - the VNC server itself takes no input then
+ * (x11vnc -viewonly, wayvnc --disable-input), not only the page. A viewer part running the
+ * other way is started again.
+ */
+export async function ensureViewer(botId, { viewOnly = false } = {}) {
   const entry = desktops.get(botId);
   if (!entry || typeof entry.startViewer !== 'function') return Boolean(entry);
-  if (entry.viewerStarting) return entry.viewerStarting;
+  if (entry.viewerStarting) {
+    await entry.viewerStarting.catch(() => false);
+    if (Boolean(entry.viewOnly) === Boolean(viewOnly)) return viewerServes(entry);
+  }
   entry.lastViewerAt = Date.now();
-  const port = entry.viewPort || entry.webPort;
-  if ((entry.viewProcs || []).length && entry.viewProcs.every(alive) && (await portReady(port))) return true;
+  if ((entry.viewProcs || []).length && entry.viewProcs.every(alive) && Boolean(entry.viewOnly) === Boolean(viewOnly) && (await viewerServes(entry))) return true;
   entry.viewerStarting = (async () => {
     for (const proc of entry.viewProcs || []) { try { proc.kill(); } catch { /* gone */ } }
-    entry.viewProcs = await entry.startViewer();
-    return portReady(port);
+    entry.viewOnly = Boolean(viewOnly);
+    entry.viewProcs = await entry.startViewer({ viewOnly: entry.viewOnly });
+    return viewerServes(entry);
   })().finally(() => { entry.viewerStarting = null; });
   return entry.viewerStarting;
+}
+
+/** Is the viewer part serving: its unix socket there (wayvnc, 1.5.63), or its port listening (x11vnc)? */
+async function viewerServes(entry) {
+  if (entry.viewSocket) return fs.existsSync(entry.viewSocket);
+  return portReady(entry.viewPort || entry.webPort);
 }
 
 /** Stop the viewer part where nobody watched for VIEWER_IDLE_MS. -> bot ids. */
@@ -211,13 +228,15 @@ export function desktopSupport() {
   }
   const backend = desktopBackend();
   if (backend === 'wayland') return { available: true, reason: '', backend };
-  const missing = ['Xvfb', 'x11vnc', 'websockify'].filter((b) => !hasBinary(b));
+  // 1.5.63: websockify and the system's noVNC are not needed (the hub bridges to the VNC server
+  // itself since 1.5.61 and serves its own noVNC page from public/novnc).
+  const missing = ['Xvfb', 'x11vnc'].filter((b) => !hasBinary(b));
   if (missing.length) {
     // Say the install command of this machine's package manager. Rocky/RHEL 10
     // have no X11 stack at all: there the screens are Wayland (cage + wayvnc).
     const hint = hasBinary('apt-get')
-      ? 'apt install xvfb x11vnc novnc websockify'
-      : hasBinary('dnf') ? 'dnf install cage wayvnc novnc python3-websockify; dnf upgrade liblc3' : 'install Xvfb, x11vnc, noVNC and websockify';
+      ? 'apt install xvfb x11vnc'
+      : hasBinary('dnf') ? 'dnf install cage wayvnc; dnf upgrade liblc3' : 'install Xvfb and x11vnc';
     return { available: false, reason: `missing ${missing.join(', ')} (${hint})` };
   }
   return { available: true, reason: '', backend };
@@ -483,7 +502,7 @@ async function ensureDesktopOnce(botId) {
   // page no password (wsbridge.mjs, as for TightVNC on Windows), so the human types none.
   // No websockify any more: the hub speaks WebSocket to x11vnc directly.
   // Started only while someone watches (ensureViewer), stopped after.
-  const startViewer = async () => {
+  const startViewer = async ({ viewOnly = false } = {}) => {
     const view = [];
     killByPattern(`x11vnc -display :${display} `);
     killByPattern(`websockify.* 127.0.0.1:${webPort} `);
@@ -495,7 +514,8 @@ async function ensureDesktopOnce(botId) {
     // -nonap: with nobody connected x11vnc naps and picks up a new viewer
     // seconds late (seen: 4 s); it only runs while someone watches anyway.
     // -nolookup: no reverse DNS for the (always local) client.
-    const args = ['-display', `:${display}`, '-localhost', '-rfbauth', authFile, '-forever', '-shared', '-noxdamage', '-repeat', '-noshm', '-nonap', '-nolookup', '-threads', '-rfbport', String(vncPort)];
+    // -viewonly (1.5.63): 接管桌面 「只能看」 is kept by x11vnc itself, not only by the page.
+    const args = ['-display', `:${display}`, '-localhost', '-rfbauth', authFile, '-forever', '-shared', '-noxdamage', '-repeat', '-noshm', '-nonap', '-nolookup', '-threads', ...(viewOnly ? ['-viewonly'] : []), '-rfbport', String(vncPort)];
     view.push(spawnChild('x11vnc', args, { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')] }));
     for (let i = 0; i < 50 && !(await portReady(vncPort)); i += 1) await sleep(100);
     return view;
@@ -508,17 +528,34 @@ async function ensureDesktopOnce(botId) {
   return { ...publicInfo(botId, entry), started: true };
 }
 
-/** The wayland command lines for one screen (also used to kill leftovers). */
-export function waylandCommands({ display, webPort }) {
+/**
+ * The wayland command lines for one screen (also used to kill leftovers).
+ *
+ * 1.5.63 (the verifier's F12 for Rocky 10): wayvnc listened on 127.0.0.1 with no password, and
+ * every bot's sandbox could reach it. Now it listens on a unix socket in data/desktop-vnc/
+ * (-u), which no sandbox can see, and only the hub connects to it - then bridges it to the page
+ * as it does for x11vnc, so the page needs no password either. A password of wayvnc's own was
+ * not used: it needs TLS or RSA-AES (or an "allow_broken_crypto" setting only newer wayvnc
+ * versions have), where the socket works on every wayvnc since 0.5 and leaves no port at all.
+ * --disable-input when the screen is opened 「只能看」.
+ */
+export function waylandCommands({ display, socket = viewerSocketPath(display), viewOnly = false }) {
   return {
     // The "app" cage runs is a placeholder; its odd length makes the process
     // findable after a hub restart. The bot's browser joins as a client.
     cage: ['cage', ['-d', '--', 'sleep', `2147${display}000`]],
-    // wayvnc speaks WebSocket itself (-w), on the bridge port the hub relays
-    // to: no websockify. That one forks per viewer, and on a 1.6 GB Rocky VM
-    // with Chromium running the fork failed with ENOMEM (a blank viewer).
-    vnc: ['wayvnc', ['-w', '-r', '127.0.0.1', String(webPort)]],
+    vnc: ['wayvnc', ['-r', ...(viewOnly ? ['--disable-input'] : []), '-u', socket]],
   };
+}
+
+/** wayvnc's socket for display N: data/desktop-vnc/w<N>.sock (short: a unix socket path has ~107 bytes). */
+export function viewerSocketPath(display) {
+  return path.join(dataDir || process.cwd(), 'desktop-vnc', `w${display}.sock`);
+}
+
+/** The unix socket the hub bridges a bot's screen from (wayvnc, 1.5.63), or ''. */
+export function desktopViewerSocket(botId) {
+  return String(desktops.get(botId)?.viewSocket || '');
 }
 
 async function startWaylandDesktop(botId) {
@@ -526,9 +563,12 @@ async function startWaylandDesktop(botId) {
   const display = BASE_DISPLAY + index;
   const vncPort = BASE_VNC_PORT + index;
   const webPort = BASE_WEB_PORT + index;
-  const cmd = waylandCommands({ display, webPort });
+  const viewSock = viewerSocketPath(display);
+  const cmd = waylandCommands({ display, socket: viewSock });
   killByPattern(`sleep 2147${display}000$`);
+  // Older hubs' wayvnc on 127.0.0.1 (no password), and this one's on the socket.
   killByPattern(`wayvnc .*127.0.0.1 (${vncPort}|${webPort})$`);
+  killByPattern(`wayvnc .*-u ${viewSock}$`);
   killByPattern(`websockify.* 127.0.0.1:${webPort} `);
   // Its own runtime dir: the Wayland socket lives there and nothing else
   // (a logged-in GNOME session) can be mistaken for it.
@@ -553,15 +593,20 @@ async function startWaylandDesktop(botId) {
     try { socket = fs.readdirSync(runtime).find((f) => /^wayland-\d+$/.test(f)) || ''; } catch { /* not yet */ }
   }
   const clientEnv = { ...env, WAYLAND_DISPLAY: socket || 'wayland-0' };
-  const startViewer = async () => {
+  const startViewer = async ({ viewOnly = false } = {}) => {
     killByPattern(`wayvnc .*127.0.0.1 (${vncPort}|${webPort})$`);
-    const view = [spawnChild(cmd.vnc[0], cmd.vnc[1], { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')], env: clientEnv })];
-    for (let i = 0; i < 50 && !(await portReady(webPort)); i += 1) await sleep(100);
+    killByPattern(`wayvnc .*-u ${viewSock}$`);
+    fs.mkdirSync(path.dirname(viewSock), { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(path.dirname(viewSock), 0o700); } catch { /* best effort */ }
+    try { fs.rmSync(viewSock, { force: true }); } catch { /* none */ } // a stale one: wayvnc would not bind
+    const vnc = waylandCommands({ display, socket: viewSock, viewOnly }).vnc;
+    const view = [spawnChild(vnc[0], vnc[1], { stdio: ['ignore', childLog(botId, 'vnc'), childLog(botId, 'vnc')], env: clientEnv })];
+    for (let i = 0; i < 50 && !fs.existsSync(viewSock); i += 1) await sleep(100);
     return view;
   };
-  // One port: the WebSocket one.
+  // No port: the unix socket, which the hub bridges to the page (desktopViewerSocket).
   const entry = {
-    display, vncPort: webPort, webPort, procs, viewProcs: [], startViewer, lastViewerAt: 0, startedAt: new Date().toISOString(), mode: 'kiosk', viewers: 0, lastUsed: Date.now(),
+    display, vncPort: webPort, webPort, viewSocket: viewSock, procs, viewProcs: [], startViewer, lastViewerAt: 0, startedAt: new Date().toISOString(), mode: 'kiosk', viewers: 0, lastUsed: Date.now(),
     wayland: { display: clientEnv.WAYLAND_DISPLAY, runtime },
   };
   desktops.set(botId, entry);

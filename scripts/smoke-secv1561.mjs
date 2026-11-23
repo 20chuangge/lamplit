@@ -1,6 +1,6 @@
 /**
  * smoke-secv1561.mjs - the verifier's attacks on 1.5.61 (section 十四 of its report), taken
- * into the smoke (F11 closes U1, F14 U2; X1a waits for the sandbox's own network: next batch).
+ * into the smoke (F11 closes U1, F14 U2; X1a is a check since the sandbox's own network, 1.5.63).
  *
  *   U1  (both, needs Chromium) the upgrade: a browser 1.5.60 left running (its own debugging
  *       port; noted with pid 0, as its desktop browser was) is stopped, and the new one starts.
@@ -125,7 +125,21 @@ async function x1(T) {
   fs.writeFileSync(probe, X_PROBE);
   const args = bwrapArgs({ mode: 'strict', root: '', dataDir: data, workspaceDir: ws, folders: [], tmpDir: '' });
   const inSandbox = (n) => { const r = spawnSync('bwrap', [...args, '--', process.execPath, probe, String(n)], { encoding: 'utf8', timeout: 20000 }); try { return JSON.parse(r.stdout.trim().split('\n').pop()); } catch { return { failed: (r.stdout + r.stderr).slice(-300) }; } };
-  const out = { human: inSandbox(human), bot: inSandbox(bot), filesystemSocketVisible: spawnSync('bwrap', [...args, '--', '/bin/sh', '-c', `test -e /tmp/.X11-unix/X${human} && echo yes`], { encoding: 'utf8' }).stdout.includes('yes') };
+  // 1.5.63: the strict sandbox's own network (pasta, else slirp4netns), as the hub sets it up.
+  const SB = await import('../src/sandbox.mjs');
+  const netState = await SB.checkSandboxNet({ workspaceDir: ws });
+  const inOwnNet = async (n) => {
+    if (netState.state !== 'own') return null;
+    const net = SB.sandboxNet(netState.helper, { dataDir: data });
+    const sandbox = { mode: 'strict', args: bwrapArgs({ mode: 'strict', root: '', dataDir: data, workspaceDir: ws, folders: [], tmpDir: '', net }), net: { helper: net.helper, proxyPorts: net.proxyPorts } };
+    const { child, ready } = SB.spawnSandboxed(sandbox, [process.execPath, probe, String(n)], { cwd: ws, env: process.env });
+    let so = ''; let why = '';
+    child.stdout.on('data', (d) => { so += d; });
+    ready.catch((err) => { why = err.message; });
+    await new Promise((r) => child.on('close', r));
+    try { return JSON.parse(so.trim().split('\n').pop()); } catch { return { failed: why || so.slice(-300) }; }
+  };
+  const out = { human: inSandbox(human), bot: inSandbox(bot), filesystemSocketVisible: spawnSync('bwrap', [...args, '--', '/bin/sh', '-c', `test -e /tmp/.X11-unix/X${human} && echo yes`], { encoding: 'utf8' }).stdout.includes('yes'), net: netState, humanOwnNet: await inOwnNet(human) };
   for (const x of xs) { try { x.kill(); } catch { /* gone */ } }
   return out;
 }
@@ -174,9 +188,12 @@ export async function verifyChecks({ check, skip = (n, why) => console.log(`SKIP
   const x1r = run('x1');
   if (x1r.skipped) skip('SECV-X1', x1r.skipped);
   else {
-    // X1a: the human's own X server listens on the abstract socket too; only a network namespace
-    // of the sandbox's own (or Landlock's abstract-socket scope) closes it - next batch. Reported, not failed.
-    console.log(`NOTE  SECV-X1a Linux: from the bots' sandbox, a display that listens on the abstract socket (as the human's Xorg / Xwayland do) cannot be reached: ${!x1r.human?.connected ? 'yes' : 'NO'} (next batch: the sandbox's own network)  ${JSON.stringify(x1r)}`);
+    // X1a: the human's own X server listens on the abstract socket too; the network of the sandbox's
+    // own (1.5.63) closes it. On the shared network (no pasta / slirp4netns here) it still connects:
+    // that is what 体检 warns about. CI installs both, so it is a real check there.
+    if (x1r.net?.state === 'own') check(`SECV-X1a Linux: from the bots' sandbox (its own network, ${x1r.net.helper}), a display that listens on the abstract socket (as the human's Xorg / Xwayland do) cannot be reached`, x1r.humanOwnNet && !x1r.humanOwnNet.connected && !x1r.humanOwnNet.failed, JSON.stringify(x1r));
+    else if (process.env.CI) check('SECV-X1a Linux CI: pasta and slirp4netns are installed (ci.yml), so the sandbox must get a network of its own', false, JSON.stringify(x1r));
+    else skip('SECV-X1a', `no network of its own for the sandbox here (${x1r.net?.reason || 'unknown'}); on the shared network it connects: ${x1r.human?.connected ? 'yes' : 'no'}`);
     check('SECV-X1b Linux: ... a bot display started with -nolisten local cannot be reached either, nor its socket file seen', !x1r.bot?.connected && !x1r.filesystemSocketVisible, JSON.stringify(x1r));
   }
   const x2r = run('x2');

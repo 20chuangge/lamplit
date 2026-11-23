@@ -15,7 +15,7 @@
  */
 
 import os from 'node:os';
-import { sandboxFor, sandboxEnv } from './sandbox.mjs';
+import { sandboxFor, sandboxEnv, spawnSandboxed } from './sandbox.mjs';
 import { runnerFor } from './winrunner.mjs';
 import { snapshot, TRASH_DIR, removeInside, removeFolderInside } from './trash.mjs';
 import { P, readJsonSync } from './store.mjs';
@@ -230,8 +230,12 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
 
     // In the sandbox on Linux (1.5.3): bwrap runs the shell, Lamplit's data out of sight.
     // On Windows (1.5.7): lamplit-run.exe runs it as the lamplit-runner account.
-    const child = sandbox
-      ? spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command], { cwd, env: sandboxEnv(env, sandbox), detached: true })
+    // 1.5.63: with a network of its own the command waits until the helper has it up; when that
+    // fails it never runs (netFailed: SANDBOX_UNAVAILABLE), and never on the shared network instead.
+    let netFailed = '';
+    const boxed = sandbox ? spawnSandboxed(sandbox, ['/bin/sh', '-c', command], { cwd, env: sandboxEnv(env, sandbox), detached: true }) : null;
+    const child = boxed
+      ? boxed.child
       : runner
         ? spawn(runner.exe, [], { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
         : spawn(process.platform === 'win32' ? `chcp 65001 >nul & ${command}` : command, {
@@ -286,8 +290,13 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
     let exitSignal = null;
     let exited = false;
     let lingering = false;
+    boxed?.ready.catch((err) => { netFailed = err.message; kill(); });
     const done = () => {
       if (signal) signal.removeEventListener('abort', onAbort);
+      if (netFailed) {
+        finish({ ok: false, error: { code: 'SANDBOX_UNAVAILABLE', message: `${netFailed}; nothing ran. Tell the human (Settings → 审批 shows the sandbox).` }, sandboxError: `${netFailed}, so nothing ran. Tell the human: Settings → 审批 shows the sandbox.`, exitCode: null, stdout: '', stderr: '', command, cwd });
+        return;
+      }
       // 1.5.61: bwrap itself refused (a bind it could not make, no user namespaces): nothing ran.
       const bwrapSaid = sandbox && exitCode !== 0 ? (/^bwrap: (.+)$/m.exec(text('stderr')) || [])[1] || '' : '';
       finish({
@@ -818,7 +827,7 @@ export function createRegistry(deps) {
       if (sandbox) {
         result.sandbox = sandbox.mode === 'open'
           ? 'ran in the sandbox: everything as usual except Lamplit\'s own data, which is not visible'
-          : `ran in the sandbox: the system is read-only and only the workspace, the opened folders and a /tmp of your own (kept between your commands) are visible; Lamplit's data, the human's /tmp, screen and login session are not. ${sandbox.screen ? 'A graphical program opens on your own screen.' : 'This machine runs no screen for you, so a graphical program has no display here ("cannot open display").'} Anything else needs the human (ask, or use sudo where allowed).`;
+          : `ran in the sandbox: the system is read-only and only the workspace, the opened folders and a /tmp of your own (kept between your commands) are visible; Lamplit's data, the human's /tmp, screen and login session are not. ${sandbox.net ? `It has a network of its own: the internet works, this machine's local-only ports (127.0.0.1 / localhost: a database, a dev server, Ollama) do not${sandbox.net.proxyPorts?.length ? ` except the proxy on port ${sandbox.net.proxyPorts.join(', ')}` : ''}; a server a command starts is reachable from that same command only. ` : ''}${sandbox.screen ? 'A graphical program opens on your own screen.' : 'This machine runs no screen for you, so a graphical program has no display here ("cannot open display").'} Anything else needs the human (ask, or use sudo where allowed).`;
       }
       return result;
     },

@@ -31,18 +31,46 @@ jobs:
       # The bots' sandbox on Linux (bubblewrap), so its checks run for real instead of being
       # skipped (1.5.60, SECV-6). Ubuntu 24.04 lets no ordinary program make a user namespace
       # unless told; on a throwaway runner that is fine to allow.
+      # 1.5.63: passt (pasta) and slirp4netns for the sandbox's own network, xvfb for the X
+      # abstract-socket checks (SECV-X1, SEC-N63) - so they run instead of being skipped.
       - name: bubblewrap (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap
+          sudo apt-get install -y -qq bubblewrap passt slirp4netns xvfb
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      # 1.5.63: what the sandbox's network depends on, so a failure says more.
+      - name: sandbox diagnostics (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          uname -r
+          bwrap --version || true
+          pasta --version 2>&1 | head -2 || true
+          slirp4netns --version 2>&1 | head -2 || true
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.apparmor_restrict_unprivileged_unconfined user.max_user_namespaces 2>&1 || true
+          ls /etc/apparmor.d | grep -iE 'bwrap|pasta|passt|slirp' || echo "no bwrap/pasta/slirp AppArmor profiles"
+          sudo aa-status 2>/dev/null | grep -iE 'bwrap|pasta|passt|slirp' || true
+          # CI round 3: bwrap inside bwrap, unshare inside bwrap, and whether a helper can join one
+          # bwrap's network with --dev and with a /dev made by hand (what Lamplit does now).
+          sh scripts/ci-sandbox-probe.sh || true
       # check:i18n parses the page with typescript (locally it comes with desktop/).
       - run: npm install --no-save typescript@5.9.3
       - run: npm run check
       - run: npm run check:i18n
       - run: npm run smoke
       - run: npm run smoke:selfupdate
+      # 1.5.63: the sandbox and its own network as on a stock Ubuntu 24.04 that Lamplit set up:
+      # AppArmor's userns restriction back on, with Lamplit's rule for /usr/bin/bwrap (what
+      # checkSandbox / setup-linux.sh write). Reported, not blocking, while it is new. It runs
+      # even when an earlier step failed (round 2 skipped it).
+      - name: sandbox with Ubuntu's AppArmor restriction (Linux)
+        if: always() && runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          sudo sh -c "$(node --input-type=module -e "const m = await import('./src/sandbox.mjs'); console.log(m.apparmorInstallCommand())")"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          sh scripts/ci-sandbox-probe.sh || true
+          node scripts/smoke-sec1563.mjs
 
   audit:
     name: Dependency audit

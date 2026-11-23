@@ -103,8 +103,10 @@ const SKIPPED = new Set([
   'sealing.json', 'browser-downloads',
   // 1.5.61: what Lamplit last wrote in the files that decide what it trusts (F9), its own temporary files and the bots' own /tmp (F8).
   'trust.json', 'trust-sealed.json', 'tmp', 'sandbox-tmp',
-  // A bot screen's VNC password (made new each time someone watches).
+  // A bot screen's VNC password (made new each time someone watches); 1.5.63: wayvnc's socket there too.
   'desktop-vnc',
+  // 1.5.63: the sandbox's own resolv.conf (written again at every command).
+  'sandbox-net',
 ]);
 const SKIPPED_PATTERNS = [/^browser-state-[\w.-]+\.json$/, /^browser-bridge-[\w.-]+\.json$/, /^vnc-secure-/, /^vnc-control-/, /\.tmp$/, /\.partial(-\d+)?$/];
 

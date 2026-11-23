@@ -1,6 +1,6 @@
 /**
  * smoke-secv1560b.mjs - the verifier's attacks on 1.5.60 (section 十二 of its report),
- * taken into the smoke with 1.5.61 (F7 closes N1, F8 closes N5; N2b/N2c wait for F10).
+ * taken into the smoke with 1.5.61 (F7 closes N1, F8 closes N5; N2b/N2c are real checks on Linux since F10, 1.5.63).
  *
  *   N1  (both, needs Chromium) the hub's own browser listens on a loopback debugging port.
  *       A command of a bot (a separate program: on Linux inside the same bwrap sandbox the
@@ -325,12 +325,18 @@ export async function verifyChecks({ check, skip = (n, why) => console.log(`SKIP
   }
   const r2 = run('n2');
   check('SECV-N2a a folder flipping to a link to the data folder: no saved content ever lands there', r2.filesWithContentInData === 0, JSON.stringify(r2));
-  // N2b / N2c: empty files and folders a flipping link can still leave in data/ (low: no content
-  // ever lands there, N2a). Reported, not failed, until F10 (Linux: make them through the held
-  // parent folder's fd) - next batch, not in 1.5.61. Then these two go back to check().
-  const noteF10 = (name, yes, obj) => console.log(`NOTE  ${name}: ${yes ? 'yes' : 'NO'} (F10, next batch)  ${JSON.stringify(obj)}`);
-  noteF10('SECV-N2b ... and no empty file is left there either', r2.emptyFilesLeftInData === 0, r2);
-  noteF10('SECV-N2c ... and no folder is made there', r2.foldersMadeInData === 0, r2);
+  // N2b / N2c: empty files and folders a flipping link could leave in data/ (low: no content
+  // ever lands there, N2a). 1.5.63 (F10): on Linux they are made through the held parent folder
+  // (/proc/self/fd/N/<name>) - real checks there. Windows: accepted (Node cannot make a name
+  // relative to an open folder; an empty file or folder at most) - reported only.
+  if (process.platform === 'linux') {
+    check('SECV-N2b ... and no empty file is left there either (Linux, F10)', r2.emptyFilesLeftInData === 0, JSON.stringify(r2));
+    check('SECV-N2c ... and no folder is made there (Linux, F10)', r2.foldersMadeInData === 0, JSON.stringify(r2));
+  } else {
+    const noteF10 = (name, yes, obj) => console.log(`NOTE  ${name}: ${yes ? 'yes' : 'NO'} (F10: accepted on Windows, empty at most)  ${JSON.stringify(obj)}`);
+    noteF10('SECV-N2b ... and no empty file is left there either', r2.emptyFilesLeftInData === 0, r2);
+    noteF10('SECV-N2c ... and no folder is made there', r2.foldersMadeInData === 0, r2);
+  }
   const r3 = run('n3', { ASSIST_MASTER_KEY: crypto.randomBytes(32).toString('hex') });
   check('SECV-N3a F6 first run with a key: plain key files are sealed and still read, the record is written sealed', r3.a?.mcpReads && r3.a.record && r3.a.recordSealed && r3.a.sealed.includes('mcp.json'), JSON.stringify(r3.a));
   check('SECV-N3b F6 a plain mcp.json planted afterwards: not used, not sealed, listed for 体检', r3.b?.readAs === 'FALLBACK' && r3.b.stillPlain && r3.b.listed, JSON.stringify(r3.b));

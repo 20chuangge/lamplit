@@ -547,3 +547,120 @@ export async function pageChecks({ check, readText }) {
   check('G65-6c messages held a moment (the burst hold) go into a turn that started meanwhile (a hand-off, a routine) instead of a second turn beside it',
     server.includes('const busyThen = !h && state.runtime.busyTurn?.(bot.id, { any: true });') && server.includes("return state.runtime.aside({ botId: bot.id, text: parts.length > 1 ? joinParts(parts) : parts[0]"));
 }
+
+// ---------------------------------------------------------------------------
+// G65-7: every line in the chat list sits in the 760 px chat column, with its own indent
+// ---------------------------------------------------------------------------
+/** The CSS rules (selector, body) of a stylesheet, flattened out of @media blocks, in file order. */
+function cssRules(css) {
+  const out = [];
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const walk = (text, media) => {
+    let i = 0;
+    while (i < text.length) {
+      const open = text.indexOf('{', i);
+      if (open < 0) break;
+      const head = text.slice(i, open).trim();
+      let depth = 1;
+      let j = open + 1;
+      for (; j < text.length && depth; j += 1) { if (text[j] === '{') depth += 1; else if (text[j] === '}') depth -= 1; }
+      const body = text.slice(open + 1, j - 1);
+      if (head.startsWith('@media')) walk(body, head);
+      else if (!head.startsWith('@')) out.push({ selector: head, body, media });
+      i = j;
+    }
+  };
+  walk(src, '');
+  return out;
+}
+
+export async function columnChecks({ check, readText, browserMod, toolsMod, skip }) {
+  const css = await readText('../public/app/style.css');
+  const rules = cssRules(css);
+  const onList = rules.filter((r) => r.selector.split(',').some((s) => s.trim() === '.messages'));
+  const padders = onList.filter((r) => /(^|;)\s*padding(-left|-right)?\s*:/.test(r.body));
+  const last = padders[padders.length - 1];
+  check('G65-7a the chat column is the list\'s own side padding - max(the layout\'s padding, half of what is left beside 760 px) - in the last rule that sets the list\'s padding, so it wins at every width',
+    Boolean(last) && !last.media && /--chat-col:\s*760px/.test(last.body)
+    && last.body.includes('padding-left: max(var(--msg-pad, 24px), calc((100% - var(--chat-col)) / 2))')
+    && last.body.includes('padding-right: max(var(--msg-pad, 24px), calc((100% - var(--chat-col)) / 2))'), last?.body);
+  const missing = padders.slice(0, -1).filter((r) => !/--msg-pad\s*:/.test(r.body));
+  check('G65-7b every layout that sets the list\'s side padding (wide, ≤1100, phone ≤860, ≤420) gives it as --msg-pad too, so the narrow paddings still hold',
+    padders.length >= 8 && missing.length === 0, JSON.stringify(missing.map((r) => `${r.media} ${r.body.trim().slice(0, 60)}`)));
+  // A line of the list must never be pulled back out to the edge (a negative side margin, or absolute placing).
+  const children = rules.filter((r) => /\.messages\s*>/.test(r.selector));
+  const outward = children.filter((r) => /margin(-left|-right)?\s*:[^;]*-\d/.test(r.body) || /position\s*:\s*(absolute|fixed)/.test(r.body));
+  check('G65-7c no rule for the list\'s lines pulls one out of the column (negative side margin, absolute or fixed): nothing in the chat is meant to span the full width',
+    outward.length === 0, JSON.stringify(outward.map((r) => r.selector)));
+
+  // Rendered: the real stylesheet, a chat list with every kind of line the page puts there - and one it does not know.
+  const savedChrome = process.env.CHROME_PATH;
+  delete process.env.CHROME_PATH;
+  const found = browserMod.detectBrowserExecutable().path;
+  if (savedChrome !== undefined) process.env.CHROME_PATH = savedChrome;
+  if (!found) { skip('G65-7d..e (a real browser)', 'no Chromium-based browser on this machine'); return; }
+  const LINES = [
+    ['row', '<div class="bubble">一条回复</div>'],
+    ['row user', '<div class="bubble">你说的话</div>'],
+    ['next-steps', '<button class="next-step first">好</button><button class="next-step">先不用</button>'],
+    ['changes-line', '<span>改了 2 个文件</span>'],
+    ['video-jobs', '<div class="video-job">视频生成中</div>'],
+    ['status-line queued-line', '<span>等那台机器开机</span>'],
+    ['status-line link-down-line', '<span>连不上</span>'],
+    ['status-line pair-needed-line', '<span>还没配对</span>'],
+    ['status-line upload-progress', '正在传 0/3…'],
+    ['onboard', '<h2>先接一个模型</h2>'],
+    ['starter-row', '<button class="btn">试试这些</button>'],
+    ['starter-tip', '找不到合适的就问助理'],
+    ['day-sep', '11月23日周一 18:30'],
+    ['routine-run', '<div class="routine-run-line">定时任务</div>'],
+    ['isolation-ask', '<b>给机器人一个单独的账户？</b>'],
+    ['typing-row', '<span class="typing-label">正在处理…</span>'],
+    ['g65-a-new-kind-of-line', '以后新加的一种行'],
+  ];
+  const list = LINES.map(([cls, html]) => `<div class="${cls}" data-k="${cls}">${html}</div>`).join('')
+    + '<details class="chip" data-k="chip"><summary>工具</summary></details><details class="handoff-line" data-k="handoff-line"><summary>主理人 → 发布</summary></details>';
+  const pane = (w) => `<div class="pane" style="width:${w}px;height:1600px;display:flex;flex-direction:column"><div class="messages" style="overflow:visible">${list}</div></div>`;
+  const PAGE = `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/style.css"></head><body style="margin:0">${pane(1400)}${pane(800)}${pane(560)}</body></html>`;
+  const http = await import('node:http');
+  const server = http.createServer((req, res) => {
+    if (req.url === '/style.css') { res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }); res.end(css); return; }
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(PAGE);
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'lamplit-g65col-'));
+  const saved = { chrome: process.env.CHROME_PATH, headless: process.env.BROWSER_HEADLESS, priv: process.env.ALLOW_PRIVATE };
+  process.env.BROWSER_HEADLESS = '1';
+  process.env.ALLOW_PRIVATE = '1'; // the test page is on loopback
+  delete process.env.CHROME_PATH;
+  const registry = toolsMod.createRegistry({ workspaceDir: ws, config: {} });
+  const ctx = { workspaceDir: ws, bot: { id: 'g65column' }, turnId: 'g65-column' };
+  const run = (name, args = {}) => registry.get(name).run(args, ctx);
+  try {
+    await run('browser_open', { url: `http://127.0.0.1:${server.address().port}/` });
+    const measure = `(() => ({ phone: matchMedia('(max-width: 860px)').matches, vw: innerWidth, panes: [...document.querySelectorAll('.messages')].map((m) => {
+      const r = m.getBoundingClientRect(); const s = getComputedStyle(m);
+      const left = r.left + parseFloat(s.paddingLeft); const right = r.right - parseFloat(s.paddingRight);
+      return { width: Math.round(r.width), col: Math.round(right - left), lines: [...m.children].map((c) => { const b = c.getBoundingClientRect(); return { k: c.dataset.k, l: Math.round(b.left - left), r: Math.round(right - b.right), w: Math.round(b.width) }; }) };
+    }) }))()`;
+    let got = null;
+    await until(async () => { got = (await browserMod.getBrowserManager('g65column').evaluateRaw(measure)).value; return got?.panes?.length === 3 && got.panes[0].col > 0; }, 8000);
+    const [wide, mid, narrow] = got?.panes || [];
+    // The avatar indent of 「好」「先不用」: 46 px, none in the phone layout (≤860 px, its own rule) - whichever this browser window is.
+    const indent = got?.phone ? 0 : 46;
+    const out = (p) => (p?.lines || []).filter((x) => x.l < -1 || x.r < -1);
+    const at = (p, k) => p?.lines?.find((x) => x.k === k);
+    check('G65-7d rendered with the real stylesheet in a wide window (1400 px): the column is 760 px in the middle, and every line - replies, 「好」「先不用」, 「改了 N 个文件」, video jobs, waiting / link-down / pair / upload lines, the first-run card, 「试试这些」 and its tip, day markers, a scheduled run, the account card, the typing line, a tool chip, a hand-off line, and a kind of line the page does not have yet - starts and ends inside it',
+      wide?.col >= 750 && wide.col <= 760 && out(wide).length === 0 && at(wide, 'g65-a-new-kind-of-line')?.l === 0 && at(wide, 'next-steps')?.l === indent && at(wide, 'changes-line')?.l === 44 && at(wide, 'row')?.w === wide.col,
+      JSON.stringify({ vw: got?.vw, phone: got?.phone, col: wide?.col, out: out(wide), next: at(wide, 'next-steps'), unknown: at(wide, 'g65-a-new-kind-of-line') }));
+    check('G65-7e in a narrower window (800 / 560 px) the column is the list minus its own padding, every line still inside it, and 「好」「先不用」 keep their 46 px avatar indent inside it (the phone layout, ≤860 px, drops it by its own rule)',
+      mid?.col > 700 && mid.col <= 760 && out(mid).length === 0 && narrow?.col < 560 && out(narrow).length === 0 && at(mid, 'next-steps')?.l === indent && at(narrow, 'next-steps')?.l === indent
+      && /@media \(max-width: 860px\) \{ \.next-steps \{ margin-left: 0; \}/.test(css),
+      JSON.stringify({ vw: got?.vw, phone: got?.phone, mid: { col: mid?.col, out: out(mid) }, narrow: { col: narrow?.col, out: out(narrow) } }));
+  } finally {
+    await run('browser_close').catch(() => {});
+    server.close();
+    for (const [k, v] of [['CHROME_PATH', saved.chrome], ['BROWSER_HEADLESS', saved.headless], ['ALLOW_PRIVATE', saved.priv]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+}

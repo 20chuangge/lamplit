@@ -275,6 +275,7 @@ async function main() {
     await stage('1.5.65: a hand-off\'s sender in a remote bot\'s chat by name and face', async () => (await import('./smoke-group-1565.mjs')).remoteSenderChecks({ check, readText, api, rawFetch, startServerChild, stopProcess, seedHome }));
     await stage('1.5.65: the coordinator asks for nothing the human did not', async () => (await import('./smoke-group-1565.mjs')).scopeChecks({ check, readText }));
     await stage('1.5.65: the page draws the board and the line at once; held messages go into a turn that started meanwhile', async () => (await import('./smoke-group-1565.mjs')).pageChecks({ check, readText }));
+    await stage('1.5.65: every line of the chat sits in the 760 px column, with its own indent', async () => (await import('./smoke-group-1565.mjs')).columnChecks({ check, readText, browserMod, toolsMod, skip }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });

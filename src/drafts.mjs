@@ -154,6 +154,67 @@ export function outgoingAsk(name, args = {}, { mcp = null } = {}) {
   return '';
 }
 
+/**
+ * File hosts where anyone with the link can see what was put there (1.5.65: 11-23, 发布 tried seven of them
+ * in two minutes). The card says so in words.
+ */
+const PUBLIC_FILE_HOSTS = /(^|\.)(tmpfiles\.org|litterbox\.catbox\.moe|catbox\.moe|uguu\.se|0x0\.st|x0\.at|envs\.sh|transfer\.sh|file\.io|pixeldrain\.com|oshi\.at|filebin\.net|termbin\.com|temp\.sh|tmp\.ninja|bashupload\.com|gofile\.io|wetransfer\.com|send\.vis\.ee)$/i;
+/**
+ * The web sends (curl / wget / PowerShell's web calls / .NET's WebClient, and Python's requests-style posts):
+ * the only sends whose destination is read here - their address is written on the line. Every other kind
+ * of send in COMMAND_SENDS (mail, sockets, ssh, git push, DNS, cloud copies, hidden options…) is not.
+ */
+const WEB_SENDS = COMMAND_SENDS.slice(0, 4);
+const PY_WEB_SEND = /\b(requests|httpx|aiohttp|session|axios)\.(post|put|patch)\s*\(/i;
+const MAIL_IN_CODE = /\b(smtplib|nodemailer)\b|Send-MailMessage/i;
+
+/**
+ * Where a send goes and what leaves (1.5.65, approved by destination): {hosts, files, images, data, public, text},
+ * or null when it cannot be read from the step itself - a program named through a variable, options out of sight,
+ * a proxy, an encoded script, a part of the line that sends with no address of its own, mail, ssh, sockets…
+ * Those keep asking every time. Only web sends (curl, wget, PowerShell's web calls, http_fetch, Python's
+ * requests…) with every address written out are read.
+ */
+export function sendDestination(name, args = {}) {
+  const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
+  if (name === 'http_fetch') {
+    const host = hostOf(args?.url);
+    if (!host || onlyLocal(args?.url)) return null;
+    return describe([host], { data: true });
+  }
+  if (name !== 'shell') return null;
+  const raw = String(args?.command || '');
+  const command = unescapedCommand(raw);
+  if (!outgoingAsk('shell', { command: raw })) return null;
+  if (VIA_VARIABLE.test(command) || VIA_VARIABLE.test(raw) || HIDDEN.test(raw) || REDIRECTED.test(raw) || encodedScript(command) !== null) return null;
+  // Every part of the line that sends is a web send naming its own address (no `curl -F @f "$u"` beside
+  // a written one, no mail or socket next to it).
+  const parts = command.split(/;|&&|\|\||\n|\r|(?<!\|)\|(?!\|)|\bdo\b|\bthen\b/);
+  const hosts = new Set();
+  for (const part of parts) {
+    const sends = COMMAND_SENDS.some((re) => re.test(part)) || PY_WEB_SEND.test(part);
+    if (!sends) continue;
+    const web = WEB_SENDS.some((re) => re.test(part)) || PY_WEB_SEND.test(part);
+    const otherWay = COMMAND_SENDS.some((re) => !WEB_SENDS.includes(re) && re !== COMMAND_SENDS[5] && re.test(part)) || MAIL_IN_CODE.test(part);
+    if (!web || otherWay) return null;
+    const urls = (part.match(/https?:\/\/[^\s'"`)]+/gi) || []).filter((u) => !LOCAL_URL.test(u));
+    if (!urls.length) return null;
+    for (const u of urls) { const h = hostOf(u); if (!h) return null; hosts.add(h); }
+  }
+  if (!hosts.size) return null;
+  const files = [...command.matchAll(/(?:=@|\s-T\s*|--upload-file[=\s]+|--data-binary[=\s]+@|--post-file[=\s]+|--body-file[=\s]+)["']?([^\s"';|&]+)/g)].map((m) => m[1]);
+  return describe([...hosts], { files, data: !files.length });
+}
+
+function describe(hosts, { files = [], data = false } = {}) {
+  const images = files.filter((f) => /\.(png|jpe?g|gif|webp|heic|bmp)$/i.test(f)).length;
+  const isPublic = hosts.every((h) => PUBLIC_FILE_HOSTS.test(h));
+  const where = hosts.join('、');
+  const what = files.length ? (images === files.length ? `这 ${files.length} 张图` : `这 ${files.length} 个文件`) : '一段数据';
+  const text = `要把${what}${files.length ? '传到' : '发到'} ${where}${isPublic ? '，谁有链接都能看' : '，发过去以后就在那边了'}`;
+  return { hosts, files: files.length, images, data: Boolean(data && !files.length), public: isPublic, text };
+}
+
 function getPath(obj, key) {
   const [p, inner] = String(key).split('#');
   let v = obj;

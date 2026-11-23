@@ -406,7 +406,7 @@
 
   .messages {
     flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
-    padding: var(--s5) var(--s5) var(--s3);
+    padding: var(--s5) var(--s5) var(--s3); --msg-pad: var(--s5);
     display: flex; flex-direction: column; gap: var(--s4);
     -webkit-overflow-scrolling: touch;
   }
@@ -1571,7 +1571,7 @@
      --------------------------------------------------------------------- */
   @media (max-width: 1100px) {
     .main { grid-template-columns: clamp(232px, 19vw, 272px) minmax(0, 1fr) clamp(276px, 26vw, 330px); }
-    .messages { padding-left: var(--s4); padding-right: var(--s4); }
+    .messages { padding-left: var(--s4); padding-right: var(--s4); --msg-pad: var(--s4); }
     .composer { padding-left: var(--s4); padding-right: var(--s4); }
     .notice { margin-left: var(--s4); margin-right: var(--s4); }
     .chat-head { padding-left: var(--s4); padding-right: var(--s4); }
@@ -1866,7 +1866,7 @@
     /* home-screen app: iOS frosts a band under the clock; keep a little air below it */
     html.ios-standalone .chat-head { padding-top: calc(var(--s2) + var(--safe-t) + 14px); min-height: calc(70px + var(--safe-t)); }
     .chat-head .sub { max-width: 52vw; }
-    .messages { padding: var(--s4) var(--s4) var(--s2); gap: var(--s3); }
+    .messages { padding: var(--s4) var(--s4) var(--s2); gap: var(--s3); --msg-pad: var(--s4); }
     .composer { padding: var(--s2) var(--s4) calc(var(--s3) + var(--safe-b)); }
     .notice { margin: 0 var(--s4) var(--s2); }
     .composer-hint { display: none; }
@@ -1936,7 +1936,7 @@
   }
 
   @media (max-width: 420px) {
-    .messages { padding-left: var(--s3); padding-right: var(--s3); }
+    .messages { padding-left: var(--s3); padding-right: var(--s3); --msg-pad: var(--s3); }
     .composer { padding-left: var(--s3); padding-right: var(--s3); }
     .notice { margin-left: var(--s3); margin-right: var(--s3); }
     .chat-head { padding-left: var(--s3); padding-right: var(--s3); }
@@ -2358,19 +2358,16 @@
   /* conversation ------------------------------------------------------- */
   .messages {
     padding: 26px 24px 10px; gap: 18px;
-    scroll-behavior: smooth;
+    scroll-behavior: smooth; --msg-pad: 24px;
   }
+  /* The 760 px chat column is the list's own side padding (1.5.65, see the end of this file): every
+     line put in .messages sits in it, with its own indent. These rows only fill it. */
   .messages > .row,
   .messages > .chip,
   .messages > .approval,
   .messages > .status-line,
-  .messages > .typing-row {
-    width: 100%; max-width: 760px; margin-left: auto; margin-right: auto;
-  }
-  /* A turn's 「改了 N 个文件」 on a line of its own sits in the chat column too, under the replies (1.5.64). */
-  .messages > .changes-line {
-    box-sizing: border-box; width: 100%; max-width: 760px; margin-left: auto; margin-right: auto; padding-left: 44px;
-  }
+  .messages > .typing-row { width: 100%; }
+  /* A turn's 「改了 N 个文件」 on a line of its own (1.5.64) keeps its own 44 px indent (.changes-line). */
   .messages > .empty { margin: auto; }
   .day-sep { color: var(--dim); font-size: var(--t-xs); font-weight: 400; margin: 2px 0; }
   .row { gap: 0; }
@@ -2745,7 +2742,7 @@
     .chat-head-actions { gap: 2px; }
     .pill.soft { display: none; }
 
-    .messages { padding: 16px 14px 6px; gap: 14px; }
+    .messages { padding: 16px 14px 6px; gap: 14px; --msg-pad: 14px; }
     .row.user .bubble { max-width: 88%; }
     .empty { padding: 8px 2px 20px; }
     .empty h2 { font-size: var(--t-2xl); }
@@ -2782,7 +2779,7 @@
     .dsec { padding-bottom: 20px; margin-bottom: 20px; }
   }
   @media (max-width: 420px) {
-    .messages { padding-left: 12px; padding-right: 12px; }
+    .messages { padding-left: 12px; padding-right: 12px; --msg-pad: 12px; }
     .composer { padding-left: 10px; padding-right: 10px; }
     .chat-head .sub { display: none; }
   }
@@ -3339,7 +3336,7 @@
     .chat-head { min-height: 56px; padding: 8px 12px 8px 16px; border-bottom: 0; }
     .chat-head .title { font-size: var(--t-xl); font-weight: 600; letter-spacing: -0.01em; }
     .chat-head .sub { font-size: var(--t-xs); color: var(--muted); }
-    .messages { padding-left: 20px; padding-right: 20px; }
+    .messages { padding-left: 20px; padding-right: 20px; --msg-pad: 20px; }
     .row.user .bubble,
     html[data-theme="light"] .row.user .bubble {
       background: var(--bubble-user); color: var(--bubble-user-text); border: 0;
@@ -4066,3 +4063,17 @@ html[data-theme="light"] .group.remote.off { opacity: 0.75; }
 .remembered-all { display: grid; gap: 14px; margin: 4px 0 2px; }
 .remembered-all .be-allowed { margin-top: 0; }
 .remembered-all .be-allowed-title { font-weight: 600; color: var(--text); }
+
+/* The chat column (1.5.65). Everything put in the chat list - replies, cards, the next-step buttons,
+   「改了 N 个文件」, video jobs, waiting lines, the first-run card, 「试试这些」, day markers, the
+   empty state, the typing line - sits in one centred column of --chat-col, with its own indent
+   (the 46 px avatar offset) inside it. The column is the list's side padding, not a list of classes,
+   so a new kind of line cannot end up at the far left of a wide window (1.5.64: the changes line;
+   1.5.65: 「好」「先不用」 in another machine's chat). --msg-pad is the narrow-window padding each
+   layout above sets. Last in the file so it wins at every width. Nothing in the list spans the full
+   width on purpose; such a line would need a rule of its own here. */
+.messages {
+  --chat-col: 760px;
+  padding-left: max(var(--msg-pad, 24px), calc((100% - var(--chat-col)) / 2));
+  padding-right: max(var(--msg-pad, 24px), calc((100% - var(--chat-col)) / 2));
+}

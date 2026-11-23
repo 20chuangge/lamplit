@@ -38,7 +38,7 @@ import { checkBoundary, DEVTOOLS, lookOnly } from './boundary.mjs';
 import { sandboxStatus } from './sandbox.mjs';
 import { PHONE_KIND_LABEL } from './phone.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
-import { draftFor, applyEdits, fieldValue as getField, outgoingAsk, rememberMayCover } from './drafts.mjs';
+import { draftFor, applyEdits, fieldValue as getField, outgoingAsk, rememberMayCover, sendDestination } from './drafts.mjs';
 import { historyStart } from './groups.mjs';
 import { explainModelError } from './modelerrors.mjs';
 import { noteUsage, overBudget, allowMore } from './usage.mjs';
@@ -135,6 +135,9 @@ function renderGroupSection(bot, group, groupRole) {
     lines.push(
       `You speak first when nobody was @mentioned. Questions and progress checks ("how is everyone doing"): answer only your own part in a line or two, then @mention each member who should answer, using the exact name (${others}). Every member you @mention answers right after you, in the group. Do not answer for them.`,
       'Real work (something to make, research, fix or produce) whose parts match the members\' roles: do NOT do their parts yourself. Call group_plan first: split it into tasks with an owner each (by role), a self-contained brief, the deliverable, and the order (needs). The runtime then starts every member on its task - in parallel where possible - and asks you to put the results together. Only when the whole job is one small step that splitting would slow down, do it yourself and say in one line why you did not split it.',
+      'Work you hand a member with bot_message or bot_pass goes on the group\'s 任务板 by itself (one row per member), and the human is told in one line who does what next: do not announce it again.',
+      // 1.5.65 (11-23, twice): 文案 re-made 21 per-platform copy files nobody asked for; the human had said to copy 《发布文案.md》 word for word.
+      'Only what the human asked for: do not have members make extra deliverables (per-platform versions, rewrites, extra copies, summaries, reports) the human did not ask for. When the human gave material to use (a copy file, pictures, a video, a script), the members use it as given - word for word when the human said so - and do not remake it. If something more seems needed, ask the human in one line first.',
     );
   } else if (groupRole === 'task') {
     lines.push(
@@ -527,8 +530,97 @@ export function asksSomething(text) {
 }
 /** Said to the model when a scheduled task runs (1.5.33; demo mode keys off it too). */
 export const ROUTINE_TURN_LINE = 'This turn runs one of your scheduled tasks (a routine): do what its instruction says.';
-// Turns that wait while their bot is busy (1.2.161): hand-offs, routines, continuations.
-const QUEUED_SOURCES = new Set(['bot', 'routine', 'task']);
+/**
+ * One bot does one piece of work at a time (1.2.161; 1.5.65 for every way in). A "working" turn
+ * uses the bot's own browser, files and phone: its chat, a hand-off, a routine, a continuation,
+ * a group board task or a group member's hand-off. A group coordinator's or @mentioned member's
+ * turn speaks in the group and is not one (it waits on members, who must be able to start).
+ * 11-23: 主理人 handed 发布 a second job from the group while 发布 was publishing to 知乎; the two
+ * turns took turns driving one browser and the second one published without the human's choice.
+ */
+export function isWorkingTurn({ group = null, groupRole = 'coordinator', kickoff = false } = {}) {
+  if (kickoff) return false;
+  return !(group?.id && (groupRole === 'coordinator' || groupRole === 'speaker'));
+}
+/** A turn in progress that is working (above); one recorded before 1.5.65 counts unless it is a group's. */
+export const isWorkingInfo = (info) => !info?.remote && (info?.working ?? !info?.group);
+/** The human typing to the bot: their words reach a running turn (aside) instead of waiting behind it. */
+export const HUMAN_SOURCES = new Set(['chat', 'feishu']);
+/** How long a queued turn waits for its bot: a teammate waiting for the reply gives up sooner. */
+export const QUEUE_WAIT_MS = 30 * 60 * 1000;
+export const QUEUE_PASS_MS = 3 * 60 * 60 * 1000;
+/** A question to the human that is still open counts for this long (then a new job may go on). */
+export const PENDING_HUMAN_MS = 24 * 60 * 60 * 1000;
+/** The same post shown twice in this window gets the first answer, not a second card (1.5.65). */
+export const SAME_POST_MS = 6 * 60 * 60 * 1000;
+
+/** What the human still has to answer, said to a turn the human did not start (1.5.65). */
+export function pendingNote(p, now = Date.now()) {
+  if (!p) return '';
+  const what = p.kind === 'takeover' || p.kind === 'login' ? '接管屏幕（扫码或登录）' : p.kind === 'approval' ? `确认「${p.tool || '一步操作'}」` : '拍板';
+  const mins = Math.max(1, Math.round((now - p.at) / 60000));
+  return [
+    `（系统：你上一件事停在等用户${what}，${mins} 分钟前问的，用户还没有回答：「${String(p.text || '').slice(0, 400)}」`,
+    '这个决定只能由用户来做。这一轮不要替他选，也不要做要等这个决定之后才能做的那一步（选选项、点发布或提交、发出去）。',
+    '这次交来的事如果碰到同一件事：只把能做的准备好，然后回复交来的人「在等用户的决定，他回了就接着做」，不要再弹一次同样的问题。和那件事无关的部分照常做。）',
+  ].join('\n');
+}
+
+/** A teammate's instructions vs what the human told this bot directly: the human wins (1.5.65). */
+export const HUMAN_FIRST_NOTE = '（同事交来的话如果和用户直接对你说过的话冲突（例如用户说过「先跳过」某一步），以用户的话为准，照用户的来，并在回复里告诉交来的人你为什么没照它说的做。）';
+
+/**
+ * Did a send to the outside fail (1.5.65)? The step failed or timed out, the program exited with an error, or
+ * what came back says so - an error page, 「uploads disabled」, a 4xx/5xx - or nothing came back at all
+ * (lines the command printed itself, like 「--catbox--」, do not count). A plain rule, not a judgment.
+ */
+export function sendFailed(ok, result) {
+  if (!ok || !result || typeof result !== 'object') return true;
+  if (result.error || result.timedOut || (typeof result.exitCode === 'number' && result.exitCode !== 0)) return true;
+  if (typeof result.status === 'number' && result.status >= 400) return true;
+  const out = String(result.stdout ?? result.body ?? result.text ?? '');
+  if (/\b[45]\d\d\b|bad gateway|service unavailable|error|disabled|forbidden|denied|not allowed|too large|rate limit|<!doctype|<html/i.test(out)) return true;
+  const said = out.split('\n').filter((l) => l.trim() && !/^\s*(--+|==+).*(--+|==+)\s*$/.test(l)).join('\n').trim();
+  return !said;
+}
+/** What the bot is told after the second failed send in a turn (1.5.65). */
+export const STOP_SENDS_NOTE = '往外发东西这一轮已经失败两次了。不要再换别的网站或服务去试：现在停下，用 tell_human 告诉用户哪里失败了（试了哪些地方、各自的错误），问他要怎么办（换个办法、他自己来传、或者先不做）。Sending out has failed twice in this turn: do not try other services - stop, and tell the human with tell_human what failed and ask how to go on.';
+
+/** A post's channel however it is written: 「知乎（视频）」 = 「知乎」 = 「知乎 」 (1.5.65). */
+export function channelKey(channel) {
+  return String(channel || '').replace(/[（(【\[][^）)】\]]*[）)】\]]/g, '').replace(/[\s·・\-_/]+/g, '').toLowerCase();
+}
+
+/** One post, however its channel is written (「知乎（视频）」 = 「知乎」) - for one card per post. */
+export function postKey(botId, args = {}) {
+  const flat = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const channel = channelKey(args.channel);
+  return `${botId}\u0001${channel}\u0001${flat(args.title)}\u0001${flat(args.body)}`;
+}
+
+/** A board row's title from a hand-off: its first real line, short. */
+export function handoffTitle(text) {
+  const line = String(text || '').split('\n').map((l) => l.replace(/^\s*(?:[>#*-]+|\d+\s*[.)、）])\s*/, '').trim()).find((l) => l.length >= 2) || '交来的事';
+  const cut = line.split(/[。！？!?；;]/)[0].replace(/[：:，,、\s]+$/, '') || line;
+  return cut.length > 40 ? `${cut.slice(0, 40)}…` : cut;
+}
+
+/** What the human will be asked for along the way, from the hand-off's own words. */
+export function humanPartOf(text) {
+  const t = String(text || '');
+  const parts = [];
+  if (/扫码|登录|登陆|接管/.test(t)) parts.push('要登录时会弹「接管屏幕」请你扫码');
+  if (/post_draft|草稿|确认|拍板|过目|发布前|发之前|点「?发布/.test(t)) parts.push('发出去之前会先把草稿给你确认');
+  return parts.length ? `中间${parts.join('，')}。` : '中间要你定的事会在这里问你。';
+}
+
+/** The coordinator's one line to the human when it gives work out (1.5.65): who does what next, and the human's part. */
+export function handoffReply(rows) {
+  const list = rows.filter(Boolean);
+  if (!list.length) return '';
+  const who = list.map((r) => `「${r.name}」${r.title}`).join('；');
+  return `好，交给${who}。进度在任务板上，做完我在群里告诉你。${humanPartOf(list.map((r) => r.text).join('\n'))}`;
+}
 const groupToolSchemas = (names) => names.map((n) => ({ type: 'function', function: { name: GROUP_TOOLS[n].name, description: GROUP_TOOLS[n].description, parameters: GROUP_TOOLS[n].parameters } }));
 
 /**
@@ -735,6 +827,65 @@ export class AgentRuntime {
     return false;
   }
 
+  /** The bot's working turn in progress (its chat, a hand-off, a board task - not a group coordinator's talk), or null (1.5.65). */
+  workingTurn(botId) {
+    for (const [turnId, info] of this.active) if (info.botId === botId && isWorkingInfo(info)) return { turnId, ...info };
+    return null;
+  }
+
+  /** A question to the human this bot left open (tell_human, a takeover, a card), while it still counts. */
+  pendingFor(botId, now = Date.now()) {
+    const p = this.pendingHuman?.get(botId);
+    if (p && now - p.at > PENDING_HUMAN_MS) { this.pendingHuman.delete(botId); return null; }
+    return p || null;
+  }
+
+  /** The human spoke to the bot: whatever it asked them is answered (or moved past). */
+  humanSpoke(botId) {
+    return Boolean(botId && this.pendingHuman?.delete(botId));
+  }
+
+  /**
+   * The human answered a card (1.5.65): only the card the open question is about closes it - the one
+   * a scheduled run stopped on. -> true when it closed it. (The card's answer is the human speaking.)
+   */
+  humanAnswered(botId, { turnId = null } = {}) {
+    const p = this.pendingHuman?.get(botId);
+    if (!p || (turnId && p.turnId !== turnId)) return false;
+    return this.humanSpoke(botId);
+  }
+
+  // ---- 1.5.65 「这一轮都允许」: an answer for the rest of one turn chain, never for another bot or a later turn ----
+
+  /** The human said 这一轮都允许 on a card: the same kind of step (or the same destination) runs unasked in this chain. */
+  grantChain(chainId, botId, offer) {
+    if (!chainId || !offer?.keys?.length) return;
+    this.chainGrants = this.chainGrants || new Map();
+    let g = this.chainGrants.get(chainId);
+    if (!g || g.botId !== botId) { g = { botId, keys: new Map() }; this.chainGrants.set(chainId, g); }
+    for (const k of offer.keys) g.keys.set(String(k), String(offer.label || k));
+  }
+
+  /** Does this chain's answer cover every key of this step (a send to two hosts needs both)? */
+  chainCovers(chainId, botId, keys = []) {
+    const g = chainId ? this.chainGrants?.get(chainId) : null;
+    return Boolean(g && g.botId === botId && keys.length && keys.every((k) => g.keys.has(String(k))));
+  }
+
+  endChain(chainId) {
+    this.chainGrants?.delete(chainId);
+  }
+
+  /** A chain cut off by the step limit that nothing goes on with ends after a while anyway. */
+  expireChainLater(chainId, botId) {
+    const t = setTimeout(() => {
+      if ([...this.active.values()].some((i) => i.chainId === chainId)) return;
+      this.endChain(chainId);
+      if (this.chainNext?.get(botId) === chainId) this.chainNext.delete(botId);
+    }, this.chainGraceMs ?? 10 * 60 * 1000);
+    t.unref?.();
+  }
+
   /** The claimed turn has started (or will not): the bot counts as busy by its turn alone. */
   releaseClaim(botId) {
     this.claims?.delete(botId);
@@ -779,10 +930,17 @@ export class AgentRuntime {
    * any depth. In the bot's chat, on the phone (human.notice), in Feishu, and
    * the sidebar shows "需要你拍板" once the turn ends.
    */
-  async tellHuman({ bot, turnId, text }) {
+  async tellHuman({ bot, turnId, text, blocking = true }) {
     const said = String(text || '').trim().slice(0, 2000);
     const live = this.active.get(turnId);
-    if (live) live.waitingFor = 'decision';
+    // A question something waits on (1.5.65; the collaboration eval, s2: asked about the CV, then applied twice
+    // without an answer): open from now on - not only when the turn ends - so nothing goes out meanwhile, in this
+    // turn or a later one, until the human answers. blocking: false is an FYI that nothing sent depends on.
+    if (live && blocking) live.waitingFor = 'decision';
+    if (blocking && isWorkingInfo(live || {})) {
+      this.pendingHuman = this.pendingHuman || new Map();
+      this.pendingHuman.set(bot.id, { kind: 'decision', text: said, turnId, at: Date.now() });
+    }
     // What to decide, for the strip on top of the chat (1.2.165).
     if (live) live.waitingText = said;
     const note = `【需要你拍板】${said}`;
@@ -794,7 +952,7 @@ export class AgentRuntime {
     try {
       if (typeof this.pushOut === 'function') feishu = Number(await this.pushOut(`【${bot.name}·需要你拍板】\n${said}`)) > 0;
     } catch { /* Feishu not connected or down: the chat and the phone still have it */ }
-    return { told: true, feishu, note: 'The human has been told (chat, phone, Feishu if connected). Finish your turn; do not wait for the answer here.' };
+    return { told: true, feishu, ...(blocking ? { blocking: true } : {}), note: blocking ? 'The human has been told (chat, phone, Feishu if connected). Nothing goes out until they answer (drafts, posts, uploads, forms are refused meanwhile). Finish your turn; do not wait for the answer here.' : 'The human has been told (chat, phone, Feishu if connected); you may go on meanwhile.' };
   }
 
   /**
@@ -878,7 +1036,9 @@ export class AgentRuntime {
    */
   busyTurn(botId, { any = false } = {}) {
     for (const [turnId, info] of this.active) {
-      if (info.botId !== botId || info.group) continue;
+      // 1.5.65: a board task or a member's hand-off from the group is work on this bot's browser too -
+      // the human's word goes into it instead of starting a second turn beside it.
+      if (info.botId !== botId || !isWorkingInfo(info)) continue;
       if (any || (!info.depth && !info.unattended)) return { turnId, ...info };
     }
     return null;
@@ -922,6 +1082,9 @@ export class AgentRuntime {
    */
   async routeGroupMessage({ group, text, turnId, parts = null, fromHuman = false, files = false, held: wasHeld = false }) {
     const fail = (err) => this.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message });
+    // The human spoke in the group: a question a member left open is answered here or moved past (1.5.65).
+    // Once per message, before it is held a moment (the held call comes back here with held: true).
+    if (fromHuman && !wasHeld) for (const m of group.members || []) if (!m.remote) this.humanSpoke?.(m.id);
     // The board runs (1.5.64; 11-23: cover 5 went to 发布, 画师 kept making it for 10 minutes):
     // the coordinator hears it and may stop or redirect a step - not whichever member is busy.
     const plan = this.groups ? await this.groupPlan(group.id).catch(() => null) : null;
@@ -1004,6 +1167,9 @@ export class AgentRuntime {
     for (const p of said) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: p, turnId });
     plan.updates = [...(plan.updates || []), ...said.map((p) => ({ ts: nowIso(), text: String(p).slice(0, 2000) }))].slice(-12);
     await this.boardChanged(plan);
+    // The coordinator's own turn is still going (a hand-off board, 1.5.65): it reads them before its next step too.
+    const lead = [...this.active.values()].find((i) => i.groupId === group.id && i.botId === plan.coordinatorId && !i.remote && !i.working);
+    if (lead) for (const p of said) lead.inbox.push(String(p));
     const fail = (err) => this.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message });
     for (const p of said) this.ackLater(`plan:${plan.id}`, p, (texts) => this.reviewPlan({ group, plan, texts, turnId }).catch(fail));
     return { turnId, plan: true };
@@ -1018,7 +1184,8 @@ export class AgentRuntime {
     const stateWords = { todo: '还没开始', doing: '正在做', waiting_human: '等用户回复', done: '做完了', failed: '没做成', skipped: '跳过了', stopped: '停了' };
     const board = plan.tasks.map((t, i) => {
       const since = t.status === 'doing' && t.startedAt ? `，已经 ${Math.max(1, Math.round((now - Date.parse(t.startedAt)) / 1000))} 秒` : '';
-      return `${i + 1}. ${t.title} —— ${names.get(t.owner) || t.owner}（${stateWords[t.status] || t.status}${since}）${t.brief ? `：${String(t.brief).slice(0, 240)}` : ''}`;
+      const direct = (t.said || []).map((s) => `\n   用户在单聊里直接对${names.get(t.owner) || t.owner}说：「${s.text}」`).join('');
+      return `${i + 1}. ${t.title} —— ${names.get(t.owner) || t.owner}（${stateWords[t.status] || t.status}${since}）${t.brief ? `：${String(t.brief).slice(0, 240)}` : ''}${direct}`;
     }).join('\n');
     const baseEvent = { botId: bot.id, botName: bot.name, turnId, source: 'group', depth: 0, parentTurnId: null, unattended: false, aside: true, groupId: group.id };
     this.bus.emit({ type: 'turn.start', ...baseEvent, text: texts.join('\n') });
@@ -1070,7 +1237,15 @@ export class AgentRuntime {
       const owner = resolveMember(members, args.owner);
       const title = String(args.title || '').trim().slice(0, 120);
       if (!owner || !title || plan.tasks.length >= 16) return '';
-      plan.tasks.push({ id: `t${plan.tasks.length + 1}`, title, owner: owner.id, brief: String(args.brief || why || '').slice(0, 1500), deliverable: '', needs: [], status: 'todo', result: '', addedBy: by?.id || '' });
+      const brief = String(args.brief || why || '').slice(0, 1500);
+      const row = { id: `t${plan.tasks.length + 1}`, title, owner: owner.id, brief, deliverable: '', needs: [], status: 'todo', result: '', addedBy: by?.id || '' };
+      plan.tasks.push(row);
+      // A hand-off board has no runner (1.5.65): the new row is handed to its owner now, as the coordinator would.
+      if (plan.auto && !owner.remote) {
+        Object.assign(row, { status: 'doing', startedAt: nowIso(), turnId: uid('turn') });
+        this.runTurn({ botId: owner.id, turnId: row.turnId, text: `${title}\n${brief}`, source: 'bot', depth: 1, chain: [owner.id], fromBotId: plan.coordinatorId, group, groupRole: 'member', hiddenNote: '协调者把这件事加到了群的任务板上，交给你做；做完的结果会回到任务板。' })
+          .catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+      }
       await this.boardChanged(plan);
       wake();
       return `加了一项「${title}」给${owner.name}`;
@@ -1111,6 +1286,8 @@ export class AgentRuntime {
     if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${botId}"`);
     const turnId = providedTurnId || uid('turn');
     const said = parts ? parts.join('\n') : String(text);
+    // The human spoke to it: what it asked them is answered or moved past (1.5.65).
+    this.humanSpoke?.(busy?.remote ? null : botId);
     // "停下" while it works: stop the turn and its task now, like the stop button.
     if (busy && !busy.remote && !group?.id && isStopWords(said)) {
       const running = this.active.get(busy.turnId);
@@ -1547,6 +1724,9 @@ export class AgentRuntime {
     // Messages the human sent in a row, gathered into this one turn (1.5.64): each is written to the
     // chat as sent; `text` is them joined, as the model reads them.
     parts = null,
+    // 1.5.65: the turn chain this turn belongs to - itself, or the turn it goes on from after the step limit.
+    // 「这一轮都允许」 lasts for the chain and ends with it.
+    chainId = null,
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -1564,23 +1744,48 @@ export class AgentRuntime {
 
     // The HTTP layer mints the id so it can hand it back before the turn starts.
     const turnId = providedTurnId || uid('turn');
+    // A continuation after the step limit (source 'task') is the same chain as the turn it goes on from.
+    const chainFromLimit = !chainId && source === 'task' ? this.chainNext?.get(botId) : null;
+    if (chainFromLimit) this.chainNext.delete(botId);
+    const turnChain = chainId || chainFromLimit || turnId;
     const controller = new AbortController();
     if (signal) {
       if (signal.aborted) controller.abort();
       else signal.addEventListener('abort', () => controller.abort(), { once: true });
     }
-    // One thing at a time: a hand-off, routine or continuation waits while this
-    // bot is busy (the human's own messages reach the running turn instead).
-    if (QUEUED_SOURCES.has(source) && !groupContext) {
-      await this.waitTurnFree(botId, { caller: fromBotId, signal });
+    // One thing at a time (1.2.161; 1.5.65 every way in): a hand-off - also one from a group, or
+    // from another machine -, a board task, a routine or a continuation waits while this bot works
+    // on something else; the human's own messages reach the running turn instead (aside()).
+    const working = isWorkingTurn({ group: groupContext, groupRole, kickoff });
+    const fromHuman = HUMAN_SOURCES.has(source);
+    if (working && !fromHuman) {
+      const queueMs = this.queueMs ?? (source === 'bot' && fromBotId && !passHops ? QUEUE_WAIT_MS : QUEUE_PASS_MS);
+      const waited = await this.waitTurnFree(botId, { caller: fromBotId, signal, maxMs: queueMs });
       if (signal?.aborted) controller.abort();
+      // Never beside another working turn: when waiting would deadlock or took too long, this one does not run.
+      const inTheWay = waited.skipped ? this.workingTurn(botId) : null;
+      if (inTheWay) return this.notStarted({ bot, turnId, source, why: waited.skipped, inTheWay, waitedMs: waited.waited, fromBotId, text, group: groupContext });
+    }
+    // The human answered (or moved past) what this bot asked them: it is no longer pending.
+    if (fromHuman) this.humanSpoke(bot.id);
+    // Not the human's turn while a question to them is open: it is told, and nothing that goes out is shown again.
+    const pending = working && !fromHuman ? this.pendingFor(bot.id) : null;
+    if (pending) hiddenNote = [hiddenNote, pendingNote(pending)].filter(Boolean).join('\n\n');
+    if (working && !fromHuman && fromBotId) hiddenNote = [hiddenNote, HUMAN_FIRST_NOTE].filter(Boolean).join('\n\n');
+    // The coordinator answers in the group with the board in front of it: who does what, and what the human told a member directly.
+    if (groupContext && groupRole === 'coordinator' && !kickoff) {
+      await this.readBoards?.().catch(() => {});
+      const brief = this.boardBrief(groupContext.id, new Map((groupContext.members || []).map((m) => [m.id, m.name])));
+      if (brief) hiddenNote = [hiddenNote, brief].filter(Boolean).join('\n\n');
     }
     // What it is doing, for a message the human sends meanwhile (aside()): the
     // task, the step in progress, the latest result, and the human's new words.
     if (coordinatorTurn) this.groupTurns.add(turnId);
     this.releaseClaim(bot.id);
-    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), groupId: group?.id || null, kickoff, unattended, from: fromBotId || null });
+    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), groupId: group?.id || null, kickoff, unattended, from: fromBotId || null, working, source, groupRole: groupContext ? groupRole : null, chainId: turnChain });
     const live = this.active.get(turnId);
+    // Its row on a hand-off board waited (待开始) while the member finished something else: 进行中 now (1.5.65).
+    this.rowStarted(turnId).catch(() => {});
 
     // Work until done, like comparable agents: a step is one tool call, and
     // real work (search, open, read, fix, check) easily takes dozens. The old
@@ -1723,6 +1928,9 @@ export class AgentRuntime {
         app: this.getApp(),
         group: groupContext ? { ...groupContext, role: groupRole } : null,
         groupTurn: coordinatorTurn,
+        // A question to the human is still open and the human did not start this turn (1.5.65): nothing goes out.
+        decisionPending: pending,
+        chainId: turnChain,
         emit: (event) => this.bus.emit({ ...baseEvent, ...event }),
       };
 
@@ -1753,6 +1961,11 @@ export class AgentRuntime {
         while (live.inbox.length) {
           const said = live.inbox.shift();
           // From the group's coordinator about this task (1.5.64, task_change): what changed for it.
+          // The human told a member of this group something in its own chat (1.5.65): the coordinator hears it.
+          if (said && typeof said === 'object' && said.kind === 'direct') {
+            messages.push({ role: 'user', content: `（用户刚在「${said.member}」的单聊里直接对它说：「${said.text}」。这是用户的意思，以它为准：后面安排「${said.member}」时不要和这句话冲突。）` });
+            continue;
+          }
           if (said && typeof said === 'object') {
             messages.push({ role: 'user', content: `（协调者「${said.from || '协调者'}」在你做这一项时转来新情况：）\n${said.note}\n（照这个调整：不再需要的部分就别做了，已经做好的文件留着；改了要求的按新的来。）` });
             continue;
@@ -2079,7 +2292,7 @@ export class AgentRuntime {
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
       }
 
-      return { turnId, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}),
+      return { turnId, chainId: turnChain, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}),
         ...(status === 'max_steps' ? { receipts, continueGroup: groupGoesOn } : {}),
         // Stopped for the human's hands (1.5.64): a group's board waits for them instead of calling the task done.
         ...(waitingFor === 'takeover' || waitingFor === 'login' ? { waitingFor } : {}) };
@@ -2090,6 +2303,18 @@ export class AgentRuntime {
       return { turnId, status, summary, steps };
     } finally {
       this.active.delete(turnId);
+      // 「这一轮都允许」 lasts for the turn chain (1.5.65): cut off by the step limit, the turn that goes on
+      // keeps it (a 1:1 continuation picks the chain up; a group's is handed it); otherwise it ends here.
+      if (status === 'max_steps') {
+        if (!groupContext) { this.chainNext = this.chainNext || new Map(); this.chainNext.set(bot.id, turnChain); }
+        this.expireChainLater(turnChain, bot.id);
+      } else if (![...this.active.values()].some((i) => i.chainId === turnChain)) this.endChain(turnChain);
+      // It stopped on a question only the human can answer (1.5.65): the next job for it, before they answer, knows.
+      const askedHuman = waitingFor || live.waitingFor || (status === 'needs_approval' ? 'approval' : '');
+      if (working && askedHuman && status !== 'cancelled') {
+        this.pendingHuman = this.pendingHuman || new Map();
+        this.pendingHuman.set(bot.id, { kind: askedHuman, text: live.waitingText || summary || '', tool: pausedTool ? toolLabel(pausedTool) : '', turnId, at: Date.now() });
+      }
       this.wakeBot(bot.id);
       // Stopped before the work was done: kept for a 「继续」 (1.5.50, S1); done: forgotten.
       if (!groupContext) {
@@ -2151,6 +2376,9 @@ export class AgentRuntime {
         ...(live.waitingText ? { waitingText: live.waitingText } : {}),
       });
       this.groupTurns.delete(turnId);
+      // A row on a group's hand-off board follows the turn doing it; the board closes when its coordinator is done (1.5.65).
+      await this.settleBoardRow(turnId, { status, waitFor, waitingText: live.waitingText || '', summary }).catch(() => {});
+      if (coordinatorTurn && groupRole === 'coordinator') await this.closeAutoBoard(group.id).catch(() => {});
       if (direct) this.afterTaskTurn(bot.id, status, waitingFor, { fromHuman: source !== 'task', toolsRun, redirectedAt }).catch(() => {});
       // Cut off by the step limit with no open checklist: the next turn starts
       // by itself. The bot decides - finished: say the result; not: go on.
@@ -2165,6 +2393,7 @@ export class AgentRuntime {
           recordUser: false,
           text: continuationText({ n, what, actions: describeActions(autoContinue.receipts) }),
           priorReceipts: autoContinue.receipts || [],
+          chainId: turnChain,
         }).catch(() => {}), this.taskDelayMs ?? 1500);
         timer.unref?.();
       }
@@ -2190,11 +2419,21 @@ export class AgentRuntime {
     let id = turnId;
     const went = new Map();
     while (queue.length && done.size < 6) {
-      const { member, role, prompt, priorReceipts, cont } = queue.shift();
+      const { member, role, prompt, priorReceipts, cont, chain } = queue.shift();
       if (done.has(member.id)) continue;
       done.add(member.id);
       // Messages sent in a row (1.5.64): written once each, by the first who answers.
       const sent = record && parts ? parts : null;
+      // An @mentioned member already at work (its chat, a hand-off, a board task; 1.5.65): the words go into
+      // that turn, answered in passing in the group - never a second turn on the same browser.
+      const atWork = !member.remote && role === 'speaker' ? this.busyTurn?.(member.id, { any: true }) : null;
+      if (atWork) {
+        if (record) await this.aside({ botId: member.id, text, turnId: id, source: 'group', busy: atWork, group, parts: sent }).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+        else this.active.get(atWork.turnId)?.inbox.push({ from: byId.get(group.coordinatorId)?.name || '协调者', note: String(prompt || text).slice(0, 1500) });
+        record = false;
+        id = null;
+        continue;
+      }
       const result = member.remote ? await this.runRemoteGroupTurn({ group, member, text: prompt || text, role, turnId: id, recordUser: record, kickoff, parts: sent }) : await this.runTurn({
         botId: member.id,
         text: prompt || text,
@@ -2207,6 +2446,7 @@ export class AgentRuntime {
         kickoff,
         priorReceipts: priorReceipts || [],
         groupContinuation: cont || 0,
+        ...(chain ? { chainId: chain } : {}),
       }).catch((err) => {
         this.bus.emit({ type: 'error', groupId: group.id, turnId: id, message: err.message });
         return null;
@@ -2218,7 +2458,7 @@ export class AgentRuntime {
         const n = (went.get(member.id) || 0) + 1;
         went.set(member.id, n);
         done.delete(member.id);
-        queue.unshift({ member, role, prompt: continuationText({ n, what: `群里交给你的事（用户原话：「${String(prompt || text).slice(0, 300)}」）`, actions: describeActions(result.receipts) }), priorReceipts: result.receipts, cont: n });
+        queue.unshift({ member, role, prompt: continuationText({ n, what: `群里交给你的事（用户原话：「${String(prompt || text).slice(0, 300)}」）`, actions: describeActions(result.receipts) }), priorReceipts: result.receipts, cont: n, chain: result.chainId });
         continue;
       }
       // The coordinator split the work: the task board runs it (and it sums up at the end).
@@ -2619,6 +2859,190 @@ export class AgentRuntime {
     this.bus.emit({ type: 'group.plan', groupId: plan.groupId, plan });
   }
 
+  // ---- 1.5.65: one working turn per bot, and the hand-off board -------------------------------
+
+  /** A queued turn that will not run (waiting would deadlock, or the bot stayed busy too long): said, not run. */
+  async notStarted({ bot, turnId, source, why, inTheWay, waitedMs = 0, fromBotId = null, text = '' }) {
+    const mins = Math.max(1, Math.round(waitedMs / 60000));
+    const from = fromBotId ? ((await this.bots.getBot(fromBotId).catch(() => null))?.name || fromBotId) : source === 'routine' ? '定时任务' : '';
+    const doing = String(inTheWay?.task || '').replace(/\s+/g, ' ').slice(0, 60);
+    const summary = why === 'cycle'
+      ? `「${bot.name}」手上正在做的事在等你的结果，不能同时接这件事：先把你的结果交回去，再交给它。`
+      : `「${bot.name}」一直在忙另一件事（${doing}…），等了 ${mins} 分钟还没做完，这件事没有开始。过一会儿再交给它。`;
+    const line = `（${from ? `${from}交来的事` : '这件事'}没有开始：${why === 'cycle' ? '交来的人在等我手上这件事的结果' : `我一直在忙另一件事，等了 ${mins} 分钟`}。原话：「${String(text).replace(/\s+/g, ' ').slice(0, 120)}」）`;
+    await this.record(bot.id, { kind: 'assistant', text: line, turnId, source, system: true, final: true });
+    // Its end, as for any turn: a machine that handed this over waits for it (askPeerBot reads the status).
+    const at = nowIso();
+    await this.record(bot.id, { kind: 'turn', turnId, status: 'busy', summary, startedAt: at, endedAt: at, steps: 0, source });
+    this.bus.emit({ type: 'message', botId: bot.id, botName: bot.name, turnId, source, text: line, final: true, system: true, ts: at });
+    await this.settleBoardRow(turnId, { status: 'busy', summary }).catch(() => {});
+    return { turnId, status: 'busy', summary, steps: 0 };
+  }
+
+  /** The group's open hand-off board (made from the coordinator's hand-offs), or null. */
+  autoBoard(groupId) {
+    const p = this.plans?.get(groupId);
+    return p?.auto && (BOARD_OPEN.includes(p.status) || (p.leadTurn && this.active.has(p.leadTurn))) ? p : null;
+  }
+
+  /** The group a hand-off from `fromId` to `toId` belongs to, with members' names: the coordinator's own group only. */
+  async handoffGroup({ fromId, toId, ctx = null }) {
+    const ids = (g) => (g?.members || []).map((m) => (typeof m === 'string' ? m : m?.id));
+    const inHand = ctx?.group?.id && ctx.group.coordinatorId === fromId && ids(ctx.group).includes(toId) ? ctx.group : null;
+    if (inHand) return inHand;
+    if (!this.groups?.listGroups) return null;
+    const all = (await this.groups.listGroups().catch(() => [])) || [];
+    const led = all.filter((g) => g.coordinatorId === fromId && ids(g).includes(toId));
+    if (led.length !== 1) return null;
+    const info = typeof this.groupForRun === 'function' ? await this.groupForRun(led[0].id).catch(() => null) : null;
+    return info?.group || null;
+  }
+
+  /**
+   * The coordinator gives a member work (bot_message / bot_pass, 1.5.65): it goes on the group's
+   * board - a new one-row board, or a row added to the open one, or the member's open row again -
+   * and the first time in a coordinator's group turn the human gets one line: who does what, and
+   * what they will be asked for. 11-23: after 「就先发第一天的」 the group showed only a hand-off line.
+   * -> {turnId} for the member's turn (its row follows it), or null when no board applies.
+   */
+  async boardHandoff({ ctx, target, text }) {
+    if (!this.groups || !ctx?.bot || !target?.id) return null;
+    const group = await this.handoffGroup({ fromId: ctx.bot.id, toId: target.id, ctx });
+    if (!group) return null;
+    this.plans = this.plans || new Map();
+    await this.readBoards?.().catch(() => {});
+    const current = this.plans.get(group.id);
+    // A board the coordinator planned (group_plan) shows the work already: no rows beside its tasks.
+    if (current && !current.auto && BOARD_OPEN.includes(current.status) && current.tasks?.some((t) => ['todo', 'doing', 'waiting_human'].includes(t.status))) return null;
+    const leadTurn = ctx.groupTurn ? ctx.turnId : null;
+    const turnId = uid('turn');
+    const brief = String(text || '').slice(0, 1500);
+    // Still at something else: the row waits (待开始) and turns 进行中 when its turn starts (rowStarted).
+    const busyNow = Boolean(this.workingTurn(target.id) || this.claims?.has(target.id));
+    let plan = this.autoBoard(group.id);
+    const fresh = !plan;
+    if (!plan) {
+      const request = String(this.active.get(ctx.turnId)?.task || text || '').slice(0, 1000);
+      plan = makePlan({ group, request, coordinatorId: ctx.bot.id, tasks: [{ title: handoffTitle(text), owner: target.id, brief }] }).plan;
+      if (!plan) return null;
+      plan.auto = true;
+      plan.tasks[0].status = busyNow ? 'todo' : 'doing';
+      plan.tasks[0].startedAt = nowIso();
+      plan.tasks[0].turnId = turnId;
+    } else {
+      const row = plan.tasks.find((t) => t.owner === target.id && ['todo', 'doing', 'waiting_human'].includes(t.status));
+      if (row && row.status !== 'doing') Object.assign(row, { title: handoffTitle(text), brief, status: busyNow ? 'todo' : 'doing', startedAt: nowIso(), turnId, question: '', answer: '' });
+      else if (row) row.next = [...(row.next || []), turnId].slice(-4); // busy on it: this one waits behind (its turn settles the row too)
+      else {
+        if (plan.tasks.length >= 16) return { turnId };
+        plan.tasks.push({ id: `t${plan.tasks.length + 1}`, title: handoffTitle(text), owner: target.id, brief, deliverable: '', needs: [], status: busyNow ? 'todo' : 'doing', startedAt: nowIso(), result: '', turnId });
+      }
+      plan.status = 'running';
+    }
+    if (leadTurn) plan.leadTurn = leadTurn;
+    await this.boardChanged(plan);
+    const names = new Map((group.members || []).map((m) => [m.id, m.name]));
+    if (fresh) await this.recordGroupMessage(group.id, { kind: 'plan', from: ctx.bot.id, planId: plan.id, text: planText(plan, names) });
+    // One line to the human per coordinator turn: who does what next, and their part.
+    if (leadTurn) {
+      this.boardReplies = this.boardReplies || new Map();
+      const said = this.boardReplies.get(leadTurn) || [];
+      said.push({ name: target.name || names.get(target.id) || target.id, title: handoffTitle(text), text });
+      this.boardReplies.set(leadTurn, said);
+      if (said.length === 1) {
+        await this.recordGroupMessage(group.id, { kind: 'assistant', from: ctx.bot.id, text: handoffReply(said) });
+      }
+    }
+    return { turnId, planId: plan.id };
+  }
+
+  /** A turn for a hand-off board row starts: the row is 进行中. */
+  async rowStarted(turnId) {
+    for (const plan of this.plans?.values() || []) {
+      const row = plan.auto && plan.tasks.find((t) => t.turnId === turnId && t.status === 'todo');
+      if (!row) continue;
+      row.status = 'doing';
+      row.startedAt = nowIso();
+      await this.boardChanged(plan);
+    }
+  }
+
+  /** A turn that did a board row ended (or did not start): the row says how it stands. */
+  async settleBoardRow(turnId, { status, waitFor = null, waitingText = '', summary = '' } = {}) {
+    if (!this.plans?.size || !turnId) return;
+    for (const plan of this.plans.values()) {
+      if (!plan.auto) continue;
+      const row = plan.tasks.find((t) => t.turnId === turnId || (t.next || []).includes(turnId));
+      if (!row) continue;
+      const current = row.turnId === turnId;
+      row.next = (row.next || []).filter((id) => id !== turnId);
+      // A second job for the same row that never ran: the row stays with the one at work.
+      if (!current) { await this.boardChanged(plan); continue; }
+      // The member had another job for this row queued behind this one: the row follows that one now.
+      if (row.next.length && status !== 'cancelled') { row.turnId = row.next.shift(); await this.boardChanged(plan); continue; }
+      row.endedAt = nowIso();
+      const said = String(summary || '').trim();
+      if (row.dropped != null && status === 'cancelled') { row.status = 'skipped'; row.result = `协调者停掉了这一项：${row.dropped || '不再需要'}`; }
+      else if (waitFor) { row.status = 'waiting_human'; row.question = String(waitingText || said).replace(/^等你/, '需要你').slice(0, 1000) || '需要你接一下'; row.answer = ''; }
+      else if (status === 'success' && said && said !== '(no answer)') { row.status = 'done'; row.result = said.slice(0, 4000); }
+      else if (status === 'busy') { row.status = 'failed'; row.result = said.slice(0, 1000); }
+      else if (status === 'cancelled') { row.status = 'stopped'; row.result = '停下了'; }
+      else { row.status = 'failed'; row.result = said ? said.slice(0, 1000) : '没有给出结果'; }
+      await this.closeAutoBoard(plan.groupId, { changed: true });
+    }
+  }
+
+  /** A hand-off board with nothing in progress, its coordinator's turn over: done, or waiting for the human. */
+  async closeAutoBoard(groupId, { changed = false } = {}) {
+    const plan = this.plans?.get(groupId);
+    if (!plan?.auto || !BOARD_OPEN.includes(plan.status)) { if (changed && plan) await this.boardChanged(plan); return; }
+    const leading = plan.leadTurn && this.active.has(plan.leadTurn);
+    const open = plan.tasks.some((t) => t.status === 'doing' || t.status === 'todo');
+    if (!leading && !open) plan.status = plan.tasks.some((t) => t.status === 'waiting_human') ? 'waiting' : 'done';
+    if (!leading) this.boardReplies?.delete(plan.leadTurn);
+    await this.boardChanged(plan);
+  }
+
+  /**
+   * The human wrote to a member in its own chat while it has work on a group's board (1.5.65):
+   * the row keeps their words and the coordinator hears them. 11-23: 「视频号先跳过」 to 发布,
+   * and six minutes later 主理人 handed 发布 「先看视频号」.
+   * -> the rows noted
+   */
+  async noteDirectWord(botId, text, { turnId = null } = {}) {
+    const said = String(text || '').replace(/\n\n\[附件\][\s\S]*$/, '').trim();
+    if (!said || !this.groups) return 0;
+    await this.readBoards?.().catch(() => {});
+    let n = 0;
+    for (const plan of this.plans?.values() || []) {
+      if (!BOARD_OPEN.includes(plan.status)) continue;
+      const row = plan.tasks.find((t) => t.owner === botId && ['todo', 'doing', 'waiting_human'].includes(t.status));
+      if (!row) continue;
+      row.said = [...(row.said || []), { ts: nowIso(), text: said.slice(0, 600) }].slice(-6);
+      // Their answer to what the row waited on: the member is at it again (its chat turn), and the row follows that turn.
+      if (row.status === 'waiting_human' && plan.auto && turnId) { row.answer = said.slice(0, 1000); row.status = 'doing'; row.turnId = turnId; plan.status = 'running'; }
+      await this.boardChanged(plan);
+      const bot = await this.bots.getBot(botId).catch(() => null);
+      const lead = [...this.active.values()].find((i) => i.groupId === plan.groupId && i.botId === plan.coordinatorId && !i.remote);
+      if (lead) lead.inbox.push({ kind: 'direct', member: bot?.name || botId, text: said.slice(0, 600) });
+      n += 1;
+    }
+    return n;
+  }
+
+  /** The open board in a few lines, for the coordinator's next turn: who does what, how it stands, what the human told a member directly. */
+  boardBrief(groupId, names) {
+    const plan = this.plans?.get(groupId);
+    if (!plan || !BOARD_OPEN.includes(plan.status)) return '';
+    const words = { todo: '还没开始', doing: '在做', waiting_human: '等用户回复', done: '做完', failed: '没做成', skipped: '跳过', stopped: '停了' };
+    const rows = plan.tasks.map((t, i) => [
+      `${i + 1}. ${t.title} —— ${names.get(t.owner) || t.owner}（${words[t.status] || t.status}）`,
+      t.question ? `   问用户：${String(t.question).slice(0, 200)}` : '',
+      ...(t.said || []).map((s) => `   用户在单聊里直接对${names.get(t.owner) || t.owner}说：「${s.text}」`),
+    ].filter(Boolean).join('\n')).join('\n');
+    return `（群里的任务板现在这样，安排时照这个来；用户直接对成员说的话以用户为准，不要再让成员做用户已经叫停或跳过的事：）\n${rows}`;
+  }
+
   /**
    * Work through a group's task board: start every task whose inputs are done
    * (at most three at once), each by its owner - here, or on its own machine -
@@ -2639,6 +3063,9 @@ export class AgentRuntime {
       for (const t of readyTasks(plan)) {
         if (running.size >= 3) break;
         if (running.has(t.id)) continue;
+        // One member, one board item at a time (1.5.65; the collaboration eval, s6: four items for 整理 started at
+        // once). Its next item stays 待开始 until this one ends - runTurn would make it wait anyway.
+        if ([...running.keys()].some((id) => plan.tasks.find((x) => x.id === id)?.owner === t.owner)) continue;
         running.set(t.id, this.runPlanTask(group, plan, t, byId, names).finally(() => running.delete(t.id)));
       }
       if (!running.size) break;
@@ -2701,7 +3128,12 @@ export class AgentRuntime {
     ].filter(Boolean).join('\n\n');
     let res;
     if (!owner) res = { status: 'failed', summary: '负责人已经不在群里' };
-    else if (owner.remote) res = await this.runRemoteGroupTurn({ group, member: owner, text: prompt, role: 'task' });
+    else if (owner.remote) {
+      // The human answered its question in the group: that machine closes the question too (1.5.65).
+      const answered = Boolean(task.answeredRemote);
+      delete task.answeredRemote;
+      res = await this.runRemoteGroupTurn({ group, member: owner, text: prompt, role: 'task', answered });
+    }
     else {
       // Its turn has a known id (1.5.64): the coordinator can stop it (task_change) or tell it something.
       task.turnId = uid('turn');
@@ -2716,7 +3148,7 @@ export class AgentRuntime {
           botId: owner.id,
           turnId: task.turnId,
           text: continuationText({ n, what: `任务板上交给你的「${task.title}」`, actions: describeActions(res.receipts) }),
-          source: 'group', group, groupRole: 'task', recordUser: false, priorReceipts: res.receipts || [], groupContinuation: n,
+          source: 'group', group, groupRole: 'task', recordUser: false, priorReceipts: res.receipts || [], groupContinuation: n, chainId: res.chainId,
         }).catch((err) => ({ status: 'failed', summary: err.message }));
       }
     }
@@ -2789,10 +3221,16 @@ export class AgentRuntime {
     const plan = await this.groupPlan(group.id);
     // A task asked the human: the next thing they say in the group is the answer,
     // even while other tasks are still running.
-    const waiting = plan && ['waiting', 'running'].includes(plan.status) && plan.tasks.find((t) => t.status === 'waiting_human');
+    // A hand-off board (1.5.65) has no runner of its own: the coordinator reads the answer and hands the work on again.
+    const waiting = plan && !plan.auto && ['waiting', 'running'].includes(plan.status) && plan.tasks.find((t) => t.status === 'waiting_human');
     if (!waiting) return false;
     await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text) });
     waiting.answer = String(text).slice(0, 2000);
+    // Their answer closes what the member asked (1.5.65; the collaboration eval: after 「扫好了」 in the group
+    // every post_draft of 发布 was refused as still waiting). A member on another machine is told with the task.
+    const ownerHere = (group.members || []).find((m) => m.id === waiting.owner);
+    if (!ownerHere?.remote) this.humanSpoke?.(waiting.owner);
+    else waiting.answeredRemote = true;
     waiting.status = 'todo';
     await this.boardChanged(plan);
     const wake = this.planWakers?.get(plan.id);
@@ -2805,7 +3243,7 @@ export class AgentRuntime {
    * A group member that lives on another machine takes its turn there: it gets
    * the recent group conversation, and its answer is posted here under its name.
    */
-  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false, kickoff = false, parts = null }) {
+  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false, kickoff = false, parts = null, answered = false }) {
     const id = turnId || uid('turn');
     if (recordUser) for (const p of parts || [String(text)]) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(p), turnId: id });
     // A new group's introductions (1.5.63): marked here and, through the handoff, on the member's machine too.
@@ -2832,7 +3270,7 @@ export class AgentRuntime {
       const r = await askPeerBot(peers, peer, {
         botId: member.remote.botId,
         text: prompt,
-        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」`, machine: this.machineName?.() || '' }, ...(kickoff ? { kickoff: true } : {}) },
+        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」`, machine: this.machineName?.() || '' }, ...(kickoff ? { kickoff: true } : {}), ...(answered ? { answered: true } : {}) },
         workspaceDir: this.config.workspaceDir,
       });
       status = r.status === 'success' ? 'success' : (r.status || 'failed');
@@ -3091,6 +3529,9 @@ export class AgentRuntime {
       else if (ctx.lookTurn && !machine.careful) verdict = { ...verdict, decision: DECISION.AUTO, reason: '这一轮你已经允许过查看类命令' };
     }
 
+    // Asked every time for a reason that is not "it goes out" (the danger list, secrets, adb, the human's rules…):
+    // such a card never offers 「这一轮都允许」 (1.5.65). Every one of those is decided above this line.
+    const stickyNotSend = sticky;
     // Something going out - a post, a mail, a message, a reply (1.5.45 第四步「替你想」):
     // a draft card the human can edit, every time, at any level, whatever trust or
     // 「以后都允许」 said. Only the human's 「发送」 sends it.
@@ -3117,6 +3558,65 @@ export class AgentRuntime {
     if (guarded) {
       lookCommand = ''; // asked because of what was read: not a card for looking
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `这一轮读过${ctx.readFrom.join('、')}里的内容，之后${guarded}先问你，免得资料里藏着的指令带偏机器人（设置 → 边界 里可以关掉）` };
+    }
+
+    // 1.5.65: a question to the human is still open (tell_human - unless it said blocking: false -, a takeover, a card a
+    // stopped run left): nothing goes out until they answer. 11-23: a second job picked 知乎's 视频标记 itself and
+    // published; the collaboration eval (s2): asked about the CV, then applied twice before any answer.
+    // Looked up at the step, not at the turn's start: a question asked earlier in this very turn counts too, and the
+    // human's answer (a word into the turn, a new message) lifts it. Any send: a draft, or one with no draft to show.
+    const openQuestion = (draft || sendsWithoutDraft) && verdict.decision !== DECISION.DENY ? this.pendingFor(bot.id) : null;
+    if (openQuestion) {
+      const p = openQuestion;
+      const result = { error: { code: 'HUMAN_DECISION_PENDING', message: `not shown: you asked the human something and they have not answered yet (「${String(p.text || '').slice(0, 200)}」). Nothing goes out before they answer - not this post either. Finish this turn: tell whoever handed you this job that it waits for the human's answer.` } };
+      this.bus.emit({ type: 'tool.call', ...baseEvent, callId: call.id, name, args, risk: 'HIGH', decision: DECISION.DENY, reason: '在等用户回答上一个问题' });
+      this.pushToolResult(messages, call, result);
+      this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name, ok: false, denied: true, result });
+      await this.record(bot.id, { kind: 'tool', name, args, ok: false, denied: true, reason: 'human_decision_pending', output: result, turnId });
+      return { notRun: true };
+    }
+    // 「这一轮都允许」 (1.5.65; 11-23: 发布 tried seven file hosts in two minutes, a card each). What the answer
+    // would cover: the same kind of step (the tool and its risk, as 「以后都允许」 names it), or - for a send - its
+    // destination: the web host(s) it goes to, the channel of a post. A new destination asks again. Not offered
+    // where a card asks every time for another reason, for look-only commands (they have their own), for a
+    // connected app, after reading something (the read guard), at 谨慎, or for a send whose destination cannot
+    // be read from the step itself.
+    const send = verdict.decision === DECISION.ASK ? sendDestination(name, args) : null;
+    let chainOffer = null;
+    if (verdict.decision === DECISION.ASK && !stickyNotSend && !guarded && !lookCommand && !machine.careful && !tool.mcp && !riskInfo.alwaysAsk && !riskInfo.adjust && !riskInfo.handoff) {
+      if (draft) chainOffer = name === 'post_draft' && String(args?.channel || '').trim() ? { keys: [`post:${channelKey(args.channel)}`], label: `发到「${String(args.channel).trim()}」` } : null;
+      else if (sendsWithoutDraft) chainOffer = send ? { keys: send.hosts.map((h) => `send:${h}`), label: `往 ${send.hosts.join('、')} 发东西` } : null;
+      else chainOffer = { keys: [`${remember?.key || name}|${verdict.risk}`], label: remember?.label || toolLabel(name) };
+    }
+    // Said yes to that already in this chain: it runs, and the audit says why.
+    let chainHit = null;
+    if (chainOffer && this.chainCovers(ctx.chainId, bot.id, chainOffer.keys)) {
+      chainHit = chainOffer;
+      verdict = { ...verdict, decision: DECISION.AUTO, reason: `这一轮你说过都允许：${chainOffer.label}` };
+      await audit({ kind: 'tool.chain_allowed', botId: bot.id, turnId, chainId: ctx.chainId, tool: name, keys: chainOffer.keys, label: chainOffer.label });
+    }
+
+    // One post, one card (1.5.65): the same post (title and text; 「知乎（视频）」 = 「知乎」) shown again
+    // gets the human's first answer instead of a second card. 11-23: two cards for one 知乎 post.
+    let samePost = null;
+    const postKeyNow = name === 'post_draft' && draft && verdict.decision === DECISION.ASK ? postKey(bot.id, args) : '';
+    if (postKeyNow) {
+      this.postDecisions = this.postDecisions || new Map();
+      let prior = this.postDecisions.get(postKeyNow);
+      if (prior && Date.now() - prior.at > SAME_POST_MS) { this.postDecisions.delete(postKeyNow); prior = null; }
+      if (prior?.waiting) prior = await prior.waiting;
+      if (prior?.decision === 'approved') {
+        samePost = prior;
+        args = { ...prior.args };
+        verdict = { ...verdict, decision: DECISION.AUTO, reason: '同一篇刚才已经给你看过、你点了发送' };
+      } else if (prior && prior.decision) {
+        const result = { error: { code: 'APPROVAL_DENIED', message: `the human already turned this same post down (${prior.decision}) - it is not shown again. Do not publish it.` } };
+        this.bus.emit({ type: 'tool.call', ...baseEvent, callId: call.id, name, args, risk: 'HIGH', decision: DECISION.DENY, reason: '同一篇你刚才没同意' });
+        this.pushToolResult(messages, call, result);
+        this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name, ok: false, denied: true, result });
+        await this.record(bot.id, { kind: 'tool', name, args, ok: false, denied: true, reason: 'same_post_denied', output: result, turnId });
+        return { notRun: true };
+      }
     }
 
     this.bus.emit({
@@ -3175,7 +3675,12 @@ export class AgentRuntime {
         ...(draft ? { draft } : {}),
         ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
         ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
+        ...(chainOffer ? { chainScope: chainOffer } : {}),
+        ...(send ? { send } : {}),
       });
+      // The same post asked again meanwhile waits for this card's answer (1.5.65).
+      let settlePost = null;
+      if (postKeyNow) this.postDecisions.set(postKeyNow, { at: Date.now(), waiting: new Promise((resolve) => { settlePost = resolve; }) });
 
       // approvals.request() exposes the record synchronously so the UI can show
       // the card without waiting for the decision.
@@ -3196,9 +3701,14 @@ export class AgentRuntime {
         ...(draft ? { draft } : {}),
         ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
         ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
+        ...(chainOffer ? { chainScope: chainOffer } : {}),
+        ...(send ? { send: { text: send.text, hosts: send.hosts, public: send.public } } : {}),
       });
 
       const resolution = await pending;
+      // 「这一轮都允许」: the same kind of step (or destination) runs unasked for the rest of this chain (1.5.65).
+      const chainAllowed = Boolean(chainOffer && resolution.decision === 'approved' && resolution.approval?.chainAllowed);
+      if (chainAllowed) this.grantChain(ctx.chainId, bot.id, chainOffer);
       // The human's edits to the draft (1.5.45): what goes out is what they left in the boxes.
       const edits = draft && resolution.decision === 'approved' ? resolution.approval?.edits : null;
       if (edits) {
@@ -3207,6 +3717,12 @@ export class AgentRuntime {
       }
       // The human wrote something new instead of answering (aside() closed the card).
       const superseded = resolution.decision !== 'approved' && resolution.note === NEW_MESSAGE_NOTE;
+      // The human's answer to this post, kept for the same post shown again (also as they edited it).
+      if (postKeyNow) {
+        const kept = !superseded && ['approved', 'denied'].includes(resolution.decision) ? { at: Date.now(), decision: resolution.decision, args: { ...args } } : null;
+        if (kept) { this.postDecisions.set(postKeyNow, kept); this.postDecisions.set(postKey(bot.id, args), kept); } else this.postDecisions.delete(postKeyNow);
+        settlePost?.(kept);
+      }
       if (lookCommand && resolution.decision === 'approved') {
         ctx.lookAllowed = new Set([...(ctx.lookAllowed || []), ...lookBatch]);
         if (lookTurn) ctx.lookTurn = true;
@@ -3220,6 +3736,7 @@ export class AgentRuntime {
         tool: name,
         decision: resolution.decision,
         note: resolution.note || '',
+        ...(chainAllowed ? { chainAllowed: true, chainScope: chainOffer } : {}),
       });
 
       // Keep the decision in the transcript, so a reloaded page still shows what
@@ -3240,6 +3757,9 @@ export class AgentRuntime {
         ...(edits ? { edits, edited: true } : {}),
         ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
         ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
+        ...(chainOffer ? { chainScope: chainOffer } : {}),
+        ...(chainAllowed ? { chainAllowed: true } : {}),
+        ...(send ? { send: { text: send.text, hosts: send.hosts, public: send.public } } : {}),
         turnId,
       });
 
@@ -3322,12 +3842,23 @@ export class AgentRuntime {
         result = { ...(result && typeof result === 'object' && !Array.isArray(result) ? result : { result }), humanEdited: { note: '你改过的草稿：人类在卡片上改了这些地方，发出去的是他改后的版本。以后写类似的东西参考他的改法。The human edited the draft before it went out; what was sent is below.', sent } };
       }
       if (draft) delete ctx.humanEdited;
+      if (ok && samePost) {
+        const at = new Date(samePost.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+        result = { ...(result && typeof result === 'object' && !Array.isArray(result) ? result : { result }), samePost: { note: `同一篇在 ${at} 已经给用户看过、用户点了发送（不再弹第二张卡）。这是那一次批准的版本。如果它已经发出去了，就不要再发一次。The human approved this same post at ${at}; if it is already published, do not publish it again.` } };
+      }
     } catch (err) {
       ok = false;
       result = { error: { code: err.code || 'TOOL_FAILED', message: err.message, details: err.details } };
       // A step that failed halfway may still have written over an upload.
       const moved = keptUploads.length ? await restoreAfter({ workspaceDir: this.config.workspaceDir, kept: keptUploads.splice(0), label: bot.name }).catch(() => []) : [];
       if (moved.length) result.uploadKept = moved.length === 1 ? moved[0] : moved;
+    }
+
+    // Sending out failed twice in this turn (1.5.65; 11-23: seven file hosts in two minutes, a card each):
+    // from the second failure on, the result says to stop trying other services and ask the human.
+    if (sendsWithoutDraft && sendFailed(ok, result)) ctx.sendFailures = (ctx.sendFailures || 0) + 1;
+    if (sendsWithoutDraft && (ctx.sendFailures || 0) >= 2) {
+      result = { ...(result && typeof result === 'object' && !Array.isArray(result) ? result : { result }), stopSending: STOP_SENDS_NOTE };
     }
 
     // Outside text is marked as material and remembered for the rest of the turn (1.5.2).

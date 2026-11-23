@@ -525,7 +525,8 @@ export async function changesLineChecks({ check, readText }) {
     JSON.stringify({ parent: line.parent?.className }));
   check('G64-7b with no reply to sit under it is a line of its own (never in the human\'s bubble), and that line is in the chat column (760 px, centred, indented like the replies)',
     lone.parent?.className === 'changes-line' && !mine.querySelector('.changes-wrap')
-    && /\.messages > \.changes-line \{\s*box-sizing: border-box; width: 100%; max-width: 760px; margin-left: auto; margin-right: auto; padding-left: 44px;/.test(css));
+    // 1.5.65: the column itself is the list's side padding (checked for every line in smoke-group-1565.mjs, G65-7).
+    && /\.changes-line \{ display: flex; align-items: center; gap: 8px; margin: 2px 0 10px 44px;/.test(css) && css.includes('padding-left: max(var(--msg-pad, 24px), calc((100% - var(--chat-col)) / 2));'));
 }
 
 // ---------------------------------------------------------------------------

@@ -826,7 +826,7 @@ export function createRegistry(deps) {
   add({
     name: 'shell',
     description:
-      'Run a shell command with the shared workspace as the working directory. Output is truncated. Commands matching the danger denylist always require human approval.',
+      'Run a shell command with the shared workspace as the working directory. Output is truncated. Commands matching the danger denylist always require human approval. Sending files or data out (an upload, a post to a website) asks the human each time: if sending out fails twice for the same goal, do not try other services one after another - stop and tell the human (tell_human) what failed and ask how to go on.',
     // Base MEDIUM: auto-approved only when the bot's policy says so. approvals.mjs
     // promotes denylisted commands to HIGH.
     risk: RISK.MEDIUM,
@@ -1896,6 +1896,8 @@ export function createRegistry(deps) {
       const runtime = deps.getRuntime();
       // Two members of one group: the group sees who gave whom what (1.2.164).
       await runtime.mirrorHandoff?.({ fromId: ctx.bot.id, toId: target.id, text: args?.text, group: ctx.group });
+      // The coordinator gives a member work: it shows on the group's task board, and the human hears who does what (1.5.65).
+      const board = await runtime.boardHandoff?.({ ctx, target, text: String(args?.text || '') }).catch(() => null);
       // One thing at a time: a busy colleague finishes first (the chat says whom we wait for).
       if (runtime.botBusy?.(target.id)) ctx.progress?.(`等${target.name}忙完手上的事…`);
       const off = runtime.noteWaiting?.(ctx.bot.id, target.id) || (() => {});
@@ -1913,6 +1915,7 @@ export function createRegistry(deps) {
           // Stopping this bot stops the colleague it is waiting on too.
           signal: ctx.signal,
           fromBotId: ctx.bot.id,
+          ...(board?.turnId ? { turnId: board.turnId } : {}),
           // A hand-off from inside a group hands the group context down too: the
           // teammate then knows the group id and can answer the whole group with
           // group_post instead of only replying privately.
@@ -1984,9 +1987,11 @@ export function createRegistry(deps) {
       const runtime = deps.getRuntime();
       const queued = Boolean(runtime.botBusy?.(target.id));
       await runtime.mirrorHandoff?.({ fromId: ctx.bot.id, toId: target.id, text: args?.text, group: ctx.group });
+      const board = await runtime.boardHandoff?.({ ctx, target, text: String(args?.text || '') }).catch(() => null);
       // Not awaited: the teammate's turn runs on its own (after its current one).
       Promise.resolve(runtime.runTurn({
         botId: target.id,
+        ...(board?.turnId ? { turnId: board.turnId } : {}),
         text: String(args?.text || ''),
         source: 'bot',
         depth: 1,
@@ -2006,18 +2011,21 @@ export function createRegistry(deps) {
   add({
     name: 'tell_human',
     description:
-      'Tell the human, right away, about something only they can decide or clear: publish or not, choose between options, a blocker (login, money, a missing file). Works even when a teammate or a routine asked you: your other replies may only reach that teammate. The human sees it in your chat, as a phone notification and in Feishu. In a few short lines: what is ready, what you need from them, and your recommendation. Not for progress reports.',
+      'Tell the human, right away, about something only they can decide or clear: publish or not, choose between options, a blocker (login, money, a missing file). Works even when a teammate or a routine asked you: your other replies may only reach that teammate. The human sees it in your chat, as a phone notification and in Feishu. In a few short lines: what is ready, what you need from them, and your recommendation. Not for progress reports. Until they answer, nothing goes out (no draft, no post, no upload, no form sent) - that waits for their answer; set blocking to false only for a question whose answer nothing you send depends on.',
     risk: RISK.LOW,
     parameters: {
       type: 'object',
-      properties: { text: { type: 'string', description: 'What they need to decide, with the facts and your recommendation.' } },
+      properties: {
+        text: { type: 'string', description: 'What they need to decide, with the facts and your recommendation.' },
+        blocking: { type: 'boolean', description: 'Default true: nothing goes out until they answer. false: only for a question no send depends on (you can go on meanwhile).' },
+      },
       required: ['text'],
       additionalProperties: false,
     },
     async run(args, ctx) {
       const text = String(args?.text || '').trim();
       if (!text) throw toolError('TEXT_REQUIRED', 'say what the human needs to decide');
-      return deps.getRuntime().tellHuman({ bot: ctx.bot, turnId: ctx.turnId, text });
+      return deps.getRuntime().tellHuman({ bot: ctx.bot, turnId: ctx.turnId, text, blocking: args?.blocking !== false });
     },
   });
 

@@ -267,6 +267,18 @@ async function main() {
     await stage('1.5.64: a login page raises the takeover card and the board waits', async () => (await import('./smoke-group-1564.mjs')).loginWallChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.64: 「改了 N 个文件」 under the turn\'s own reply, in the chat column', async () => (await import('./smoke-group-1564.mjs')).changesLineChecks({ check, readText }));
     await stage('1.5.64: browser_upload finds a hidden file box in a dialog or a frame by itself', async () => (await import('./smoke-group-1564.mjs')).uploadBoxChecks({ check, toolsMod, browserMod, skip }));
+    // 1.5.65: what the 1.5.64 acceptance run with the content group found on 11-23.
+    await stage('1.5.65: one bot, one working turn - hand-offs wait, an open question is respected', async () => (await import('./smoke-group-1565.mjs')).oneTurnChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.65: one post, one approval card', async () => (await import('./smoke-group-1565.mjs')).onePostChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.65: the coordinator stays visible - a board from its hand-offs, one line to the human', async () => (await import('./smoke-group-1565.mjs')).boardChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.65: what the human tells a member directly reaches the coordinator', async () => (await import('./smoke-group-1565.mjs')).directWordChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.65: a hand-off\'s sender in a remote bot\'s chat by name and face', async () => (await import('./smoke-group-1565.mjs')).remoteSenderChecks({ check, readText, api, rawFetch, startServerChild, stopProcess, seedHome }));
+    await stage('1.5.65: the coordinator asks for nothing the human did not', async () => (await import('./smoke-group-1565.mjs')).scopeChecks({ check, readText }));
+    await stage('1.5.65: the page draws the board and the line at once; held messages go into a turn that started meanwhile', async () => (await import('./smoke-group-1565.mjs')).pageChecks({ check, readText }));
+    await stage('1.5.65: every line of the chat sits in the 760 px column, with its own indent', async () => (await import('./smoke-group-1565.mjs')).columnChecks({ check, readText, browserMod, toolsMod, skip }));
+    await stage('1.5.65: every way the human answers closes the open question, once', async () => (await import('./smoke-group-1565.mjs')).answerChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.65: 「这一轮都允许」, sends approved by where they go, stopping after two failed sends', async () => (await import('./smoke-group-1565.mjs')).chainChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.65: what the first real-model collaboration run found - board items one by one, a direct word mid-board, one card for one post, no send before an answer', async () => (await import('./smoke-group-1565.mjs')).realEvalChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -5146,14 +5158,15 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         const waitingAfterFirst = plan.status === 'waiting' && plan.tasks[1].status === 'waiting_human' && plan.tasks[3].status === 'todo';
         const handed = plan.tasks[2].owner === 'a1' && plan.tasks[2].handoffFrom === 'w1' && plan.tasks[2].status === 'done';
         const started = (name) => calls.filter((c) => c.text?.includes(`你负责的任务：${name}`)).map((c) => c.at);
-        // Independent tasks overlap: the second starts before the first one ends (no timing window).
-        const parallel = seq.indexOf('start:配乐清单') > -1 && seq.indexOf('start:配乐清单') < seq.indexOf('end:写分镜') && started('写分镜').length >= 1;
+        // 1.5.65: two items of ONE member (编剧: 写分镜, 配乐清单) run one after another - one bot, one working turn
+        // (the collaboration eval's s6). Different members still run at once (smoke-group-1564 G64-3, smoke-group-1565 G65-10a).
+        const parallel = seq.indexOf('start:配乐清单') > -1 && seq.indexOf('start:配乐清单') > seq.indexOf('end:写分镜') && started('写分镜').length >= 1;
         const took = await brt.answerBoard(grp, '卡通');
         await waitUntil(() => plan.status === 'done', 8000, 'board done').catch(() => false);
         const second = calls.filter((c) => c.text?.includes('你负责的任务：画首帧'));
         const remote = calls.find((c) => c.remote);
         const summary = calls.find((c) => c.role === 'coordinator');
-        check('M15 task board: independent tasks run at once; a task waits for what it needs; a hand-off changes the owner; a question parks the board until the human answers',
+        check('M15 task board: independent tasks run at once (one member\'s own items one after another, 1.5.65); a task waits for what it needs; a hand-off changes the owner; a question parks the board until the human answers',
           waitingAfterFirst && handed && parallel && took === true && second.length === 2 && /用户的回答：卡通/.test(second[1].text) && /前面几项的结果/.test(second[1].text) && /写分镜/.test(second[1].text), JSON.stringify(calls.map((c) => [c.who, c.role, (c.text || '').slice(0, 30)])));
         check('M15 task board: a member on another machine does its task there; at the end the coordinator sums up once and cannot plan again; the board is done and the group is told',
           remote?.who === 'r1' && /画首帧/.test(remote.text) && summary?.noPlan === true && /任务板做完了/.test(summary.text) && plan.status === 'done' && plan.tasks.every((t) => t.status === 'done')
@@ -7558,9 +7571,11 @@ async function scenarioV161() {
     rt.active.delete('turn_q2');
     check('Q1 queue: no waiting when that would deadlock (the busy bot is waiting on the caller), and a stopped caller stops waiting',
       cyc.skipped === 'cycle' && ab.aborted === true, JSON.stringify({ cyc, ab }));
+    // 1.5.65: every way in that is not the human's own words waits - also a hand-off from a group, a board task,
+    // another machine's hand-off (checked with real turns in smoke-group-1565.mjs, G65-1e).
     check('Q1 queue: hand-offs, routines and automatic continuations wait their turn; the waiting bot says whom it waits for; the human\'s own messages still reach a busy bot at once',
-      agentSrc.includes("const QUEUED_SOURCES = new Set(['bot', 'routine', 'task']);") && agentSrc.includes('if (QUEUED_SOURCES.has(source) && !groupContext) {')
-      && agentSrc.includes('await this.waitTurnFree(botId, { caller: fromBotId, signal });') && agentSrc.includes('this.wakeBot(bot.id);')
+      agentSrc.includes("export const HUMAN_SOURCES = new Set(['chat', 'feishu']);") && agentSrc.includes('if (working && !fromHuman) {')
+      && agentSrc.includes('const waited = await this.waitTurnFree(botId, { caller: fromBotId, signal, maxMs: queueMs });') && agentSrc.includes('this.wakeBot(bot.id);')
       && toolsSrc.includes('const off = runtime.noteWaiting?.(ctx.bot.id, target.id)') && toolsSrc.includes('ctx.progress?.(`等${target.name}忙完手上的事…`)'));
   }
 
@@ -10108,7 +10123,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const srv = await readText('../src/server.mjs');
     check('approval: a decision from a paired device is audited as "device"',
       srv.includes("viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human'") &&
-      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits })"));
+      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits, chain: body?.chain === true })")); // 1.5.65: + chain
   }
   // Public port (G1): a tunnel socket that never counts as the local human.
   {

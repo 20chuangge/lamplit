@@ -591,9 +591,31 @@ function attachmentNode(file) {
   return a;
 }
 
+/**
+ * A bot id said in the open chat (a hand-off's sender, a bot_message target), as that bot (1.5.65).
+ * In a chat of a bot on another machine (全部机器) a plain id is a bot over there - never this
+ * machine's bot of the same id: 「bot-xxxxxx → 发布」 read as a raw id. From that machine's roster,
+ * else from one of its groups' members, with its face.
+ */
+function chatBotById(id) {
+  const raw = String(id || '');
+  if (!raw) return null;
+  const far = isRemoteId(state.botId) && !isRemoteId(raw) ? remoteOf(state.botId) : null;
+  if (!far) return botById(raw);
+  const there = `${raw}@${far.machine}`;
+  const known = botById(there);
+  if (known) return faceOf(known);
+  const m = (state.peerRoster || []).find((x) => x.machine === far.machine);
+  for (const g of m?.groups || []) {
+    const member = (g.members || []).find((x) => x && x.id === raw);
+    if (member?.name) return faceOf({ ...member, id: there });
+  }
+  return null;
+}
+
 /** A message one bot sent another: "文案 → 质检", with the sender's face. */
 function botMessageRow(item) {
-  const sender = botById(item.fromBot) || { id: item.fromBot, name: item.fromBot };
+  const sender = chatBotById(item.fromBot) || { id: item.fromBot, name: item.fromBot };
   // One line, the words behind a click (1.5.40).
   const row = handoffRow({ sender, target: botById(state.botId), text: item.text || '', state: item.handoffState || '', ts: item.ts });
   row.classList.add('from-bot');
@@ -1783,7 +1805,7 @@ function describeTool(name, rawArgs) {
         : '只会写进这位助手自己的记忆，以后的对话都会带上它。';
       break;
     case 'bot_message': {
-      const target = botById(args.botId);
+      const target = chatBotById(args.botId);
       out.detail = target ? target.name : (args.botId || '');
       out.title = `想把任务交给${target ? `「${target.name}」` : '另一位助手'}`;
       set('交给', '交给', target ? target.name : args.botId);

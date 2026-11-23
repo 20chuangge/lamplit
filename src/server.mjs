@@ -664,6 +664,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
         const record = approvals.decide(id, decision, '飞书', 'feishu');
         if (!record) throw new Error('找不到这个审批');
         if (record.error) throw new Error(record.error);
+        // Answered in Feishu: the question that card was closes, as on the page (1.5.65).
+        runtime.humanAnswered?.(record.botId, { turnId: record.turnId });
         bus.emit({ type: 'approval.decided', approvalId: record.id, botId: record.botId, turnId: record.turnId, status: record.status, note: record.note, late: Boolean(record.late) });
       },
     },
@@ -3446,7 +3448,11 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   // The bot is busy with something the human asked: answer now (no second
   // turn racing the first), and hand the message to the running turn.
   // Also when the work is a teammate's hand-off or a routine (1.2.165).
+  // A group on another machine passes on the human's answer to what this bot asked (1.5.65): the question closes.
+  if (h?.answered === true) state.runtime.humanSpoke?.(bot.id);
   const busyNow = !h && state.runtime.busyTurn?.(bot.id, { any: true });
+  // Said to a member that has work on a group's task board (1.5.65): the row keeps it and the coordinator hears it.
+  if (!h) state.runtime.noteDirectWord?.(bot.id, text, { turnId: busyNow ? null : turnId }).catch(() => {});
   if (busyNow) {
     state.runtime.aside({ botId: bot.id, text, turnId, source: 'chat', busy: busyNow })
       .catch((err) => state.bus.emit({ type: 'error', botId: bot.id, turnId, message: err.message }));
@@ -3457,7 +3463,16 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   for (const card of (!h && state.approvals.cancelOrphans?.(bot.id)) || []) {
     state.bus.emit({ type: 'approval.resolved', botId: bot.id, botName: bot.name, turnId: card.turnId, approvalId: card.id, tool: card.toolName, decision: card.status, note: card.note });
   }
-  const start = (parts, id) => state.runtime
+  const start = (parts, id) => {
+    // Work came in while these were held (a hand-off, a routine; 1.5.65): they go to that turn, not beside it.
+    const busyThen = !h && state.runtime.busyTurn?.(bot.id, { any: true });
+    if (busyThen) {
+      return state.runtime.aside({ botId: bot.id, text: parts.length > 1 ? joinParts(parts) : parts[0], ...(parts.length > 1 ? { parts } : {}), turnId: id, source: 'chat', busy: busyThen })
+        .catch((err) => state.bus.emit({ type: 'error', botId: bot.id, turnId: id, message: err.message }));
+    }
+    return startTurn(parts, id);
+  };
+  const startTurn = (parts, id) => state.runtime
     .runTurn({
       botId: bot.id, text: parts.length > 1 ? joinParts(parts) : parts[0], ...(parts.length > 1 ? { parts } : {}), source: h ? 'peer' : 'chat', turnId: id, ...(handoff || {}),
       ...(h ? { hiddenNote: fromNote, fromBotId: fromLabel } : {}),
@@ -4643,7 +4658,7 @@ route('PUT', /^\/api\/usage$/, async (_req, _res, { body, state }) => {
 //        the cards waiting on the human's other machines, whole: what a card
 //        here shows (tool, full arguments, the commands of a batch, why it asks).
 //        This machine's own cards are not repeated: they are in their chats.
-//   POST /api/inbox/:machine/:id {decision, note?, always?} -> {approval, ...}
+//   POST /api/inbox/:machine/:id {decision, note?, always?, chain?} -> {approval, ...}
 //        the human answers here; this hub passes the answer on with that
 //        machine's token and says where it was answered. Only the human may
 //        (isAuthorityRequest), a call another hub passed on is never passed on
@@ -4702,7 +4717,7 @@ route('POST', /^\/api\/inbox\/(?<machine>[^/]+)\/(?<id>[^/]+)$/, async (req, _re
   const edits = body?.edits && typeof body.edits === 'object' && !Array.isArray(body.edits)
     ? Object.fromEntries(Object.entries(body.edits).filter(([k, v]) => typeof k === 'string' && k.length <= 80 && typeof v === 'string').slice(0, 8).map(([k, v]) => [k, v.slice(0, 20000)]))
     : null;
-  const forward = { decision, note: String(body?.note || '').slice(0, 500), ...(body?.always === true ? { always: true } : {}), ...(edits && Object.keys(edits).length ? { edits } : {}), via: { machine: here } };
+  const forward = { decision, note: String(body?.note || '').slice(0, 500), ...(body?.always === true ? { always: true } : {}), ...(body?.chain === true ? { chain: true } : {}), ...(edits && Object.keys(edits).length ? { edits } : {}), via: { machine: here } };
   let out = null;
   let failure = null;
   try {
@@ -5637,11 +5652,14 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
   const viaMachine = body?.via?.machine && isHubCall(req, state.security) ? String(body.via.machine).trim().slice(0, 60) : '';
   const by = viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human';
   const edits = body?.edits && typeof body.edits === 'object' && !Array.isArray(body.edits) ? body.edits : null;
-  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits });
+  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits, chain: body?.chain === true });
   if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', '这张卡已经不在了（可能已经处理过，或者那台机器重启过）');
   // A draft the human made too long (1.5.45): said so, the card stays open.
   if (record.editError) throw httpError(400, 'DRAFT_INVALID', record.error);
   if (record.error) throw httpError(409, 'APPROVAL_CONFLICT', record.error);
+  // The card a stopped run left open was the question to the human (1.5.65): answered here (this page, the phone,
+  // another machine passing it on), the next job for that bot no longer waits on it.
+  state.runtime.humanAnswered?.(record.botId, { turnId: record.turnId });
   // A routine's card (1.3.2): "现在跑一次（我看着）" runs that routine now, attended,
   // so the same step asks again and waits for the human; "不用了" just puts it away.
   if (record.status === 'dismissed') {
@@ -6550,6 +6568,10 @@ export function toMessageItem(record, index) {
         ...(record.edits ? { edits: record.edits, edited: true } : {}),
         ...(record.adjust ? { adjust: record.adjust } : {}),
         ...(record.handoff ? { handoff: record.handoff } : {}),
+        // 1.5.65: what leaves and where (a send), and 「这一轮都允许」 - offered, and whether it was the answer.
+        ...(record.send?.text ? { send: record.send } : {}),
+        ...(record.chainScope?.keys?.length ? { chainScope: record.chainScope } : {}),
+        ...(record.chainAllowed ? { chainAllowed: true } : {}),
       };
     case 'turn':
       return { ...base, role: 'status', status: record.status, summary: record.summary, steps: record.steps };

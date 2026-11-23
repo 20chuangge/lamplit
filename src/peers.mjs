@@ -61,6 +61,18 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
       || null;
   }
 
+  // A paused link (1.5.65): for a few minutes this hub acts as if that machine were unreachable - every call
+  // in flight is cut and new ones fail at once. Memory only, gone with a restart. The collaboration eval uses
+  // it to drop a machine it may not switch off (the human's cloud server).
+  const paused = new Map(); // name -> until (ms)
+  const epochs = new Map(); // name -> AbortController of the calls since the last pause
+  const epochOf = (name) => { let c = epochs.get(name); if (!c || c.signal.aborted) { c = new AbortController(); epochs.set(name, c); } return c; };
+  function linkCut(name) {
+    const until = paused.get(name) || 0;
+    if (until <= Date.now()) { paused.delete(name); return null; }
+    return Object.assign(new Error(`连不上「${name}」（这条连接暂停了，还有 ${Math.ceil((until - Date.now()) / 1000)} 秒）`), { code: 'PEER_UNREACHABLE', paused: true });
+  }
+
   // The address that answered last, per machine (1.5.28): tried first next
   // time. A LAN address that cannot be reached from here (another network) made
   // every call wait for its timeout before trying the Tailscale one.
@@ -83,6 +95,11 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
   /** One request to a peer: the address that worked last, else its LAN address, then its Tailscale address.
    *  `base` forces a single address (the machine list probes both in parallel). */
   async function call(peer, method, path, { body, raw, headers = {}, timeoutMs = 20000, signal, base, noRelay = false } = {}) {
+    const cut = linkCut(peer.name);
+    if (cut) throw cut;
+    // Every call (and a stream's body) also ends when the link is paused (1.5.65, pause()).
+    const epoch = epochOf(peer.name).signal;
+    signal = signal ? AbortSignal.any([signal, epoch]) : epoch;
     let lastErr = null;
     // The relay comes last (第 1 步原型): it works from anywhere, but it is the long way.
     const known = [peer.url, peer.tailnetUrl, noRelay ? '' : relayBase(peer)].filter(Boolean);
@@ -114,6 +131,7 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
         }
         return res;
       } catch (err) {
+        if (epoch.aborted) throw linkCut(peer.name) || Object.assign(new Error(`连不上「${peer.name}」（连接断了）`), { code: 'PEER_UNREACHABLE' });
         if (err.code === 'PEER_UNAUTHORIZED' || signal?.aborted) throw err;
         lastErr = err;
       }
@@ -129,6 +147,20 @@ export function createPeers({ file, fetchImpl = fetch, relayFetchImpl = relayFet
   }
 
   return {
+    /** Pause the link to a machine for `ms` (at most 5 minutes; 0 resumes it). Returns the time it ends, 0, or null (no such machine). */
+    pause(name, ms) {
+      if (!peers.some((p) => p.name === name)) return null;
+      const wait = Math.max(0, Math.min(Number(ms) || 0, 5 * 60 * 1000));
+      if (!wait) { paused.delete(name); return 0; }
+      const until = Date.now() + wait;
+      paused.set(name, until);
+      epochs.get(name)?.abort();
+      rosters.delete(name);
+      return until;
+    },
+    /** When a paused link resumes (ms), or 0. */
+    pausedUntil(name) { return linkCut(name) ? paused.get(name) : 0; },
+
     async load() {
       const raw = await readJson(file, []);
       peers = Array.isArray(raw)

@@ -53,3 +53,6 @@ _*.html
 
 # screenshots taken by scripts/check-phone-ui.mjs
 .uiv1-shots/
+
+# collaboration eval reports (scripts/eval-collab.mjs)
+eval-results/

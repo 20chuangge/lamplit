@@ -62,6 +62,8 @@ import { grantsForNewBot, isRequestable } from './abilities.mjs';
 import { fetchPublic } from './netguard.mjs';
 import { realPathOf } from './realpath.mjs';
 import { readInside, writeInside, mkdirInside } from './safefs.mjs';
+import { turnWriteAside, BOT_MADE } from './keepuploads.mjs';
+import fs from 'node:fs';
 
 const MAX_SHELL_OUTPUT = 20000;
 const MAX_FILE_READ = 200000;
@@ -367,6 +369,40 @@ function runShellCommand(command, { cwd, timeoutMs, signal, maxOutput = MAX_SHEL
  * @param {() => object} deps.getRuntime   late-bound AgentRuntime (bot_message needs it)
  * @param {() => object} deps.getRoutines  late-bound RoutineStore
  */
+/**
+ * A page that stops at a login only the human can pass (1.5.64): 11-23 发布 opened
+ * B站, 视频号 and 知乎, found a QR login on each, and ended its turn with a report -
+ * the human learned it later. -> {kind:'qr'|'sms'|'login', why} or null.
+ * From the address and the title (a login page's own); from the text only for
+ * what a header's 「登录」 link never says (scan a code, an SMS code).
+ */
+export function loginWallOf({ url = '', title = '', text = '' } = {}) {
+  const u = String(url || '');
+  const t = String(title || '');
+  const body = String(text || '').slice(0, 8000);
+  if (/扫码登录|扫描二维码|二维码登录|微信扫一扫|扫一扫登录|使用.{0,8}App.{0,4}扫|打开.{0,10}(App|客户端).{0,6}扫|scan (the )?qr/i.test(body) || /扫码/.test(t)) return { kind: 'qr', why: '要扫码登录' };
+  if (/(短信|手机)验证码登录|获取(短信)?验证码|输入.{0,4}验证码/.test(body) && /登录|log ?in|sign ?in/i.test(`${t} ${body.slice(0, 2000)}`)) return { kind: 'sms', why: '要手机验证码登录' };
+  let host = '';
+  let p = '';
+  try { const x = new URL(u); host = x.hostname; p = `${x.pathname}${x.hash}`; } catch { /* not an address */ }
+  if (/^passport\.|^login\.|^signin\.|^account(s)?\.[^.]+\.[a-z]+$/i.test(host) && !/logout/i.test(p)) return { kind: 'login', why: '跳到了登录页' };
+  if (/\/(login|signin|sign_in|sign-in|logon|passport)(\/|\.|$|\?)/i.test(p)) return { kind: 'login', why: '跳到了登录页' };
+  if (/^(登录|登入|账号登录|用户登录|log ?in|sign ?in)\b|[-|·_ ](登录|登入|log ?in|sign ?in)$|^.{0,12}(登录|登入)$/i.test(t.trim())) return { kind: 'login', why: '这一页是登录页' };
+  return null;
+}
+
+/** A browser result with what a login page means for the bot (1.5.64), when it is one. */
+export function withLoginWall(result) {
+  if (!result || typeof result !== 'object' || result.ok === false || result.error) return result;
+  const wall = loginWallOf(result);
+  return wall ? { ...result, loginWall: { kind: wall.kind, note: loginWallNote(wall) } } : result;
+}
+
+/** What a bot is told on a login page (1.5.64): hand the screen over now and wait, do not end with a report. */
+export function loginWallNote(wall) {
+  return `这一页${wall.why}。你自己登不了：现在就调用 request_takeover，用一句话说清要用户做什么（例如「在打开的页面扫码登录」），然后等他弄好再接着做这一步。不要先收尾、写一段「需要登录」的汇报；几个网站都要登录时一次只交一个。账号密码登录先看 vault_list，有就用 browser_fill_secret。`;
+}
+
 /**
  * Words the human reads, as said to them (1.5.52, F7): the prompts say "the human",
  * and a model wrote 「告诉人类」「只在人类点头后」 into reminders and machine lines.
@@ -705,9 +741,13 @@ export function createRegistry(deps) {
     },
     async run(args, ctx) {
       if (optionLikePath(args?.path)) throw toolError('FS_OPTION_LIKE', `"${args.path}" has a part that looks like a command option (like -p), not a file or folder name. Use the real path.`);
-      const r = resolvePath(ctx.workspaceDir, args?.path);
+      let r = resolvePath(ctx.workspaceDir, args?.path);
       if (!args?.path) throw toolError('FS_BAD_ARGS', 'fs_write needs a path');
       const content = String(args?.content ?? '');
+      // Onto a file the human uploaded: a new name next to it, never over it (1.5.64).
+      const aside = r.named && r.inWorkspace ? turnWriteAside({ workspaceDir: ctx.workspaceDir, rel: r.rel, append: args?.mode === 'append', label: ctx.bot?.name || '' }) : null;
+      if (aside) r = resolvePath(ctx.workspaceDir, aside.path);
+      else if (r.named && r.inWorkspace && /^uploads\//.test(String(r.rel).replace(/\\/g, '/')) && !fs.existsSync(r.abs)) BOT_MADE.add(String(r.rel).replace(/\\/g, '/'));
       // Inside the workspace its folders are made one level at a time, each checked (1.5.60, the verifier F1).
       if (r.named) await mkdirInside(ctx.workspaceDir, path.dirname(r.abs)).catch((err) => { throw err.code === 'PATH_OUTSIDE_WORKSPACE' ? toolError('FS_OUTSIDE_WORKSPACE', err.message) : err; });
       else await fsp.mkdir(path.dirname(r.abs), { recursive: true });
@@ -720,6 +760,7 @@ export function createRegistry(deps) {
         inWorkspace: r.inWorkspace,
         mode: args?.mode === 'append' ? 'append' : 'overwrite',
         ...(undo ? { undo } : {}),
+        ...(aside ? { uploadKept: aside.kept } : {}),
       };
     },
   });
@@ -1086,7 +1127,7 @@ export function createRegistry(deps) {
         const { desktopSupport, ensureDesktop } = await import('./desktops.mjs');
         if (desktopSupport().available && ctx?.bot?.id) await ensureDesktop(ctx.bot.id);
       } catch { /* fall back to the shared desktop */ }
-      return browserManager(ctx).open(args);
+      return withLoginWall(await browserManager(ctx).open(args));
     },
   });
 
@@ -1097,7 +1138,7 @@ export function createRegistry(deps) {
       'Each element looks like {ref:"@e3", tag, role, name, visible}. Always snapshot before clicking or typing; refs from an older page state fail with STALE_REF, so take a new snapshot after the page changes.',
     risk: RISK.LOW,
     parameters: { type: 'object', properties: {}, additionalProperties: false },
-    run: (_args, ctx) => browserManager(ctx).snapshot(),
+    run: async (_args, ctx) => withLoginWall(await browserManager(ctx).snapshot()),
   });
 
   add({

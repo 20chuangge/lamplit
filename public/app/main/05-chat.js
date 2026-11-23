@@ -614,7 +614,9 @@ function botMessageRow(item) {
 
 /** "@质检" in a message: a chip with that bot's face, so it is clear who is meant. */
 function decorateMentions(node) {
-  const names = (state.bots || []).map((b) => b && b.name).filter(Boolean).sort((a, b) => b.length - a.length);
+  // In a group: its members too - another machine's group names its own (1.5.64), with their faces.
+  const people = [...(isGroupMode() ? groupMembers(groupById(state.groupId)) : []), ...(state.bots || [])];
+  const names = [...new Set(people.map((b) => b && b.name).filter(Boolean))].sort((a, b) => b.length - a.length);
   if (!node || !names.length || !String(node.textContent || '').includes('@')) return;
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`@(${names.map(esc).join('|')})`, 'g');
@@ -631,7 +633,7 @@ function decorateMentions(node) {
     re.lastIndex = 0;
     for (const m of value.matchAll(re)) {
       if (m.index > last) frag.appendChild(document.createTextNode(value.slice(last, m.index)));
-      const bot = state.bots.find((b) => b.name === m[1]);
+      const bot = people.find((b) => b && b.name === m[1]);
       const chip = el('span', 'mention');
       if (bot) chip.appendChild(avatarNode(bot, 16));
       chip.appendChild(document.createTextNode(`@${m[1]}`));

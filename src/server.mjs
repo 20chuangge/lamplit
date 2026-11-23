@@ -69,7 +69,7 @@ import { ApprovalQueue, effectivePolicy, APPROVAL_LEVELS, phraseToPattern, inval
 import { readUsageRecords, recentRecords, summarizeUsage, readUsageSettings, saveUsageSettings, readUsageAlert, localDay, forgetSpent, knownPrice, spendRate, fixHandPrices, noteUsage, noteBalance, balancePace } from './usage.mjs';
 import { normalizeRule } from './rules.mjs';
 import { RoutineStore } from './routines.mjs';
-import { AgentRuntime, recoverInterruptedTurns } from './agent.mjs';
+import { AgentRuntime, recoverInterruptedTurns, joinParts } from './agent.mjs';
 import * as memory from './memory.mjs';
 import * as skills from './skills.mjs';
 import * as groups from './groups.mjs';
@@ -3447,9 +3447,9 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   for (const card of (!h && state.approvals.cancelOrphans?.(bot.id)) || []) {
     state.bus.emit({ type: 'approval.resolved', botId: bot.id, botName: bot.name, turnId: card.turnId, approvalId: card.id, tool: card.toolName, decision: card.status, note: card.note });
   }
-  state.runtime
+  const start = (parts, id) => state.runtime
     .runTurn({
-      botId: bot.id, text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}),
+      botId: bot.id, text: parts.length > 1 ? joinParts(parts) : parts[0], ...(parts.length > 1 ? { parts } : {}), source: h ? 'peer' : 'chat', turnId: id, ...(handoff || {}),
       ...(h ? { hiddenNote: fromNote, fromBotId: fromLabel } : {}),
       // A group's introduction asked from another machine (1.5.63): not work for the human here either. Older peers send no flag.
       ...(h?.kickoff === true ? { kickoff: true } : {}),
@@ -3457,8 +3457,15 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
       ...(body?.voiceCall === true && !h ? { hiddenNote: VOICE_CALL_NOTE } : {}),
     })
     .catch((err) => {
-      state.bus.emit({ type: 'error', botId: bot.id, turnId, message: err.message });
+      state.bus.emit({ type: 'error', botId: bot.id, turnId: id, message: err.message });
     });
+  // Several messages in a row start one turn (1.5.64): a few seconds while more keep coming.
+  // Not a hand-off from another machine, and not a voice call (spoken, it waits for nobody).
+  if (!h && body?.voiceCall !== true) {
+    const held = state.runtime.holdHuman(`bot:${bot.id}`, { text, turnId, files: Array.isArray(body?.attachments) && body.attachments.length > 0 }, start);
+    return { turnId: held.turnId, botId: bot.id, ...(held.folded ? { folded: true } : {}) };
+  }
+  start([text], turnId);
 
   return { turnId, botId: bot.id };
 });
@@ -3928,12 +3935,15 @@ route('POST', /^\/api\/groups\/(?<id>[^/]+)\/message$/, async (_req, _res, { par
   // now, and the message reaches their running turn (as in a 1:1 chat).
   // Someone in the group is still working on the last message: they answer
   // in passing, unless the human @mentions a member who is free (it answers now).
+  // 1.5.64: while its board runs, the coordinator hears it; several in a row start one turn.
   const routed = await state.runtime.routeGroupMessage({
     group: { id: group.id, name: group.name, coordinatorId: group.coordinatorId, members },
     text,
     turnId,
+    fromHuman: true,
+    files: Array.isArray(body?.attachments) && body.attachments.length > 0,
   });
-  return { turnId, ...(routed?.aside ? { aside: true } : {}) };
+  return { turnId: routed?.turnId || turnId, ...(routed?.aside ? { aside: true } : {}), ...(routed?.folded ? { folded: true } : {}), ...(routed?.plan ? { plan: true } : {}) };
 });
 
 route('PATCH', /^\/api\/groups\/(?<id>[^/]+)$/, async (_req, _res, { params, body, state }) => {

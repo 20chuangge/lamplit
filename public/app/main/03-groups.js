@@ -368,8 +368,10 @@ async function loadGroupMessages() {
 function senderOf(item) {
   if (!item) return null;
   if (item.from && item.from !== 'user') {
+    // Another machine's group (1.5.64): its member with its face, from the same list the task board uses.
+    if (isRemoteId(state.groupId)) { const m = groupMembersForCard().get(item.from); if (m) return m; }
     const far = groupMemberById(item.from);
-    if (far && isRemoteId(state.groupId)) return far; // its own member, not this machine's bot of that id
+    if (far && isRemoteId(state.groupId)) return faceOf(far); // its own member, not this machine's bot of that id
     // A member deleted since: its name from the history, never its id (1.5.41: 「bot-ioeiz8」).
     return botById(item.from) || far || { id: item.from, name: item.name || (item.from.includes('@') ? item.from : '已删除的助手') };
   }
@@ -632,10 +634,32 @@ function handoffRow({ sender, target, text, state: progress = '', ts = '' }) {
 /** Group members by id (local bots and the far ones), for avatars and names on the card. */
 function groupMembersForCard() {
   const map = new Map();
-  for (const b of state.bots || []) map.set(b.id, b);
-  const g = (state.groups || []).find((x) => x.id === state.groupId);
-  for (const m of g?.members || []) if (!map.has(m.id)) map.set(m.id, m);
+  // Another machine's group (1.5.64, a content group on the user's cloud hub): its board says plain ids
+  // (bot-xxxxxx), its members here are "id@machine" - both name the member, with its own face.
+  // Not this machine's bots first: a bot of the same id here is not that group's member.
+  const group = groupById(state.groupId);
+  const far = group?.remote?.machine || (isRemoteId(state.groupId) ? remoteOf(state.groupId).machine : '');
+  if (!far) for (const b of state.bots || []) map.set(b.id, b);
+  const tail = `@${far}`;
+  for (const m of group?.members || []) {
+    if (!m || typeof m !== 'object' || !m.id) continue;
+    const plain = far && m.id.endsWith(tail) ? m.id.slice(0, -tail.length) : m.id;
+    // No name in the group's list (only its id): that machine's own list of bots has it.
+    const listed = far && (!m.name || m.name === m.id || m.name === plain) ? remoteBotById(`${plain}@${far}`) : null;
+    const face = faceOf(listed ? { ...m, name: listed.name, ...(m.avatar ? {} : listed.avatar ? { avatar: listed.avatar } : {}) } : m);
+    if (!map.has(m.id)) map.set(m.id, face);
+    if (far && !map.has(plain)) map.set(plain, face);
+  }
+  // The group's list not read this time (a slow look at that machine): its bots still have their names.
+  if (far) for (const b of (state.peerRoster || []).find((x) => x.machine === far)?.bots || []) if (b?.id && !map.has(b.id)) map.set(b.id, remoteBotById(`${b.id}@${far}`));
   return map;
+}
+
+/** A member of the open group as a group's line draws it (1.5.64): its name and face, never a bare id. */
+function groupFace(id, name = '') {
+  if (!id) return null;
+  if (isRemoteId(state.groupId)) return groupMembersForCard().get(id) || groupMemberById(id) || { id, name: name || id };
+  return botById(id) || groupMemberById(id) || { id, name: name || id };
 }
 
 function onPlanEvent(plan) {
@@ -665,7 +689,7 @@ function renderGroupItem(item) {
   }
   if (kind === 'handoff') {
     // One bot giving another a piece of the work (1.2.164): "数据匠 → 图表师".
-    const target = item.to ? (botById(item.to) || groupMemberById(item.to) || { id: item.to, name: item.to }) : null;
+    const target = item.to ? groupFace(item.to) : null;
     // One line; the words are behind a click (1.5.40; two folded lines since 1.5.28).
     return handoffRow({ sender, target, text: item.text || '', state: item.handoffState || '', ts: item.ts });
   }

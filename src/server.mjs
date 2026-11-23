@@ -3447,6 +3447,8 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   // turn racing the first), and hand the message to the running turn.
   // Also when the work is a teammate's hand-off or a routine (1.2.165).
   const busyNow = !h && state.runtime.busyTurn?.(bot.id, { any: true });
+  // Said to a member that has work on a group's task board (1.5.65): the row keeps it and the coordinator hears it.
+  if (!h) state.runtime.noteDirectWord?.(bot.id, text, { turnId: busyNow ? null : turnId }).catch(() => {});
   if (busyNow) {
     state.runtime.aside({ botId: bot.id, text, turnId, source: 'chat', busy: busyNow })
       .catch((err) => state.bus.emit({ type: 'error', botId: bot.id, turnId, message: err.message }));
@@ -3457,7 +3459,16 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   for (const card of (!h && state.approvals.cancelOrphans?.(bot.id)) || []) {
     state.bus.emit({ type: 'approval.resolved', botId: bot.id, botName: bot.name, turnId: card.turnId, approvalId: card.id, tool: card.toolName, decision: card.status, note: card.note });
   }
-  const start = (parts, id) => state.runtime
+  const start = (parts, id) => {
+    // Work came in while these were held (a hand-off, a routine; 1.5.65): they go to that turn, not beside it.
+    const busyThen = !h && state.runtime.busyTurn?.(bot.id, { any: true });
+    if (busyThen) {
+      return state.runtime.aside({ botId: bot.id, text: parts.length > 1 ? joinParts(parts) : parts[0], ...(parts.length > 1 ? { parts } : {}), turnId: id, source: 'chat', busy: busyThen })
+        .catch((err) => state.bus.emit({ type: 'error', botId: bot.id, turnId: id, message: err.message }));
+    }
+    return startTurn(parts, id);
+  };
+  const startTurn = (parts, id) => state.runtime
     .runTurn({
       botId: bot.id, text: parts.length > 1 ? joinParts(parts) : parts[0], ...(parts.length > 1 ? { parts } : {}), source: h ? 'peer' : 'chat', turnId: id, ...(handoff || {}),
       ...(h ? { hiddenNote: fromNote, fromBotId: fromLabel } : {}),

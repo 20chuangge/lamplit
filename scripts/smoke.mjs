@@ -267,6 +267,14 @@ async function main() {
     await stage('1.5.64: a login page raises the takeover card and the board waits', async () => (await import('./smoke-group-1564.mjs')).loginWallChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.64: 「改了 N 个文件」 under the turn\'s own reply, in the chat column', async () => (await import('./smoke-group-1564.mjs')).changesLineChecks({ check, readText }));
     await stage('1.5.64: browser_upload finds a hidden file box in a dialog or a frame by itself', async () => (await import('./smoke-group-1564.mjs')).uploadBoxChecks({ check, toolsMod, browserMod, skip }));
+    // 1.5.65: what the 1.5.64 acceptance run with the content group found on 11-23.
+    await stage('1.5.65: one bot, one working turn - hand-offs wait, an open question is respected', async () => (await import('./smoke-group-1565.mjs')).oneTurnChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.65: one post, one approval card', async () => (await import('./smoke-group-1565.mjs')).onePostChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.65: the coordinator stays visible - a board from its hand-offs, one line to the human', async () => (await import('./smoke-group-1565.mjs')).boardChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.65: what the human tells a member directly reaches the coordinator', async () => (await import('./smoke-group-1565.mjs')).directWordChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.65: a hand-off\'s sender in a remote bot\'s chat by name and face', async () => (await import('./smoke-group-1565.mjs')).remoteSenderChecks({ check, readText, api, rawFetch, startServerChild, stopProcess, seedHome }));
+    await stage('1.5.65: the coordinator asks for nothing the human did not', async () => (await import('./smoke-group-1565.mjs')).scopeChecks({ check, readText }));
+    await stage('1.5.65: the page draws the board and the line at once; held messages go into a turn that started meanwhile', async () => (await import('./smoke-group-1565.mjs')).pageChecks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -7558,9 +7566,11 @@ async function scenarioV161() {
     rt.active.delete('turn_q2');
     check('Q1 queue: no waiting when that would deadlock (the busy bot is waiting on the caller), and a stopped caller stops waiting',
       cyc.skipped === 'cycle' && ab.aborted === true, JSON.stringify({ cyc, ab }));
+    // 1.5.65: every way in that is not the human's own words waits - also a hand-off from a group, a board task,
+    // another machine's hand-off (checked with real turns in smoke-group-1565.mjs, G65-1e).
     check('Q1 queue: hand-offs, routines and automatic continuations wait their turn; the waiting bot says whom it waits for; the human\'s own messages still reach a busy bot at once',
-      agentSrc.includes("const QUEUED_SOURCES = new Set(['bot', 'routine', 'task']);") && agentSrc.includes('if (QUEUED_SOURCES.has(source) && !groupContext) {')
-      && agentSrc.includes('await this.waitTurnFree(botId, { caller: fromBotId, signal });') && agentSrc.includes('this.wakeBot(bot.id);')
+      agentSrc.includes("export const HUMAN_SOURCES = new Set(['chat', 'feishu']);") && agentSrc.includes('if (working && !fromHuman) {')
+      && agentSrc.includes('const waited = await this.waitTurnFree(botId, { caller: fromBotId, signal, maxMs: queueMs });') && agentSrc.includes('this.wakeBot(bot.id);')
       && toolsSrc.includes('const off = runtime.noteWaiting?.(ctx.bot.id, target.id)') && toolsSrc.includes('ctx.progress?.(`等${target.name}忙完手上的事…`)'));
   }
 

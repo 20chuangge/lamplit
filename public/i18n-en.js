@@ -1464,6 +1464,7 @@ window.DESK_I18N_EN = {
   " · 等第 {0} 项": " · after task {0}",
   "问你：{0}{1}": "Asked you: {0}{1}",
   "你答：{0}": "You answered: {0}",
+  "你在单聊里说：{0}": "You told it in its own chat: {0}",
   "打开位置": "Show in folder",
   "用上面同一个语音服务和密钥。每个机器人的声音在「管理助手」里选。": "Uses the same speech service and key as above. Each bot picks its voice under Manage bot.",
   "它的回复读出来用这个声音，飞书里的语音回复也是。什么时候自动读，在 设置 → 模型 → 朗读回复。": "Its replies are read aloud in this voice, Feishu voice replies too. When to read aloud is set in Settings → Model → Read replies aloud.",

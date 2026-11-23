@@ -322,6 +322,16 @@ function handleEvent(ev) {
     onPlanEvent(ev.plan);
     return;
   }
+  // Written into the open group while a turn still runs (1.5.65): the board a coordinator's hand-off
+  // made, the hand-off, its one line to the human - drawn now, not when the coordinator's turn ends
+  // (it waits on the member, often for minutes). Not while a reply is streaming in.
+  if (ev.type === 'group.message' && isGroupMode() && ev.groupId === state.groupId && ['plan', 'handoff', 'assistant'].includes(ev.message?.kind) && !state.liveTurn?.bubble) {
+    clearTimeout(state.groupLiveTimer);
+    state.groupLiveTimer = setTimeout(() => {
+      const typing = messagesEl.querySelector('.typing-row');
+      loadGroupMessages().then(() => { if (typing && !messagesEl.contains(typing)) { messagesEl.appendChild(typing); scrollToBottom(); } }).catch(() => {});
+    }, 250);
+  }
   if (ev.type === 'bot.plan') {
     // A bot's own task: a new one shows up in its open chat right away.
     onPlanEvent(ev.plan);

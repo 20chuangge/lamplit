@@ -1896,6 +1896,8 @@ export function createRegistry(deps) {
       const runtime = deps.getRuntime();
       // Two members of one group: the group sees who gave whom what (1.2.164).
       await runtime.mirrorHandoff?.({ fromId: ctx.bot.id, toId: target.id, text: args?.text, group: ctx.group });
+      // The coordinator gives a member work: it shows on the group's task board, and the human hears who does what (1.5.65).
+      const board = await runtime.boardHandoff?.({ ctx, target, text: String(args?.text || '') }).catch(() => null);
       // One thing at a time: a busy colleague finishes first (the chat says whom we wait for).
       if (runtime.botBusy?.(target.id)) ctx.progress?.(`等${target.name}忙完手上的事…`);
       const off = runtime.noteWaiting?.(ctx.bot.id, target.id) || (() => {});
@@ -1913,6 +1915,7 @@ export function createRegistry(deps) {
           // Stopping this bot stops the colleague it is waiting on too.
           signal: ctx.signal,
           fromBotId: ctx.bot.id,
+          ...(board?.turnId ? { turnId: board.turnId } : {}),
           // A hand-off from inside a group hands the group context down too: the
           // teammate then knows the group id and can answer the whole group with
           // group_post instead of only replying privately.
@@ -1984,9 +1987,11 @@ export function createRegistry(deps) {
       const runtime = deps.getRuntime();
       const queued = Boolean(runtime.botBusy?.(target.id));
       await runtime.mirrorHandoff?.({ fromId: ctx.bot.id, toId: target.id, text: args?.text, group: ctx.group });
+      const board = await runtime.boardHandoff?.({ ctx, target, text: String(args?.text || '') }).catch(() => null);
       // Not awaited: the teammate's turn runs on its own (after its current one).
       Promise.resolve(runtime.runTurn({
         botId: target.id,
+        ...(board?.turnId ? { turnId: board.turnId } : {}),
         text: String(args?.text || ''),
         source: 'bot',
         depth: 1,

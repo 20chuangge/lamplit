@@ -473,7 +473,9 @@ function planCard(planId, fallbackText = '') {
   const url = isGroupMode() && state.groupId ? (isRemoteId(state.groupId) ? remoteGroupApi(state.groupId, `/plans/${encodeURIComponent(planId)}`) : `/api/groups/${encodeURIComponent(state.groupId)}/plans/${encodeURIComponent(planId)}`)
     : state.botId ? (isRemoteId(state.botId) ? remoteApi(state.botId, `/plans/${encodeURIComponent(planId)}`) : `/api/bots/${encodeURIComponent(state.botId)}/plans/${encodeURIComponent(planId)}`) : '';
   if (known) fillPlanCard(card, known);
-  else if (url) {
+  // Still open when last seen (1.5.65): it may have moved while this chat was not on screen (another
+  // machine's board sends no events then) - drawn from what this browser had, then asked again.
+  if (url && (!known || known.status === 'running' || known.status === 'waiting')) {
     api(url)
       .then((r) => { if (r?.plan) { state.plans.set(planId, r.plan); fillPlanCard(card, r.plan); } })
       .catch(() => {});
@@ -590,6 +592,8 @@ function fillPlanCard(card, plan, view = null) {
     const body = el('div', 'plan-task-body');
     if (t.brief) body.appendChild(el('div', '', t.brief));
     if (t.question) body.appendChild(el('div', 'plan-q', `问你：${t.question}${t.answer ? `\n你答：${t.answer}` : ''}`));
+    // What the human told this member in its own chat while it had this task (1.5.65): the coordinator goes by it too.
+    for (const s of t.said || []) body.appendChild(el('div', 'plan-q plan-said', `你在单聊里说：${s.text}`));
     if (t.result) body.appendChild(el('div', 'plan-result', t.result));
     if (body.childNodes.length) row.appendChild(body);
     host.appendChild(row);

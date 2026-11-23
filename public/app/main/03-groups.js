@@ -1941,9 +1941,12 @@ function changesChip(turnId, all) {
 }
 
 /** Put it under the reply it belongs to: in the bubble's action row, next to 朗读. */
-function placeChanges(node) {
+function placeChanges(node, reply = null) {
   if (!node) return;
-  const bubble = messagesEl.lastElementChild?.querySelector?.('.bubble');
+  // The turn's own reply when there is one (1.5.64: it came after a 接管屏幕 card, at the far left).
+  const last = messagesEl.lastElementChild;
+  const bubble = (reply || (last && !last.classList?.contains('user') ? last : null))?.querySelector?.('.bubble');
+  // No reply to sit under: a line of its own, in the chat column (style.css).
   if (!bubble) { const line = el('div', 'changes-line'); line.appendChild(node); messagesEl.appendChild(line); return; }
   let row = bubble.querySelector('.bubble-actions');
   if (!row) {

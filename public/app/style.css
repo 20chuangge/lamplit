@@ -2367,6 +2367,10 @@
   .messages > .typing-row {
     width: 100%; max-width: 760px; margin-left: auto; margin-right: auto;
   }
+  /* A turn's 「改了 N 个文件」 on a line of its own sits in the chat column too, under the replies (1.5.64). */
+  .messages > .changes-line {
+    box-sizing: border-box; width: 100%; max-width: 760px; margin-left: auto; margin-right: auto; padding-left: 44px;
+  }
   .messages > .empty { margin: auto; }
   .day-sep { color: var(--dim); font-size: var(--t-xs); font-weight: 400; margin: 2px 0; }
   .row { gap: 0; }

@@ -478,3 +478,120 @@ export async function loginWallChecks({ check, toolsMod, groupsMod, readText }) 
     took === true && /用户的回答：好了/.test(back) && saved?.tasks?.[0]?.status === 'done' && saved.status === 'done', JSON.stringify({ took, status: saved?.status, task: saved?.tasks?.[0]?.status }));
   rig.done();
 }
+
+// ---------------------------------------------------------------------------
+// G64-7: 「改了 N 个文件」 sits under the turn's own reply, in the chat column
+// ---------------------------------------------------------------------------
+/** A few DOM nodes, enough for placeChanges (no browser). */
+function fakeDom() {
+  const node = (cls = '') => {
+    const n = { className: cls, children: [], parent: null };
+    n.classList = { contains: (c) => n.className.split(/\s+/).includes(c) };
+    n.appendChild = (c) => { if (c.parent) c.parent.children.splice(c.parent.children.indexOf(c), 1); c.parent = n; n.children.push(c); return c; };
+    Object.defineProperty(n, 'lastElementChild', { get: () => n.children[n.children.length - 1] || null });
+    n.querySelector = (sel) => {
+      const want = sel.replace(/^\./, '');
+      const walk = (x) => { for (const c of x.children) { if (c.classList.contains(want)) return c; const d = walk(c); if (d) return d; } return null; };
+      return walk(n);
+    };
+    return n;
+  };
+  return { node, el: (_tag, cls) => node(cls || '') };
+}
+
+export async function changesLineChecks({ check, readText }) {
+  const groupsSrc = await readText('../public/app/main/03-groups.js');
+  const chatSrc = await readText('../public/app/main/05-chat.js');
+  const css = await readText('../public/app/style.css');
+  const { node, el } = fakeDom();
+  const placeIn = (messagesEl) => new Function('messagesEl', 'el', `${fnSource(groupsSrc, 'placeChanges')}; return placeChanges;`)(messagesEl, el);
+  // A bot's turn on another machine: its reply (it wrote a file), then the 接管屏幕 card it raised, drawn after it.
+  const messagesEl = node('messages');
+  const reply = messagesEl.appendChild(node('row bot'));
+  reply.appendChild(node('bubble'));
+  const card = messagesEl.appendChild(node('row bot takeover'));
+  card.appendChild(node('takeover-card'));
+  const line = node('changes-wrap');
+  placeIn(messagesEl)(line, reply);
+  const underReply = line.parent?.classList.contains('bubble-actions') && line.parent.parent === reply.children[0];
+  // No reply in that turn at all: a line of its own - never inside the human's own bubble.
+  const m2 = node('messages');
+  const mine = m2.appendChild(node('row user'));
+  mine.appendChild(node('bubble'));
+  const lone = node('changes-wrap');
+  placeIn(m2)(lone);
+  check('G64-7a a turn that changed a file and then raised 接管屏幕: 「改了 1 个文件」 goes under that turn\'s own reply (its action row), not after the card',
+    underReply && !card.querySelector('.changes-wrap') && chatSrc.includes('placeChanges(changesLine(item.turnId, changesByTurn.get(item.turnId)), replyOfTurn.get(item.turnId));'),
+    JSON.stringify({ parent: line.parent?.className }));
+  check('G64-7b with no reply to sit under it is a line of its own (never in the human\'s bubble), and that line is in the chat column (760 px, centred, indented like the replies)',
+    lone.parent?.className === 'changes-line' && !mine.querySelector('.changes-wrap')
+    && /\.messages > \.changes-line \{\s*box-sizing: border-box; width: 100%; max-width: 760px; margin-left: auto; margin-right: auto; padding-left: 44px;/.test(css));
+}
+
+// ---------------------------------------------------------------------------
+// G64-8: browser_upload finds the hidden file box in a dialog by itself
+// ---------------------------------------------------------------------------
+export async function uploadBoxChecks({ check, toolsMod, browserMod, skip }) {
+  const { fileBoxTakes } = browserMod;
+  check('G64-8a which box takes which file: accept by extension or type, image/* too; an empty accept takes anything',
+    fileBoxTakes('image/png, image/jpeg', ['a/cover.jpg']) && !fileBoxTakes('image/png, image/jpeg', ['a/v.mp4']) && fileBoxTakes('.mp4,.flv,.mov', ['v.mp4'])
+    && !fileBoxTakes('.mp4,.flv', ['c.jpg']) && fileBoxTakes('image/*', ['c.webp']) && fileBoxTakes('', ['x.bin']) && !fileBoxTakes('.zip', ['c.jpg', 'd.zip']));
+  const toolsSrc = fs.readFileSync(path.join(REPO, 'src', 'tools.mjs'), 'utf8');
+  check('G64-8b the tool says hidden file boxes are set directly (no clicking 上传, no screen coordinates), and lists the boxes when it cannot tell which',
+    toolsSrc.includes('Hidden file boxes (display:none, inside an open dialog, in shadow DOM or a same-site frame) are set directly') && toolsSrc.includes("throw toolError('OUTSIDE_WORKSPACE'"));
+  // The harness points CHROME_PATH at nothing (smoke.mjs): find the real browser the way the product does.
+  const savedChrome = process.env.CHROME_PATH;
+  delete process.env.CHROME_PATH;
+  const found = browserMod.detectBrowserExecutable().path;
+  if (savedChrome !== undefined) process.env.CHROME_PATH = savedChrome;
+  if (!found) { skip('G64-8c..e (a real browser)', 'no Chromium-based browser on this machine'); return; }
+  const http = await import('node:http');
+  // Like a video site's upload page: a video box first, then the cover dialog with a hidden image box; a same-site frame with a .zip box.
+  const PAGE = `<!doctype html><html><head><title>g64 upload</title><style>.modal{position:fixed;top:40px;left:40px;width:300px;height:200px;background:#fff;border:1px solid #888}</style></head><body>
+<p>上传视频 <input type="file" id="video" accept=".mp4,.flv,.mov"></p>
+<div class="modal" role="dialog"><p>拖拽图片或点击上传</p><input type="file" id="cover" accept="image/png, image/jpeg" style="display:none"></div>
+<iframe id="extra" title="附件" src="/frame"></iframe>
+<p id="got">none</p>
+<script>for (const id of ['video', 'cover']) document.getElementById(id).addEventListener('change', (e) => { document.getElementById('got').textContent = id + ':' + e.target.files[0].name; });</script>
+</body></html>`;
+  const FRAME = '<!doctype html><html><body><label>资料包 <input type="file" id="zip" accept=".zip"></label><p id="fgot">none</p><script>document.getElementById("zip").addEventListener("change", (e) => { document.getElementById("fgot").textContent = e.target.files[0].name; });</script></body></html>';
+  const server = http.createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end(req.url === '/frame' ? FRAME : PAGE); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'lamplit-g64up-'));
+  fs.mkdirSync(path.join(ws, 'uploads'), { recursive: true });
+  fs.writeFileSync(path.join(ws, 'uploads', 'cover.jpg'), Buffer.from('ffd8ffe000104a464946', 'hex'));
+  fs.writeFileSync(path.join(ws, 'uploads', 'pack.zip'), 'PK');
+  const saved = { chrome: process.env.CHROME_PATH, headless: process.env.BROWSER_HEADLESS, priv: process.env.ALLOW_PRIVATE };
+  process.env.BROWSER_HEADLESS = '1';
+  process.env.ALLOW_PRIVATE = '1'; // the test page is on loopback
+  delete process.env.CHROME_PATH;
+  const registry = toolsMod.createRegistry({ workspaceDir: ws, config: {} });
+  const ctx = { workspaceDir: ws, bot: { id: 'g64upload' }, turnId: 'g64-upload' };
+  const call = (name, args = {}) => registry.get(name).run(args, ctx);
+  const got = async (expr) => (await browserMod.getBrowserManager('g64upload').evaluateRaw(expr)).value;
+  try {
+    const opened = await call('browser_open', { url: `http://127.0.0.1:${server.address().port}/` });
+    await until(async () => (await got('document.getElementById("extra").contentDocument && document.getElementById("extra").contentDocument.getElementById("zip") ? 1 : 0')) === 1, 5000);
+    const cover = await call('browser_upload', { paths: ['uploads/cover.jpg'] });
+    const coverGot = await until(async () => ((await got('document.getElementById("got").textContent')) === 'cover:cover.jpg' ? 'cover:cover.jpg' : ''), 3000);
+    check('G64-8c a cover picture with no index goes into the hidden image box inside the open dialog (not the video box before it), without a click - the result says which box',
+      opened?.ok !== false && cover.ok === true && cover.box?.index === 1 && cover.box.hidden === true && cover.box.inDialog === true && coverGot === 'cover:cover.jpg',
+      JSON.stringify({ cover, coverGot }));
+    const wrong = await call('browser_upload', { paths: ['uploads/cover.jpg'], index: 0 });
+    check('G64-8d the wrong box by number (the video box) changes nothing and lists every box - index, accept, hidden, in a dialog, the frame, nearby words',
+      wrong.ok === false && wrong.error?.code === 'WRONG_FILE_BOX' && /#1 hidden in an open dialog accept="image\/png, image\/jpeg"/.test(wrong.error.message) && /#2 in frame 附件 accept="\.zip" near 「资料包」/.test(wrong.error.message)
+      && /#0 accept="\.mp4,\.flv,\.mov" near 「上传视频」/.test(wrong.error.message) && Array.isArray(wrong.boxes) && wrong.boxes.length === 3,
+      JSON.stringify(wrong.error || wrong));
+    const pack = await call('browser_upload', { paths: ['uploads/pack.zip'] });
+    const packGot = await until(async () => ((await got('document.getElementById("extra").contentDocument.getElementById("fgot").textContent')) === 'pack.zip' ? 'pack.zip' : ''), 3000);
+    let outside = null;
+    try { outside = await call('browser_upload', { paths: ['../outside.jpg'] }); } catch (err) { outside = { code: err.code }; }
+    check('G64-8e a box inside a same-site frame is found too; files outside the workspace are still refused before anything reaches the page',
+      pack.ok === true && pack.box?.frame === '附件' && packGot === 'pack.zip' && outside?.code === 'OUTSIDE_WORKSPACE', JSON.stringify({ pack, packGot, outside }));
+  } finally {
+    await call('browser_close').catch(() => {});
+    server.close();
+    for (const [k, v] of [['CHROME_PATH', saved.chrome], ['BROWSER_HEADLESS', saved.headless], ['ALLOW_PRIVATE', saved.priv]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    fs.rmSync(ws, { recursive: true, force: true });
+  }
+}

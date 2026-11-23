@@ -1235,15 +1235,17 @@ export function createRegistry(deps) {
     name: 'browser_upload',
     description:
       'Put files from the workspace into a file box (input type=file) on the current page - pictures for a post, an attachment for a form. ' +
-      'Use this instead of scripting the browser. paths are workspace paths; the page\'s first file box is used unless you pass selector or index. ' +
+      'Use this instead of scripting the browser. paths are workspace paths. ' +
+      'Hidden file boxes (display:none, inside an open dialog, in shadow DOM or a same-site frame) are set directly - do not click 上传 or try to open a file picker first, and never click by screen coordinates for this. ' +
+      'Without index it picks the box whose accept takes your files (one in an open dialog first); when several fit or none does, it changes nothing and lists every file box (index, accept, hidden, in a dialog, nearby words) so you can pass index. ' +
       'Take a browser_screenshot after it to check the files appeared. MEDIUM risk: it hands files to a website.',
     risk: RISK.MEDIUM,
     parameters: {
       type: 'object',
       properties: {
         paths: { type: 'array', items: { type: 'string' }, description: 'Workspace paths of the files, in order (up to 20).' },
-        selector: { type: 'string', description: 'CSS selector of the file box, when the page has more than one.' },
-        index: { type: 'integer', description: 'Which file box (0 = first) among those matching.' },
+        selector: { type: 'string', description: 'CSS selector of the file box, when the page has more than one (optional: the boxes are listed for you).' },
+        index: { type: 'integer', description: 'Which file box (0 = first) among those matching, as a list from browser_upload numbers them.' },
       },
       required: ['paths'],
       additionalProperties: false,

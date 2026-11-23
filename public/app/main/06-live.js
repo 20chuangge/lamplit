@@ -34,6 +34,8 @@ async function send() {
     ? `${text || '（见附件）'}${ATTACH_MARK}${files.map((f) => (f.folder ? folderAttachLine(f) : `- ${f.path}（${/\.(png|jpe?g|gif|webp)$/i.test(f.path) ? '图片' : '文件'}，…）`)).join('\n')}`
     : text;
   state.lastSent = { text, at: Date.now() }; // its turn.start is not drawn twice (1.5.42 test)
+  // Several sent in a row start one turn (1.5.64): each of them is known as this page's own.
+  state.sentRecent = [...(state.sentRecent || []).filter((m) => Date.now() - m.at < 120000).slice(-9), state.lastSent];
   const myRow = messagesEl.appendChild(userRow({ text: shown, ts: new Date().toISOString() }));
   keepTypingLast();
   scrollToBottom(true);
@@ -103,7 +105,8 @@ async function refreshWorking() {
 /** Did this page send that text a moment ago (its own bubble is already drawn)? */
 function sentHere(text) {
   const mine = state.lastSent;
-  return Boolean(state.sending || (mine && Date.now() - mine.at < 120000 && String(text).startsWith(mine.text || '（见附件）')));
+  if (state.sending) return true;
+  return [...(state.sentRecent || []), ...(mine ? [mine] : [])].some((m) => Date.now() - m.at < 120000 && String(text).startsWith(m.text || '（见附件）'));
 }
 
 /** The stop button says 「停下」: the turn stops, its task does not go on by itself, its waiting cards close. */
@@ -398,8 +401,12 @@ function handleEvent(ev) {
       if (!isGroupMode() && ev.botId === state.botId && !ev.aside) setWorking(true);
       // A colleague handed this bot work: show what it asked, with its face, as it arrives.
       // Typed on another device or on that machine's own page: shown here too, not only after a reload.
-      if (ev.source === 'chat' && ev.text && !ev.aside && !isGroupMode() && ev.botId === state.botId && !sentHere(ev.text)) {
-        messagesEl.appendChild(userRow({ text: ev.text, ts: ev.ts || new Date().toISOString() }));
+      if (ev.source === 'chat' && ev.text && !ev.aside && !isGroupMode() && ev.botId === state.botId) {
+        // Several sent in a row, one turn (1.5.64): each of them, as sent.
+        for (const said of (Array.isArray(ev.parts) && ev.parts.length ? ev.parts : [ev.text])) {
+          if (sentHere(said)) continue;
+          messagesEl.appendChild(userRow({ text: said, ts: ev.ts || new Date().toISOString() }));
+        }
         keepTypingLast();
       }
       if (ev.fromBotId && ev.text && !isGroupMode() && ev.botId === state.botId) {
@@ -516,7 +523,7 @@ function showTyping(botId, label = '正在处理…') {
   // In a group: the face of the bot at work, so the human sees who is busy.
   const who = row.querySelector('.typing-who');
   if (isGroupMode() && botId) {
-    const bot = botById(botId) || groupMemberById?.(botId);
+    const bot = groupFace(botId); // another machine's group: its member, not a bot of that id here (1.5.64)
     if (bot && who?.dataset.bot !== botId) {
       const face = avatarNode(bot, 18, 'typing-who');
       face.dataset.bot = botId;

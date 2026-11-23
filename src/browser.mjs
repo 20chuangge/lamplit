@@ -82,6 +82,26 @@ async function pressKey(page, k) {
   await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
 }
 
+const UPLOAD_MIME = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', svg: 'image/svg+xml', heic: 'image/heic',
+  mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', avi: 'video/x-msvideo', mkv: 'video/x-matroska', flv: 'video/x-flv', m4v: 'video/mp4',
+  mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', pdf: 'application/pdf', txt: 'text/plain', csv: 'text/csv', zip: 'application/zip',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+/**
+ * Does a file box's accept="…" take every one of these files (1.5.64)? By extension (".jpg")
+ * or type ("image/jpeg", "image/*"); an empty accept takes anything.
+ */
+export function fileBoxTakes(accept, files) {
+  const tokens = String(accept || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+  if (!tokens.length) return true;
+  return (files || []).every((f) => {
+    const ext = String(f).split(/[\\/]/).pop().split('.').pop().toLowerCase();
+    const mime = UPLOAD_MIME[ext] || '';
+    return tokens.some((t) => (t.startsWith('.') ? t.slice(1) === ext : t.endsWith('/*') ? Boolean(mime) && mime.startsWith(t.slice(0, -1)) : Boolean(mime) && t === mime));
+  });
+}
+
 function errorResult(code, message, extra = {}) {
   return { ok: false, error: { code, message }, ...extra };
 }
@@ -1554,25 +1574,76 @@ class BrowserManager {
     try {
       await this.ensureSession();
       const page = await this.ensurePage();
+      // 1.5.64: every file box on the page - hidden ones, ones in an open dialog, in shadow DOM and in
+      // same-site frames - with what it takes (accept) and the words near it. 11-23 B站's cover box was
+      // a hidden image box (#1) among four others; the bot did not know which and spent ~60 steps.
       const sel = String(args?.selector || 'input[type=file]');
-      const index = Math.max(0, Number(args?.index) || 0);
       const find = `(() => {
         const seen = [];
-        const walk = (root) => { for (const el of root.querySelectorAll(${JSON.stringify(sel)})) seen.push(el); for (const host of root.querySelectorAll('*')) if (host.shadowRoot) walk(host.shadowRoot); };
+        let frameNow = '';
+        const walk = (root) => {
+          for (const el of root.querySelectorAll('input[type=file]')) seen.push({ el, frame: frameNow });
+          for (const host of root.querySelectorAll('*')) if (host.shadowRoot) walk(host.shadowRoot);
+          for (const f of root.querySelectorAll('iframe,frame')) {
+            let d = null;
+            try { d = f.contentDocument; } catch { /* another site's frame */ }
+            if (d) { const was = frameNow; frameNow = (was ? was + ' > ' : '') + (f.title || f.name || f.id || 'iframe'); walk(d); frameNow = was; }
+          }
+        };
         walk(document);
-        const boxes = seen.filter((el) => el.tagName === 'INPUT' && el.type === 'file');
-        window.__deskFileBoxes = boxes.length;
-        return boxes[${index}] || null;
+        const shown = (n) => { if (!n || !n.getBoundingClientRect) return false; const r = n.getBoundingClientRect(); const s = (n.ownerDocument.defaultView || window).getComputedStyle(n); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+        const words = (n) => String((n && (n.innerText || n.textContent)) || '').replace(/\\s+/g, ' ').trim();
+        const near = (el) => {
+          const own = (el.labels && el.labels[0] && words(el.labels[0])) || el.getAttribute('aria-label') || el.title || '';
+          if (own) return own.slice(0, 40);
+          let n = el.parentElement;
+          for (let i = 0; n && i < 4; i += 1, n = n.parentElement) { const t = words(n); if (t && t.length <= 60) return t.slice(0, 40); }
+          return '';
+        };
+        const DIALOG = 'dialog[open],[role=dialog],[aria-modal=true],.modal,[class*="modal"],[class*="Modal"],[class*="dialog"],[class*="Dialog"],[class*="popup"],[class*="Popup"]';
+        let matches = (el) => true;
+        try { document.querySelector(${JSON.stringify(sel)}); matches = (el) => el.matches(${JSON.stringify(sel)}); } catch { matches = () => false; }
+        window.__deskFileBoxList = seen.map((b) => b.el);
+        return seen.map(({ el, frame }, index) => {
+          const dlg = el.closest(DIALOG);
+          return { index, accept: el.accept || '', multiple: Boolean(el.multiple), hidden: !shown(el), inDialog: Boolean(dlg && shown(dlg)), frame, label: near(el), name: el.name || el.id || '', matches: matches(el) };
+        });
       })()`;
-      const found = await page.send('Runtime.evaluate', { expression: find, returnByValue: false });
-      const objectId = found?.result?.objectId;
-      if (!objectId) {
-        const count = await this.evaluateRaw('window.__deskFileBoxes || 0');
-        return errorResult('NO_FILE_BOX', `no file box (input type=file) #${index} on this page (found ${count?.value ?? count ?? 0}). Open the page's upload area first (browser_click on 上传), then try again.`);
+      const listed = await this.evaluateRaw(find);
+      if (!listed.ok) return listed;
+      const boxes = Array.isArray(listed.value) ? listed.value : [];
+      const fits = (box) => fileBoxTakes(box.accept, absPaths);
+      const shownList = boxes.map((b) => ({ ...b, fits: fits(b) }));
+      const say = (b) => `#${b.index}${b.hidden ? ' hidden' : ''}${b.inDialog ? ' in an open dialog' : ''}${b.frame ? ` in frame ${b.frame}` : ''} accept="${b.accept || 'anything'}"${b.label ? ` near 「${b.label}」` : ''}${b.fits ? '' : ' (does not take these files)'}`;
+      const listText = shownList.map(say).join('; ');
+      const HIDDEN_NOTE = 'Hidden file boxes (display:none, inside a dialog, in shadow DOM or a same-site frame) are set directly by this tool - no need to click 上传 or open a file picker first.';
+      if (!boxes.length) {
+        return errorResult('NO_FILE_BOX', `no file box (input type=file) on this page. ${HIDDEN_NOTE} If the page builds its file box only after a click on its upload area, click that once (browser_click), then call browser_upload again.`);
       }
+      const pool = args?.selector ? shownList.filter((b) => b.matches) : shownList;
+      if (!pool.length) return errorResult('NO_FILE_BOX', `no file box matches selector ${sel}. The file boxes on this page: ${listText}. ${HIDDEN_NOTE}`, { boxes: shownList });
+      let box = null;
+      if (args?.index !== undefined && args?.index !== null && args?.index !== '') {
+        box = pool[Math.max(0, Number(args.index) || 0)] || null;
+        if (!box) return errorResult('NO_FILE_BOX', `no file box #${args.index}${args?.selector ? ` among those matching ${sel}` : ''}. The file boxes on this page: ${listText}. ${HIDDEN_NOTE}`, { boxes: shownList });
+        if (!box.fits) return errorResult('WRONG_FILE_BOX', `file box #${box.index} takes ${box.accept}, not these files. The file boxes on this page: ${listText}. Pass the index of one that takes them.`, { boxes: shownList });
+      } else {
+        // Not told which: the one that takes these files - one in an open dialog first.
+        const ok = pool.filter((b) => b.fits);
+        if (!ok.length) return errorResult('WRONG_FILE_BOX', `no file box on this page takes these files. The file boxes: ${listText}.`, { boxes: shownList });
+        const inDialog = ok.filter((b) => b.inDialog);
+        const top = inDialog.length ? inDialog : ok;
+        if (top.length > 1 && top.some((b) => b.accept !== top[0].accept || b.label !== top[0].label)) {
+          return errorResult('WHICH_FILE_BOX', `several file boxes take these files: ${top.map(say).join('; ')}. Call browser_upload again with the index of the right one (all boxes: ${listText}). ${HIDDEN_NOTE}`, { boxes: shownList });
+        }
+        [box] = top;
+      }
+      const found = await page.send('Runtime.evaluate', { expression: `(window.__deskFileBoxList || [])[${box.index}] || null`, returnByValue: false });
+      const objectId = found?.result?.objectId;
+      if (!objectId) return errorResult('NO_FILE_BOX', `file box #${box.index} went away (the page changed). The file boxes were: ${listText}.`);
       await page.send('DOM.enable').catch(() => {});
       await page.send('DOM.setFileInputFiles', { files: absPaths, objectId }, { timeoutMs: 60000 });
-      return { ok: true, uploaded: absPaths.length, files: absPaths.map((p) => p.split(/[\\/]/).pop()), note: 'The files were handed to the page; take a browser_screenshot to see them appear (big pictures can take a few seconds).' };
+      return { ok: true, uploaded: absPaths.length, files: absPaths.map((p) => p.split(/[\\/]/).pop()), box: { index: box.index, accept: box.accept, label: box.label, hidden: box.hidden, inDialog: box.inDialog, ...(box.frame ? { frame: box.frame } : {}) }, boxes: shownList.length, note: 'The files were handed to the page; take a browser_screenshot to see them appear (big pictures can take a few seconds).' };
     } catch (err) {
       return errorResult('UPLOAD_FAILED', err.message);
     }

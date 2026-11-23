@@ -258,6 +258,15 @@ async function main() {
     await stage('1.5.64 folder upload: to another machine - the layout kept there, progress', async () => (await import('./smoke-folder-1564.mjs')).folderPeerChecks({ check, api, base, rawFetch, startServerChild, stopProcess, seedHome }));
     await stage('1.5.64 folder upload: an older Lamplit there - flat with a note, 10 a message', async () => (await import('./smoke-folder-1564.mjs')).folderOldPeerChecks({ check }));
     await stage('1.5.64 folder upload: the page - 选文件夹, a dropped folder, the chip, the card, 正在传', async () => (await import('./smoke-folder-1564.mjs')).folderPageChecks({ check, readText }));
+    // 1.5.64: what the user's content group ran into on 11-23.
+    await stage('1.5.64: another machine\'s group draws its members by name and face - task board, hand-off, sender', async () => (await import('./smoke-group-1564.mjs')).remoteGroupFaceChecks({ check, readText, api, rawFetch, startServerChild, stopProcess, seedHome }));
+    await stage('1.5.64: messages sent in a row start one turn', async () => (await import('./smoke-group-1564.mjs')).burstChecks({ check, toolsMod, groupsMod, startServerChild, stopProcess, seedHome, rawFetch }));
+    await stage('1.5.64: a word during a running board reaches the coordinator, which stops or redirects a step', async () => (await import('./smoke-group-1564.mjs')).midPlanChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.64: the human\'s upload is never written over', async () => (await import('./smoke-group-1564.mjs')).uploadKeepChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.64: a busy bot answers a burst once, without quoting', async () => (await import('./smoke-group-1564.mjs')).busyReplyChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.64: a login page raises the takeover card and the board waits', async () => (await import('./smoke-group-1564.mjs')).loginWallChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.64: 「改了 N 个文件」 under the turn\'s own reply, in the chat column', async () => (await import('./smoke-group-1564.mjs')).changesLineChecks({ check, readText }));
+    await stage('1.5.64: browser_upload finds a hidden file box in a dialog or a frame by itself', async () => (await import('./smoke-group-1564.mjs')).uploadBoxChecks({ check, toolsMod, browserMod, skip }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -325,6 +334,8 @@ function pointEnvAt(target) {
   process.env.ASSIST_WORKSPACE_DIR = path.join(target, 'workspace');
   process.env.ASSIST_MODEL_PROVIDER = 'mock';
   process.env.ASSIST_COUNT_DEMO_USAGE = '1'; // the usage checks run on the demo model (1.5.33: it is not counted for people)
+  // Messages start at once, as each older scenario expects (1.5.64: gathering a burst is checked in smoke-group-1564.mjs).
+  process.env.LAMPLIT_GATHER_MS = '0';
   // Never the real Tailscale of the computer the tests run on (1.5.43: install / remove are one click now).
   process.env.DESK_TAILSCALE_SIMULATE = '1';
   delete process.env.ASSIST_API_KEY;
@@ -11126,7 +11137,7 @@ async function scenarioRoster1542() {
     const rosterSrcNow = await readText('../src/roster.mjs');
     check('RC-15 a remote chat whose machine is off keeps what is on screen (the last turn, a card undone) instead of an older saved copy; a message typed elsewhere shows live; the pairing box says why for another machine',
       pageNow.includes('if (cached && !remoteChatOnScreen(botId) && messagesEl.dataset.shown !== `bot:${botId}`)') && pageNow.includes("if (remoteChatOnScreen(botId)) appendQueuedMessages();") // 1.5.63: nor a chat already on screen
-      && pageNow.includes("ev.source === 'chat' && ev.text && !ev.aside && !isGroupMode() && ev.botId === state.botId && !sentHere(ev.text)")
+      && pageNow.includes("ev.source === 'chat' && ev.text && !ev.aside && !isGroupMode() && ev.botId === state.botId)") && pageNow.includes('if (sentHere(said)) continue;') // 1.5.64: each of several sent in a row
       && pageNow.includes('和别的机器上的助手说话、看它的文件') && rosterSrcNow.includes("from: { bot: from.name || '', machine: selfName() }"));
 
     // --- 5d. what the file-route retest found (2026-11-19) -------------------------------------

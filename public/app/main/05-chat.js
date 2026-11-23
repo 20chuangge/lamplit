@@ -63,6 +63,7 @@ function renderMessages() {
   // A turn's own last message: a new message sent in the middle splits a turn in two (1.5.40), the line still shows once.
   const turnEnds = new Map();
   items.forEach((it, i) => { if (it.turnId) turnEnds.set(it.turnId, i); });
+  const replyOfTurn = new Map(); // turnId -> the row of its last reply bubble (1.5.64)
 
   if (!visible.length) {
     messagesEl.appendChild(emptyState());
@@ -78,13 +79,15 @@ function renderMessages() {
       // One malformed record must never blank the whole transcript.
       try {
         messagesEl.appendChild(renderItem(item));
+        // The turn's own reply (1.5.64): its 「改了 N 个文件」 goes under it, not under a card that came later.
+        if (item.turnId && item.role === 'assistant' && messagesEl.lastElementChild?.querySelector?.('.bubble')) replyOfTurn.set(item.turnId, messagesEl.lastElementChild);
       } catch (err) {
         console.error('render failed for a message', item && item.role, err);
         messagesEl.appendChild(el('div', 'status-line', `这条消息没能渲染（${item && item.role}）`));
       }
       // The end of a turn that changed files: what changed, and 撤销 (1.5.8).
       if (item.turnId && turnEnds.get(item.turnId) === items.indexOf(item) && changesByTurn.has(item.turnId)) {
-        placeChanges(changesLine(item.turnId, changesByTurn.get(item.turnId)));
+        placeChanges(changesLine(item.turnId, changesByTurn.get(item.turnId)), replyOfTurn.get(item.turnId));
       }
     }
     // The last ended turn's result goes at the bottom only while it is the newest
@@ -599,7 +602,9 @@ function botMessageRow(item) {
 
 /** "@质检" in a message: a chip with that bot's face, so it is clear who is meant. */
 function decorateMentions(node) {
-  const names = (state.bots || []).map((b) => b && b.name).filter(Boolean).sort((a, b) => b.length - a.length);
+  // In a group: its members too - another machine's group names its own (1.5.64), with their faces.
+  const people = [...(isGroupMode() ? groupMembers(groupById(state.groupId)) : []), ...(state.bots || [])];
+  const names = [...new Set(people.map((b) => b && b.name).filter(Boolean))].sort((a, b) => b.length - a.length);
   if (!node || !names.length || !String(node.textContent || '').includes('@')) return;
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`@(${names.map(esc).join('|')})`, 'g');
@@ -616,7 +621,7 @@ function decorateMentions(node) {
     re.lastIndex = 0;
     for (const m of value.matchAll(re)) {
       if (m.index > last) frag.appendChild(document.createTextNode(value.slice(last, m.index)));
-      const bot = state.bots.find((b) => b.name === m[1]);
+      const bot = people.find((b) => b && b.name === m[1]);
       const chip = el('span', 'mention');
       if (bot) chip.appendChild(avatarNode(bot, 16));
       chip.appendChild(document.createTextNode(`@${m[1]}`));

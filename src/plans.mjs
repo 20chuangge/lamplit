@@ -96,7 +96,8 @@ export async function loadPlan(planId) {
 
 /** Tasks that can start now: not started, and everything they need is done. */
 export function readyTasks(plan) {
-  const done = new Set(plan.tasks.filter((t) => t.status === 'done').map((t) => t.id));
+  // Stopped by the coordinator because it was not needed (1.5.64, task_change): what waits on it goes on.
+  const done = new Set(plan.tasks.filter((t) => t.status === 'done' || (t.status === 'skipped' && t.dropped != null)).map((t) => t.id));
   return plan.tasks.filter((t) => t.status === 'todo' && t.needs.every((id) => done.has(id)));
 }
 
@@ -105,7 +106,7 @@ export function skipBlocked(plan) {
   let changed = true;
   while (changed) {
     changed = false;
-    const dead = new Set(plan.tasks.filter((t) => ['failed', 'skipped', 'stopped'].includes(t.status)).map((t) => t.id));
+    const dead = new Set(plan.tasks.filter((t) => ['failed', 'skipped', 'stopped'].includes(t.status) && t.dropped == null).map((t) => t.id));
     for (const t of plan.tasks) {
       if (t.status === 'todo' && t.needs.some((id) => dead.has(id))) { t.status = 'skipped'; t.result = '它依赖的任务没做成，所以跳过了。'; changed = true; }
     }

@@ -42,6 +42,7 @@ import { draftFor, applyEdits, fieldValue as getField, outgoingAsk, rememberMayC
 import { historyStart } from './groups.mjs';
 import { explainModelError } from './modelerrors.mjs';
 import { noteUsage, overBudget, allowMore } from './usage.mjs';
+import { WRITERS, keepBefore, restoreAfter } from './keepuploads.mjs';
 
 const MAX_TOOL_OUTPUT = 12000;
 
@@ -180,6 +181,7 @@ const TAKEOVER_RULES = [
   '- When a site needs any of those: open the page in your own browser (browser_open), then call request_takeover with one short sentence saying exactly what they should do. Your turn ends there; you continue when they say so.',
   '- Logins: first call vault_list. If the site is there, fill the fields with browser_fill_secret (you never see the values). If not, call request_login - a secure form saves what the human types into the vault.',
   '- QR codes, SMS or e-mail codes, CAPTCHA and payment: use request_takeover.',
+  '- Do it the moment you hit the login page (a browser result with loginWall says so): call request_takeover then and wait. Never end your turn with a report that a site needs a login - the human would only learn it later. Several sites behind logins: one at a time, the next after they finish the first.',
   '- Only request_takeover puts the 接管屏幕 button in the chat: always call it, never just write "点下面的「接管屏幕」" yourself.',
   '- Never ask for passwords, verification codes or card numbers in chat, and never type a password with browser_type.',
   '- Never expose the desktop to the network (VNC/x11vnc/websockify on 0.0.0.0, port forwarding, remote-desktop software, VNC passwords). The app already gives the human secure access.',
@@ -473,7 +475,56 @@ GROUP_TOOLS.task_end = {
   description: 'Close your current task: done=true when it is finished, false when the human called it off or moved on to something else.',
   parameters: { type: 'object', properties: { done: { type: 'boolean' }, note: { type: 'string' } }, required: ['done'] },
 };
+GROUP_TOOLS.task_change = {
+  name: 'task_change',
+  description: 'Change the running task board after the human said something new: stop a task that is no longer needed (e.g. the human already gave what it was making), tell a task\'s owner a new requirement, or add a task. A task being worked on gets a note before its next step, or stops now.',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['stop', 'note', 'add'], description: 'stop: no longer needed. note: tell its owner something new. add: a new task.' },
+      task: { type: 'integer', description: 'stop / note: the task\'s number on the board (1-based).' },
+      reason: { type: 'string', description: 'stop: why it is not needed (one line, shown on the board). note: what changed and what to do now.' },
+      title: { type: 'string', description: 'add: short task name.' },
+      owner: { type: 'string', description: 'add: the member who does it (exact name).' },
+      brief: { type: 'string', description: 'add: everything the owner needs to do it.' },
+    },
+    required: ['action'],
+  },
+};
 const SOLO_TASK_TOOLS = ['task_plan', 'task_step', 'task_end'];
+
+/*
+ * The human writes several messages in a row (1.5.64; 11-23 in the user's content group: text with
+ * files, more files, then a one-line wish within 16 s - the coordinator planned on the first).
+ * To a chat where nothing runs yet, messages are gathered while more keep coming and start
+ * one turn: GATHER_MS after the last one, GATHER_FILES_MS after one with files (the next batch
+ * of files is often on its way), never more than GATHER_MAX_MS after the first. A bot already
+ * at work reads them before its next step as before, and answers a burst once (ACK_MS).
+ * LAMPLIT_GATHER_MS sets the base wait (0: no gathering, every message at once).
+ */
+export const GATHER_MS = 2500;
+export const GATHER_FILES_MS = 4000;
+export const GATHER_MAX_MS = 10000;
+export const ACK_MS = 2500;
+/** A busy bot's one answer to a message that is not a question (1.5.64: no quoting, once per burst). */
+export const BUSY_ACK = '收到，这一步做完就看。';
+export function gatherBase() {
+  const v = Number(process.env.LAMPLIT_GATHER_MS);
+  return process.env.LAMPLIT_GATHER_MS !== undefined && Number.isFinite(v) ? Math.max(0, Math.min(v, 10000)) : GATHER_MS;
+}
+/** Several messages sent in a row, as the one request the model reads (each stays its own bubble in the chat). */
+export function joinParts(parts) {
+  const list = (parts || []).map((p) => String(p || '').trim()).filter(Boolean);
+  if (list.length <= 1) return list[0] || '';
+  return `（用户几秒内连着发了 ${list.length} 条消息，合起来看，是同一件事：）\n\n${list.map((p, i) => `【第 ${i + 1} 条】\n${p}`).join('\n\n')}`;
+}
+/** Does the human ask something (progress, why, a question) - worth a real answer - or just add to the work? */
+export function asksSomething(text) {
+  const t = String(text || '').replace(/\[附件\][\s\S]*$/, '').trim();
+  if (!t) return false;
+  return /[?？]\s*$/.test(t) || /(吗|呢|没有?|么)\s*[。.!！]?\s*$/.test(t)
+    || /到哪|进度|怎么样|怎样了|多久|多长时间|还要|在干|在做什么|在忙|好了没|做完没|为什么|为啥|咋|怎么回事|有什么问题|卡住/.test(t);
+}
 /** Said to the model when a scheduled task runs (1.5.33; demo mode keys off it too). */
 export const ROUTINE_TURN_LINE = 'This turn runs one of your scheduled tasks (a routine): do what its instruction says.';
 // Turns that wait while their bot is busy (1.2.161): hand-offs, routines, continuations.
@@ -869,28 +920,197 @@ export class AgentRuntime {
    * member answers in passing and the message reaches its running turn.
    * (Seen: "@质检 ..." while 选题 worked went into 选题's turn; 质检 never got it.)
    */
-  async routeGroupMessage({ group, text, turnId }) {
+  async routeGroupMessage({ group, text, turnId, parts = null, fromHuman = false, files = false, held: wasHeld = false }) {
     const fail = (err) => this.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message });
+    // The board runs (1.5.64; 11-23: cover 5 went to 发布, 画师 kept making it for 10 minutes):
+    // the coordinator hears it and may stop or redirect a step - not whichever member is busy.
+    const plan = this.groups ? await this.groupPlan(group.id).catch(() => null) : null;
+    const open = plan?.status === 'running' && plan.tasks?.some((t) => t.status === 'todo' || t.status === 'doing');
+    const mentioned = mentionedMembers(text, group.members || []);
     const busy = this.busyGroupTurn(group.id);
+    if (open && fromHuman && !mentioned.some((m) => !m.remote && !this.isWorking(m.id))) return this.planInput({ group, plan, text, turnId, parts });
     if (!busy) {
-      this.runGroupMessage({ group, text, turnId }).catch(fail);
+      // Nothing runs yet: a few seconds while more messages keep coming, then one turn (1.5.64).
+      if (fromHuman && !wasHeld) {
+        const held = this.holdHuman(`group:${group.id}`, { text, turnId, files }, (list, id) => {
+          this.routeGroupMessage({ group, text: list.length > 1 ? joinParts(list) : list[0], turnId: id, parts: list.length > 1 ? list : null, fromHuman: true, held: true }).catch(fail);
+        });
+        return { turnId: held.turnId, ...(held.folded ? { folded: true } : {}) };
+      }
+      this.runGroupMessage({ group, text, turnId, parts }).catch(fail);
       return {};
     }
-    const free = mentionedMembers(text, group.members || []).filter((m) => m.id !== busy.botId && !m.remote && !this.isWorking(m.id));
+    const free = mentioned.filter((m) => m.id !== busy.botId && !m.remote && !this.isWorking(m.id));
     if (free.length) {
-      this.runGroupMessage({ group, text, turnId, only: free.map((m) => m.id) }).catch(fail);
+      this.runGroupMessage({ group, text, turnId, parts, only: free.map((m) => m.id) }).catch(fail);
       return { started: free.map((m) => m.id) };
     }
-    this.aside({ botId: busy.botId, text, turnId, source: 'group', busy, group }).catch(fail);
+    this.aside({ botId: busy.botId, text, turnId, source: 'group', busy, group, parts }).catch(fail);
     return { aside: true };
   }
 
-  async aside({ botId, text, turnId: providedTurnId = null, source = 'chat', group = null, busy: givenBusy = null }) {
+  /**
+   * Hold a human's message a moment (1.5.64): more that come for the same chat
+   * before it starts join it, and `start(parts, turnId)` runs once with all of
+   * them. -> {turnId, folded} (folded: it joined one already waiting).
+   */
+  holdHuman(key, { text, turnId, files = false }, start) {
+    const base = this.gatherMs ?? gatherBase();
+    if (!(base > 0)) { start([String(text)], turnId); return { turnId, folded: false }; }
+    this.gathering = this.gathering || new Map();
+    let g = this.gathering.get(key);
+    const folded = Boolean(g);
+    if (!g) { g = { parts: [], turnId, firstAt: Date.now(), start }; this.gathering.set(key, g); }
+    g.parts.push(String(text));
+    clearTimeout(g.timer);
+    const wait = files ? Math.max(base, (this.gatherFilesMs ?? Math.round(base * (GATHER_FILES_MS / GATHER_MS)))) : base;
+    const left = Math.max(0, (this.gatherMaxMs ?? GATHER_MAX_MS) - (Date.now() - g.firstAt));
+    g.timer = setTimeout(() => {
+      if (this.gathering.get(key) === g) this.gathering.delete(key);
+      try { g.start(g.parts, g.turnId); } catch (err) { this.bus.emit({ type: 'error', turnId: g.turnId, message: err.message }); }
+    }, Math.min(wait, left));
+    return { turnId: g.turnId, folded };
+  }
+
+  /** How long a burst of messages to a busy bot waits for one answer (1.5.64). */
+  ackWait() {
+    return this.ackMs ?? (gatherBase() > 0 ? ACK_MS : 0);
+  }
+
+  /**
+   * One answer for messages sent in a row (1.5.64): the first schedules it, the
+   * others join; `answer(texts)` runs once. -> a promise of what it answered.
+   */
+  ackLater(key, text, answer) {
+    this.acks = this.acks || new Map();
+    let a = this.acks.get(key);
+    if (a) { a.texts.push(text); return { joined: true, done: a.done }; }
+    a = { texts: [text] };
+    this.acks.set(key, a);
+    a.done = new Promise((resolve) => setTimeout(resolve, this.ackWait()))
+      .then(() => { this.acks.delete(key); return answer(a.texts); });
+    return { joined: false, done: a.done };
+  }
+
+  /**
+   * The human wrote in a group while its board runs (1.5.64). Their words are
+   * kept on the board (a task that starts later reads them, so does the final
+   * summary) and the coordinator looks at the board with them: it may stop a
+   * task that is not needed any more, tell an owner what changed, or add one
+   * (task_change), and answers once for messages sent in a row.
+   */
+  async planInput({ group, plan, text, turnId, parts = null }) {
+    const said = parts || [String(text)];
+    for (const p of said) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: p, turnId });
+    plan.updates = [...(plan.updates || []), ...said.map((p) => ({ ts: nowIso(), text: String(p).slice(0, 2000) }))].slice(-12);
+    await this.boardChanged(plan);
+    const fail = (err) => this.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message });
+    for (const p of said) this.ackLater(`plan:${plan.id}`, p, (texts) => this.reviewPlan({ group, plan, texts, turnId }).catch(fail));
+    return { turnId, plan: true };
+  }
+
+  /** The coordinator's look at its running board after the human's new words: one model call, task_change only. */
+  async reviewPlan({ group, plan, texts, turnId }) {
+    const members = group.members || [];
+    const names = new Map(members.map((m) => [m.id, m.name]));
+    const bot = (await this.bots.getBot(plan.coordinatorId).catch(() => null)) || { id: plan.coordinatorId, name: names.get(plan.coordinatorId) || '协调者', role: '' };
+    const now = Date.now();
+    const stateWords = { todo: '还没开始', doing: '正在做', waiting_human: '等用户回复', done: '做完了', failed: '没做成', skipped: '跳过了', stopped: '停了' };
+    const board = plan.tasks.map((t, i) => {
+      const since = t.status === 'doing' && t.startedAt ? `，已经 ${Math.max(1, Math.round((now - Date.parse(t.startedAt)) / 1000))} 秒` : '';
+      return `${i + 1}. ${t.title} —— ${names.get(t.owner) || t.owner}（${stateWords[t.status] || t.status}${since}）${t.brief ? `：${String(t.brief).slice(0, 240)}` : ''}`;
+    }).join('\n');
+    const baseEvent = { botId: bot.id, botName: bot.name, turnId, source: 'group', depth: 0, parentTurnId: null, unattended: false, aside: true, groupId: group.id };
+    this.bus.emit({ type: 'turn.start', ...baseEvent, text: texts.join('\n') });
+    const applied = [];
+    let answer = '';
+    try {
+      const model = (await this.modelFor(bot).catch(() => null)) || this.model;
+      const response = await model.complete([
+        { role: 'system', content: [
+          `你是群「${group.name || ''}」的协调者「${bot.name}」。${bot.role || ''}`,
+          `你排的任务板正在进行。用户原来的请求：${String(plan.request || '').slice(0, 600)}`,
+          `任务板现在：\n${board}`,
+          '',
+          '用户刚在群里又说了下面的话。判断它对任务板有没有影响：',
+          '- 某一项因此不需要了（例如用户自己给了这一项要做出来的东西）：用 task_change，action 为 stop，reason 写清为什么。正在做的会马上停下，已经写好的文件留着。',
+          '- 某一项要按新的要求做：task_change，action 为 note，reason 写清改了什么。正在做的在下一步之前看到，还没开始的开始时看到。',
+          '- 多了一件事：task_change，action 为 add，写 title、owner（成员名字）、brief。',
+          '- 只是补充信息或者和任务板无关：不用调用工具。这些话已经记在任务板上，后面开始的每一项和最后的汇总都会看到。',
+          '然后用一两句话回复用户：说你做了什么调整；没调整就说收到、做的时候会照这个来。不要复述用户的原话，不要列任务板。',
+        ].join('\n') },
+        { role: 'user', content: texts.length > 1 ? joinParts(texts) : texts[0] },
+      ], { tools: groupToolSchemas(['task_change']) });
+      noteUsage({ botId: bot.id, botName: bot.name, provider: model.provider || '', model: model.model || '', usage: response.usage, source: 'group', ...(bot.eval ? { eval: true } : {}) }, { audit, bus: this.bus }).catch(() => {});
+      for (const call of response.toolCalls || []) {
+        if (call?.name !== 'task_change') continue;
+        const done = await this.changeTask({ group, plan, args: call.arguments || call.args || {}, by: bot });
+        if (done) applied.push(done);
+        this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name: 'task_change', args: truncateJson(call.arguments || {}, 2000), ok: Boolean(done), risk: 'LOW', result: done || { error: { code: 'BAD_CHANGE', message: '没有这一项' } } });
+      }
+      answer = stripOwnTag(String(response.content || '').trim(), bot.name);
+    } catch (err) {
+      console.error(`[group] board review failed (${group.id}): ${String(err.message).slice(0, 200)}`);
+    }
+    if (!answer) answer = applied.length ? `好，${applied.join('；')}。` : BUSY_ACK;
+    this.bus.emit({ type: 'message', ...baseEvent, text: answer, final: true });
+    await this.recordGroupMessage(group.id, { kind: 'assistant', from: bot.id, text: answer, turnId });
+    this.bus.emit({ type: 'turn.end', ...baseEvent, status: 'success', summary: answer.slice(0, 200), steps: 0 });
+    return { turnId, text: answer, applied };
+  }
+
+  /** task_change on a running board (1.5.64). -> what was done, in words, or '' when nothing matched. */
+  async changeTask({ group, plan, args = {}, by = null }) {
+    const members = group.members || [];
+    const action = String(args.action || '').trim();
+    const why = String(args.reason || '').trim().slice(0, 600);
+    const who = (id) => members.find((m) => m.id === id)?.name || id;
+    const wake = () => this.planWakers?.get(plan.id)?.();
+    if (action === 'add') {
+      const owner = resolveMember(members, args.owner);
+      const title = String(args.title || '').trim().slice(0, 120);
+      if (!owner || !title || plan.tasks.length >= 16) return '';
+      plan.tasks.push({ id: `t${plan.tasks.length + 1}`, title, owner: owner.id, brief: String(args.brief || why || '').slice(0, 1500), deliverable: '', needs: [], status: 'todo', result: '', addedBy: by?.id || '' });
+      await this.boardChanged(plan);
+      wake();
+      return `加了一项「${title}」给${owner.name}`;
+    }
+    const n = Number(args.task);
+    const task = Number.isInteger(n) && n >= 1 ? plan.tasks[n - 1] : plan.tasks.find((t) => t.id === String(args.task || ''));
+    if (!task) return '';
+    if (action === 'stop') {
+      if (!['todo', 'doing', 'waiting_human'].includes(task.status)) return '';
+      task.dropped = why || '不再需要';
+      if (task.status === 'doing') {
+        // Its turn stops now; runPlanTask marks it skipped when that turn returns.
+        const live = task.turnId ? this.active.get(task.turnId) : null;
+        live?.controller?.abort();
+        if (task.turnId) this.approvals?.cancelForTurn?.(task.turnId, '已取消：协调者停掉了这一项');
+      } else {
+        task.status = 'skipped';
+        task.result = `协调者停掉了这一项：${task.dropped}`;
+      }
+      await this.boardChanged(plan);
+      wake();
+      return `停掉了第 ${plan.tasks.indexOf(task) + 1} 项「${task.title}」（${who(task.owner)}）`;
+    }
+    if (action === 'note') {
+      if (!why || !['todo', 'doing', 'waiting_human'].includes(task.status)) return '';
+      task.notes = [...(task.notes || []), why].slice(-6);
+      const live = task.status === 'doing' && task.turnId ? this.active.get(task.turnId) : null;
+      if (live) live.inbox.push({ from: by?.name || '协调者', note: why });
+      await this.boardChanged(plan);
+      return `把新要求告诉了${who(task.owner)}（第 ${plan.tasks.indexOf(task) + 1} 项）`;
+    }
+    return '';
+  }
+
+  async aside({ botId, text, turnId: providedTurnId = null, source = 'chat', group = null, busy: givenBusy = null, parts = null }) {
     const busy = givenBusy || this.busyTurn(botId);
     const bot = await this.bots.getBot(busy?.remote && group?.coordinatorId ? group.coordinatorId : botId);
     if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${botId}"`);
     const turnId = providedTurnId || uid('turn');
-    const said = String(text);
+    const said = parts ? parts.join('\n') : String(text);
     // "停下" while it works: stop the turn and its task now, like the stop button.
     if (busy && !busy.remote && !group?.id && isStopWords(said)) {
       const running = this.active.get(busy.turnId);
@@ -921,7 +1141,25 @@ export class AgentRuntime {
       this.approvals.cancelForTurn(busy.turnId, NEW_MESSAGE_NOTE);
       return { turnId, text: '好，刚才等你确认的那一步先不做了，我按这条来。', redirected: true };
     }
-    if (busy) this.active.get(busy.turnId)?.inbox.push(said);
+    // 1.5.64: each message is kept and reaches the running turn now; the answer waits a moment so
+    // messages sent in a row get one. Not a question: one short line, no quoting (11-23: 「我正在做
+    // 「…」 with the first 40 characters of the request, cut mid-link, and two answers in 3 s).
+    const list = parts || [said];
+    for (const p of list) {
+      if (busy) this.active.get(busy.turnId)?.inbox.push(p);
+      if (group?.id) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: p, turnId });
+      else await this.record(bot.id, { kind: 'user', text: p, turnId, source });
+    }
+    const key = `aside:${group?.id ? `group:${group.id}` : `bot:${bot.id}`}:${busy?.turnId || ''}`;
+    let waiting = null;
+    for (const p of list) waiting = this.ackLater(key, p, (texts) => this.answerAside({ bot, busy, group, source, turnId, texts }));
+    const answered = await waiting.done;
+    return waiting.joined ? { turnId: answered?.turnId || turnId, text: answered?.text || '', joined: true } : answered;
+  }
+
+  /** The one answer to what the human sent a busy bot (1.5.64): a real one for a question, else 「收到，这一步做完就看。」. */
+  async answerAside({ bot, busy, group = null, source = 'chat', turnId, texts }) {
+    const said = texts.length > 1 ? joinParts(texts) : String(texts[0] || '');
     const now = Date.now();
     const secs = (ms) => `${Math.max(1, Math.round(ms / 1000))} 秒`;
     const step = busy?.step;
@@ -936,18 +1174,16 @@ export class AgentRuntime {
     ].filter(Boolean).join('\n') : '你手上没有正在做的事。';
     const model = (await this.modelFor(bot).catch(() => null)) || this.model;
     const baseEvent = { botId: bot.id, botName: bot.name, turnId, source, depth: 0, parentTurnId: null, unattended: false, aside: true, ...(group?.id ? { groupId: group.id } : {}) };
-    // In a group the exchange belongs to the group's transcript, not the bot's own chat.
-    if (group?.id) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: said, turnId });
-    else await this.record(bot.id, { kind: 'user', text: said, turnId, source });
-    this.bus.emit({ type: 'turn.start', ...baseEvent, text: said });
+    // (The human's words are in the transcript already, each as sent - aside() wrote them.)
+    this.bus.emit({ type: 'turn.start', ...baseEvent, text: texts[texts.length - 1] || said });
     let answer = '';
-    // Said from the status alone, when the model gives nothing back.
+    // Said from the status alone, when the model gives nothing back - never quoting the human (1.5.64).
     const plain = () => busy?.remote
       ? `收到。「${busy.memberName}」正在「${busy.machine}」上处理，已经 ${secs(now - busy.startedAt)}；它答完后，群里接着处理你这条。`
-      : busy
-        ? `收到。我正在做「${String(busy.task || '').slice(0, 40)}」${step ? `，这一步（${step.name}）已经 ${secs(now - step.startedAt)}` : ''}，这条消息我会在这一步结束后接着看。`
-        : '收到。';
-    try {
+      : busy ? BUSY_ACK : '收到。';
+    // Not a question (files, a new requirement, a schedule): the turn reads it before its next step; no model call.
+    if (busy && !texts.some(asksSomething)) answer = plain();
+    else try {
       const history = group?.id && this.groups
         ? (await this.groups.loadGroupHistory(group.id, { names: new Map((group.members || []).map((m) => [m.id, m.name])) }).catch(() => [])).slice(-8)
         : await this.loadHistory(bot.id, 8);
@@ -965,7 +1201,8 @@ export class AgentRuntime {
         { role: 'user', content: said },
       ], { tools: [] });
       noteUsage({ botId: bot.id, botName: bot.name, provider: model.provider || '', model: model.model || '', usage: response.usage, source, ...(bot.eval ? { eval: true } : {}) }, { audit, bus: this.bus }).catch(() => {});
-      answer = String(response.content || '').trim() || plain();
+      // 「[组长] 收到…」: its own name tag copied from the group history, dropped (1.5.64).
+      answer = stripOwnTag(String(response.content || '').trim(), bot.name) || plain();
     } catch (err) {
       answer = busy ? plain() : `没能回答：${err.message}`;
     }
@@ -1307,6 +1544,9 @@ export class AgentRuntime {
     fromBotId = null,
     // bot_pass: how many times this piece of work was already passed on.
     passHops = 0,
+    // Messages the human sent in a row, gathered into this one turn (1.5.64): each is written to the
+    // chat as sent; `text` is them joined, as the model reads them.
+    parts = null,
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -1396,7 +1636,8 @@ export class AgentRuntime {
       // A new group's round of introductions (1.5.62): the daily note does not count it as work done (attention.mjs intro).
       ...(kickoff ? { kickoff: true } : {}),
     };
-    this.bus.emit({ type: 'turn.start', ...baseEvent, text });
+    // Gathered messages (1.5.64): the page draws each as its own bubble, not the joined text.
+    this.bus.emit({ type: 'turn.start', ...baseEvent, text: parts?.length ? String(parts[parts.length - 1]) : text, ...(parts?.length ? { parts: parts.map(String) } : {}) });
 
     let status = 'success';
     let summary = '';
@@ -1453,8 +1694,12 @@ export class AgentRuntime {
           + (stoppedByHuman ? '\n\n（系统：你手上的任务已经按用户的话停止了，不会再自动接着做。用一句话确认已经停下，说清做到了哪一步、留下了什么；不要再调用工具。）' : '') },
       ];
 
-      if (recordUser) await this.record(bot.id, { kind: 'user', text: String(text), turnId, source, ...(fromBotId ? { from: fromBotId } : {}) });
-      if (coordinatorTurn && recordUser) {
+      const said = Array.isArray(parts) && parts.length > 1 ? parts.map(String) : null;
+      if (recordUser && said) for (const p of said) await this.record(bot.id, { kind: 'user', text: p, turnId, source, ...(fromBotId ? { from: fromBotId } : {}) });
+      else if (recordUser) await this.record(bot.id, { kind: 'user', text: String(text), turnId, source, ...(fromBotId ? { from: fromBotId } : {}) });
+      if (coordinatorTurn && recordUser && said) {
+        for (const p of said) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: p, turnId });
+      } else if (coordinatorTurn && recordUser) {
         await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text), turnId });
       }
 
@@ -1507,6 +1752,11 @@ export class AgentRuntime {
         // Said by the human while this turn worked: read before the next step.
         while (live.inbox.length) {
           const said = live.inbox.shift();
+          // From the group's coordinator about this task (1.5.64, task_change): what changed for it.
+          if (said && typeof said === 'object') {
+            messages.push({ role: 'user', content: `（协调者「${said.from || '协调者'}」在你做这一项时转来新情况：）\n${said.note}\n（照这个调整：不再需要的部分就别做了，已经做好的文件留着；改了要求的按新的来。）` });
+            continue;
+          }
           // Sent instead of answering an approval card (aside() closed it): this is what to do now.
           messages.push({ role: 'user', content: live.redirected
             ? `（你在等用户确认上一步时，他没有点确认，而是发来了下面这条新消息；那张卡片已经收起，那一步没有做。）\n${said}\n（按这条新消息来。上一步除非这条消息要，否则不要原样再试。）`
@@ -1830,7 +2080,9 @@ export class AgentRuntime {
       }
 
       return { turnId, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}),
-        ...(status === 'max_steps' ? { receipts, continueGroup: groupGoesOn } : {}) };
+        ...(status === 'max_steps' ? { receipts, continueGroup: groupGoesOn } : {}),
+        // Stopped for the human's hands (1.5.64): a group's board waits for them instead of calling the task done.
+        ...(waitingFor === 'takeover' || waitingFor === 'login' ? { waitingFor } : {}) };
     } catch (err) {
       status = 'failed';
       summary = `Turn failed: ${err.message}`;
@@ -1926,7 +2178,7 @@ export class AgentRuntime {
    *     answers right after it (progress questions reach every owner)
    * Speakers run one after another so the transcript reads in order.
    */
-  async runGroupMessage({ group, text, turnId = null, recordUser = true, kickoff = false, only = null }) {
+  async runGroupMessage({ group, text, turnId = null, recordUser = true, kickoff = false, only = null, parts = null }) {
     const members = group.members || [];
     const byId = new Map(members.map((m) => [m.id, m]));
     // `only`: the free members a message to a busy group named (the busy one answers elsewhere).
@@ -1941,7 +2193,9 @@ export class AgentRuntime {
       const { member, role, prompt, priorReceipts, cont } = queue.shift();
       if (done.has(member.id)) continue;
       done.add(member.id);
-      const result = member.remote ? await this.runRemoteGroupTurn({ group, member, text: prompt || text, role, turnId: id, recordUser: record, kickoff }) : await this.runTurn({
+      // Messages sent in a row (1.5.64): written once each, by the first who answers.
+      const sent = record && parts ? parts : null;
+      const result = member.remote ? await this.runRemoteGroupTurn({ group, member, text: prompt || text, role, turnId: id, recordUser: record, kickoff, parts: sent }) : await this.runTurn({
         botId: member.id,
         text: prompt || text,
         source: 'group',
@@ -1949,6 +2203,7 @@ export class AgentRuntime {
         group,
         groupRole: role,
         recordUser: record,
+        parts: sent,
         kickoff,
         priorReceipts: priorReceipts || [],
         groupContinuation: cont || 0,
@@ -2400,9 +2655,10 @@ export class AgentRuntime {
     }
     // Everyone is done: the coordinator puts it together for the human.
     const report = plan.tasks.map((t, i) => `${i + 1}. ${t.title}（${names.get(t.owner) || t.owner}，${t.status === 'done' ? '完成' : t.status === 'skipped' ? '跳过' : '没做成'}）：${String(t.result || '').slice(0, 1500)}`).join('\n\n');
+    const later = plan.updates?.length ? `\n\n任务板进行中，用户在群里又说了（以这些为准）：\n${plan.updates.map((u) => `- ${String(u.text).slice(0, 600)}`).join('\n')}` : '';
     await this.runTurn({
       botId: plan.coordinatorId,
-      text: `（任务板做完了）用户的原始请求：${plan.request}\n\n各项结果：\n${report}\n\n把这些结果整合成交给用户的最终答复：结果本身、文件路径；没做成的说明原因和下一步。不要再分工。`,
+      text: `（任务板做完了）用户的原始请求：${plan.request}${later}\n\n各项结果：\n${report}\n\n把这些结果整合成交给用户的最终答复：结果本身、文件路径；没做成的说明原因和下一步。不要再分工。`,
       source: 'group',
       group,
       groupRole: 'coordinator',
@@ -2433,6 +2689,9 @@ export class AgentRuntime {
       task.handoffFrom ? `这项是「${names.get(task.handoffFrom) || task.handoffFrom}」交给你的：${task.handoffNote || ''}` : '',
       task.question ? `你之前问过用户：${task.question}\n用户的回答：${task.answer || '（没有回答）'}` : '',
       cutOff ? '这项做到一半时应用重启了，被打断过，已经写好的文件都还在。先看看做到哪一步了，再接着做；已经做完的部分不要重做一遍。' : '',
+      // Said in the group after the board started (1.5.64): a task that starts later works with it.
+      plan.updates?.length ? `任务板开始以后，用户在群里又说了（以这些为准）：\n${plan.updates.map((u) => `- ${String(u.text).slice(0, 800)}`).join('\n')}` : '',
+      task.notes?.length ? `协调者后来对这一项的补充（以这些为准）：\n${task.notes.map((n) => `- ${n}`).join('\n')}` : '',
       (() => {
         if (!owner || owner.remote || !Array.isArray(owner.tools)) return '';
         const lack = toolsForText(`${task.title} ${task.brief || ''} ${task.deliverable || ''}`).filter((n) => !owner.tools.includes(n));
@@ -2444,13 +2703,18 @@ export class AgentRuntime {
     if (!owner) res = { status: 'failed', summary: '负责人已经不在群里' };
     else if (owner.remote) res = await this.runRemoteGroupTurn({ group, member: owner, text: prompt, role: 'task' });
     else {
-      res = await this.runTurn({ botId: owner.id, text: prompt, source: 'group', group, groupRole: 'task', recordUser: false })
+      // Its turn has a known id (1.5.64): the coordinator can stop it (task_change) or tell it something.
+      task.turnId = uid('turn');
+      res = await this.runTurn({ botId: owner.id, text: prompt, source: 'group', group, groupRole: 'task', recordUser: false, turnId: task.turnId })
         .catch((err) => ({ status: 'failed', summary: err.message }));
       // Cut off by the step limit: the owner goes on, told what it already did,
       // as a group member does (11-17: "我接着做" on the board, then 没做成).
       for (let n = 1; res?.status === 'max_steps' && res.continueGroup && plan.status !== 'stopped'; n += 1) {
+        if (task.dropped != null) break; // stopped by the coordinator (1.5.64)
+        task.turnId = uid('turn');
         res = await this.runTurn({
           botId: owner.id,
+          turnId: task.turnId,
           text: continuationText({ n, what: `任务板上交给你的「${task.title}」`, actions: describeActions(res.receipts) }),
           source: 'group', group, groupRole: 'task', recordUser: false, priorReceipts: res.receipts || [], groupContinuation: n,
         }).catch((err) => ({ status: 'failed', summary: err.message }));
@@ -2462,7 +2726,11 @@ export class AgentRuntime {
     // circles - stop and leave it to the coordinator.
     const handoffLimit = Math.max(3, (group.members || []).length - 1);
     const backTo = res?.board?.handoff && (task.handedBy || []).includes(res.board.handoff.to);
-    if (res?.board?.handoff && ((task.handoffs || 0) >= handoffLimit || backTo)) {
+    if (task.dropped != null) {
+      // The coordinator stopped it while it ran (1.5.64, task_change): not needed any more; the board goes on.
+      task.status = 'skipped';
+      task.result = `协调者停掉了这一项：${task.dropped || '不再需要'}`;
+    } else if (res?.board?.handoff && ((task.handoffs || 0) >= handoffLimit || backTo)) {
       task.status = 'failed';
       task.result = backTo
         ? `这项在成员之间来回推（又要交回给「${names.get(res.board.handoff.to) || res.board.handoff.to}」），停下来等协调者处理。`
@@ -2496,6 +2764,13 @@ export class AgentRuntime {
       task.status = 'waiting_human';
       task.question = res.board.askHuman;
       task.answer = '';
+    } else if (res?.waitingFor) {
+      // A login only the human can pass (1.5.64): the card is up in the group, the task waits for
+      // them like a question - their next word there (「好了」) sends its owner back to it.
+      task.status = 'waiting_human';
+      task.question = String(res.summary || '').replace(/^等你/, '需要你') || '需要你接管屏幕登录';
+      task.answer = '';
+      task.takeover = res.waitingFor;
     } else if (res?.status === 'cancelled') {
       task.status = 'stopped';
       plan.status = 'stopped';
@@ -2530,9 +2805,9 @@ export class AgentRuntime {
    * A group member that lives on another machine takes its turn there: it gets
    * the recent group conversation, and its answer is posted here under its name.
    */
-  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false, kickoff = false }) {
+  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false, kickoff = false, parts = null }) {
     const id = turnId || uid('turn');
-    if (recordUser) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text), turnId: id });
+    if (recordUser) for (const p of parts || [String(text)]) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(p), turnId: id });
     // A new group's introductions (1.5.63): marked here and, through the handoff, on the member's machine too.
     const base = { botId: member.id, botName: member.name, turnId: id, source: 'group', groupId: group.id, ...(kickoff ? { kickoff: true } : {}) };
     const startedAt = nowIso();
@@ -3032,9 +3307,15 @@ export class AgentRuntime {
     // 3. Run it.
     let result;
     let ok = true;
+    // A step that may write names a file the human uploaded: kept aside, given back after (1.5.64).
+    const keptUploads = WRITERS.has(name) ? await keepBefore({ workspaceDir: this.config.workspaceDir, args }).catch(() => []) : [];
     try {
       result = await tool.run(args, ctx);
       ok = result?.ok !== false && !result?.error;
+      if (keptUploads.length) {
+        const moved = await restoreAfter({ workspaceDir: this.config.workspaceDir, kept: keptUploads.splice(0), label: bot.name });
+        if (moved.length) result = { ...(result && typeof result === 'object' && !Array.isArray(result) ? result : { result }), uploadKept: moved.length === 1 ? moved[0] : moved };
+      }
       // The human changed the draft before it went out: the bot is told, and what went out.
       if (ok && draft && ctx.humanEdited?.length) {
         const sent = Object.fromEntries(draft.fields.filter((f) => ctx.humanEdited.includes(f.key)).map((f) => [f.label, String(getField(args, f.key) ?? '').slice(0, 1500)]));
@@ -3044,6 +3325,9 @@ export class AgentRuntime {
     } catch (err) {
       ok = false;
       result = { error: { code: err.code || 'TOOL_FAILED', message: err.message, details: err.details } };
+      // A step that failed halfway may still have written over an upload.
+      const moved = keptUploads.length ? await restoreAfter({ workspaceDir: this.config.workspaceDir, kept: keptUploads.splice(0), label: bot.name }).catch(() => []) : [];
+      if (moved.length) result.uploadKept = moved.length === 1 ? moved[0] : moved;
     }
 
     // Outside text is marked as material and remembered for the rest of the turn (1.5.2).

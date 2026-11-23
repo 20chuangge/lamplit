@@ -453,7 +453,7 @@ export class ApprovalQueue {
    * routine report that in chat. That is the honest behaviour - a scheduled run
    * should never hang for ten minutes pretending to work.
    */
-  request({ turnId, botId, toolName, args, risk, reason, unattended = false, remember = null, batch = null, lookTurn = false, look = false, draft = null, adjust = null, handoff = null }) {
+  request({ turnId, botId, toolName, args, risk, reason, unattended = false, remember = null, batch = null, lookTurn = false, look = false, draft = null, adjust = null, handoff = null, chainScope = null, send = null }) {
     const id = uid('ap');
     const record = {
       id,
@@ -482,6 +482,10 @@ export class ApprovalQueue {
       ...(adjust ? { adjust } : {}),
       // The first hand-off to a machine (1.5.45): which machine and bot.
       ...(handoff ? { handoff } : {}),
+      // 1.5.65: what 「这一轮都允许」 would cover ({keys, label}); absent when this card always asks.
+      ...(chainScope && Array.isArray(chainScope.keys) && chainScope.keys.length ? { chainScope: { keys: chainScope.keys.map(String).slice(0, 12), label: String(chainScope.label || '').slice(0, 200) } } : {}),
+      // 1.5.65: a send - what leaves and where, in words, for the card.
+      ...(send?.text ? { send: { text: String(send.text).slice(0, 300), hosts: (send.hosts || []).map(String).slice(0, 12), public: Boolean(send.public) } } : {}),
     };
     this.records.set(id, record);
     void this.onAudit({ kind: 'approval.requested', ...record });
@@ -518,7 +522,7 @@ export class ApprovalQueue {
    * late, but we do NOT resume the finished run. Re-running the routine is the
    * explicit way to continue; see README "what this replica does NOT do".
    */
-  decide(id, decision, note = '', by = 'human', { decidedOn = '', edits = null } = {}) {
+  decide(id, decision, note = '', by = 'human', { decidedOn = '', edits = null, chain = false } = {}) {
     const record = this.records.get(id);
     if (!record) return null;
     // Answered already (another device, another machine, or a second click):
@@ -569,6 +573,8 @@ export class ApprovalQueue {
       return { ...record, late: true };
     }
 
+    // 「这一轮都允许」 (1.5.65): only on a card that offered it, only with a yes, only while its turn waits.
+    if (chain === true && normalized === 'approved' && record.chainScope && record.status === 'pending') record.chainAllowed = true;
     this.settle(id, normalized, note, by);
     return this.records.get(id);
   }

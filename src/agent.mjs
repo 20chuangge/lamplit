@@ -38,7 +38,7 @@ import { checkBoundary, DEVTOOLS, lookOnly } from './boundary.mjs';
 import { sandboxStatus } from './sandbox.mjs';
 import { PHONE_KIND_LABEL } from './phone.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
-import { draftFor, applyEdits, fieldValue as getField, outgoingAsk, rememberMayCover } from './drafts.mjs';
+import { draftFor, applyEdits, fieldValue as getField, outgoingAsk, rememberMayCover, sendDestination } from './drafts.mjs';
 import { historyStart } from './groups.mjs';
 import { explainModelError } from './modelerrors.mjs';
 import { noteUsage, overBudget, allowMore } from './usage.mjs';
@@ -569,10 +569,32 @@ export function pendingNote(p, now = Date.now()) {
 /** A teammate's instructions vs what the human told this bot directly: the human wins (1.5.65). */
 export const HUMAN_FIRST_NOTE = '（同事交来的话如果和用户直接对你说过的话冲突（例如用户说过「先跳过」某一步），以用户的话为准，照用户的来，并在回复里告诉交来的人你为什么没照它说的做。）';
 
+/**
+ * Did a send to the outside fail (1.5.65)? The step failed or timed out, the program exited with an error, or
+ * what came back says so - an error page, 「uploads disabled」, a 4xx/5xx - or nothing came back at all
+ * (lines the command printed itself, like 「--catbox--」, do not count). A plain rule, not a judgment.
+ */
+export function sendFailed(ok, result) {
+  if (!ok || !result || typeof result !== 'object') return true;
+  if (result.error || result.timedOut || (typeof result.exitCode === 'number' && result.exitCode !== 0)) return true;
+  if (typeof result.status === 'number' && result.status >= 400) return true;
+  const out = String(result.stdout ?? result.body ?? result.text ?? '');
+  if (/\b[45]\d\d\b|bad gateway|service unavailable|error|disabled|forbidden|denied|not allowed|too large|rate limit|<!doctype|<html/i.test(out)) return true;
+  const said = out.split('\n').filter((l) => l.trim() && !/^\s*(--+|==+).*(--+|==+)\s*$/.test(l)).join('\n').trim();
+  return !said;
+}
+/** What the bot is told after the second failed send in a turn (1.5.65). */
+export const STOP_SENDS_NOTE = '往外发东西这一轮已经失败两次了。不要再换别的网站或服务去试：现在停下，用 tell_human 告诉用户哪里失败了（试了哪些地方、各自的错误），问他要怎么办（换个办法、他自己来传、或者先不做）。Sending out has failed twice in this turn: do not try other services - stop, and tell the human with tell_human what failed and ask how to go on.';
+
+/** A post's channel however it is written: 「知乎（视频）」 = 「知乎」 = 「知乎 」 (1.5.65). */
+export function channelKey(channel) {
+  return String(channel || '').replace(/[（(【\[][^）)】\]]*[）)】\]]/g, '').replace(/[\s·・\-_/]+/g, '').toLowerCase();
+}
+
 /** One post, however its channel is written (「知乎（视频）」 = 「知乎」) - for one card per post. */
 export function postKey(botId, args = {}) {
   const flat = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-  const channel = String(args.channel || '').replace(/[（(【\[][^）)】\]]*[）)】\]]/g, '').replace(/[\s·・\-_/]+/g, '').toLowerCase();
+  const channel = channelKey(args.channel);
   return `${botId}\u0001${channel}\u0001${flat(args.title)}\u0001${flat(args.body)}`;
 }
 
@@ -831,6 +853,37 @@ export class AgentRuntime {
     const p = this.pendingHuman?.get(botId);
     if (!p || (turnId && p.turnId !== turnId)) return false;
     return this.humanSpoke(botId);
+  }
+
+  // ---- 1.5.65 「这一轮都允许」: an answer for the rest of one turn chain, never for another bot or a later turn ----
+
+  /** The human said 这一轮都允许 on a card: the same kind of step (or the same destination) runs unasked in this chain. */
+  grantChain(chainId, botId, offer) {
+    if (!chainId || !offer?.keys?.length) return;
+    this.chainGrants = this.chainGrants || new Map();
+    let g = this.chainGrants.get(chainId);
+    if (!g || g.botId !== botId) { g = { botId, keys: new Map() }; this.chainGrants.set(chainId, g); }
+    for (const k of offer.keys) g.keys.set(String(k), String(offer.label || k));
+  }
+
+  /** Does this chain's answer cover every key of this step (a send to two hosts needs both)? */
+  chainCovers(chainId, botId, keys = []) {
+    const g = chainId ? this.chainGrants?.get(chainId) : null;
+    return Boolean(g && g.botId === botId && keys.length && keys.every((k) => g.keys.has(String(k))));
+  }
+
+  endChain(chainId) {
+    this.chainGrants?.delete(chainId);
+  }
+
+  /** A chain cut off by the step limit that nothing goes on with ends after a while anyway. */
+  expireChainLater(chainId, botId) {
+    const t = setTimeout(() => {
+      if ([...this.active.values()].some((i) => i.chainId === chainId)) return;
+      this.endChain(chainId);
+      if (this.chainNext?.get(botId) === chainId) this.chainNext.delete(botId);
+    }, this.chainGraceMs ?? 10 * 60 * 1000);
+    t.unref?.();
   }
 
   /** The claimed turn has started (or will not): the bot counts as busy by its turn alone. */
@@ -1664,6 +1717,9 @@ export class AgentRuntime {
     // Messages the human sent in a row, gathered into this one turn (1.5.64): each is written to the
     // chat as sent; `text` is them joined, as the model reads them.
     parts = null,
+    // 1.5.65: the turn chain this turn belongs to - itself, or the turn it goes on from after the step limit.
+    // 「这一轮都允许」 lasts for the chain and ends with it.
+    chainId = null,
   }) {
     const bot = await this.bots.getBot(botId);
     const turnModel = (await this.modelFor(bot).catch(() => null)) || this.model;
@@ -1681,6 +1737,10 @@ export class AgentRuntime {
 
     // The HTTP layer mints the id so it can hand it back before the turn starts.
     const turnId = providedTurnId || uid('turn');
+    // A continuation after the step limit (source 'task') is the same chain as the turn it goes on from.
+    const chainFromLimit = !chainId && source === 'task' ? this.chainNext?.get(botId) : null;
+    if (chainFromLimit) this.chainNext.delete(botId);
+    const turnChain = chainId || chainFromLimit || turnId;
     const controller = new AbortController();
     if (signal) {
       if (signal.aborted) controller.abort();
@@ -1715,7 +1775,7 @@ export class AgentRuntime {
     // task, the step in progress, the latest result, and the human's new words.
     if (coordinatorTurn) this.groupTurns.add(turnId);
     this.releaseClaim(bot.id);
-    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), groupId: group?.id || null, kickoff, unattended, from: fromBotId || null, working, source, groupRole: groupContext ? groupRole : null });
+    this.active.set(turnId, { controller, botId: bot.id, task: String(text).slice(0, 400), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth, group: Boolean(group?.id), groupId: group?.id || null, kickoff, unattended, from: fromBotId || null, working, source, groupRole: groupContext ? groupRole : null, chainId: turnChain });
     const live = this.active.get(turnId);
     // Its row on a hand-off board waited (待开始) while the member finished something else: 进行中 now (1.5.65).
     this.rowStarted(turnId).catch(() => {});
@@ -1863,6 +1923,7 @@ export class AgentRuntime {
         groupTurn: coordinatorTurn,
         // A question to the human is still open and the human did not start this turn (1.5.65): nothing goes out.
         decisionPending: pending,
+        chainId: turnChain,
         emit: (event) => this.bus.emit({ ...baseEvent, ...event }),
       };
 
@@ -2224,7 +2285,7 @@ export class AgentRuntime {
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
       }
 
-      return { turnId, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}),
+      return { turnId, chainId: turnChain, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}),
         ...(status === 'max_steps' ? { receipts, continueGroup: groupGoesOn } : {}),
         // Stopped for the human's hands (1.5.64): a group's board waits for them instead of calling the task done.
         ...(waitingFor === 'takeover' || waitingFor === 'login' ? { waitingFor } : {}) };
@@ -2235,6 +2296,12 @@ export class AgentRuntime {
       return { turnId, status, summary, steps };
     } finally {
       this.active.delete(turnId);
+      // 「这一轮都允许」 lasts for the turn chain (1.5.65): cut off by the step limit, the turn that goes on
+      // keeps it (a 1:1 continuation picks the chain up; a group's is handed it); otherwise it ends here.
+      if (status === 'max_steps') {
+        if (!groupContext) { this.chainNext = this.chainNext || new Map(); this.chainNext.set(bot.id, turnChain); }
+        this.expireChainLater(turnChain, bot.id);
+      } else if (![...this.active.values()].some((i) => i.chainId === turnChain)) this.endChain(turnChain);
       // It stopped on a question only the human can answer (1.5.65): the next job for it, before they answer, knows.
       const askedHuman = waitingFor || live.waitingFor || (status === 'needs_approval' ? 'approval' : '');
       if (working && askedHuman && status !== 'cancelled') {
@@ -2319,6 +2386,7 @@ export class AgentRuntime {
           recordUser: false,
           text: continuationText({ n, what, actions: describeActions(autoContinue.receipts) }),
           priorReceipts: autoContinue.receipts || [],
+          chainId: turnChain,
         }).catch(() => {}), this.taskDelayMs ?? 1500);
         timer.unref?.();
       }
@@ -2344,7 +2412,7 @@ export class AgentRuntime {
     let id = turnId;
     const went = new Map();
     while (queue.length && done.size < 6) {
-      const { member, role, prompt, priorReceipts, cont } = queue.shift();
+      const { member, role, prompt, priorReceipts, cont, chain } = queue.shift();
       if (done.has(member.id)) continue;
       done.add(member.id);
       // Messages sent in a row (1.5.64): written once each, by the first who answers.
@@ -2371,6 +2439,7 @@ export class AgentRuntime {
         kickoff,
         priorReceipts: priorReceipts || [],
         groupContinuation: cont || 0,
+        ...(chain ? { chainId: chain } : {}),
       }).catch((err) => {
         this.bus.emit({ type: 'error', groupId: group.id, turnId: id, message: err.message });
         return null;
@@ -2382,7 +2451,7 @@ export class AgentRuntime {
         const n = (went.get(member.id) || 0) + 1;
         went.set(member.id, n);
         done.delete(member.id);
-        queue.unshift({ member, role, prompt: continuationText({ n, what: `群里交给你的事（用户原话：「${String(prompt || text).slice(0, 300)}」）`, actions: describeActions(result.receipts) }), priorReceipts: result.receipts, cont: n });
+        queue.unshift({ member, role, prompt: continuationText({ n, what: `群里交给你的事（用户原话：「${String(prompt || text).slice(0, 300)}」）`, actions: describeActions(result.receipts) }), priorReceipts: result.receipts, cont: n, chain: result.chainId });
         continue;
       }
       // The coordinator split the work: the task board runs it (and it sums up at the end).
@@ -3069,7 +3138,7 @@ export class AgentRuntime {
           botId: owner.id,
           turnId: task.turnId,
           text: continuationText({ n, what: `任务板上交给你的「${task.title}」`, actions: describeActions(res.receipts) }),
-          source: 'group', group, groupRole: 'task', recordUser: false, priorReceipts: res.receipts || [], groupContinuation: n,
+          source: 'group', group, groupRole: 'task', recordUser: false, priorReceipts: res.receipts || [], groupContinuation: n, chainId: res.chainId,
         }).catch((err) => ({ status: 'failed', summary: err.message }));
       }
     }
@@ -3450,6 +3519,9 @@ export class AgentRuntime {
       else if (ctx.lookTurn && !machine.careful) verdict = { ...verdict, decision: DECISION.AUTO, reason: '这一轮你已经允许过查看类命令' };
     }
 
+    // Asked every time for a reason that is not "it goes out" (the danger list, secrets, adb, the human's rules…):
+    // such a card never offers 「这一轮都允许」 (1.5.65). Every one of those is decided above this line.
+    const stickyNotSend = sticky;
     // Something going out - a post, a mail, a message, a reply (1.5.45 第四步「替你想」):
     // a draft card the human can edit, every time, at any level, whatever trust or
     // 「以后都允许」 said. Only the human's 「发送」 sends it.
@@ -3489,6 +3561,27 @@ export class AgentRuntime {
       await this.record(bot.id, { kind: 'tool', name, args, ok: false, denied: true, reason: 'human_decision_pending', output: result, turnId });
       return { notRun: true };
     }
+    // 「这一轮都允许」 (1.5.65; 11-23: 发布 tried seven file hosts in two minutes, a card each). What the answer
+    // would cover: the same kind of step (the tool and its risk, as 「以后都允许」 names it), or - for a send - its
+    // destination: the web host(s) it goes to, the channel of a post. A new destination asks again. Not offered
+    // where a card asks every time for another reason, for look-only commands (they have their own), for a
+    // connected app, after reading something (the read guard), at 谨慎, or for a send whose destination cannot
+    // be read from the step itself.
+    const send = verdict.decision === DECISION.ASK ? sendDestination(name, args) : null;
+    let chainOffer = null;
+    if (verdict.decision === DECISION.ASK && !stickyNotSend && !guarded && !lookCommand && !machine.careful && !tool.mcp && !riskInfo.alwaysAsk && !riskInfo.adjust && !riskInfo.handoff) {
+      if (draft) chainOffer = name === 'post_draft' && String(args?.channel || '').trim() ? { keys: [`post:${channelKey(args.channel)}`], label: `发到「${String(args.channel).trim()}」` } : null;
+      else if (sendsWithoutDraft) chainOffer = send ? { keys: send.hosts.map((h) => `send:${h}`), label: `往 ${send.hosts.join('、')} 发东西` } : null;
+      else chainOffer = { keys: [`${remember?.key || name}|${verdict.risk}`], label: remember?.label || toolLabel(name) };
+    }
+    // Said yes to that already in this chain: it runs, and the audit says why.
+    let chainHit = null;
+    if (chainOffer && this.chainCovers(ctx.chainId, bot.id, chainOffer.keys)) {
+      chainHit = chainOffer;
+      verdict = { ...verdict, decision: DECISION.AUTO, reason: `这一轮你说过都允许：${chainOffer.label}` };
+      await audit({ kind: 'tool.chain_allowed', botId: bot.id, turnId, chainId: ctx.chainId, tool: name, keys: chainOffer.keys, label: chainOffer.label });
+    }
+
     // One post, one card (1.5.65): the same post (title and text; 「知乎（视频）」 = 「知乎」) shown again
     // gets the human's first answer instead of a second card. 11-23: two cards for one 知乎 post.
     let samePost = null;
@@ -3568,6 +3661,8 @@ export class AgentRuntime {
         ...(draft ? { draft } : {}),
         ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
         ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
+        ...(chainOffer ? { chainScope: chainOffer } : {}),
+        ...(send ? { send } : {}),
       });
       // The same post asked again meanwhile waits for this card's answer (1.5.65).
       let settlePost = null;
@@ -3592,9 +3687,14 @@ export class AgentRuntime {
         ...(draft ? { draft } : {}),
         ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
         ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
+        ...(chainOffer ? { chainScope: chainOffer } : {}),
+        ...(send ? { send: { text: send.text, hosts: send.hosts, public: send.public } } : {}),
       });
 
       const resolution = await pending;
+      // 「这一轮都允许」: the same kind of step (or destination) runs unasked for the rest of this chain (1.5.65).
+      const chainAllowed = Boolean(chainOffer && resolution.decision === 'approved' && resolution.approval?.chainAllowed);
+      if (chainAllowed) this.grantChain(ctx.chainId, bot.id, chainOffer);
       // The human's edits to the draft (1.5.45): what goes out is what they left in the boxes.
       const edits = draft && resolution.decision === 'approved' ? resolution.approval?.edits : null;
       if (edits) {
@@ -3622,6 +3722,7 @@ export class AgentRuntime {
         tool: name,
         decision: resolution.decision,
         note: resolution.note || '',
+        ...(chainAllowed ? { chainAllowed: true, chainScope: chainOffer } : {}),
       });
 
       // Keep the decision in the transcript, so a reloaded page still shows what
@@ -3642,6 +3743,9 @@ export class AgentRuntime {
         ...(edits ? { edits, edited: true } : {}),
         ...(riskInfo.adjust ? { adjust: riskInfo.adjust } : {}),
         ...(riskInfo.handoff ? { handoff: riskInfo.handoff } : {}),
+        ...(chainOffer ? { chainScope: chainOffer } : {}),
+        ...(chainAllowed ? { chainAllowed: true } : {}),
+        ...(send ? { send: { text: send.text, hosts: send.hosts, public: send.public } } : {}),
         turnId,
       });
 
@@ -3734,6 +3838,13 @@ export class AgentRuntime {
       // A step that failed halfway may still have written over an upload.
       const moved = keptUploads.length ? await restoreAfter({ workspaceDir: this.config.workspaceDir, kept: keptUploads.splice(0), label: bot.name }).catch(() => []) : [];
       if (moved.length) result.uploadKept = moved.length === 1 ? moved[0] : moved;
+    }
+
+    // Sending out failed twice in this turn (1.5.65; 11-23: seven file hosts in two minutes, a card each):
+    // from the second failure on, the result says to stop trying other services and ask the human.
+    if (sendsWithoutDraft && sendFailed(ok, result)) ctx.sendFailures = (ctx.sendFailures || 0) + 1;
+    if (sendsWithoutDraft && (ctx.sendFailures || 0) >= 2) {
+      result = { ...(result && typeof result === 'object' && !Array.isArray(result) ? result : { result }), stopSending: STOP_SENDS_NOTE };
     }
 
     // Outside text is marked as material and remembered for the rest of the turn (1.5.2).

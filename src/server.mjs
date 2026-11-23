@@ -4658,7 +4658,7 @@ route('PUT', /^\/api\/usage$/, async (_req, _res, { body, state }) => {
 //        the cards waiting on the human's other machines, whole: what a card
 //        here shows (tool, full arguments, the commands of a batch, why it asks).
 //        This machine's own cards are not repeated: they are in their chats.
-//   POST /api/inbox/:machine/:id {decision, note?, always?} -> {approval, ...}
+//   POST /api/inbox/:machine/:id {decision, note?, always?, chain?} -> {approval, ...}
 //        the human answers here; this hub passes the answer on with that
 //        machine's token and says where it was answered. Only the human may
 //        (isAuthorityRequest), a call another hub passed on is never passed on
@@ -4717,7 +4717,7 @@ route('POST', /^\/api\/inbox\/(?<machine>[^/]+)\/(?<id>[^/]+)$/, async (req, _re
   const edits = body?.edits && typeof body.edits === 'object' && !Array.isArray(body.edits)
     ? Object.fromEntries(Object.entries(body.edits).filter(([k, v]) => typeof k === 'string' && k.length <= 80 && typeof v === 'string').slice(0, 8).map(([k, v]) => [k, v.slice(0, 20000)]))
     : null;
-  const forward = { decision, note: String(body?.note || '').slice(0, 500), ...(body?.always === true ? { always: true } : {}), ...(edits && Object.keys(edits).length ? { edits } : {}), via: { machine: here } };
+  const forward = { decision, note: String(body?.note || '').slice(0, 500), ...(body?.always === true ? { always: true } : {}), ...(body?.chain === true ? { chain: true } : {}), ...(edits && Object.keys(edits).length ? { edits } : {}), via: { machine: here } };
   let out = null;
   let failure = null;
   try {
@@ -5652,7 +5652,7 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
   const viaMachine = body?.via?.machine && isHubCall(req, state.security) ? String(body.via.machine).trim().slice(0, 60) : '';
   const by = viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human';
   const edits = body?.edits && typeof body.edits === 'object' && !Array.isArray(body.edits) ? body.edits : null;
-  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits });
+  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits, chain: body?.chain === true });
   if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', '这张卡已经不在了（可能已经处理过，或者那台机器重启过）');
   // A draft the human made too long (1.5.45): said so, the card stays open.
   if (record.editError) throw httpError(400, 'DRAFT_INVALID', record.error);
@@ -6568,6 +6568,10 @@ export function toMessageItem(record, index) {
         ...(record.edits ? { edits: record.edits, edited: true } : {}),
         ...(record.adjust ? { adjust: record.adjust } : {}),
         ...(record.handoff ? { handoff: record.handoff } : {}),
+        // 1.5.65: what leaves and where (a send), and 「这一轮都允许」 - offered, and whether it was the answer.
+        ...(record.send?.text ? { send: record.send } : {}),
+        ...(record.chainScope?.keys?.length ? { chainScope: record.chainScope } : {}),
+        ...(record.chainAllowed ? { chainAllowed: true } : {}),
       };
     case 'turn':
       return { ...base, role: 'status', status: record.status, summary: record.summary, steps: record.steps };

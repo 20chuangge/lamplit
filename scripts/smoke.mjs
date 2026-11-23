@@ -277,6 +277,7 @@ async function main() {
     await stage('1.5.65: the page draws the board and the line at once; held messages go into a turn that started meanwhile', async () => (await import('./smoke-group-1565.mjs')).pageChecks({ check, readText }));
     await stage('1.5.65: every line of the chat sits in the 760 px column, with its own indent', async () => (await import('./smoke-group-1565.mjs')).columnChecks({ check, readText, browserMod, toolsMod, skip }));
     await stage('1.5.65: every way the human answers closes the open question, once', async () => (await import('./smoke-group-1565.mjs')).answerChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.65: 「这一轮都允许」, sends approved by where they go, stopping after two failed sends', async () => (await import('./smoke-group-1565.mjs')).chainChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -10120,7 +10121,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const srv = await readText('../src/server.mjs');
     check('approval: a decision from a paired device is audited as "device"',
       srv.includes("viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human'") &&
-      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits })"));
+      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits, chain: body?.chain === true })")); // 1.5.65: + chain
   }
   // Public port (G1): a tunnel socket that never counts as the local human.
   {

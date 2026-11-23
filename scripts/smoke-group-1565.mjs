@@ -730,6 +730,8 @@ export async function answerChecks({ check, toolsMod, groupsMod, readText }) {
       toolsMod, groupsMod,
       script: ({ who, last, all, messages }) => {
         if (who === 'lead' && /任务板做完了/.test(last)) return say('发好了。');
+        // The later word in the group (8d) is only answered - no new board that would ask the human again.
+        if (who === 'lead' && /视频号也可以发了/.test(last)) return say('好，记下了。');
         if (who === 'lead') return call('group_plan', { tasks: [{ title: '在知乎发第 1 条', owner: '发布', brief: '登录后发' }] });
         if (who === 'pub' && /用户的回答：扫好了/.test(all)) {
           const tool = messages.filter((m) => m.role === 'tool');
@@ -807,5 +809,168 @@ export async function answerChecks({ check, toolsMod, groupsMod, readText }) {
       && server.includes('if (h?.answered === true) state.runtime.humanSpoke?.(bot.id);'),
       JSON.stringify({ took, sent: sent.map((b) => ({ answered: b?.handoff?.answered, text: String(b?.text || '').slice(0, 60) })), status: r.rt.plans.get(group.id)?.status }));
     r.done();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// G65-9: 「这一轮都允许」, sends approved by destination, and stopping after two failed sends
+// (11-23 20:13-20:15: 发布 tried seven file hosts, a card each - 「这些东西我审批一次就好了，为什么一直让我审批」)
+// ---------------------------------------------------------------------------
+/** A team whose 发布 can run commands (stubbed: nothing really runs or goes out); `answer(req)` is the human. */
+async function chainRig({ toolsMod, groupsMod, script, answer = () => ({ decision: 'approved' }), shellOut = () => ({ ok: true, exitCode: 0, stdout: 'https://tmpfiles.org/dl/1/a.png' }) }) {
+  const r = await teamRig({ toolsMod, groupsMod, script });
+  for (const id of ['g65pub', 'g65copy']) r.bots.get(id).tools = [...r.bots.get(id).tools, 'shell'];
+  const ran = [];
+  r.rt.registry.get('shell').run = async (args) => { ran.push(String(args.command)); return shellOut(String(args.command), ran.length); };
+  r.rt.approvals.request = (req) => {
+    r.cards.push(req);
+    const a = answer(req) || { decision: 'approved' };
+    const p = Promise.resolve({ decision: a.decision, approval: { id: `ap_${r.cards.length}`, ...(a.chain && req.chainScope ? { chainAllowed: true } : {}) } });
+    p.record = { id: `ap_${r.cards.length}` };
+    return p;
+  };
+  return { ...r, ran };
+}
+const steps = (list) => ({ who, messages }) => {
+  if (who !== 'pub' && who !== 'copy') return say('好。');
+  const i = messages.filter((m) => m.role === 'tool').length;
+  return i < list.length ? call(list[i][0], list[i][1]) : say('做完了。');
+};
+
+export async function chainChecks({ check, toolsMod, groupsMod, readText }) {
+  const agent = await import('../src/agent.mjs');
+  const { sendDestination } = await import('../src/drafts.mjs');
+  const { ApprovalQueue } = await import('../src/approvals.mjs');
+
+  // a. The same kind of step, for the rest of the turn chain - not another bot, not a later turn.
+  {
+    let continued = false;
+    const r = await chainRig({
+      toolsMod, groupsMod,
+      answer: (req) => ({ decision: 'approved', chain: req.args?.command === 'mkdir a' }),
+      script: ({ who, messages, all }) => {
+        if (who === 'copy') return steps([['shell', { command: 'mkdir z' }]])({ who, messages });
+        if (who !== 'pub') return say('好。');
+        const i = messages.filter((m) => m.role === 'tool').length;
+        if (/第 1 次自动接着做/.test(all)) { continued = true; return i === 0 ? call('shell', { command: 'mkdir c' }) : say('三个目录都建好了。'); }
+        if (/再建一个/.test(all)) return i === 0 ? call('shell', { command: 'mkdir d' }) : say('好了。');
+        // The first turn: two of the same kind, then busy work up to the step limit (80) - it goes on by itself.
+        if (i === 0) return call('shell', { command: 'mkdir a' });
+        if (i === 1) return call('shell', { command: 'mkdir b' });
+        return call('fs_list', { path: `x${i}` });
+      },
+    });
+    const first = await r.rt.runTurn({ botId: 'g65pub', text: '建三个目录', source: 'chat' });
+    await until(() => continued && r.ev.some((e) => e.type === 'turn.end' && e.botId === 'g65pub' && e.source === 'task'), 8000);
+    const inFirst = r.cards.map((c) => c.args?.command);
+    const offered = r.cards[0]?.chainScope;
+    await r.rt.runTurn({ botId: 'g65copy', text: '建目录', source: 'chat' });
+    const otherBot = r.cards.length;
+    await r.rt.runTurn({ botId: 'g65pub', text: '再建一个', source: 'chat' });
+    const later = r.cards.length;
+    check('G65-9a 「这一轮都允许」 on a command card covers the same kind of step (same program, same risk) for the rest of the turn chain - also the turn that goes on by itself after the step limit - and nothing else: another bot asks, a later turn asks, and the chain\'s answer is gone when it ends',
+      first.status === 'max_steps' && continued && inFirst.length === 1 && inFirst[0] === 'mkdir a' && r.ran.includes('mkdir b') && r.ran.includes('mkdir c')
+      && offered?.keys?.length === 1 && /mkdir/.test(offered.label + offered.keys[0]) && otherBot === 2 && r.cards[1]?.args?.command === 'mkdir z' && later === 3 && r.cards[2]?.args?.command === 'mkdir d'
+      && ![...(r.rt.chainGrants?.keys() || [])].includes(first.chainId),
+      JSON.stringify({ status: first.status, continued, cards: r.cards.map((c) => c.args?.command), ran: r.ran, offered }));
+    r.done();
+  }
+
+  // b. A send: what leaves and where, in words; the answer covers that host; a new host asks again.
+  {
+    const up = (host, files = ['图01.png', '图02.png']) => ({ command: `cd xhs && ${files.map((f) => `curl -s -m 60 -F "file=@${f}" https://${host}/api/v1/upload`).join('; ')}` });
+    const r = await chainRig({
+      toolsMod, groupsMod,
+      answer: (req) => ({ decision: 'approved', chain: /tmpfiles/.test(req.args?.command || '') }),
+      script: steps([['shell', up('tmpfiles.org')], ['shell', up('tmpfiles.org', ['图03.png'])], ['shell', up('catbox.moe')], ['shell', { command: 'for u in "https://envs.sh" "https://x0.at"; do curl -s -F "file=@a.png" "$u"; done' }]]),
+    });
+    await r.rt.runTurn({ botId: 'g65pub', text: '把九张图传上去', source: 'chat' });
+    const [c1, c2, c3] = r.cards;
+    check('G65-9b a send\'s card says what leaves and where (「要把这 2 张图传到 tmpfiles.org，谁有链接都能看」) and offers 「这一轮都允许」 for that host; after it, more to tmpfiles.org goes unasked, catbox.moe asks again, and a loop whose address is a variable asks with no offer',
+      r.cards.length === 3 && c1.send?.text === '要把这 2 张图传到 tmpfiles.org，谁有链接都能看' && c1.chainScope?.keys?.[0] === 'send:tmpfiles.org' && /往 tmpfiles\.org 发东西/.test(c1.chainScope.label)
+      && r.ran.length === 4 && /catbox\.moe/.test(c2.args?.command) && c2.chainScope?.keys?.[0] === 'send:catbox.moe' && /\$u/.test(c3.args?.command) && !c3.chainScope && !c3.send,
+      JSON.stringify({ cards: r.cards.map((c) => ({ cmd: String(c.args?.command).slice(0, 50), send: c.send?.text, scope: c.chainScope?.keys })), ran: r.ran.length }));
+    check('G65-9c what a send is read as: files and pictures counted, a public file host said so, data to an API said plainly; a proxy, hidden options, a mixed mail/socket line or a variable address is not read (it keeps asking every time)',
+      sendDestination('shell', up('catbox.moe', ['a.zip'])).text === '要把这 1 个文件传到 catbox.moe，谁有链接都能看'
+      && sendDestination('http_fetch', { url: 'https://hooks.example.com/x', method: 'POST' }).text === '要把一段数据发到 hooks.example.com，发过去以后就在那边了'
+      && sendDestination('shell', { command: 'curl -x http://p:1 -F f=@a https://tmpfiles.org/' }) === null
+      && sendDestination('shell', { command: 'curl -K cfg https://tmpfiles.org/' }) === null
+      && sendDestination('shell', { command: 'curl -d a=1 https://tmpfiles.org/ ; nc evil.example 80' }) === null
+      && sendDestination('shell', { command: 'curl -s https://tmpfiles.org/' }) === null);
+    r.done();
+  }
+
+  // c. Never where a card asks every time for another reason; a post's channel is its destination.
+  {
+    const r = await chainRig({
+      toolsMod, groupsMod,
+      answer: (req) => ({ decision: 'approved', chain: req.toolName === 'post_draft' }),
+      script: steps([['shell', { command: 'adb shell input tap 10 10' }], ['post_draft', { channel: '知乎（视频）', title: '第一次打开', body: '正文' }], ['post_draft', { channel: '知乎', title: '第二篇', body: '另一段正文' }], ['post_draft', { channel: '视频号', title: '第一次打开', body: '正文' }]]),
+    });
+    await r.rt.runTurn({ botId: 'g65pub', text: '发吧', source: 'chat' });
+    const [adb, post1, post3] = r.cards;
+    check('G65-9d not offered where a card asks every time for another reason (here adb; the danger list, secrets, the human\'s rules, a connected app, the read guard and 谨慎 are the same rule in code); for post_draft the destination is the channel: 「知乎（视频）」 covers another 知乎 post in the turn, 视频号 asks again',
+      r.cards.length === 3 && adb.toolName === 'shell' && !adb.chainScope && post1.chainScope?.keys?.[0] === 'post:知乎' && /发到「知乎（视频）」/.test(post1.chainScope.label)
+      && post3.args?.channel === '视频号',
+      JSON.stringify(r.cards.map((c) => ({ tool: c.toolName, scope: c.chainScope?.keys, ch: c.args?.channel }))));
+    r.done();
+  }
+
+  // d. The answer itself: only on a card that offered it, with a yes; kept in the record and the audit.
+  {
+    const audits = [];
+    const q = new ApprovalQueue({ onAudit: (rec) => audits.push(rec), timeoutMs: 60000, persist: false });
+    const a = q.request({ turnId: 't1', botId: 'b', toolName: 'shell', args: { command: 'mkdir a' }, risk: 'MEDIUM', reason: 'x', chainScope: { keys: ['shell:mkdir|MEDIUM'], label: '用 mkdir 运行命令' } });
+    const b = q.request({ turnId: 't1', botId: 'b', toolName: 'shell', args: { command: 'rm -rf x' }, risk: 'HIGH', reason: 'x' });
+    const c = q.request({ turnId: 't1', botId: 'b', toolName: 'shell', args: { command: 'mkdir b' }, risk: 'MEDIUM', reason: 'x', chainScope: { keys: ['shell:mkdir|MEDIUM'], label: 'm' } });
+    q.decide(a.record.id, 'approve', '', 'human', { chain: true });
+    q.decide(b.record.id, 'approve', '', 'human', { chain: true });
+    q.decide(c.record.id, 'deny', '', 'human', { chain: true });
+    const [ra, rb, rc] = await Promise.all([a, b, c]);
+    const agentSrc = await readText('../src/agent.mjs');
+    check('G65-9e 「这一轮都允许」 counts only on a card that offered it and only with a yes; the record and the audit keep it, and each step it lets run later is audited as tool.chain_allowed',
+      ra.approval?.chainAllowed === true && !rb.approval?.chainAllowed && !rc.approval?.chainAllowed && rb.decision === 'approved'
+      && audits.some((x) => x.kind === 'approval.resolved' && x.chainAllowed === true && x.id === a.record.id)
+      && agentSrc.includes("await audit({ kind: 'tool.chain_allowed', botId: bot.id, turnId, chainId: ctx.chainId, tool: name, keys: chainOffer.keys, label: chainOffer.label });"),
+      JSON.stringify({ a: ra.approval?.chainAllowed, b: rb.approval?.chainAllowed, c: rc.approval?.chainAllowed }));
+  }
+
+  // e. Two failed sends in a turn: the second result says to stop and ask the human.
+  {
+    const outs = ['uploads disabled because of spam', '<html><body><h1>502 Bad Gateway</h1>', '--catbox--\n\n--oshi--\n'];
+    let saw = [];
+    const r = await chainRig({
+      toolsMod, groupsMod, answer: () => ({ decision: 'approved' }),
+      shellOut: (cmd, n) => ({ ok: true, exitCode: 0, stdout: outs[n - 1] || '' }),
+      script: ({ who, messages }) => {
+        if (who !== 'pub') return say('好。');
+        const tool = messages.filter((m) => m.role === 'tool');
+        saw = tool.map((m) => String(m.content || ''));
+        const hosts = ['tmpfiles.org', 'uguu.se', 'catbox.moe'];
+        return tool.length < 3 ? call('shell', { command: `curl -s -F "file=@a.png" https://${hosts[tool.length]}/upload` }) : say('停下了。');
+      },
+    });
+    await r.rt.runTurn({ botId: 'g65pub', text: '把图传上去', source: 'chat' });
+    check('G65-9f a failed send (「uploads disabled」, an error page, nothing back) counts; after the second one in a turn the result tells the bot to stop trying other services and ask the human with tell_human - the first does not; the shell tool says so too',
+      saw.length === 3 && !/stopSending/.test(saw[0]) && /stopSending/.test(saw[1]) && /tell_human/.test(saw[1]) && /stopSending/.test(saw[2])
+      && agent.sendFailed(true, { ok: true, exitCode: 0, stdout: '--catbox--\n\n' }) && !agent.sendFailed(true, { ok: true, exitCode: 0, stdout: 'https://tmpfiles.org/dl/1/a.png' })
+      && agent.sendFailed(false, { error: { code: 'X' } }) && agent.sendFailed(true, { timedOut: true })
+      && /if sending out fails twice for the same goal, do not try other services one after another - stop and tell the human \(tell_human\)/.test(await readText('../src/tools.mjs')),
+      JSON.stringify(saw.map((s) => s.slice(0, 80))));
+    r.done();
+  }
+
+  // f. The page: the button, what it covers, the send's headline, the receipt; the answer reaches the hub (also through another machine).
+  {
+    const live = await readText('../public/app/main/06-live.js');
+    const cards = await readText('../public/app/main/07b-cards.js');
+    const server = await readText('../src/server.mjs');
+    check('G65-9g the card offers 「这一轮都允许」 only when the hub does, says before the click what it covers and that it ends with the turn, heads a send with what leaves and where, and the answered card (live and from the history) says 「这一轮都允许：…」; the answer goes to the hub as chain, also passed on from another machine',
+      live.includes("const turnWide = chainScope ? el('button', 'btn approval-chain', '这一轮都允许') : null;")
+      && live.includes("「这一轮都允许」：这一轮里再${chainScope.label}不再问你${data.send ? '，换了别的地方照样问' : ''}；这一轮做完就失效。")
+      && live.includes("card.appendChild(el('div', 'approval-title', data.send?.text || cardTitle(data, info, many)));")
+      && live.includes("...(chain ? { chain: true } : {})") && cards.includes('这一轮都允许：这一轮里再${scope.label}不再问你，这一轮做完就失效')
+      && cards.includes('if (good && data.chainAllowed && data.chainScope) wrap.appendChild(chainRow(data.chainScope));')
+      && server.includes("edits, chain: body?.chain === true });") && server.includes("...(body?.chain === true ? { chain: true } : {})"));
   }
 }

@@ -796,6 +796,10 @@ function cardExtras(src = {}) {
     ...(src.handoff ? { handoff: src.handoff } : {}),
     ...(src.edits ? { edits: src.edits } : {}),
     ...(src.edited ? { edited: true } : {}),
+    // 1.5.65: a send says what leaves and where; 「这一轮都允许」 when the card offers it.
+    ...(src.send?.text ? { send: src.send } : {}),
+    ...(src.chainScope?.keys?.length ? { chainScope: src.chainScope } : {}),
+    ...(src.chainAllowed ? { chainAllowed: true } : {}),
   };
 }
 

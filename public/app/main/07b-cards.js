@@ -441,7 +441,13 @@ function cardReceipt(card, decision, note) {
     noteRemembered(data.approvalId, { botId, key: remembered.key, label: remembered.label });
     wrap.appendChild(rememberedRow(botId, remembered, data.approvalId));
   }
+  if (card.dataset.chain === '1' && (decision === 'approved' || decision === 'approve') && data.chainScope) wrap.appendChild(chainRow(data.chainScope));
   return wrap;
+}
+
+/** 「这一轮都允许」 said (1.5.65): one line on the card - what it covers, and that it ends with the turn. */
+function chainRow(scope) {
+  return receiptRow('ok', `这一轮都允许：这一轮里再${scope.label}不再问你，这一轮做完就失效`);
 }
 
 /** The step behind an answered card ran: its receipt says what it did (live, tool.result). */
@@ -470,6 +476,7 @@ function historyReceipt(data) {
   wrap.appendChild(row);
   const said = good ? rememberedCards()[data.approvalId] : null;
   if (said?.key) wrap.appendChild(rememberedRow(said.botId || '', said, data.approvalId));
+  if (good && data.chainAllowed && data.chainScope) wrap.appendChild(chainRow(data.chainScope));
   return wrap;
 }
 

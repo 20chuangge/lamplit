@@ -826,7 +826,7 @@ export function createRegistry(deps) {
   add({
     name: 'shell',
     description:
-      'Run a shell command with the shared workspace as the working directory. Output is truncated. Commands matching the danger denylist always require human approval.',
+      'Run a shell command with the shared workspace as the working directory. Output is truncated. Commands matching the danger denylist always require human approval. Sending files or data out (an upload, a post to a website) asks the human each time: if sending out fails twice for the same goal, do not try other services one after another - stop and tell the human (tell_human) what failed and ask how to go on.',
     // Base MEDIUM: auto-approved only when the bot's policy says so. approvals.mjs
     // promotes denylisted commands to HIGH.
     risk: RISK.MEDIUM,

@@ -123,7 +123,8 @@ export async function cards1558Checks({ check, readText }) {
   const diff = Object.keys(VERDICTS_1557).filter((k) => JSON.stringify(now[k]) !== JSON.stringify(VERDICTS_1557[k]));
   check('C1 approval decisions unchanged: for a fixed set of tool calls, classify (risk, ask/auto/deny, reason), mediumRunsUnasked, 以后都允许\'s permission keys, isAuthorityRequest, the boundary and the approval levels say exactly what they said at 1.5.57',
     diff.length === 0, diff.join(', '));
-  const pinned = { decide: '3d5042fb4e5130e9', decideParked: '223fb42b0ce5e7d4', approvalPath: '72643c97d35aa25d', dropAnswered: 'cc22422bad437ca2' };
+  // 1.5.65: decide() takes one more argument, chain (「这一轮都允许」), sent as { chain: true } - the only change.
+  const pinned = { decide: '68353dc3bdde41a2', decideParked: '223fb42b0ce5e7d4', approvalPath: '72643c97d35aa25d', dropAnswered: 'cc22422bad437ca2' };
   const moved = Object.entries(pinned).filter(([n, h]) => sha(fnSource(page, n)) !== h).map(([n]) => n);
   check('C2 the page sends the same answers: decide, decideParked, approvalPath and dropAnswered are byte for byte as at 1.5.57, and the card\'s three buttons call decide with the same arguments',
     moved.length === 0

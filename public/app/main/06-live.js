@@ -767,7 +767,8 @@ function buildApprovalCard(data) {
   }
 
   // The headline in plain words (a fixed template per tool and its arguments).
-  card.appendChild(el('div', 'approval-title', cardTitle(data, info, many)));
+  // A send (1.5.65): what leaves and where, plainly - 「要把这 9 张图传到 tmpfiles.org，谁有链接都能看」.
+  card.appendChild(el('div', 'approval-title', data.send?.text || cardTitle(data, info, many)));
 
   if (!resolved) {
     const why = looking ? (data.from?.machine ? `在「${data.from.machine}」上运行命令前，都先问你一次` : '在这台电脑上运行命令前，都先问你一次') : reasonLabel(data.reason);
@@ -843,6 +844,17 @@ function buildApprovalCard(data) {
   const lookNote = data.lookTurn
     ? el('div', 'approval-scope muted tiny', many ? '允许后这几条都会运行；这一轮后面只是查看的命令也不再问你，会改动东西的照样先问。' : '允许后，这一轮后面只是查看的命令不再问你；会改动东西的照样先问。')
     : many ? el('div', 'approval-scope muted tiny', '允许后这几条都会运行，不再一条条问。') : null;
+  // 「这一轮都允许」 (1.5.65): the same kind of step - for a send, the same place - for the rest of this turn,
+  // continuations after the step limit included; never another bot, never a later turn. Offered by the hub only.
+  const chainScope = data.chainScope?.keys?.length ? data.chainScope : null;
+  const turnWide = chainScope ? el('button', 'btn approval-chain', '这一轮都允许') : null;
+  if (turnWide) {
+    turnWide.type = 'button';
+    turnWide.title = `这一轮里再${chainScope.label}都不再问你，这一轮做完就失效`;
+  }
+  const chainNote = chainScope
+    ? el('div', 'approval-scope muted tiny', `「这一轮都允许」：这一轮里再${chainScope.label}不再问你${data.send ? '，换了别的地方照样问' : ''}；这一轮做完就失效。`)
+    : null;
   const reject = el('button', 'btn approval-reject', words.no);
   reject.type = 'button';
   reject.title = words.noTip;
@@ -860,13 +872,22 @@ function buildApprovalCard(data) {
       decide(data.approvalId, 'approve', note.value, card, allow, reject, data.remember);
     });
   }
+  if (turnWide) {
+    turnWide.addEventListener('click', () => {
+      delete card.dataset.always;
+      card.dataset.chain = '1';
+      decide(data.approvalId, 'approve', note.value, card, allow, reject, null, data.draft ? draftEdits(card, data) : null, true);
+    });
+  }
   reject.addEventListener('click', () => decide(data.approvalId, 'deny', note.value, card, allow, reject));
 
   choose.appendChild(allow);
+  if (turnWide) choose.appendChild(turnWide);
   if (always) choose.appendChild(always);
   choose.appendChild(reject);
   actions.appendChild(choose);
   if (lookNote) actions.appendChild(lookNote);
+  if (chainNote) actions.appendChild(chainNote);
   if (scope) actions.appendChild(scope);
   actions.appendChild(note);
   actions.appendChild(armCardKeys(card, allow, reject));
@@ -1004,11 +1025,13 @@ async function decideParked(approvalId, decision, card, buttons) {
   }
 }
 
-async function decide(approvalId, decision, note, card, approve, deny, remember = null, edits = null) {
+async function decide(approvalId, decision, note, card, approve, deny, remember = null, edits = null, chain = false) {
   if (approve) approve.disabled = true;
   if (deny) deny.disabled = true;
   const alwaysBtn = card?.querySelector('.approval-always');
   if (alwaysBtn) alwaysBtn.disabled = true;
+  const chainBtn = card?.querySelector('.approval-chain');
+  if (chainBtn) chainBtn.disabled = true;
   const done = (res) => {
     if (edits && card) card.dataset.edited = '1';
     settleApprovalCard(card, decision, note);
@@ -1018,7 +1041,7 @@ async function decide(approvalId, decision, note, card, approve, deny, remember 
   try {
     done(await api(approvalPath(approvalId, card), {
       method: 'POST',
-      body: { decision, note: note || '', ...(remember ? { always: true } : {}), ...(edits ? { edits } : {}) },
+      body: { decision, note: note || '', ...(remember ? { always: true } : {}), ...(chain ? { chain: true } : {}), ...(edits ? { edits } : {}) },
     }));
   } catch (err) {
     if (err.code === 'LOCAL_KEY_REQUIRED' && state.afterPair) state.afterPair.then = done;
@@ -1028,6 +1051,8 @@ async function decide(approvalId, decision, note, card, approve, deny, remember 
     if (approve) approve.disabled = false;
     if (deny) deny.disabled = false;
     if (alwaysBtn) alwaysBtn.disabled = false;
+    if (chainBtn) chainBtn.disabled = false;
+    if (card) delete card.dataset.chain;
     // Another machine that cannot be reached: the card says nothing was approved and stays open.
     if (card?.dataset?.machine) showCardProblem(card, err.message);
     if (!err.quiet) toast(err.message, true);

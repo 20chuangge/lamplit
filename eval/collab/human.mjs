@@ -24,6 +24,11 @@ export function makeHuman(run) {
     return b;
   };
   const hubOf = (name) => run.hubs[name];
+  // A card on the other machine is answered through the first one's 待办 inbox, as the app does.
+  const answerCard = (card, body) => {
+    const hub = hubOf(card.hub);
+    return hub.via ? hub.answer(card.approvalId, body.decision, body.note ? { note: body.note } : body.edits ? { edits: body.edits } : {}) : hub.api.post(`/api/approvals/${encodeURIComponent(card.approvalId)}`, body);
+  };
   const h = {
     run,
     sleep: (ms) => sleep(ms * (run.speed || 1)),
@@ -63,11 +68,11 @@ export function makeHuman(run) {
     },
     /** Answer an approval card. */
     async approve(card, { edits, step } = {}) {
-      await hubOf(card.hub).api.post(`/api/approvals/${encodeURIComponent(card.approvalId)}`, { decision: 'approve', ...(edits ? { edits } : {}) }).catch((err) => run.log?.(`[human] approve failed: ${err.message}`));
+      await answerCard(card, { decision: 'approve', ...(edits ? { edits } : {}) }).catch((err) => run.log?.(`[human] approve failed: ${err.message}`));
       note({ kind: 'approve', ref: `${card.tool} ${String(JSON.stringify(card.args || '')).slice(0, 80)}`, step, approvalId: card.approvalId });
     },
     async deny(card, reason = '', { step } = {}) {
-      await hubOf(card.hub).api.post(`/api/approvals/${encodeURIComponent(card.approvalId)}`, { decision: 'deny', note: reason }).catch((err) => run.log?.(`[human] deny failed: ${err.message}`));
+      await answerCard(card, { decision: 'deny', note: reason }).catch((err) => run.log?.(`[human] deny failed: ${err.message}`));
       note({ kind: 'deny', ref: `${card.tool} ${String(JSON.stringify(card.args || '')).slice(0, 80)}`, text: reason, step, approvalId: card.approvalId });
     },
     /** Finish a takeover: scan the QR code on the mock site (the human's phone does that). */
@@ -82,16 +87,30 @@ export function makeHuman(run) {
       note({ kind: 'restart', ref: name, step });
       await hub.restart();
     },
+    /**
+     * The other machine goes away. Reached through the first hub (peer.mjs): a test hub of this run is
+     * switched off ('cut'); any other is only cut off from the first hub for a while ('pause').
+     */
     async stopHub(name, { step } = {}) {
       const hub = hubOf(name);
+      if (hub.via && hub.drop !== 'cut') {
+        note({ kind: 'hub-down', ref: `${name}（第一台暂停连接）`, step });
+        await hub.pause(300);
+        return;
+      }
       trace.restarts.push({ hub: name, at: Date.now() });
       note({ kind: 'hub-down', ref: name, step });
-      await hub.stop();
+      await (hub.via ? hub.testHub : hub).stop();
     },
     async startHub(name, { step } = {}) {
       const hub = hubOf(name);
+      if (hub.via && hub.drop !== 'cut') {
+        note({ kind: 'hub-up', ref: `${name}（第一台恢复连接）`, step });
+        await hub.pause(0);
+        return;
+      }
       note({ kind: 'hub-up', ref: name, step });
-      await hub.restart({ hard: false });
+      await (hub.via ? hub.testHub : hub).restart({ hard: false });
     },
     botOf,
   };

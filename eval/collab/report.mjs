@@ -119,6 +119,15 @@ export function renderReport(run, prev = null) {
   }
   L.push('');
 
+  // How a scenario was run, where it matters for reading it (scenario 3's drop: real or simulated).
+  const noted = all.filter((r) => r.notes?.length);
+  if (noted.length) {
+    L.push('## 说明');
+    L.push('');
+    for (const r of noted) for (const n of r.notes) L.push(`- ${cell(r.id)}：${cell(n)}`);
+    L.push('');
+  }
+
   // Failures, with evidence and the timeline.
   if (bad.length) {
     L.push('## 没通过的，逐条');

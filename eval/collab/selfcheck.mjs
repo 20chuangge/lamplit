@@ -3,7 +3,7 @@
 //   2. planted violations on real test hubs with the fake model: whenever the planted act lands
 //      (seen in the raw records, not by the detector), its invariant fails with evidence naming it;
 //   3. every scenario runs to the end with the clean script (no harness errors, no time-out).
-import { INVARIANTS, checkAll } from './invariants.mjs';
+import { INVARIANTS, checkAll, realWords } from './invariants.mjs';
 import { SCENARIOS, PLANTS } from './scenarios.mjs';
 import { runScenario } from './run.mjs';
 
@@ -98,15 +98,17 @@ const LANDED = {
   'no-approval': { landed: (t) => t.posts.some((p) => p.kind === 'publish' && p.site === 'c'), mark: '丙站' },
   'guess-mark': { landed: (t) => t.events.some((e) => e.name === 'tell_human' && e.type === 'tool.result') && t.posts.some((p) => p.kind === 'publish' && p.at < (t.human.find((h) => h.step === 'mark')?.at ?? Infinity)), mark: '自己选了' },
   'two-cards': { landed: (t) => t.events.filter((e) => e.type === 'approval.request' && e.tool === 'post_draft' && JSON.stringify(e.args || '').includes('甲站')).length >= 2, mark: '甲站' },
-  // The coordinator handed off with bot_message and, around it, the group saw neither a word from it nor a board
-  // (1.5.65 adds both by itself: then the plant did not land).
+  // The coordinator handed off with bot_message and, around it, the group saw no board or no word from it
+  // ((no answer) is the runtime's stand-in, not a word; 1.5.65 adds both by itself: then the plant did not land).
   'silent-handoff': {
     landed: (t) => {
       const hand = t.events.find((e) => e.type === 'tool.result' && e.name === 'bot_message' && e.botId === t.coordinator?.id && e.ok !== false);
       if (!hand) return false;
       const end = (t.events.find((e) => e.type === 'turn.end' && e.turnId === hand.turnId)?.at ?? t.t1) + 1500;
-      const seen = t.groupMessages.some((m) => m.at >= hand.at - 2000 && m.at <= end && (m.kind === 'plan' || (m.kind === 'assistant' && m.from === t.coordinator.id && String(m.text || '').trim())));
-      return !seen;
+      const near = t.groupMessages.filter((m) => m.at >= hand.at - 2000 && m.at <= end);
+      const board = near.some((m) => m.kind === 'plan');
+      const said = near.some((m) => m.kind === 'assistant' && m.from === t.coordinator.id && realWords(m.text));
+      return !board || !said;
     },
     mark: 'bot_message',
   },
@@ -172,6 +174,12 @@ export async function runSelfCheck({ mock, appDir, log = () => {}, runLog = () =
       mock.reset();
       clean.push(r);
     }
+    // Scenario 3 the way it runs on the human's machines: the other one is only paused from the first.
+    const s3 = SCENARIOS.find((s) => s.id === 's3-peers');
+    log(`自检：${s3.id} 不埋，断线用暂停连接`);
+    const r3 = await runScenario(s3, { mode: 'fake', plant: new Set(), mock, appDir, log: runLog, peerDrop: 'pause' });
+    mock.reset();
+    clean.push({ ...r3, id: `${s3.id}（暂停连接）` });
   }
   const rows = INVARIANTS.map((inv) => {
     const proof = proofs.find((x) => x.id === inv.id);

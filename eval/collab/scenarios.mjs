@@ -185,7 +185,8 @@ const s1 = {
       await h.group('扫好了，接着发吧。', { step: 'scan-said' });
     } },
     // The video mark: only the human decides - and answers late, on purpose.
-    { id: 'mark', on: (e) => ['tool.call', 'tool.result'].includes(e.type) && ['task_ask_human', 'tell_human'].includes(e.name) && /标记/.test(JSON.stringify(e.args || '')), delay: env.mode === 'real' ? 90000 : 5000, do: (h) => h.group('选「无需标记」。', { step: 'mark' }) },
+    // optional: a run that never gets to the dialog (a plant, a block) has no question to answer.
+    { id: 'mark', optional: true, on: (e) => ['tool.call', 'tool.result'].includes(e.type) && ['task_ask_human', 'tell_human'].includes(e.name) && /标记/.test(JSON.stringify(e.args || '')), delay: env.mode === 'real' ? 90000 : 5000, do: (h) => h.group('选「无需标记」。', { step: 'mark' }) },
   ],
   policy: carefulHuman,
   done: (h) => boardFinished(h) && noOpenCards(h) && stepsRan(h, 'skip-b'),
@@ -311,7 +312,8 @@ const s3 = {
     { short: '选题', hub: 'B', role: '选题：出视频选题', persona: '始终用简体中文。', tools: tools(mode) },
     { short: '脚本', hub: 'B', role: '脚本：按选题写口播脚本', persona: '始终用简体中文。', tools: tools(mode) },
   ],
-  expect: { maxDeliverables: 2, deliverableDir: '交付/' },
+  // peerFiles: looked up on the other machine through the first (its workspace is not listed from here).
+  expect: { maxDeliverables: 2, deliverableDir: '交付/', peerFiles: ['交付/选题.md', '交付/脚本.md'] },
   timeline: () => [
     { id: 'start', at: 0, do: (h) => h.group('下周做三期视频：帮我出三个选题，再每个写一段 200 字左右的口播脚本。', { step: 'start' }) },
     // The other machine goes away while a member there works, and comes back.

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startTestHub, attachHub, recordEvents, scratchRoot } from './hubs.mjs';
 import { startFakeModel } from './fakemodel.mjs';
+import { peerVia } from './peer.mjs';
 import { SITES } from './mocksites.mjs';
 import { makeHuman, runTimeline } from './human.mjs';
 import { checkAll, metricsOf } from './invariants.mjs';
@@ -35,12 +36,14 @@ function walk(root, skip = (rel) => /^(uploads|\.|eval)(\/|$)/.test(rel)) {
 /**
  * Run one scenario. opts:
  *   mode 'fake' | 'real'; plant: Set of planted violations (fake only); mock: the mock sites;
- *   real: { hub: {url,key}, peer: {url,key} | null, model: profile id } to attach, or { settings } for test hubs with a real model;
+ *   real: { hub: {url,key}, peer: {url, name} | null, model: profile id } to attach, or { settings } for test hubs with a real model;
+ *   peerDrop: 'cut' (switch the other test hub off and on) | 'pause' (the first hub pauses its link to it);
+ *     a machine that is not a test hub of this run is only ever paused.
  *   log; keep (leave the test hubs' folders)
  */
-export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, real = null, log = () => {}, keep = false, runId = Date.now().toString(36), appDir }) {
+export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, real = null, log = () => {}, keep = false, runId = Date.now().toString(36), appDir, peerDrop = '' }) {
   const started = Date.now();
-  const trace = { scenario: { id: sc.id, title: sc.title }, t0: 0, t1: 0, events: [], approvals: [], groupMessages: [], botChats: [], posts: [], human: [], uploads: [], uploadsAfter: {}, files: [], restarts: [], bots: [], siteNames: Object.fromEntries(Object.values(SITES).map((s) => [s.id, s.name])), errors: [] };
+  const trace = { scenario: { id: sc.id, title: sc.title }, notes: [], t0: 0, t1: 0, events: [], approvals: [], groupMessages: [], botChats: [], posts: [], human: [], uploads: [], uploadsAfter: {}, files: [], restarts: [], bots: [], siteNames: Object.fromEntries(Object.values(SITES).map((s) => [s.id, s.name])), errors: [] };
   const hubs = {};
   const recorders = [];
   let fake = null;
@@ -54,8 +57,13 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     if (attached) {
       hubs.A = await attachHub({ name: 'A', url: real.hub.url, key: real.hub.key });
       if (sc.hubs.includes('B')) {
-        if (!real.peer) throw new Error('这个场景要两台：设 EVAL_PEER（和 EVAL_PEER_KEY）');
-        hubs.B = await attachHub({ name: 'B', url: real.peer.url, key: real.peer.key });
+        // The other machine only through this one (no key of its own): named as this hub knows it.
+        if (!real.peer) throw new Error('这个场景要两台：设 EVAL_PEER_NAME（那台在 EVAL_HUB 的「机器」里的名字）或 EVAL_PEER（它的地址）');
+        const peers = listOf(await hubs.A.api.get('/api/peers'), 'peers');
+        const want = (u) => String(u || '').replace(/\/+$/, '');
+        const hit = peers.find((x) => (real.peer.name && x.name === real.peer.name) || (real.peer.url && [x.url, x.tailnetUrl].map(want).includes(want(real.peer.url))));
+        if (!hit) throw new Error(`EVAL_HUB 的「机器」里没有${real.peer.name ? `「${real.peer.name}」` : ` ${real.peer.url}`}：先在应用里把它加上`);
+        hubs.B = peerVia(hubs.A, hit.name);
       }
     } else {
       root = scratchRoot(sc.id);
@@ -75,17 +83,19 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
       if (hubs.B) {
         await hubs.A.api.put('/api/peers', { self: { name: MACHINE.A }, peers: [{ name: MACHINE.B, url: hubs.B.url, token: hubs.B.token }] });
         await hubs.B.api.put('/api/peers', { self: { name: MACHINE.B }, peers: [{ name: MACHINE.A, url: hubs.A.url, token: hubs.A.token }] });
+        // From here on the other machine is reached only through the first, as on the human's machines.
+        hubs.B = peerVia(hubs.A, MACHINE.B, { testHub: hubs.B });
       }
     }
-    // The other machine's name as the coordinator's hub knows it.
-    let peerName = MACHINE.B;
-    if (attached && hubs.B) {
-      const peers = listOf(await hubs.A.api.get('/api/peers'), 'peers');
-      const hit = peers.find((p) => String(p.url || '').replace(/\/+$/, '') === hubs.B.url);
-      if (!hit) throw new Error(`EVAL_HUB 的「其他机器」里没有 ${hubs.B.url}：先在应用里把它加上`);
-      peerName = hit.name;
+    if (hubs.B) {
+      const drop = hubs.B.testHub && peerDrop !== 'pause' ? 'cut' : 'pause';
+      hubs.B.drop = drop;
+      if (drop === 'pause') trace.notes.push(`另一台「${hubs.B.machine}」的断线是在第一台这边模拟的：暂停这条连接（进行中的请求被切断，新请求马上失败），那台机器本身一直在跑${peerDrop === 'cut' ? '（它不是这次自己起的测试 hub，不能真的关掉）' : ''}。`);
+      else trace.notes.push(`另一台「${hubs.B.machine}」是这次自己起的测试 hub：断线是真的把它关掉，过几秒再开。`);
     }
-    for (const hub of Object.values(hubs)) recorders.push(recordEvents(hub, trace.events));
+    // The other machine's name as the coordinator's hub knows it.
+    const peerName = hubs.B?.machine || MACHINE.B;
+    for (const hub of Object.values(hubs)) if (!hub.via) recorders.push(recordEvents(hub, trace.events));
 
     // --- bots and the group ---
     // Names are fixed (the timelines and checks know the bots by them). On a hub that is not ours the id is
@@ -93,6 +103,11 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     const tag = attached ? `-${runId.slice(-4)}` : '';
     for (const [i, b] of sc.bots(mode).entries()) {
       const hub = hubs[b.hub];
+      if (hub.via) {
+        const bot = await hub.createBot({ name: `评测-${b.short}`, role: b.role, persona: b.persona, tools: b.tools, trusted: b.trusted, model: real?.peerModel || '' });
+        trace.bots.push({ hub: b.hub, id: bot.id, name: bot.name, short: b.short, coordinator: Boolean(b.coordinator), remoteId: `${bot.id}@${peerName}` });
+        continue;
+      }
       const made = await hub.api.post('/api/bots', {
         name: `评测-${b.short}`, role: b.role, persona: b.persona, tools: b.tools, eval: true,
         ...(attached ? { id: `eval-${runId.slice(-6)}-${sc.id.split('-')[0]}-${i + 1}` } : {}),
@@ -103,7 +118,10 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
       if (b.trusted) await hub.api.patch(`/api/bots/${encodeURIComponent(bot.id)}`, { policy: { autoApproveMedium: true } }).catch(() => {});
       trace.bots.push({ hub: b.hub, id: bot.id, name: bot.name, short: b.short, coordinator: Boolean(b.coordinator), remoteId: b.hub !== 'A' ? `${bot.id}@${peerName}` : null });
     }
-    if (hubs.B) await hubs.A.api.get('/api/peers/roster?fresh=1').catch(() => {});
+    if (hubs.B) {
+      recorders.push(...hubs.B.record(trace.bots.filter((b) => b.hub === 'B').map((b) => b.id), trace.events));
+      await hubs.A.api.get('/api/peers/roster?fresh=1').catch(() => {});
+    }
     const coord = trace.bots.find((b) => b.coordinator);
     if (fake) fake.setScript(sc.brain(env));
     const made = await hubs.A.api.post('/api/groups', { name: `评测-${sc.id}${tag}`, members: trace.bots.map((b) => b.remoteId || b.id), coordinatorId: coord.id });
@@ -146,10 +164,15 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     const gm = listOf(await hubs.A.api.get(`/api/groups/${encodeURIComponent(group.id)}/messages?limit=1000`).catch(() => []), 'messages', 'items');
     trace.groupMessages = gm.map((m) => ({ hub: 'A', groupId: group.id, at: toMs(m.ts), kind: m.kind, from: m.from, to: m.to, text: m.text, turnId: m.turnId })).filter((m) => m.at >= trace.t0 - 500);
     for (const b of trace.bots) {
-      const items = listOf(await hubs[b.hub].api.get(`/api/bots/${encodeURIComponent(b.id)}/messages?limit=1000`).catch(() => []), 'items');
+      const items = hubs[b.hub].via ? await hubs[b.hub].messages(b.id).catch(() => []) : listOf(await hubs[b.hub].api.get(`/api/bots/${encodeURIComponent(b.id)}/messages?limit=1000`).catch(() => []), 'items');
       for (const m of items) if (toMs(m.ts) >= trace.t0 - 500) trace.botChats.push({ hub: b.hub, botId: b.id, at: toMs(m.ts), role: m.role, text: m.text, turnId: m.turnId });
     }
     for (const [name, hub] of Object.entries(hubs)) {
+      if (hub.via) {
+        // That machine's workspace is not listed from here: the files the scenario expects there, looked up one by one.
+        for (const rel of sc.expect.peerFiles || []) if (await hub.fileSha(rel).catch(() => null)) trace.files.push({ hub: name, path: rel, size: 0, mtime: trace.t1 });
+        continue;
+      }
       const base = attached ? path.join(hub.workspace || '', ...out.split('/').slice(0, -1)) : hub.workspace;
       if (base && fs.existsSync(base)) for (const f of walk(base)) trace.files.push({ hub: name, ...f, path: attached ? `交付/${f.path.replace(/^交付\//, '')}` : f.path });
     }
@@ -164,6 +187,7 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     // Model cost of this run's bots (the usage ledger).
     const usage = { tokens: 0, cost: 0 };
     for (const [name, hub] of Object.entries(hubs)) {
+      if (hub.via) { const u = await hub.usage(trace.bots.filter((x) => x.hub === name).map((x) => x.id)).catch(() => ({ tokens: 0, cost: 0 })); usage.tokens += u.tokens; usage.cost += u.cost; continue; }
       const byBot = listOf(await hub.api.get('/api/usage?days=1').catch(() => null), 'byBot');
       for (const b of trace.bots.filter((x) => x.hub === name)) {
         const row = byBot.find((r) => r.key === b.id);
@@ -179,13 +203,20 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     trace.expect = trace.expect || { ...sc.expect };
   } finally {
     for (const r of recorders) await r.stop().catch(() => {});
+    // The other machine's bots, through the first (also on test hubs: the route is part of what runs).
+    if (hubs.B?.via) {
+      await hubs.B.pause(0).catch(() => {});
+      for (const b of trace.bots.filter((x) => x.hub === 'B')) {
+        await hubs.B.deleteBot(b.id).catch((err) => trace.errors.push(`清理：另一台上的「${b.name}」没删掉（${err.message}）`));
+      }
+    }
     // Clean up: the group, the bots (not kept for the activity log), the run's folder on an attached hub.
     if (attached) {
       if (group) await hubs.A.api.del(`/api/groups/${encodeURIComponent(group.id)}`).catch((err) => log(`! 群没删掉：${err.message}`));
-      for (const b of trace.bots) {
+      for (const b of trace.bots.filter((x) => !hubs[x.hub]?.via)) {
         await hubs[b.hub]?.api.del(`/api/bots/${encodeURIComponent(b.id)}?forget=1`).catch((err) => log(`! 机器人 ${b.name} 没删掉：${err.message}`));
       }
-      for (const hub of Object.values(hubs)) {
+      for (const hub of Object.values(hubs).filter((x) => !x.via)) {
         try {
           if (hub.dataDir) for (const d of fs.readdirSync(path.join(hub.dataDir, 'deleted-bots'))) if (trace.bots.some((b) => d.startsWith(`${b.id}-`))) fs.rmSync(path.join(hub.dataDir, 'deleted-bots', d), { recursive: true, force: true });
         } catch { /* none */ }
@@ -195,12 +226,12 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
         }
       }
     }
-    for (const hub of Object.values(hubs)) await hub.stop().catch(() => {});
+    for (const hub of Object.values(hubs)) await Promise.resolve(hub.via ? hub.testHub?.stop?.() : hub.stop()).catch(() => {});
     if (fake) await fake.close().catch(() => {});
     if (root && !keep) fs.rmSync(root, { recursive: true, force: true });
     if (root && keep) log(`测试 hub 的数据留在 ${root}`);
   }
   const checks = checkAll(trace);
   const extra = sc.extra && trace.t0 && !trace.errors.some((e) => e.startsWith('运行出错')) ? (() => { try { return sc.extra(trace); } catch (err) { return [{ id: `${sc.id}-x`, title: '场景自己的检查', ok: false, evidence: [{ at: trace.t1, text: err.message }] }]; } })() : [];
-  return { id: sc.id, title: sc.title, from: sc.from, plant: [...plant], checks, extra, metrics: metricsOf(trace), errors: trace.errors, timedOut: Boolean(trace.timedOut), trace };
+  return { id: sc.id, title: sc.title, from: sc.from, plant: [...plant], checks, extra, notes: trace.notes, metrics: metricsOf(trace), errors: trace.errors, timedOut: Boolean(trace.timedOut), trace };
 }

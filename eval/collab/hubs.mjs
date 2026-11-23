@@ -143,14 +143,14 @@ export async function attachHub({ name, url, key }) {
  * Every event of one hub, as the page would see it. Reconnects (a restart), so nothing between is lost
  * except what the hub sent while it was down. rows: { hub, at (ms), ...event }.
  */
-export function recordEvents(hub, rows, { onEvent = () => {} } = {}) {
+export function recordEvents(hub, rows, { onEvent = () => {}, path: streamPath = '/api/stream', map = (ev) => ev } = {}) {
   let stopped = false;
   let ctrl = null;
   const loop = async () => {
     while (!stopped) {
       ctrl = new AbortController();
       try {
-        const res = await fetch(`${hub.url}/api/stream`, { headers: { 'x-lamplit-local': hub.key, accept: 'text/event-stream' }, signal: ctrl.signal });
+        const res = await fetch(`${hub.url}${streamPath}`, { headers: { 'x-lamplit-local': hub.key, accept: 'text/event-stream' }, signal: ctrl.signal });
         if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
         const reader = res.body.getReader();
         const dec = new TextDecoder();
@@ -167,7 +167,7 @@ export function recordEvents(hub, rows, { onEvent = () => {} } = {}) {
             if (!data) continue;
             let ev;
             try { ev = JSON.parse(data); } catch { continue; }
-            const row = { hub: hub.name, at: Date.now(), ...ev };
+            const row = { hub: hub.name, at: Date.now(), ...map(ev) };
             rows.push(row);
             try { onEvent(row); } catch { /* the human's trigger must not stop the recorder */ }
           }

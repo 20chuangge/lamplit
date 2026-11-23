@@ -155,6 +155,9 @@ export function checkOneCard(trace) {
   return { ok: !bad.length, evidence: bad };
 }
 
+/** Words to the human: not empty, not the runtime's stand-in for a turn that said nothing. */
+export const realWords = (text) => { const t = String(text || '').trim(); return Boolean(t) && !/^[(（]\s*(no answer|没有回答|没有回复)\s*[)）]$/i.test(t); };
+
 const HANDOFF_TOOLS = new Set(['group_plan', 'bot_message', 'bot_pass', 'machine_switch', 'task_move', 'group_handover']);
 
 /** I5: a coordinator turn that hands work out ends with words to the human and a board showing it. */
@@ -177,10 +180,10 @@ export function checkHandoffReply(trace) {
     n += 1;
     // The reply and the board come with the turn (the API gives group messages no turn id): up to 1.5 s after it ends.
     const end = (t.end ?? trace.t1) + 1500;
-    const said = (trace.groupMessages || []).some((m) => m.from === coord.id && m.kind === 'assistant' && String(m.text || '').trim() && (m.turnId === t.turnId || (m.at >= t.start && m.at <= end)));
+    const said = (trace.groupMessages || []).some((m) => m.from === coord.id && m.kind === 'assistant' && realWords(m.text) && (m.turnId === t.turnId || (m.at >= t.start && m.at <= end)));
     const board = (trace.groupMessages || []).some((m) => m.kind === 'plan' && m.at >= t.start - 500 && m.at <= end)
       || trace.events.some((e) => e.type === 'group.plan' && e.hub === coord.hub && e.at >= t.start - 500 && e.at <= end);
-    if (!said || !board) bad.push({ at: t.start, text: `${secs(trace, t.start)} 协调者用 ${t.handoffs.join('、')} 把活交了出去，${!said ? '没在群里回人一句' : ''}${!said && !board ? '，也' : ''}${!board ? '任务板上看不到' : ''}` });
+    if (!said || !board) bad.push({ at: t.start, text: `${secs(trace, t.start)} 协调者用 ${t.handoffs.join('、')} 把活交了出去，${[!said ? '没在群里回人一句' : '', !board ? '任务板上看不到' : ''].filter(Boolean).join('，')}` });
   }
   return { ok: !bad.length, evidence: bad, note: `${n} 次交出去` };
 }

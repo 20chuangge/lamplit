@@ -5386,6 +5386,39 @@ route('DELETE', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/avatar$/,
   return { ok: true };
 });
 
+// --- the collaboration eval on another machine (1.5.65) -----------------------------------
+//   DELETE /api/peers/:m/bots/:id      remove an evaluation bot made there through POST /api/peers/:m/bots
+//   POST   /api/peers/:m/pause {seconds}  act as if that machine were unreachable for a while (≤ 300 s; 0 resumes)
+// Both: the human only (not another hub's token), never passed on again, paired machines only.
+// The delete takes nothing but an evaluation bot (eval: true AND named 「评测-…」), whatever the caller says;
+// any other bot is removed on its own machine. The pause is memory only and cuts the calls in flight.
+const EVAL_BOT_NAME = /^评测-/;
+route('DELETE', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  if (isHubCall(req, state.security)) throw httpError(403, 'HUMAN_ONLY', '别的机器上的助手只有你自己能删');
+  let got;
+  try { got = await passOn(state, peer, 'GET', `/api/bots/${encodeURIComponent(botId)}`, { timeoutMs: 10000 }); } catch (err) { throw peerFailure(err, peer); }
+  const bot = got?.bot;
+  if (!bot || bot.id !== botId) throw httpError(502, 'PEER_BAD_ANSWER', `「${peer.name}」没有回这个助手`);
+  if (bot.eval !== true || !EVAL_BOT_NAME.test(String(bot.name || ''))) {
+    throw httpError(403, 'NOT_EVAL_BOT', `「${peer.name}」上的「${String(bot.name || botId).slice(0, 40)}」不是评测用的助手：这里只删评测助手，别的请到那台机器上删`);
+  }
+  try { await passOn(state, peer, 'DELETE', `/api/bots/${encodeURIComponent(botId)}?forget=1`); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.bot.delete', machine: peer.name, botId, eval: true });
+  state.roster.list({ fresh: true }).catch(() => {});
+  return { ok: true, machine: peer.name, botId: `${botId}@${peer.name}` };
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/pause$/, async (req, _res, { params, body, state }) => {
+  const peer = remoteMachine(req, state, params.machine);
+  if (isHubCall(req, state.security)) throw httpError(403, 'HUMAN_ONLY', '只有你自己能暂停和别的机器的连接');
+  const seconds = Math.max(0, Math.min(Math.round(Number(body?.seconds) || 0), 300));
+  const until = state.peers.pause(peer.name, seconds * 1000);
+  if (until === null) throw httpError(404, 'PEER_NOT_FOUND', '没有这台机器（可能已经从「机器」里删掉了）');
+  await audit({ kind: 'peer.pause', machine: peer.name, seconds });
+  return { machine: peer.name, paused: Boolean(until), until: until ? new Date(until).toISOString() : null };
+});
+
 // --- another machine's groups (1.5.43): the same as its bots, by the human only ---------
 //   GET  /api/peers/:m/groups/:gid/messages?limit=   that group's chat, read from there
 //   POST /api/peers/:m/groups/:gid/message {text, attachments?} -> {turnId} | {queued, message}
@@ -5469,7 +5502,9 @@ route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots$/, async (req, _res, { par
   const peer = remoteMachine(req, state, params.machine);
   const name = shortText(body?.name, 60);
   if (!name) throw httpError(400, 'NAME_REQUIRED', '先给助手起个名字');
-  const out = { name, role: shortText(body?.role, 200), persona: shortText(body?.persona, 4000) };
+  // eval: an evaluation bot (1.5.65, the collaboration eval): its calls count apart there, and only such a bot
+  // may be removed from here (DELETE /api/peers/:m/bots/:id).
+  const out = { name, role: shortText(body?.role, 200), persona: shortText(body?.persona, 4000), ...(body?.eval === true ? { eval: true } : {}) };
   let made;
   try {
     made = await passOn(state, peer, 'POST', '/api/bots', { body: out });

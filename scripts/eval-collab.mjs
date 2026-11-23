@@ -11,11 +11,16 @@
  *
  *   node scripts/eval-collab.mjs --real                 a real model on hubs you point it at:
  *        EVAL_HUB=http://127.0.0.1:<port>  EVAL_LOCAL_KEY=<that hub's data/local-key>
- *        EVAL_PEER=http://…  EVAL_PEER_KEY=…      (scenario 3 only: a second machine the first knows)
+ *        EVAL_PEER_NAME=<its name in the first hub's 机器 list> (or EVAL_PEER=<its address>): scenario 3's
+ *                                                 second machine, reached only through the first - no key of
+ *                                                 its own; its drop is the first hub pausing the link
+ *        EVAL_PEER_MODEL=<profile id there>       the 评测 bots there use this model (else that machine's default)
  *        --model <profile id>                     the 评测 bots use this model (Settings → 模型)
  *   node scripts/eval-collab.mjs --real --test-hubs     a real model on this run's own test hubs:
  *        EVAL_PROVIDER, EVAL_BASE_URL, EVAL_MODEL_NAME, EVAL_API_KEY
  *
+ *   --peer-drop cut|pause   scenario 3 on test hubs: switch the other hub off and on (cut, the --fake
+ *               default) or pause the first hub's link to it (pause: what a run on the human's machines does)
  *   --keep      leave the test hubs' folders (and an attached hub's run folder) for a look
  *   --verbose   print every model call and human step
  *   --out <dir> where the report goes (default eval-results/, gitignored)
@@ -68,7 +73,8 @@ if (mode === 'real') {
     if (!process.env.EVAL_HUB) fail('--real 要 EVAL_HUB（和 EVAL_LOCAL_KEY）：评测只跑在你明确指定的 hub 上。');
     real = {
       hub: { url: process.env.EVAL_HUB.replace(/\/+$/, ''), key: process.env.EVAL_LOCAL_KEY || '' },
-      peer: process.env.EVAL_PEER ? { url: process.env.EVAL_PEER.replace(/\/+$/, ''), key: process.env.EVAL_PEER_KEY || '' } : null,
+      peer: process.env.EVAL_PEER || process.env.EVAL_PEER_NAME ? { url: String(process.env.EVAL_PEER || '').replace(/\/+$/, ''), name: String(process.env.EVAL_PEER_NAME || '').trim() } : null,
+      peerModel: process.env.EVAL_PEER_MODEL || '',
       model: opt('--model') || process.env.EVAL_MODEL || '',
     };
     if (!real.hub.key) fail('EVAL_LOCAL_KEY 没设：那台 hub 的 data/local-key（评测替人点审批卡要用它）。');
@@ -101,7 +107,7 @@ try {
   } else {
     for (const sc of scenarios) {
       process.stdout.write(`- ${sc.id} ${sc.title} … `);
-      const r = await runScenario(sc, { mode, plant, mock, real, appDir: appDir || undefined, log, keep: flag('--keep'), runId: run.at.replace(/[-:.TZ]/g, '').slice(0, 14) });
+      const r = await runScenario(sc, { mode, plant, mock, real, appDir: appDir || undefined, log, keep: flag('--keep'), peerDrop: opt('--peer-drop'), runId: run.at.replace(/[-:.TZ]/g, '').slice(0, 14) });
       mock.reset();
       run.results.push(r);
       const bad = [...r.checks, ...r.extra].filter((c) => !c.ok);

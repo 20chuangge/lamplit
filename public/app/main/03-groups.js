@@ -340,7 +340,7 @@ async function loadGroupMessages() {
   // What this browser had for the group, at once (1.5.28); the machine's answer replaces it.
   const cacheKey = `group:${groupId}`;
   const cached = chatCacheGet(cacheKey);
-  if (cached) { state.groupMessages = cached; renderMessages(); }
+  if (cached && messagesEl.dataset.shown !== `group:${groupId}`) { state.groupMessages = cached; renderMessages(); } // not again when on screen (1.5.63)
   try {
     const items = await api(isRemoteId(groupId) ? remoteGroupApi(groupId, '/messages?limit=200') : `/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`);
     if (state.groupId !== groupId) return;
@@ -390,6 +390,7 @@ function groupSenderRow(sender, contentNode) {
 }
 
 function renderGroupMessages() {
+  const place = chatPlace(`group:${state.groupId}`); // where the reader is (1.5.63)
   messagesEl.innerHTML = ''; messagesEl.dataset.chat = '';
   const filtered = state.groupMessages.filter(
     (m) => m && m.kind !== 'status' && (state.showProcess || m.kind !== 'tool' || isActionCard(m.name || m.tool)),
@@ -448,7 +449,7 @@ function renderGroupMessages() {
   }
   appendQueuedMessages(); // another machine's group: what waits for that machine (1.5.43 test)
   updateComposerMode();
-  scrollToBottom(true);
+  restoreChatPlace(place, `group:${state.groupId}`);
 }
 
 /* ---------------------------------------------------------------------
@@ -998,6 +999,14 @@ function remoteBotById(id) {
   const b = m?.bots?.find((x) => x.id === far.botId);
   if (!b) return null;
   return { id, name: b.name, role: b.role || '', primary: Boolean(b.primary), mainThere: Boolean(b.primary), preview: b.preview || null, ...(b.avatar ? { avatar: b.avatar } : {}), remote: { machine: far.machine, botId: far.botId, online: Boolean(m.online) } };
+}
+/** Saved on its machine from here (1.5.63, 管理助手): the list shows it now, before the next look there. */
+function patchRemoteRosterBot(id, fields) {
+  const far = remoteOf(id);
+  const m = far && (state.peerRoster || []).find((x) => x.machine === far.machine);
+  const b = m?.bots?.find((x) => x.id === far.botId);
+  if (!b) return;
+  for (const [k, v] of Object.entries(fields || {})) if (v !== undefined) b[k] = v;
 }
 
 /**

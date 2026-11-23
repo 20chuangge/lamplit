@@ -120,3 +120,48 @@ export function pushUpdateAddress(machine, reached) {
   const listed = [machine?.url, machine?.tailnetUrl].some((u) => u && origin(u) === at);
   return at && listed ? reached : String(machine?.url || '');
 }
+
+/**
+ * The login cookie a hub sets for a browser at this address (1.5.63, src/auth.mjs
+ * sessionCookieName): cookies are kept per host, not per port, so two Lamplits
+ * on one computer each name theirs after the port ("desk_session_14390"); an
+ * address with no port keeps the plain name.
+ */
+export const LEGACY_LOGIN_COOKIE = 'desk_session';
+export function loginCookieName(url) {
+  let port = '';
+  try { port = new URL(String(url || '')).port; } catch { /* not an address */ }
+  return port ? `${LEGACY_LOGIN_COOKIE}_${port}` : LEGACY_LOGIN_COOKIE;
+}
+
+/** The names a login for this address may be under, its own first: hubs before 1.5.63 set the plain one. */
+export function loginCookieNames(url) {
+  const own = loginCookieName(url);
+  return own === LEGACY_LOGIN_COOKIE ? [own] : [own, LEGACY_LOGIN_COOKIE];
+}
+
+/** Is this cookie some hub's login (any port)? A relay one (12 characters of the machine's id) is not. */
+export function isLoginCookieName(name) {
+  return /^desk_session(?:_\d{1,5})?$/.test(String(name || ''));
+}
+
+/** The login in a POST /api/pair answer's Set-Cookie (either name): {name, value} or null. */
+export function loginFromSetCookie(header) {
+  const m = /(?:^|[\s,;])(desk_session(?:_\d{1,5})?)=([^;,\s]+)/.exec(String(header || ''));
+  if (!m) return null;
+  let value = m[2];
+  try { value = decodeURIComponent(value); } catch { /* as it is */ }
+  return { name: m[1], value };
+}
+
+/**
+ * How one login cookie is copied from one address of a machine to another
+ * (its Tailscale address, or a relay door named `rename`): the new name, or ''
+ * to leave it (another Lamplit's login on the same host).
+ */
+export function copiedLoginName(cookieName, from, to, rename = '', chosen = '') {
+  if (!isLoginCookieName(cookieName)) return cookieName;
+  if (!loginCookieNames(from).includes(cookieName)) return '';
+  if (rename) return cookieName === chosen ? rename : '';
+  return cookieName === LEGACY_LOGIN_COOKIE ? LEGACY_LOGIN_COOKIE : loginCookieName(to);
+}

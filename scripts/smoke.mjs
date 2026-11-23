@@ -248,6 +248,11 @@ async function main() {
     await stage('1.5.59: the sidebar - 「N 件等你」 / 「N 个在做」, machines with an online dot, status lines, the header counts the chat on screen', async () => (await import('./smoke-sidebar1559.mjs')).sidebar1559Checks({ check, readText }));
     await stage('1.5.61: redesign step 5 - groups on top, a stable order kept on the hub, the first run, the settings home, 连接应用', async () => (await import('./smoke-step5-1561.mjs')).step5Checks({ check, readText }));
     await stage('1.5.62: the reply count, the other machines\' pace, 「以后都允许」 in 审批, this machine\'s cost, introductions not counted', async () => (await import('./smoke-fixes-1562.mjs')).fixes1562Checks({ check, readText }));
+    await stage('1.5.63: introductions on another machine, the developer run, a pairing cookie per port, ports Windows keeps, the chat after a reload', async () => (await import('./smoke-fixes-1563.mjs')).fixes1563Checks({ check, readText, api, base }));
+    await stage('1.5.63: 管理助手 for a bot on another machine - read there, saved there, its picture, never a third machine', async () => (await import('./smoke-fixes-1563.mjs')).remoteEditChecks({ check, readText, api, base, rawFetch, startServerChild, stopProcess, seedHome }));
+    await stage('1.5.63: the chat does not jump when a reply lands - instant moves, the reader keeps their place, one redraw', async () => (await import('./smoke-fixes-1563.mjs')).chatScrollChecks({ check, readText }));
+    await stage('1.5.63: the 任务 panel follows a chat on another machine - its routines and briefing, changed there', async () => (await import('./smoke-fixes-1563.mjs')).remoteRoutineChecks({ check, readText, api, base, rawFetch, startServerChild, stopProcess, seedHome }));
+    await stage('1.5.63: a bot finds and moves its own routine on a machine with many (routine_list stays under the cut)', async () => (await import('./smoke-fixes-1563.mjs')).routineListChecks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -2610,12 +2615,12 @@ async function scenarioPairing() {
   check('the right pairing code pairs the client', ok.status === 200 && ok.json?.ok === true, ok.text.slice(0, 200));
   check(
     'pairing sets an HttpOnly SameSite=Lax session cookie',
-    /desk_session=/.test(setCookie) && /HttpOnly/i.test(setCookie) && /SameSite=Lax/i.test(setCookie) && /Path=\//.test(setCookie) && /Max-Age=31536000/.test(setCookie),
+    /desk_session_\d+=/.test(setCookie) && /HttpOnly/i.test(setCookie) && /SameSite=Lax/i.test(setCookie) && /Path=\//.test(setCookie) && /Max-Age=31536000/.test(setCookie),
     setCookie,
   );
   check(
     'pairing with the 8-digit code also gives the device its own session',
-    /^desk_session=[0-9a-f]{64};/.test(setCookie) && Boolean(ok.json?.device?.id),
+    /^desk_session_\d+=[0-9a-f]{64};/.test(setCookie) && Boolean(ok.json?.device?.id), // named after the port since 1.5.63
     `${setCookie} ${JSON.stringify(ok.json?.device)}`,
   );
 
@@ -2825,7 +2830,7 @@ async function scenarioPairingLink() {
     const setCookie = paired.headers.get('set-cookie') || '';
     check(
       'scanning the link pairs the phone without typing anything',
-      paired.status === 200 && /^desk_session=[0-9a-f]{64};/.test(setCookie),
+      paired.status === 200 && /^desk_session_\d+=[0-9a-f]{64};/.test(setCookie),
       `${paired.status} ${setCookie}`,
     );
     check(
@@ -4037,7 +4042,7 @@ async function scenarioMcp({ home, toolsMod }) {
       && small.output.waiting === true && user.text.length === 5000 && full.status === 200 && compact.status === 200 && Array.isArray(compact.json)
       && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name) && !m.output?.undo && !m.afterCard) /* 1.5.58: the step after an answered card stays, slim */ && srcSrv.includes(".filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo")
       && pg.includes("messages?limit=200${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
-      && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);'));
+      && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups(), primeAttention()]);')); // 1.5.63: what each chat is doing, alongside
   }
   // Two gaps found after release: a stale sync login made the other machines skip this computer; task_finish summaries were not checked.
   {
@@ -5055,7 +5060,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         botsSrc.includes("voice: String(raw.voice || '').trim().slice(0, 120),") && srvSrc.includes('async function voiceForBot(state, botId)')
         && srvSrc.includes('ttsVoice: body?.voice ? String(body.voice) : await voiceForBot(state, body?.botId)') && srvSrc.includes('speak: async (text, botId) =>')
         && feishuSrc.includes('await o.speak(text, to.botId)') && feishuSrc.includes('botId: id, texts: [], spoken, label')
-        && pageSrc.includes('function renderBotVoiceSelect(bot)') && pageSrc.includes('voice: voiceId } });') && pageSrc.includes('queueSpeech(text, speaker)') && pageSrc.includes('id="botedit-voice-try"'));
+        && pageSrc.includes('function renderBotVoiceSelect(bot, farTts = undefined)') && pageSrc.includes('voice: voiceId } });') && pageSrc.includes('queueSpeech(text, speaker)') && pageSrc.includes('id="botedit-voice-try"'));
       const setupSrc = await readText('../hub/setup-linux.sh');
       const remoteSrc = await readText('../src/remote.mjs');
       const clipSrc = await readText('../src/clipboard.mjs');
@@ -5339,7 +5344,7 @@ async function scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, auth
   // --- SEC-06: only the master token or another computer may push an update --
   const machine = await api('/api/pair', { method: 'POST', body: { code: code2 }, headers: { 'user-agent': 'node' } });
   const security = JSON.parse(await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8'));
-  const machineToken = /desk_session=([0-9a-f]+)/.exec(machine.headers.get('set-cookie') || '')?.[1] || '';
+  const machineToken = /desk_session(?:_\d+)?=([0-9a-f]+)/.exec(machine.headers.get('set-cookie') || '')?.[1] || '';
   const junk = Buffer.from('not a package');
   const sha = crypto.createHash('sha256').update(junk).digest('hex');
   const push = (headers) => rawHttp('/api/system/update', { method: 'POST', headers: { host: `lamplit.test:${port}`, 'content-type': 'application/gzip', ...headers }, body: junk });
@@ -11114,7 +11119,7 @@ async function scenarioRoster1542() {
     const pageNow = await readText('../public/index.html');
     const rosterSrcNow = await readText('../src/roster.mjs');
     check('RC-15 a remote chat whose machine is off keeps what is on screen (the last turn, a card undone) instead of an older saved copy; a message typed elsewhere shows live; the pairing box says why for another machine',
-      pageNow.includes('if (cached && !remoteChatOnScreen(botId))') && pageNow.includes("if (remoteChatOnScreen(botId)) appendQueuedMessages();")
+      pageNow.includes('if (cached && !remoteChatOnScreen(botId) && messagesEl.dataset.shown !== `bot:${botId}`)') && pageNow.includes("if (remoteChatOnScreen(botId)) appendQueuedMessages();") // 1.5.63: nor a chat already on screen
       && pageNow.includes("ev.source === 'chat' && ev.text && !ev.aside && !isGroupMode() && ev.botId === state.botId && !sentHere(ev.text)")
       && pageNow.includes('和别的机器上的助手说话、看它的文件') && rosterSrcNow.includes("from: { bot: from.name || '', machine: selfName() }"));
 

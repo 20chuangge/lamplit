@@ -96,7 +96,7 @@ import { createPhoneLink, makePhoneExec } from './phonelink.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
-import { createRoster, cleanBotId } from './roster.mjs';
+import { createRoster, cleanBotId, safeAvatar } from './roster.mjs';
 import { createXAccount, X_DEVELOPER_URL } from './xpost.mjs';
 import { createMachineNotes, suggestNote, machinesPrompt } from './machinenotes.mjs';
 import { readOrder, writeOrder } from './rosterorder.mjs';
@@ -131,6 +131,8 @@ import {
   safeEqual,
   sessionCookieHeader,
   sessionCookieName,
+  SESSION_COOKIE,
+  readCookie,
   createRateLimiter,
   createPairLinkStore,
   loadOrCreateSecurity,
@@ -1138,6 +1140,7 @@ async function handleRequest(req, res, state) {
     // out it needs to pair and then do it.
     if (!isAuthExemptPath(method, pathname)) {
       const auth = evaluateAuth(req, state.security, state.devices);
+      renewLoginCookie(req, res, auth, state);
       if (!auth.authorized) {
         return errorResponse(
           res,
@@ -1154,10 +1157,31 @@ async function handleRequest(req, res, state) {
   // Static: the app shell has to load before a client can pair, so those files
   // are public. Anything else in public/ is treated like app data.
   const auth = evaluateAuth(req, state.security, state.devices);
+  renewLoginCookie(req, res, auth, state);
   if (!auth.authorized && !isPublicShellPath(pathname)) {
     return errorResponse(res, 401, 'AUTH_REQUIRED', 'this device is not paired');
   }
   return serveStatic(req, res, pathname);
+}
+
+/**
+ * A browser paired before 1.5.63 signs in with the plain cookie name (auth.mjs
+ * sessionCookieNames): the answer gives it the same login again under this
+ * hub's own name, so a second Lamplit on this computer pairing later no longer
+ * logs it out. The old cookie stays (it still signs in if the port changes).
+ */
+function renewLoginCookie(req, res, auth, state) {
+  if (!auth?.authorized || res.headersSent || res.getHeader?.('set-cookie')) return;
+  const name = sessionCookieName(req);
+  if (name === SESSION_COOKIE || readCookie(req.headers?.cookie, name)) return;
+  let token = auth.renewCookie || '';
+  // On this computer the page is the local user anyway; a browser paired with the code still carries its device's cookie (carriesLocalKey).
+  if (!token && auth.mode === 'local') {
+    const old = readCookie(req.headers?.cookie, SESSION_COOKIE);
+    if (old && state.devices?.findBySession?.(old)) token = old;
+  }
+  if (!token) return;
+  res.setHeader('set-cookie', sessionCookieHeader(token, { secure: (isSecureRequest(req) || Boolean(req.viaPublic)) && !req.viaRelay, name }));
 }
 
 async function dispatchApi(req, res, state, pathname, url) {
@@ -1303,7 +1327,7 @@ route('GET', /^\/api\/events$/, async (_req, _res, { query, state }) => {
 //   PUT  /api/settings       {provider,baseUrl,model,apiKey?} -> {ok:true, model:{...}}
 //   POST /api/settings/test  -> {ok, latencyMs, mode, error?}
 //   GET  /api/auth           -> {required, authorized, mode:'local'|'token'|'cookie'|'none'}
-//   POST /api/pair           {code} -> {ok:true} + Set-Cookie: desk_session
+//   POST /api/pair           {code} -> {ok:true} + Set-Cookie: desk_session_<port> (auth.mjs sessionCookieName)
 //   GET  /api/pairing        -> {url, code}
 
 /** http://100.x.y.z:port when this hub listens beyond loopback and the machine is on Tailscale. */
@@ -2279,8 +2303,9 @@ route('POST', /^\/api\/settings\/test$/, async (_req, _res, { body, state }) => 
   };
 });
 
-route('GET', /^\/api\/auth$/, async (req, _res, { state }) => {
+route('GET', /^\/api\/auth$/, async (req, res, { state }) => {
   const auth = evaluateAuth(req, state.security, state.devices);
+  renewLoginCookie(req, res, auth, state);
   // authority: whether this client may decide approvals (1.5.32): a browser on
   // this computer without the app's key is told so before the human clicks.
   // codeAllowed (1.5.47): through the relay, direct or the public door the 8-digit code is refused, so the page does not offer it.
@@ -3426,6 +3451,8 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
     .runTurn({
       botId: bot.id, text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}),
       ...(h ? { hiddenNote: fromNote, fromBotId: fromLabel } : {}),
+      // A group's introduction asked from another machine (1.5.63): not work for the human here either. Older peers send no flag.
+      ...(h?.kickoff === true ? { kickoff: true } : {}),
       // Said in a voice call (1.5.22): the bot knows it is spoken to and answers for the ear.
       ...(body?.voiceCall === true && !h ? { hiddenNote: VOICE_CALL_NOTE } : {}),
     })
@@ -4979,6 +5006,98 @@ const passOn = (state, peer, method, p, opts = {}) => state.peers.json(peer, met
 
 route('GET', /^\/api\/peers\/roster$/, async (_req, _res, { state, query }) => ({ machines: await state.roster.list({ fresh: query.get('fresh') === '1', quick: query.get('quick') === '1' }) }));
 
+// --- the 任务 panel for a chat on another machine (1.5.63) ------------------------
+//   GET    /api/peers/:m/routines              that machine's routines, each bot as "id@machine"
+//   POST   /api/peers/:m/routines              {name, instruction, botId, schedule, onlyChanges, pushFeishu, offPeak}
+//   PATCH  /api/peers/:m/routines/:id          {enabled?, schedule?, offPeak?}: what the panel's buttons send
+//   DELETE /api/peers/:m/routines/:id
+//   POST   /api/peers/:m/routines/:id/test     {watched?}: 立即运行 / the briefing's 现在试一次
+//   GET    /api/peers/:m/briefing  ·  PUT {enabled, time, feishu}: that machine's 每日简报
+// The same rules as 管理助手 there: only the human, only a paired machine, never a call
+// another hub passed on (no hop to a third machine); changes audited here as peer.routine.
+function peerOnly(req, state, params) {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const peer = exactPeer(state, params.machine);
+  if (!peer) throw httpError(404, 'PEER_NOT_FOUND', '没有这台机器（可能已经从「机器」里删掉了）');
+  if (params.id !== undefined && !/^[\w.-]{1,80}$/.test(params.id)) throw httpError(400, 'BAD_ROUTINE_ID', '没有这个定时任务');
+  return peer;
+}
+const pickFields = (body, keys) => Object.fromEntries(keys.filter((k) => body?.[k] !== undefined).map((k) => [k, body[k]]));
+/** That machine's routine as the panel draws it: its own fields, its bot as "id@machine". */
+function farRoutine(r, machine) {
+  const x = r && typeof r === 'object' ? r : {};
+  return {
+    id: farStr(x.id, 80), botId: `${farStr(x.botId, 80)}@${machine}`, machine, name: farStr(x.name, 120), instruction: farStr(x.instruction, 4000),
+    schedule: farStr(x.schedule, 120), kind: farStr(x.kind, 20), timezone: farStr(x.timezone, 60), enabled: Boolean(x.enabled),
+    lastRun: x.lastRun ? farStr(x.lastRun, 40) : null, nextRun: x.nextRun ? farStr(x.nextRun, 40) : null, lastStatus: x.lastStatus ? farStr(x.lastStatus, 40) : null,
+    runs: (Array.isArray(x.runs) ? x.runs : []).slice(-10).map((u) => ({ startedAt: farStr(u?.startedAt, 40), status: farStr(u?.status, 40), summary: farStr(u?.summary, 300), ...(u?.quiet ? { quiet: true } : {}) })),
+    onlyChanges: Boolean(x.onlyChanges), pushFeishu: Boolean(x.pushFeishu), offPeak: Boolean(x.offPeak), preset: x.preset ? farStr(x.preset, 40) : null,
+  };
+}
+const farBriefing = (b) => ({ enabled: Boolean(b?.enabled), time: farStr(b?.time || '08:30', 5), feishu: Boolean(b?.feishu), lastRun: b?.lastRun ? farStr(b.lastRun, 40) : null, lastStatus: b?.lastStatus ? farStr(b.lastStatus, 40) : null, nextRun: b?.nextRun ? farStr(b.nextRun, 40) : null, routineId: b?.routineId ? farStr(b.routineId, 80) : null });
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/routines$/, async (req, _res, { params, state }) => {
+  const peer = peerOnly(req, state, params);
+  let list;
+  try { list = await passOn(state, peer, 'GET', '/api/routines', { timeoutMs: 10000 }); } catch (err) { throw peerFailure(err, peer); }
+  if (!Array.isArray(list)) throw httpError(502, 'PEER_BAD_ANSWER', `「${peer.name}」没有回它的定时任务`);
+  return list.slice(0, 500).map((r) => farRoutine(r, peer.name));
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/routines$/, async (req, _res, { params, body, state }) => {
+  const peer = peerOnly(req, state, params);
+  const fields = pickFields(body, ['name', 'instruction', 'botId', 'schedule', 'onlyChanges', 'pushFeishu', 'offPeak']);
+  // The panel names that machine's bot as "id@machine": there it is just the id (never another machine's).
+  if (fields.botId !== undefined) {
+    const at = String(fields.botId).lastIndexOf('@');
+    if (at > 0 && String(fields.botId).slice(at + 1) !== peer.name) throw httpError(400, 'ROUTINE_OTHER_MACHINE', '这个助手不在那台机器上');
+    fields.botId = at > 0 ? String(fields.botId).slice(0, at) : String(fields.botId);
+  }
+  let out;
+  try { out = await passOn(state, peer, 'POST', '/api/routines', { body: fields }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'create', routineId: out?.routine?.id || null });
+  return { routine: farRoutine(out?.routine, peer.name) };
+});
+
+route('PATCH', /^\/api\/peers\/(?<machine>[^/]+)\/routines\/(?<id>[^/]+)$/, async (req, _res, { params, body, state }) => {
+  const peer = peerOnly(req, state, params);
+  const fields = pickFields(body, ['enabled', 'schedule', 'offPeak']);
+  if (!Object.keys(fields).length) throw httpError(400, 'NOTHING_TO_SAVE', 'body needs one of: enabled, schedule, offPeak');
+  let out;
+  try { out = await passOn(state, peer, 'PATCH', `/api/routines/${encodeURIComponent(params.id)}`, { body: fields }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'update', routineId: params.id, fields: Object.keys(fields) });
+  return { routine: farRoutine(out?.routine, peer.name) };
+});
+
+route('DELETE', /^\/api\/peers\/(?<machine>[^/]+)\/routines\/(?<id>[^/]+)$/, async (req, _res, { params, state }) => {
+  const peer = peerOnly(req, state, params);
+  try { await passOn(state, peer, 'DELETE', `/api/routines/${encodeURIComponent(params.id)}`); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'delete', routineId: params.id });
+  return { ok: true };
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/routines\/(?<id>[^/]+)\/test$/, async (req, _res, { params, body, state }) => {
+  const peer = peerOnly(req, state, params);
+  let out;
+  // An unattended test run waits for its answer (the briefing's 现在试一次): give it the time it takes there.
+  try { out = await passOn(state, peer, 'POST', `/api/routines/${encodeURIComponent(params.id)}/test`, { body: body?.watched === true ? { watched: true } : {}, timeoutMs: body?.watched === true ? 15000 : 10 * 60 * 1000 }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'run', routineId: params.id });
+  return { ...(out?.started ? { started: true } : {}), routine: farRoutine(out?.routine, peer.name), ...(out?.run ? { run: { status: farStr(out.run.status, 40), summary: farStr(out.run.summary, 2000) } } : {}) };
+});
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/briefing$/, async (req, _res, { params, state }) => {
+  const peer = peerOnly(req, state, params);
+  try { return farBriefing(await passOn(state, peer, 'GET', '/api/briefing', { timeoutMs: 10000 })); } catch (err) { throw peerFailure(err, peer); }
+});
+
+route('PUT', /^\/api\/peers\/(?<machine>[^/]+)\/briefing$/, async (req, _res, { params, body, state }) => {
+  const peer = peerOnly(req, state, params);
+  let out;
+  try { out = await passOn(state, peer, 'PUT', '/api/briefing', { body: pickFields(body, ['enabled', 'time', 'feishu']) }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'briefing' });
+  return farBriefing(out);
+});
+
 route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/messages$/, async (req, _res, { params, state, query }) => {
   const { peer, botId } = remoteTarget(req, state, params);
   const limit = Math.min(Number(query.get('limit')) || 200, 1000);
@@ -5070,6 +5189,110 @@ route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/desktop$/, a
     const desktop = out?.desktop && typeof out.desktop === 'object' ? { ...out.desktop, url: remoteViewerUrl(out.desktop.url, peer.name, botId) } : { running: false, url: null };
     return { botId: `${botId}@${peer.name}`, machine: peer.name, support: out?.support || null, desktop };
   } catch (err) { throw peerFailure(err, peer); }
+});
+
+// --- 管理助手 for a bot on another machine (1.5.63) ------------------------------
+//   GET    /api/peers/:m/bots/:id         -> {machine, bot, models, tts}: the bot as that machine
+//          has it (tools, policy, model, voice), and that machine's models and voices
+//   PATCH  /api/peers/:m/bots/:id         {name?, role?, tools?, policy?, model?, voice?, avatar?}
+//          -> {bot}: the same body as a save here, applied (and audited) there
+//   POST   /api/peers/:m/bots/:id/avatar  raw image bytes (same limits as here) -> {ok, imageUrl}
+//   DELETE /api/peers/:m/bots/:id/avatar  -> {ok}
+// Only the human (isAuthorityRequest), only a paired machine (exactPeer), never a
+// call another hub passed on (remoteTarget): no hop to a third machine. Deleting
+// it or making it the main assistant there is not passed on.
+const PEER_BOT_FIELDS = ['name', 'role', 'tools', 'policy', 'model', 'voice', 'avatar'];
+const farStr = (v, n) => String(v ?? '').slice(0, n);
+/** That machine's bot as this page may draw it: its own fields, the id as "id@machine", the picture through this hub. */
+function farBot(raw, machine) {
+  const b = raw && typeof raw === 'object' ? raw : {};
+  const policy = b.policy && typeof b.policy === 'object' ? b.policy : {};
+  const avatar = safeAvatar(b.avatar, machine, b.id);
+  return {
+    id: `${farStr(b.id, 80)}@${machine}`,
+    name: farStr(b.name || b.id, 80),
+    role: farStr(b.role, 200),
+    primary: Boolean(b.primary),
+    tools: (Array.isArray(b.tools) ? b.tools : []).map((t) => farStr(t, 60)).slice(0, 200),
+    policy: {
+      autoApproveMedium: Boolean(policy.autoApproveMedium),
+      allowed: (Array.isArray(policy.allowed) ? policy.allowed : []).slice(0, 200).map((a) => ({ ...a, key: farStr(a?.key, 300), label: farStr(a?.label, 300) })),
+      phoneGrants: (Array.isArray(policy.phoneGrants) ? policy.phoneGrants : []).slice(0, 50).map((g) => ({ app: farStr(g?.app, 60), kind: farStr(g?.kind, 20), until: farStr(g?.until, 40), at: farStr(g?.at, 40) })),
+    },
+    model: farStr(b.model, 80),
+    voice: farStr(b.voice, 80),
+    ...(avatar ? { avatar } : {}),
+    remote: { machine, botId: farStr(b.id, 80), online: true },
+  };
+}
+function farModels(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const d = raw.default && typeof raw.default === 'object' ? raw.default : null;
+  return {
+    default: d ? { provider: farStr(d.provider, 40), model: farStr(d.model, 120) } : null,
+    models: (Array.isArray(raw.models) ? raw.models : []).slice(0, 100).map((m) => ({ id: farStr(m?.id, 80), label: farStr(m?.label, 80), provider: farStr(m?.provider, 40), model: farStr(m?.model, 120), hasKey: Boolean(m?.hasKey) })),
+  };
+}
+function farTts(raw) {
+  const t = raw?.tts;
+  if (!t || typeof t !== 'object') return null;
+  return { available: Boolean(t.available), voice: farStr(t.voice, 80), voices: (Array.isArray(t.voices) ? t.voices : []).slice(0, 100).map((v) => ({ id: farStr(v?.id, 80), label: farStr(v?.label, 80) })) };
+}
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  let got;
+  try { got = await passOn(state, peer, 'GET', `/api/bots/${encodeURIComponent(botId)}`, { timeoutMs: 10000 }); } catch (err) { throw peerFailure(err, peer); }
+  if (!got?.bot || got.bot.id !== botId) throw httpError(502, 'PEER_BAD_ANSWER', `「${peer.name}」没有回这个助手的设置`);
+  // Its machine's choices, not this one's; an older machine without them: the drawer says what it can.
+  const [models, voiceStatus] = await Promise.all([
+    passOn(state, peer, 'GET', '/api/models', { timeoutMs: 8000 }).catch(() => null),
+    passOn(state, peer, 'GET', '/api/voice', { timeoutMs: 8000 }).catch(() => null),
+  ]);
+  return { machine: peer.name, bot: farBot(got.bot, peer.name), models: farModels(models), tts: farTts(voiceStatus) };
+});
+
+route('PATCH', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)$/, async (req, _res, { params, body, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  const patch = {};
+  for (const k of PEER_BOT_FIELDS) if (body?.[k] !== undefined) patch[k] = body[k];
+  if (!Object.keys(patch).length) throw httpError(400, 'NOTHING_TO_SAVE', `body needs one of: ${PEER_BOT_FIELDS.join(', ')}`);
+  let out;
+  try { out = await passOn(state, peer, 'PATCH', `/api/bots/${encodeURIComponent(botId)}`, { body: patch }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.bot.update', machine: peer.name, botId, fields: Object.keys(patch) });
+  // The sidebar shows the new name / face on its next look, not the one kept for 15 s.
+  state.roster.list({ fresh: true }).catch(() => {});
+  return { bot: farBot(out?.bot, peer.name) };
+});
+
+route(
+  'POST',
+  /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/avatar$/,
+  async (req, _res, { params, state }) => {
+    const { peer, botId } = remoteTarget(req, state, params);
+    // The same checks as a picture for a bot here (POST /api/bots/:id/avatar), before anything goes out.
+    const declared = avatarMimeFromHeader(req.headers['content-type']);
+    if (!declared) throw httpError(400, 'AVATAR_BAD_TYPE', `content-type must be one of: ${AVATAR_MIME_TYPES.join(', ')}`);
+    const bytes = await readRawBody(req, AVATAR_MAX_BYTES, { code: 'AVATAR_TOO_LARGE', message: `an avatar image must be ${AVATAR_MAX_BYTES / (1024 * 1024)} MB or smaller` });
+    const sniffed = sniffImageType(bytes);
+    if (!sniffed) throw httpError(400, 'AVATAR_BAD_TYPE', 'body is not a PNG, JPEG or WebP image');
+    if (sniffed !== declared) throw httpError(400, 'AVATAR_BAD_TYPE', `content-type says ${declared} but the bytes look like ${sniffed}`);
+    try {
+      await passOn(state, peer, 'POST', `/api/bots/${encodeURIComponent(botId)}/avatar`, { raw: bytes, headers: { 'content-type': sniffed }, timeoutMs: 20000 });
+    } catch (err) { throw peerFailure(err, peer); }
+    await audit({ kind: 'peer.bot.update', machine: peer.name, botId, fields: ['avatarImage'] });
+    state.roster.list({ fresh: true }).catch(() => {});
+    return { ok: true, imageUrl: `/api/peers/${encodeURIComponent(peer.name)}/avatar/${encodeURIComponent(botId)}` };
+  },
+  { rawBody: true },
+);
+
+route('DELETE', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/avatar$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  try { await passOn(state, peer, 'DELETE', `/api/bots/${encodeURIComponent(botId)}/avatar`); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.bot.update', machine: peer.name, botId, fields: ['avatarImage'] });
+  state.roster.list({ fresh: true }).catch(() => {});
+  return { ok: true };
 });
 
 // --- another machine's groups (1.5.43): the same as its bots, by the human only ---------

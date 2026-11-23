@@ -3488,4 +3488,11 @@ window.DESK_I18N_EN = {
   "「{0}」能读写你的笔记": "“{0}” can read and write your notes",
   "「{0}」能查地点、算路线": "“{0}” can look up places and routes",
   "「{0}」能在钉钉里发消息": "“{0}” can send messages in DingTalk",
+  "正在从「{0}」读取…": "Reading from “{0}”…",
+  "「{0}」现在连不上，连上后再改": "Can't reach “{0}” right now. Change it once it's back.",
+  "没选的话用「{0}」的默认模型。": "Without a pick it uses the default model of “{0}”.",
+  "想要更多选择：在「{0}」上 设置 → 模型 → 其他模型。": "Want more choices: on “{0}”, Settings → Models → Other models.",
+  "「{0}」现在连不上": "Can't reach “{0}” right now",
+  "{0} 的每日简报": "Daily briefing on {0}",
+  "{0}名下没有定时任务（「{1}」上一共 {2} 条，勾选「全部」查看）。": "{0} has no routines ({2} on “{1}” in all; tick All to see them).",
 };

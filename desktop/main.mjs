@@ -23,7 +23,7 @@ import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pickDataDir } from './datadir.mjs';
 import { textMenuTemplate } from './textmenu.mjs';
-import { senderKind, mayUse, isProgramFile, firewallVerdict, firewallPlan, parseNetcheck, pushUpdateAddress } from './guard.mjs';
+import { senderKind, mayUse, isProgramFile, firewallVerdict, firewallPlan, parseNetcheck, pushUpdateAddress, loginCookieNames, loginFromSetCookie, copiedLoginName } from './guard.mjs';
 import { readSecretJson } from './sealed.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -129,8 +129,7 @@ async function sharePeers() {
     // (Notion) coming back to this computer could not be passed on to it.
     let token = '';
     for (const u of [m.url, m.tailnetUrl].filter(Boolean)) {
-      const raw = await session.defaultSession.cookies.get({ url: u, name: 'desk_session' }).catch(() => []);
-      token = raw[0]?.value || '';
+      token = await loginToken(u);
       if (token) break;
     }
     if (token) machines.push({ name: m.name || m.url, url: m.url, tailnetUrl: m.tailnetUrl || '', token });
@@ -332,13 +331,21 @@ async function reachMachine(url) {
   return '';
 }
 
+/** The pairing token this app holds for an address: its own cookie name first, then the plain one (1.5.63). */
+async function loginToken(u) {
+  for (const name of loginCookieNames(u)) {
+    const raw = await session.defaultSession.cookies.get({ url: u, name }).catch(() => []);
+    if (raw[0]?.value) return raw[0].value;
+  }
+  return '';
+}
+
 /** The addresses of a machine that hold its pairing cookie here, its own address first. */
 async function loginSources(url) {
   const alt = readMachines().find((m) => m.url === url)?.tailnetUrl || '';
   const out = [];
   for (const u of [url, alt].filter(Boolean)) {
-    const has = await session.defaultSession.cookies.get({ url: u, name: 'desk_session' }).catch(() => []);
-    if (has.length) out.push(u);
+    if (await loginToken(u)) out.push(u);
   }
   return out.length ? out : [url];
 }
@@ -359,9 +366,14 @@ async function doorAccepts(base) {
  */
 async function copyLogin(from, to, rename = '') {
   try {
-    for (const c of await session.defaultSession.cookies.get({ url: from })) {
+    const all = await session.defaultSession.cookies.get({ url: from });
+    // 1.5.63: the login is named after the address's port (guard.mjs loginCookieName); the plain name from older hubs still counts.
+    const chosen = loginCookieNames(from).find((n) => all.some((c) => c.name === n)) || '';
+    for (const c of all) {
+      const name = copiedLoginName(c.name, from, to, rename, chosen);
+      if (!name) continue;
       await session.defaultSession.cookies.set({
-        url: to, name: rename && c.name === 'desk_session' ? rename : c.name, value: c.value, path: c.path || '/', httpOnly: c.httpOnly,
+        url: to, name, value: c.value, path: c.path || '/', httpOnly: c.httpOnly,
         ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}), ...(c.sameSite ? { sameSite: c.sameSite } : {}),
       });
     }
@@ -401,12 +413,13 @@ async function pairWith(url, code) {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return false;
-    const match = /desk_session=([^;]+)/.exec(res.headers.get('set-cookie') || '');
-    if (!match) return false;
+    // Named after the port since 1.5.63, plain from older hubs: kept under the name the hub gave.
+    const login = loginFromSetCookie(res.headers.get('set-cookie') || '');
+    if (!login) return false;
     await session.defaultSession.cookies.set({
       url,
-      name: 'desk_session',
-      value: decodeURIComponent(match[1]),
+      name: login.name,
+      value: login.value,
       httpOnly: true,
       sameSite: 'lax',
       expirationDate: Math.floor(Date.now() / 1000) + 10 * 365 * 24 * 3600,
@@ -559,6 +572,8 @@ function masterKey() {
       }
       return masterKeyCache;
     }
+    // A developer run (ASSIST_DEV_URL, 1.5.63): HOME is the source folder, so no key file is made there.
+    if (DEV_URL) { bootLog('dev mode: no master key made'); return masterKeyCache; }
     const hex = crypto.randomBytes(32).toString('hex');
     const sealed = safeStorage.encryptString(hex);
     if (safeStorage.decryptString(sealed) !== hex) return masterKeyCache;
@@ -1849,6 +1864,8 @@ if (!gotLock) {
   // keep theirs. In the background: a first run unpacks it (a 2 MB download).
   const startLocalVnc = () => {
     if (process.platform !== 'win32') return;
+    // A developer run (ASSIST_DEV_URL, 1.5.63) leaves this computer's TightVNC alone: no start, no download, no registry password.
+    if (DEV_URL) { bootLog('local screen: off (dev mode)'); return; }
     import(pathToFileURL(path.join(SERVER_DIR, 'src', 'localvnc.mjs')).href)
       .then(async (m) => {
         // Its passwords live in the hub's data folder, sealed with the master key (1.5.53): the hub signs in for the page.

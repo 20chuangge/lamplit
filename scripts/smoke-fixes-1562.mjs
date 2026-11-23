@@ -94,7 +94,8 @@ export async function fixes1562Checks({ check, readText }) {
   // --- 3. 设置 → 审批 lists every 「以后都允许」, by assistant, with the same 撤销 ---------------------
   const calls = [];
   const st = { bots: [{ id: 'w', name: '周报', policy: { level: 'x', allowed: [{ key: 'send_email', label: '发邮件' }, { key: 'shell:git', label: '运行 git' }], phoneGrants: [{ app: '微信', kind: 'send' }] } }] };
-  const R = new Function('state', 'api', `${fnSource(bots, 'rememberedOf')}; ${fnSource(bots, 'revokeRemembered')}; return { rememberedOf, revokeRemembered };`)(st, async (url, opts) => { calls.push([url, opts]); return null; });
+  // botApiUrl (1.5.63): the address of a bot's settings, here or passed on to its machine.
+  const R = new Function('state', 'api', 'botApiUrl', `${fnSource(bots, 'rememberedOf')}; ${fnSource(bots, 'revokeRemembered')}; return { rememberedOf, revokeRemembered };`)(st, async (url, opts) => { calls.push([url, opts]); return null; }, (id) => `/api/bots/${encodeURIComponent(id)}`);
   const before = R.rememberedOf(st.bots[0]);
   const after = await R.revokeRemembered(st.bots[0], { key: 'send_email' });
   const afterGrant = await R.revokeRemembered(after, { grant: { app: '微信', kind: 'send' } });

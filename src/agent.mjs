@@ -1941,7 +1941,7 @@ export class AgentRuntime {
       const { member, role, prompt, priorReceipts, cont } = queue.shift();
       if (done.has(member.id)) continue;
       done.add(member.id);
-      const result = member.remote ? await this.runRemoteGroupTurn({ group, member, text: prompt || text, role, turnId: id, recordUser: record }) : await this.runTurn({
+      const result = member.remote ? await this.runRemoteGroupTurn({ group, member, text: prompt || text, role, turnId: id, recordUser: record, kickoff }) : await this.runTurn({
         botId: member.id,
         text: prompt || text,
         source: 'group',
@@ -2530,10 +2530,11 @@ export class AgentRuntime {
    * A group member that lives on another machine takes its turn there: it gets
    * the recent group conversation, and its answer is posted here under its name.
    */
-  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false }) {
+  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false, kickoff = false }) {
     const id = turnId || uid('turn');
     if (recordUser) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text), turnId: id });
-    const base = { botId: member.id, botName: member.name, turnId: id, source: 'group', groupId: group.id };
+    // A new group's introductions (1.5.63): marked here and, through the handoff, on the member's machine too.
+    const base = { botId: member.id, botName: member.name, turnId: id, source: 'group', groupId: group.id, ...(kickoff ? { kickoff: true } : {}) };
     const startedAt = nowIso();
     this.bus.emit({ type: 'turn.start', ...base, text });
     let status = 'success';
@@ -2552,11 +2553,11 @@ export class AgentRuntime {
       const prompt = `（你是群聊「${group.name}」的成员，这个群在另一台机器上；成员：${who}。${role === 'speaker' ? '现在点名请你回答。' : ''}你的回答会以你的名字发到群里：只回答你负责的部分，简短；做出的文件写出路径，会自动取到群所在的机器。）\n\n最近的群聊：\n${recent || '（还没有消息）'}\n\n现在要你回答的话：${text}`;
       // While it answers there, a new group message gets a quick status reply here and waits (see below).
       remoteKey = `remote_${id || uid('turn')}`;
-      this.active?.set(remoteKey, { controller: new AbortController(), botId: member.id, remote: true, machine: member.remote.machine, memberName: member.name, task: String(text).slice(0, 300), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth: 0, group: true, groupId: group.id, kickoff: role === 'kickoff' });
+      this.active?.set(remoteKey, { controller: new AbortController(), botId: member.id, remote: true, machine: member.remote.machine, memberName: member.name, task: String(text).slice(0, 300), startedAt: Date.now(), steps: 0, step: null, last: '', inbox: [], depth: 0, group: true, groupId: group.id, kickoff });
       const r = await askPeerBot(peers, peer, {
         botId: member.remote.botId,
         text: prompt,
-        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」`, machine: this.machineName?.() || '' } },
+        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」`, machine: this.machineName?.() || '' }, ...(kickoff ? { kickoff: true } : {}) },
         workspaceDir: this.config.workspaceDir,
       });
       status = r.status === 'success' ? 'success' : (r.status || 'failed');

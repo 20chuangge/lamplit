@@ -9,7 +9,8 @@ async function loadMessages() {
   const botId = state.botId;
   const cacheKey = `bot:${botId}:${state.showProcess ? 1 : 0}`;
   const cached = chatCacheGet(cacheKey);
-  if (cached && !remoteChatOnScreen(botId)) { state.messages = cached; renderMessages(); }
+  // Not when this chat is on screen already (1.5.63: at every turn end it drew the older copy, then the new one).
+  if (cached && !remoteChatOnScreen(botId) && messagesEl.dataset.shown !== `bot:${botId}`) { state.messages = cached; renderMessages(); }
   let messages;
   try {
     // Steps hidden: their long output stays on the machine. A bot on another machine: read from there (1.5.42).
@@ -56,6 +57,7 @@ function renderMessages() {
     if (last > i) { items.splice(i, 1); items.splice(last, 0, it); }
   }
 
+  const place = chatPlace(`bot:${state.botId}`); // where the reader is (1.5.63)
   messagesEl.innerHTML = ''; messagesEl.dataset.chat = state.botId || '';
   const changesByTurn = turnChanges(state.messages);
   // A turn's own last message: a new message sent in the middle splits a turn in two (1.5.40), the line still shows once.
@@ -104,7 +106,7 @@ function renderMessages() {
   showNextSteps(); // under the newest reply, while nothing runs (1.5.58)
   updateComposerMode();
   renderVideoJobs();
-  scrollToBottom(true);
+  restoreChatPlace(place, `bot:${state.botId}`);
 }
 
 /* --- file changes a turn made, undoable for 7 days (1.5.8) ------------------

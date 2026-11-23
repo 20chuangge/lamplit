@@ -683,6 +683,8 @@ function appendApprovalCard(ev, sender) {
   }
   // 「等你点头…」 goes under the card it is about, not above it (it was drawn first after a reload).
   keepTypingLast();
+  // A card waits: the first things to try are not for now, or they sit above it (1.5.63, also a parked card with no turn running).
+  messagesEl.querySelectorAll('.starter-row, .starter-tip').forEach((n) => n.remove());
   focusNewCard(card);
   scrollToBottom(true);
 }

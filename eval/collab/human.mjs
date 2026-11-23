@@ -190,7 +190,9 @@ export async function runTimeline(h, { steps, policy, cardDelay = 1000, done, ti
     // Nothing more will happen: every step that must run ran, no turn is open, no card waits, and the hubs
     // have been quiet a while (a run whose board never came - the scenario's checks say what is missing).
     if (events.length !== lastCount) { lastCount = events.length; lastEventAt = now; }
-    if (quietMs && now - lastEventAt > quietMs && !busy.size && steps.every((s) => s.repeat || s.optional || fired.get(s.id)) && !openTurns(events) && !openCards(events)) {
+    // The human's last word counts as something happening (11-24: after a long quiet the late answer came,
+    // and the run took itself as over 1 s later, before anything could take the answer up).
+    if (quietMs && now - lastEventAt > quietMs && now - spoke >= settleMs && !busy.size && steps.every((s) => s.repeat || s.optional || fired.get(s.id)) && !openTurns(events) && !openCards(events)) {
       run.log?.(`[human] quiet for ${Math.round(quietMs / 1000)} s: taking the run as over`);
       quiet = true;
       break;

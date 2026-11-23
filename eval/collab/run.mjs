@@ -241,7 +241,9 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     const run = { hubs, group, bots: trace.bots, mock, trace, coordinatorId: coord.id, speed: mode === 'real' ? 5 : 1, log };
     const h = makeHuman(run);
     // orAt is written for the fake model's pace; a real one is about 20 times slower, unless the step says (orAtReal).
-    const steps = sc.timeline(env).map((s) => (mode === 'real' && s.orAt != null ? { ...s, orAt: s.orAtReal ?? s.orAt * 20 } : s));
+    // delay is scaled by the run's speed too; delayReal is a real model's own (11-24: the video-mark answer, meant
+    // 90 s late, came 450 s late: 90 000 ms written for a real model, then times 5).
+    const steps = sc.timeline(env).map((s) => (mode === 'real' ? { ...s, ...(s.orAt != null ? { orAt: s.orAtReal ?? s.orAt * 20 } : {}), ...(s.delayReal != null ? { delay: s.delayReal / run.speed } : {}) } : s));
     const result = await runTimeline(h, { steps, policy: sc.policy, cardDelay: 1000, done: sc.done, quietMs: mode === 'real' ? 300000 : 6000, settleMs: mode === 'real' ? 30000 : 1500, timeoutMs: (Number(process.env.EVAL_TIMEOUT_MINUTES) || (mode === 'real' ? 45 : 2)) * 60000, speed: run.speed });
     trace.errors.push(...result.errors);
     trace.timedOut = result.timedOut;
@@ -299,7 +301,9 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     const usage = { tokens: 0, cost: 0 };
     for (const [name, hub] of Object.entries(hubs)) {
       if (hub.via) { const u = await hub.usage(trace.bots.filter((x) => x.hub === name).map((x) => x.id)).catch(() => ({ tokens: 0, cost: 0 })); usage.tokens += u.tokens; usage.cost += u.cost; continue; }
-      const byBot = listOf(await hub.api.get('/api/usage?days=1').catch(() => null), 'byBot');
+      // Two local days: a scenario that crosses midnight is in both (11-24: s1 read 0 tokens just after midnight).
+      // The bots are new each run, so nothing else is counted.
+      const byBot = listOf(await hub.api.get('/api/usage?days=2').catch(() => null), 'byBot');
       for (const b of trace.bots.filter((x) => x.hub === name)) {
         const row = byBot.find((r) => r.key === b.id);
         if (row) { usage.tokens += Number(row.tokens) || 0; usage.cost += Number(row.cost) || 0; }

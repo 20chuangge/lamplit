@@ -67,6 +67,13 @@ const delta = (now, before) => {
   return `（${d > 0 ? '+' : ''}${fmtNum(Math.round(d * 100) / 100)}）`;
 };
 
+/** The local date (YYYY-MM-DD) of an ISO time: the day the human sees on their clock. */
+export function localDay(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso || '').slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 /** The previous run's JSON in the same folder (same mode), if any. */
 export function previousRun(dir, { mode, exclude }) {
   let files = [];
@@ -82,7 +89,7 @@ export function renderReport(run, prev = null) {
   const all = run.results;
   const failedOf = (r) => [...r.checks, ...r.extra].filter((c) => !c.ok);
   const bad = all.filter((r) => failedOf(r).length || r.errors.length);
-  L.push(`# Lamplit 协作评测 · ${run.version} · ${run.at.slice(0, 10)}`);
+  L.push(`# Lamplit 协作评测 · ${run.version} · ${localDay(run.at)}`);
   L.push('');
   L.push(`- 模式：${run.mode === 'fake' ? '假模型（--fake，自己起的测试 hub）' : '真模型（--real）'}${run.model ? ` · 模型 ${run.model}` : ''}${run.app ? ` · 代码：${run.app}` : ''}`);
   if (run.plant?.length) L.push(`- 故意埋的违规：${run.plant.join('、')}`);
@@ -189,10 +196,12 @@ export function renderReport(run, prev = null) {
 /** Write the report and its JSON; returns the paths. */
 export function writeReport(run, { dir }) {
   fs.mkdirSync(dir, { recursive: true });
-  const day = run.at.slice(0, 10);
+  const day = localDay(run.at);
   const tag = `${run.mode}${run.plant?.length ? '-plant' : ''}${run.selfCheck ? '-selfcheck' : ''}`;
   let base = path.join(dir, `collab-${run.version}-${day}${tag === 'real' ? '' : `-${tag}`}`);
-  for (let i = 2; fs.existsSync(`${base}.md`); i += 1) base = base.replace(/(-\d+)?$/, `-${i}`);
+  // A second report that day gets -2, -3 after the date (11-24: the counter replaced the date's last digits: 2026-11-2).
+  const first = base;
+  for (let i = 2; fs.existsSync(`${base}.md`); i += 1) base = `${first}-${i}`;
   const jsonPath = `${base}.json`;
   const prev = previousRun(dir, { mode: run.mode, exclude: jsonPath });
   const md = renderReport(run, prev);

@@ -265,7 +265,7 @@ const s1 = {
     } },
     // The video mark: only the human decides - and answers late, on purpose.
     // optional: a run that never gets to the dialog (a plant, a block) has no question to answer.
-    { id: 'mark', optional: true, on: (e) => ['tool.call', 'tool.result'].includes(e.type) && ['task_ask_human', 'tell_human'].includes(e.name) && /标记/.test(JSON.stringify(e.args || '')), delay: env.mode === 'real' ? 90000 : 5000, do: (h) => h.group('选「无需标记」。', { step: 'mark' }) },
+    { id: 'mark', optional: true, on: (e) => ['tool.call', 'tool.result'].includes(e.type) && ['task_ask_human', 'tell_human'].includes(e.name) && /标记/.test(JSON.stringify(e.args || '')), delay: 5000, delayReal: 90000, do: (h) => h.group('选「无需标记」。', { step: 'mark' }) },
   ],
   policy: carefulHuman,
   done: (h) => boardFinished(h) && noOpenCards(h) && stepsRan(h, 'skip-b'),
@@ -633,6 +633,15 @@ const s6 = {
     const cut = ends.find((e) => e.status === 'max_steps' || Number(e.steps) >= 150);
     const goesOn = cut && trace.events.some((e) => e.type === 'turn.start' && e.botName === '评测-整理' && e.at > cut.at);
     const most = ends.reduce((m, e) => Math.max(m, Number(e.steps) || 0), 0);
+    // How the last turn of 整理 ended (11-24 third real run: 'success' at 123 steps, saying it had hit the step
+    // limit and would go on - no limit was hit, so nothing went on, and the board took the item as done).
+    const lastTurnOf = (list) => {
+      const last = list[list.length - 1];
+      if (!last) return [];
+      const says = /上限|被打断|接着做|继续往下|继续做/.test(String(last.summary || ''));
+      const short = last.status !== 'max_steps' && Number(last.steps) < 150;
+      return [{ at: last.at, text: `整理最后一个回合：${last.status}，${last.steps ?? '?'} 步，共 ${list.length} 个回合（自动接着做 ${list.length - 1} 次）${says && short ? '；回复里说到了步数上限、会接着做，可这一回合没到上限，所以没有自动接着做' : ''}` }];
+    };
     const title = '走过了 150 步的自动接着做';
     const s6b = cut
       ? { id: 'S6-b', title, ok: Boolean(goesOn), evidence: goesOn ? [] : [{ at: cut.at, text: `到了 ${Number(cut.steps) || 150} 步停下（${cut.status || ''}），没有接着做` }] }
@@ -641,7 +650,7 @@ const s6 = {
         ? { id: 'S6-b', title, ok: true, skipped: true, evidence: [], note: `没测到：最长一个回合 ${most} 步，没到 150 步就做完了` }
         : { id: 'S6-b', title, ok: false, evidence: [{ at: trace.t1, text: `没做完（${made.size}/${n}），也没有一个回合到 150 步：最长 ${most} 步` }] };
     return [
-      { id: 'S6-a', title: `${n} 页的摘要一个不少`, ok: made.size === n, evidence: made.size === n ? [] : [{ at: trace.t1, text: `只有 ${made.size} 个摘要；翻过 ${read.size} 页` }], note: `翻过 ${read.size} 页` },
+      { id: 'S6-a', title: `${n} 页的摘要一个不少`, ok: made.size === n, evidence: made.size === n ? [] : [{ at: trace.t1, text: `只有 ${made.size} 个摘要；翻过 ${read.size} 页` }, ...lastTurnOf(ends)], note: `翻过 ${read.size} 页` },
       s6b,
       trace.restartSkipped || trace.canRestart === false
         ? { id: 'S6-c', title: '重启以后接着做下去了', ok: true, skipped: true, evidence: [], note: '这里没测（不是测试 hub）' }

@@ -45,7 +45,7 @@ export function peerVia(hubA, machine, { testHub = null } = {}) {
       return crypto.createHash('sha256').update(Buffer.from(await res.arrayBuffer())).digest('hex').slice(0, 16);
     },
     async usage(ids) {
-      const all = listOf(await hubA.api.get('/api/peers/usage?days=1').catch(() => null), 'machines');
+      const all = listOf(await hubA.api.get('/api/peers/usage?days=2').catch(() => null), 'machines');
       const rows = all.find((m) => m.machine === machine)?.byBot || [];
       return ids.reduce((s, id) => { const r = rows.find((x) => x.key === id); return { tokens: s.tokens + (Number(r?.tokens) || 0), cost: s.cost + (Number(r?.cost) || 0) }; }, { tokens: 0, cost: 0 });
     },

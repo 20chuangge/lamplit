@@ -185,8 +185,26 @@ export async function collabSelfChecks({ check }) {
       const t2 = Date.now();
       await runTimeline({ run: { trace: trace2 } }, { steps: [{ id: 'answer', at: 0, do: () => { trace2.human.push({ at: Date.now(), step: 'answer' }); trace2.events.push({ type: 'turn.start', turnId: 'x', at: Date.now() }); setTimeout(() => trace2.events.push({ type: 'turn.end', turnId: 'x', at: Date.now() }), 1200); } }], done: () => true, timeoutMs: 5000, settleMs: 300 });
       const waited2 = Date.now() - t2;
-      check('COLLAB-10 a run whose work looks done still waits after the human\'s last word (settleMs), and for a turn that word started to end',
-        waited >= 600 && waited < 2000 && waited2 >= 1200 && waited2 < 3000, JSON.stringify({ waited, waited2 }));
+      // The quiet rule too (11-24: a late answer after a long quiet, and the run took itself as over 1 s later).
+      const trace3 = { events: [], human: [] };
+      const t3 = Date.now();
+      const r3 = await runTimeline({ run: { trace: trace3 } }, { steps: [{ id: 'late', at: 0, delay: 500, do: () => { trace3.human.push({ at: Date.now(), step: 'late' }); } }], done: () => false, timeoutMs: 5000, quietMs: 100, settleMs: 600 });
+      const waited3 = Date.now() - t3;
+      check('COLLAB-10 a run whose work looks done still waits after the human\'s last word (settleMs), and for a turn that word started to end; so does a run that has been quiet a long time',
+        waited >= 600 && waited < 2000 && waited2 >= 1200 && waited2 < 3000 && r3.quiet && waited3 >= 1100 && waited3 < 2500, JSON.stringify({ waited, waited2, waited3 }));
+    }
+
+    // The report's name: the local day the run started, then -2, -3 (11-24: 「collab-1.5.65-2026-11-2」).
+    {
+      const os = await import('node:os');
+      const path = await import('node:path');
+      const { writeReport, localDay } = await import('../eval/collab/report.mjs');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-rep-'));
+      const run = { version: '0.0.0', at: new Date(2026, 10, 23, 23, 58).toISOString(), mode: 'real', model: '', app: '', plant: [], currency: 'CNY', results: [] };
+      const names = [writeReport(run, { dir }), writeReport(run, { dir })].map((w) => path.basename(w.md));
+      fs.rmSync(dir, { recursive: true, force: true });
+      check('COLLAB-12 a report is named by the local day its run started, a second one that day gets -2 after the whole date',
+        names[0] === 'collab-0.0.0-2026-11-23.md' && names[1] === 'collab-0.0.0-2026-11-23-2.md' && localDay(run.at) === '2026-11-23', JSON.stringify(names));
     }
 
     // The material and what counts (11-23 second real run): real media, deliverables are what reaches the

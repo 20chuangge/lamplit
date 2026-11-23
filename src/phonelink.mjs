@@ -14,6 +14,7 @@
 // "lamplit:<deviceId>"; anything else goes to the real adb.
 
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 
 const PREFIX = 'lamplit:';
 
@@ -24,15 +25,47 @@ function fail(code, message) {
 // 150 s, not 90 (1.5.17): a phone reports every 30 s, but one machine that
 // did not answer could hold its other reports back (fixed in the app too).
 export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } = {}) {
-  const phones = new Map(); // deviceId -> {enabled, model, name, at}
+  const phones = new Map(); // deviceId -> {enabled, model, name, at, caps}
   const waiting = new Map(); // jobId -> {deviceId, resolve, reject, timer}
+  // Files the phone may fetch for a save_media step (1.5.65): token -> {deviceId, root, abs, size, until}.
+  const staged = new Map();
   let seq = 0;
 
   return {
-    /** The app says whether this phone may be used (every 30 s and on connecting). */
-    register(deviceId, { enabled = false, model = '', name = '', sdk = 0, phoneId = '' } = {}) {
+    /** The app says whether this phone may be used (every 30 s and on connecting). caps: steps beyond the first ones (1.5.65: save_media). */
+    register(deviceId, { enabled = false, model = '', name = '', sdk = 0, phoneId = '', caps = [] } = {}) {
       if (!deviceId) return;
-      phones.set(String(deviceId), { enabled: Boolean(enabled), model: String(model || '').slice(0, 60), name: String(name || '').slice(0, 60), sdk: Number(sdk) || 0, phoneId: String(phoneId || '').slice(0, 64), at: Date.now() });
+      phones.set(String(deviceId), { enabled: Boolean(enabled), model: String(model || '').slice(0, 60), name: String(name || '').slice(0, 60), sdk: Number(sdk) || 0, phoneId: String(phoneId || '').slice(0, 64), caps: (Array.isArray(caps) ? caps : []).map(String).slice(0, 20), at: Date.now() });
+    },
+
+    /** Can the app on this phone do this step (it said so in its last report)? */
+    can(deviceId, cap) {
+      return Boolean(phones.get(String(deviceId))?.caps?.includes(cap));
+    },
+
+    /** The phone's model as the app reported it (to find the same phone on the cable). */
+    model(deviceId) {
+      return phones.get(String(deviceId))?.model || '';
+    },
+
+    /**
+     * A workspace file the phone `deviceId` may fetch with the token, until the
+     * step ends (unstage) or `ttlMs` passes. Only that phone, only that file.
+     */
+    stage(deviceId, file, { ttlMs = 20 * 60 * 1000 } = {}) {
+      const token = crypto.randomBytes(18).toString('base64url');
+      staged.set(token, { deviceId: String(deviceId), root: file.root, abs: file.abs, size: Number(file.size) || 0, until: Date.now() + ttlMs });
+      return token;
+    },
+    /** The file behind a token, for the phone it was made for; null otherwise. */
+    staged(token, deviceId) {
+      const s = staged.get(String(token || ''));
+      if (!s) return null;
+      if (Date.now() > s.until) { staged.delete(String(token)); return null; }
+      return s.deviceId === String(deviceId) ? s : null;
+    },
+    unstage(tokens = []) {
+      for (const t of tokens) staged.delete(String(t));
     },
 
     /** Phones that can be used now: turned on and heard from lately. */
@@ -112,6 +145,28 @@ function unescapeInputText(s) {
  * The commands src/phone.mjs runs, for both kinds of phone: adb for a phone on
  * the cable, the app (through the link) for "lamplit:<deviceId>".
  */
+/** How long a save_media step may take: the files come over the phone's connection. */
+export function mediaTimeoutMs(items) {
+  const bytes = items.reduce((n, it) => n + (Number(it.size) || 0), 0);
+  // 30 s, 2 s a file (a second apart, for the order), 4 s a MB (a slow relay): at most 20 min.
+  return Math.min(20 * 60 * 1000, 30000 + items.length * 2000 + Math.ceil(bytes / (1024 * 1024)) * 4000);
+}
+
+/** The save_media step for the app: in the order given, each with a one-time address on this machine. */
+export function mediaJobArgs(items, token) {
+  return {
+    files: items.map((it) => ({
+      order: it.order,
+      url: `/api/phone/files/${token(it)}`,
+      name: it.phoneName,
+      mime: it.mime,
+      kind: it.kind,
+      folder: it.folder,
+      size: it.size,
+    })),
+  };
+}
+
 export function makePhoneExec({ adbPath = () => '', link, adbExec = runAdb }) {
   const typed = new Map(); // deviceId -> text waiting for the paste key
 
@@ -201,6 +256,40 @@ export function makePhoneExec({ adbPath = () => '', link, adbExec = runAdb }) {
     if (!adb) throw fail('ADB_NOT_FOUND', 'no phone on a cable here (adb is not installed) and no phone with Lamplit\'s 「让机器人用这部手机」 turned on');
     return adbExec(adb, args, opts);
   }
+  /**
+   * Files into the album through the app (1.5.65): each staged for this phone
+   * only; the app fetches them over its paired connection (never a public host)
+   * and saves them through MediaStore. -> {failed:[{order, why}]}
+   */
+  async function media(deviceId, items) {
+    const tokens = [];
+    try {
+      const args = mediaJobArgs(items, (it) => { const t = link.stage(deviceId, it); tokens.push(t); return t; });
+      const out = await link.request(deviceId, 'save_media', args, { timeoutMs: mediaTimeoutMs(items) });
+      return { failed: Array.isArray(out?.failed) ? out.failed : [] };
+    } catch (err) {
+      // An app from before 1.5.65 does not know the step.
+      if (/unknown step/i.test(String(err.message || ''))) throw fail('PHONE_APP_TOO_OLD', 'the Lamplit app on the phone cannot save files yet');
+      throw err;
+    } finally {
+      link.unstage(tokens);
+    }
+  }
+  media.can = (deviceId) => Boolean(link.can?.(deviceId, 'save_media'));
+  exec.media = media;
+
+  /** The same phone on the cable here (by its model), when the app cannot do a step. -> adb serial | '' */
+  exec.adbTwin = async (deviceId) => {
+    const want = String(link.model?.(deviceId) || '').toLowerCase().replace(/[\s_]+/g, ' ').trim();
+    if (!want) return '';
+    for (const line of (await adbDevices()).split(/\r?\n/).slice(1)) {
+      const [serial, state] = line.trim().split(/\s+/);
+      const model = (/\bmodel:(\S+)/.exec(line)?.[1] || '').toLowerCase().replace(/_/g, ' ').trim();
+      if (serial && state === 'device' && model && (want === model || want.endsWith(` ${model}`))) return serial;
+    }
+    return '';
+  };
+
   // Why no phone answers, when one was here before (phone.mjs adds it to PHONE_NOT_CONNECTED).
   exec.whyGone = () => {
     const s = link.stale?.() || [];

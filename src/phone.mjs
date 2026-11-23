@@ -15,7 +15,9 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { saveInside } from './safefs.mjs';
+import { pipeline } from 'node:stream/promises';
+import { saveInside, statInside } from './safefs.mjs';
+import { hubTmp } from './store.mjs';
 
 const LAMPLIT_PACKAGE = 'com.desk.assistant';
 
@@ -167,9 +169,179 @@ function inputTextArg(text) {
   return text.replace(/([\\"'`$&|;<>()*?#~!\[\]{}])/g, '\\$1').replace(/ /g, '%s');
 }
 
+// ---- workspace files into the phone's album (1.5.65) -------------------------
+//
+// A bot on the cloud had to post 9 pictures from the phone; they were in its
+// workspace, not in the phone's album, so it put them on public file hosts one
+// by one to download them on the phone. Now save_to_album puts workspace files
+// on the human's own phone, never through anyone else:
+//   - on the cable: adb push to /sdcard/DCIM/Lamplit (other files: Download/Lamplit),
+//     each file's time set, then the phone's media scan;
+//   - through the Lamplit app (no cable, or this is another machine): the app
+//     fetches each file from this machine over its paired connection and saves it
+//     through MediaStore (phonelink.mjs, GET /api/phone/files/:token).
+// The first file is the newest, the next a second older and so on, so the
+// gallery and 「从相册选择」 (newest first) show them first, in the given order.
+
+export const ALBUM_MAX_FILES = 50;
+export const ALBUM_MAX_BYTES = 200 * 1024 * 1024;
+export const ALBUM_DIR = 'DCIM/Lamplit';
+export const DOWNLOAD_DIR = 'Download/Lamplit';
+/** The phone app that can save files (its save_media step). */
+export const ALBUM_APP_VERSION = '1.5.65';
+
+const MEDIA_TYPES = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.heic': 'image/heic', '.heif': 'image/heif', '.bmp': 'image/bmp',
+  '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.m4v': 'video/x-m4v', '.3gp': 'video/3gpp', '.webm': 'video/webm', '.mkv': 'video/x-matroska',
+};
+const FILE_TYPES = {
+  '.pdf': 'application/pdf', '.txt': 'text/plain', '.md': 'text/markdown', '.csv': 'text/csv', '.json': 'application/json',
+  '.zip': 'application/zip', '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav', '.apk': 'application/vnd.android.package-archive',
+};
+
+/** image / video go to the album, anything else to Downloads. -> {kind, mime} */
+export function mediaKind(name) {
+  const ext = path.extname(String(name || '')).toLowerCase();
+  const media = MEDIA_TYPES[ext];
+  if (media) return { kind: media.startsWith('image/') ? 'image' : 'video', mime: media };
+  return { kind: 'file', mime: FILE_TYPES[ext] || 'application/octet-stream' };
+}
+
+/** A name safe on the phone and in a shell there: no folders, quotes or control characters; a tag keeps it unique. */
+export function phoneFileName(name, tag = '') {
+  const base = path.basename(String(name || '').replace(/\\/g, '/')) || 'file';
+  const ext = path.extname(base).toLowerCase().replace(/[^.\w]/g, '').slice(0, 10);
+  const stem = base.slice(0, base.length - path.extname(base).length)
+    .replace(/[\\/:*?"<>|'`$!&;(){}[\]#~%^\u0000-\u001f]/g, '_').replace(/\s+/g, '_').replace(/^[.\-_]+/, '').slice(0, 60) || 'file';
+  return `${stem}${tag ? `_${tag}` : ''}${ext}`;
+}
+
+/**
+ * Each file's name, folder and time on the phone, in the given order: the first
+ * is the newest (now), each next one a second older. Saved last file first.
+ */
+export function albumPlan(files, { now = Date.now() } = {}) {
+  const sec = Math.floor(now / 1000);
+  const tag = sec.toString(36);
+  return (files || []).map((f, i) => {
+    const { kind, mime } = mediaKind(f.name || f.abs);
+    return { ...f, kind, mime, folder: kind === 'file' ? DOWNLOAD_DIR : ALBUM_DIR, phoneName: phoneFileName(f.name || f.abs, `${tag}${String(i + 1).padStart(2, '0')}`), time: sec - i, order: i };
+  });
+}
+
+/** One argument for `adb shell` (the phone's shell joins them into one line). */
+export const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
+/**
+ * The adb command lines that put the planned files on a phone on the cable:
+ * copy (push + its time, last file first), then one media scan through the
+ * Lamplit app (1.5.65 and newer), and the system's scan broadcast for each
+ * file when the app did not take it. local(item) is the file on this computer.
+ */
+export function adbAlbumCommands(serial, items, local = (it) => it.abs) {
+  const copy = [];
+  const remotes = [];
+  for (const it of [...items].reverse()) {
+    const remote = `/sdcard/${it.folder}/${it.phoneName}`;
+    remotes.unshift(remote);
+    copy.push(['-s', serial, 'push', local(it), remote]);
+    copy.push(['-s', serial, 'shell', 'touch', '-d', `@${it.time}`, shellQuote(remote)]);
+  }
+  const scan = ['-s', serial, 'shell', 'content', 'call', '--uri', `content://${LAMPLIT_PACKAGE}.phonetype`, '--method', 'scan', '--arg', Buffer.from(remotes.join('\n'), 'utf8').toString('base64')];
+  const broadcast = remotes.map((r) => ['-s', serial, 'shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', shellQuote(`file://${r}`)]);
+  return { copy, scan, broadcast, remotes };
+}
+
+/**
+ * The workspace files a bot named, checked like every read of the workspace
+ * (safefs: a link out of it is refused), with the caps. -> [{rel, abs, root, name, size}]
+ */
+export async function albumFiles(root, paths) {
+  const list = (Array.isArray(paths) ? paths : [paths]).map((p) => String(p ?? '').trim()).filter(Boolean);
+  if (!list.length) throw fail('PHONE_BAD_ARGS', 'save_to_album needs paths: the workspace files to put on the phone, in the order you want them');
+  if (list.length > ALBUM_MAX_FILES) throw fail('PHONE_TOO_MANY_FILES', `at most ${ALBUM_MAX_FILES} files at a time (you gave ${list.length}): do them in parts`);
+  const rootAbs = path.resolve(root);
+  const out = [];
+  const seen = new Set();
+  let total = 0;
+  for (const raw of list) {
+    const rel = raw.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^workspace\//, '');
+    const abs = path.resolve(rootAbs, rel);
+    if (!abs.startsWith(rootAbs + path.sep)) throw fail('PHONE_OUTSIDE_WORKSPACE', `only files in the workspace can go to the phone (${raw} is not)`);
+    if (seen.has(abs)) continue;
+    let st;
+    try {
+      const { fh, stat } = await statInside(rootAbs, abs);
+      await fh.close().catch(() => {});
+      st = stat;
+    } catch (err) {
+      if (err.code === 'PATH_OUTSIDE_WORKSPACE') throw fail('PHONE_OUTSIDE_WORKSPACE', `only files in the workspace can go to the phone (${raw} leads outside it)`);
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') throw fail('PHONE_FILE_NOT_FOUND', `no such file in the workspace: ${rel}`);
+      if (err.code === 'EISDIR' || err.code === 'EPERM' || err.code === 'EACCES') {
+        const isDir = await fsp.stat(abs).then((s) => s.isDirectory()).catch(() => false);
+        if (isDir) throw fail('PHONE_BAD_ARGS', `${rel} is a folder: name the files in it`);
+      }
+      throw fail('PHONE_FILE_NOT_FOUND', `cannot read ${rel}: ${err.message}`);
+    }
+    if (!st.isFile()) throw fail('PHONE_BAD_ARGS', `${rel} is not a file`);
+    total += st.size;
+    if (total > ALBUM_MAX_BYTES) throw fail('PHONE_FILES_TOO_LARGE', `at most ${ALBUM_MAX_BYTES / (1024 * 1024)} MB at a time: do them in parts`);
+    seen.add(abs);
+    out.push({ rel: path.relative(rootAbs, abs).split(path.sep).join('/'), abs, root: rootAbs, name: path.basename(abs), size: st.size });
+  }
+  return out;
+}
+
+/** Copy a checked workspace file to `dest` (a folder of the hub's own), streamed. */
+async function copyOut(root, abs, dest) {
+  const { fh, stat } = await statInside(root, abs);
+  try {
+    if (stat.size > ALBUM_MAX_BYTES) throw fail('PHONE_FILES_TOO_LARGE', 'the file grew past the limit');
+    await pipeline(fh.createReadStream({ autoClose: false }), fs.createWriteStream(dest, { mode: 0o600 }));
+  } finally {
+    await fh.close().catch(() => {});
+  }
+}
+
+export const albumOldAppMessage = (adbHere) => `The Lamplit app on the phone is too old to save files: the human needs to update it to ${ALBUM_APP_VERSION} or newer (Lamplit on the phone → 设置 → 检查更新).`
+  + (adbHere ? ' Or plug the phone into this computer with USB debugging on: then the files go over the cable.' : ' Until then, plugging it into a computer with Lamplit and USB debugging on works too.')
+  + ' Never put the files on a public file host instead.';
+
+/** The bots' guidance (1.5.65): for bots that work the phone, and for every bot. */
+export const PHONE_FILES_RULE = 'Files the phone needs (pictures or a video to post from an app there, a document to open): put them on it with phone save_to_album, paths in the order you want - they become the newest in the gallery, so in 「从相册选择」 pick them from the top. If the Lamplit app there is too old for it, tell the human to update it; do not find another way.';
+export const NO_PUBLIC_HOST_RULE = 'Never upload the human\'s files to a public file host, a paste site or a temporary download link to move them between the human\'s own devices: onto the phone use phone save_to_album, between machines file_send / file_fetch. If none of those can do it, ask the human.';
+
+/** What a save did, for the bot and the turn's receipt. */
+export function albumSummary(items, result = {}, via = '') {
+  const failed = Array.isArray(result.failed) ? result.failed : [];
+  const bad = new Set(failed.map((f) => Number(f.order)));
+  const ok = items.filter((it) => !bad.has(it.order));
+  const pictures = ok.filter((it) => it.kind === 'image').length;
+  const videos = ok.filter((it) => it.kind === 'video').length;
+  const album = pictures + videos;
+  const downloads = ok.length - album;
+  return {
+    done: ok.length > 0,
+    via,
+    album,
+    pictures,
+    videos,
+    downloads,
+    saved: ok.map((it) => ({ path: it.rel, phone: `${it.folder}/${it.phoneName}` })),
+    ...(failed.length ? { failed: failed.map((f) => ({ path: items.find((it) => it.order === Number(f.order))?.rel || '', why: String(f.why || f.message || '').slice(0, 200) })) } : {}),
+    note: album
+      ? `${album} picture(s)/video(s) are now the newest in the phone's gallery (album 「Lamplit」), in the order given: in 「从相册选择」 the first one is at the top left.${downloads ? ` ${downloads} other file(s) are in Downloads/Lamplit.` : ''}`
+      : `${downloads} file(s) are in the phone's Downloads/Lamplit folder.`,
+  };
+}
+
 // ---- the phone --------------------------------------------------------------
 
-export function createPhone({ adb, exec = runAdb, workspaceDir }) {
+export function createPhone({ adb, exec = runAdb, workspaceDir, tmpDir = () => hubTmp('album') }) {
   const lastUi = new Map(); // serial -> {at, app, nodes}
   let lastSerial = '';
 
@@ -488,9 +660,74 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
     return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '');
   }
 
-  const ACTIONS = { status, look, tap, swipe, type, key, open, apps };
+  /**
+   * Workspace files into the phone's album (1.5.65). args.files: from albumFiles()
+   * (checked, within the caps). Through the Lamplit app when the phone is on it
+   * and the app can; else over the cable when the same phone is plugged in here.
+   */
+  async function saveToAlbum(args = {}) {
+    const files = Array.isArray(args.files) ? args.files : [];
+    if (!files.length) throw fail('PHONE_BAD_ARGS', 'save_to_album needs paths: the workspace files to put on the phone');
+    const items = albumPlan(files);
+    const serial = await pick(args.device);
+    if (serial.startsWith('lamplit:')) {
+      const deviceId = serial.slice('lamplit:'.length);
+      const media = typeof exec.media === 'function' ? exec.media : null;
+      if (media && media.can(deviceId)) {
+        try {
+          return albumSummary(items, await media(deviceId, items), 'app');
+        } catch (err) {
+          if (err.code !== 'PHONE_APP_TOO_OLD') throw err;
+        }
+      }
+      // An older app: the same phone on the cable here still works.
+      const twin = typeof exec.adbTwin === 'function' ? await exec.adbTwin(deviceId).catch(() => '') : '';
+      if (twin) return albumSummary(items, await byAdb(twin, items), 'adb');
+      throw fail('PHONE_APP_TOO_OLD', albumOldAppMessage(Boolean(adbPathOrEmpty())));
+    }
+    return albumSummary(items, await byAdb(serial, items), 'adb');
+  }
+  const adbPathOrEmpty = () => { try { const p = typeof adb === 'function' ? adb() : adb; return p && p !== 'lamplit' ? p : ''; } catch { return ''; } };
+
+  /** Over the cable: each file copied (checked) to a folder of the hub's own, pushed, its time set; then a scan. */
+  async function byAdb(serial, items) {
+    // The phone's own clock: "newest" is newer than the photos taken there just now, whatever this computer's clock says.
+    const phoneNow = Number(String(await text(['-s', serial, 'shell', 'date', '+%s'], { timeout: 10000 }).catch(() => '')).trim());
+    if (Number.isFinite(phoneNow) && phoneNow > 1e9) items = items.map((it) => ({ ...it, time: phoneNow - it.order }));
+    // The hub's own temp folder (data/tmp, hidden from the bots), never the system's.
+    const tmp = await fsp.mkdtemp(path.join(typeof tmpDir === 'function' ? tmpDir() : tmpDir, 'push-'));
+    const local = (it) => path.join(tmp, `${it.order}${path.extname(it.phoneName)}`);
+    const { copy, scan, broadcast } = adbAlbumCommands(serial, items, local);
+    const failed = [];
+    try {
+      const saveOrder = [...items].reverse();
+      for (let i = 0; i < saveOrder.length; i += 1) {
+        const it = saveOrder[i];
+        try {
+          await copyOut(it.root, it.abs, local(it));
+          await run(copy[i * 2], { timeout: 60000 + Math.ceil(it.size / (1024 * 1024)) * 3000 });
+          await run(copy[i * 2 + 1], { timeout: 15000 }).catch(() => {}); // a phone without `touch -d`: the order may differ
+        } catch (err) {
+          if (err.code === 'PHONE_NOT_CONNECTED' || err.code === 'ADB_NOT_FOUND') throw err;
+          failed.push({ order: it.order, why: err.code === 'PATH_OUTSIDE_WORKSPACE' ? 'leads outside the workspace' : err.message });
+        } finally {
+          await fsp.rm(local(it), { force: true }).catch(() => {});
+        }
+      }
+      if (failed.length === items.length) throw fail('PHONE_ADB_FAILED', `no file got onto the phone: ${failed[0]?.why || ''}`.slice(0, 400));
+      const scanned = await text(scan, { timeout: 20000 }).catch(() => '');
+      if (!/ok=true/.test(scanned)) {
+        for (const line of broadcast) await run(line, { timeout: 15000 }).catch(() => {});
+      }
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+    return { failed };
+  }
+
+  const ACTIONS = { status, look, tap, swipe, type, key, open, apps, save_to_album: saveToAlbum };
   return {
-    devices, status, look, tap, swipe, type, key, open, apps, labelFor, focusedBox, screenshotBytes,
+    devices, status, look, tap, swipe, type, key, open, apps, saveToAlbum, labelFor, focusedBox, screenshotBytes,
     adbPath: () => { try { return adbPath(); } catch { return ''; } },
     act(action, args = {}) {
       const fn = ACTIONS[action];
@@ -500,5 +737,5 @@ export function createPhone({ adb, exec = runAdb, workspaceDir }) {
   };
 }
 
-export const PHONE_ACTIONS = ['status', 'look', 'tap', 'swipe', 'type', 'key', 'open', 'apps'];
+export const PHONE_ACTIONS = ['status', 'look', 'tap', 'swipe', 'type', 'key', 'open', 'apps', 'save_to_album'];
 export const PHONE_LOOK_ACTIONS = new Set(['status', 'look', 'apps']);

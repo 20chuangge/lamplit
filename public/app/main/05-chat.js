@@ -1830,6 +1830,7 @@ function describeTool(name, rawArgs) {
       out.detail = truncate(args.text || '', 72);
       set('内容', '要发的内容', truncate(args.text || '', 200));
       break;
+    case 'phone': if (args.action === 'save_to_album') albumStepText(out, args, set); break; // files into the album (1.5.65), 07b-cards.js
     case 'skill_save':
       out.detail = args.name || '';
       set('技能', '技能名', args.name);
@@ -1938,6 +1939,7 @@ function toolChip(item) {
   if (item.name === 'request_takeover' && !item.pending) return takeoverCard(item);
   if (item.name === 'request_login' && !item.pending) return loginCard(item);
   const info = describeTool(item.name, item.args);
+  if (item.name === 'phone' && item.ok && !item.pending && Array.isArray(item.output?.saved)) info.detail = albumReceiptText(item.output); // what reached the phone (1.5.65)
   const details = el('details', 'chip');
   const summary = el('summary');
 

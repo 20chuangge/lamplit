@@ -58,6 +58,32 @@ public class PhoneTypeProvider extends ContentProvider {
             out.putBoolean("ok", true);
             return out;
         }
+        if ("scan".equals(method)) {
+            // 1.5.65: files a bot just pushed over the cable into DCIM/Lamplit or Download/Lamplit
+            // show in the gallery: the system's media scan, for those folders only.
+            try {
+                String root = android.os.Environment.getExternalStorageDirectory().getPath();
+                java.util.List<String> paths = new java.util.ArrayList<>();
+                String raw = arg == null ? "" : new String(Base64.decode(arg, Base64.DEFAULT), StandardCharsets.UTF_8);
+                for (String line : raw.split("\n")) {
+                    String p = line.trim();
+                    if (p.startsWith("/sdcard/")) p = root + p.substring("/sdcard".length());
+                    if (p.contains("/../") || paths.size() >= 50) continue;
+                    if (p.startsWith(root + "/DCIM/Lamplit/") || p.startsWith(root + "/Download/Lamplit/")) paths.add(p);
+                }
+                if (paths.isEmpty()) {
+                    out.putBoolean("ok", false);
+                    out.putString("error", "no files of Lamplit's folders to scan");
+                    return out;
+                }
+                android.media.MediaScannerConnection.scanFile(context, paths.toArray(new String[0]), null, null);
+                out.putBoolean("ok", true);
+            } catch (Exception e) {
+                out.putBoolean("ok", false);
+                out.putString("error", String.valueOf(e.getMessage()));
+            }
+            return out;
+        }
         if (!"type".equals(method) || arg == null || arg.isEmpty()) {
             out.putBoolean("ok", false);
             out.putString("error", "say method type with the text in base64");

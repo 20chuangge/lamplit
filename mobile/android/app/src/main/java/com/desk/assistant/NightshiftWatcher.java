@@ -578,6 +578,8 @@ public class NightshiftWatcher extends Service {
             body.put("sdk", Build.VERSION.SDK_INT);
             // The same phone paired through two addresses is one phone (1.4.1).
             body.put("phoneId", phoneId(this));
+            // Steps beyond the first ones (1.5.65): files into the album.
+            body.put("caps", new org.json.JSONArray().put("save_media"));
             postJson(via(hub) + "/api/phone/agent", token, body);
             return true;
         } catch (Exception err) {
@@ -598,6 +600,21 @@ public class NightshiftWatcher extends Service {
         return id;
     }
 
+    /** save_media (1.5.65): each file from `hub` itself, with this phone's token for it, into MediaStore. */
+    private JSONObject saveMedia(String hub, org.json.JSONArray files) throws Exception {
+        final String token = TokenBox.open(prefs(this).getString("desk.token:" + hub, null));
+        if (token == null) throw new PhoneAgentService.StepError("PHONE_FAILED", "this phone is not paired with that machine any more");
+        final String base = via(hub);
+        return AlbumSaver.save(this, files, (path) -> {
+            HttpURLConnection conn = (HttpURLConnection) new URL(base + path).openConnection();
+            conn.setRequestProperty("Authorization", "Bearer " + token);
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(60000);
+            return conn;
+        });
+    }
+
     /** Do one step a machine sent and give it the answer (POST /api/phone/jobs/:id). */
     private void runPhoneJob(String hub, JSONObject event) {
         final String jobId = event.optString("jobId", "");
@@ -606,7 +623,12 @@ public class NightshiftWatcher extends Service {
             JSONObject reply = new JSONObject();
             try {
                 PhoneAgentService agent = PhoneAgentService.instance;
-                if (agent == null) {
+                if ("save_media".equals(event.optString("action", ""))) {
+                    // Files into the album (1.5.65): fetched from this machine only, over its paired connection.
+                    JSONObject args = event.optJSONObject("args");
+                    reply.put("result", saveMedia(hub, args == null ? null : args.optJSONArray("files")));
+                    reply.put("ok", true);
+                } else if (agent == null) {
                     reply.put("ok", false);
                     reply.put("code", "PHONE_AGENT_OFF");
                     reply.put("message", "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)");

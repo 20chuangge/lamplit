@@ -267,6 +267,8 @@ async function main() {
     await stage('1.5.64: a login page raises the takeover card and the board waits', async () => (await import('./smoke-group-1564.mjs')).loginWallChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.64: 「改了 N 个文件」 under the turn\'s own reply, in the chat column', async () => (await import('./smoke-group-1564.mjs')).changesLineChecks({ check, readText }));
     await stage('1.5.64: browser_upload finds a hidden file box in a dialog or a frame by itself', async () => (await import('./smoke-group-1564.mjs')).uploadBoxChecks({ check, toolsMod, browserMod, skip }));
+    // 1.5.65: the group-collaboration eval (scripts/eval-collab.mjs) proves its own detectors.
+    await stage('1.5.65: the collaboration eval checks itself - mock sites, nine detectors proven on data, planted violations caught, six scenarios run', async () => (await import('./smoke-collab.mjs')).collabSelfChecks({ check }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });

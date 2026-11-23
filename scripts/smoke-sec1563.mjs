@@ -93,8 +93,16 @@ async function netUnits() {
   const strict = SB.bwrapArgs({ mode: 'strict', root: '/r', dataDir: '/r/data', workspaceDir: '/r/ws', net, exists: () => true });
   const open = SB.bwrapArgs({ mode: 'open', root: '/r', dataDir: '/r/data', workspaceDir: '/r/ws', net, exists: () => true });
   const plain = SB.bwrapArgs({ mode: 'strict', root: '/r', dataDir: '/r/data', workspaceDir: '/r/ws', exists: () => true });
-  out.args = strict.includes('--unshare-net') && strict.join(' ').includes('--ro-bind /d/sandbox-net/resolv-pasta.conf /run/systemd/resolve/stub-resolv.conf')
-    && !open.includes('--unshare-net') && !plain.includes('--unshare-net');
+  // The network is the holder's (an outer bwrap with no --dev: one user namespace, which owns
+  // the network namespace the helper joins); the strict bwrap inside only gets the resolv.conf.
+  const [hf, ha] = SB.sandboxCommand({ args: strict, net: { helper: 'pasta' } }, ['/bin/sh', '-c', 'x']);
+  const [, pa2] = SB.sandboxCommand({ args: plain, net: null }, ['/bin/sh', '-c', 'x']);
+  const inner = ha.indexOf('bwrap');
+  out.args = strict.join(' ').includes('--ro-bind /d/sandbox-net/resolv-pasta.conf /run/systemd/resolve/stub-resolv.conf')
+    && !strict.includes('--unshare-net') && !open.includes('--unshare-net') && !plain.includes('--unshare-net')
+    && hf === 'bwrap' && inner > 0 && ha.slice(0, inner).join(' ') === `${SB.NET_HOLDER_ARGS.join(' ')} --info-fd 3 --block-fd 4 --`
+    && !ha.slice(0, inner).includes('--dev') && ha.slice(0, inner).includes('--unshare-net') && ha.slice(inner + 1, inner + 1 + strict.length).join('\0') === strict.join('\0')
+    && ha.slice(-4).join(' ') === '-- /bin/sh -c x' && pa2[0] === '--unshare-pid' && !pa2.includes('--unshare-net');
   // The start-up decision, with stand-ins for "installed?" and the probe.
   const decide = async ({ have = [], ok = [], env = {} }) => SB.checkSandboxNet({
     platform: 'linux', env, workspaceDir: '/w',
@@ -157,7 +165,14 @@ async function netLive() {
   // The internet is expected inside only where this machine itself reaches it.
   const target = 'github.com';
   const hostNet = await new Promise((r) => dns.lookup(target, (e, a) => r(e ? '' : a)));
-  const out = { hostNs, hostInternet: Boolean(hostNet), helpers: {} };
+  // What the machine is, so a failure here says more (helper versions, AppArmor's userns switch).
+  const sh = (c) => String(spawnSync('sh', ['-c', c], { encoding: 'utf8', timeout: 10000 }).stdout || '').trim().slice(0, 160);
+  const diag = {
+    kernel: sh('uname -r'), bwrap: sh('bwrap --version 2>&1'), pasta: sh('pasta --version 2>&1 | head -1'), slirp4netns: sh('slirp4netns --version 2>&1 | head -1'),
+    restrictUserns: sh('cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null'), maxUserNs: sh('cat /proc/sys/user/max_user_namespaces 2>/dev/null'),
+    profiles: sh('ls /etc/apparmor.d 2>/dev/null | grep -iE "bwrap|pasta|passt|slirp" | tr "\\n" " "'), uid: process.getuid?.(),
+  };
+  const out = { hostNs, hostInternet: Boolean(hostNet), diag, helpers: {} };
   const run = async (helper, { proxyPorts = [], command = null } = {}) => {
     const n = SB.sandboxNet(helper, { dataDir: data });
     const sandbox = { mode: 'strict', args: SB.bwrapArgs({ mode: 'strict', root: '', dataDir: data, workspaceDir: ws, folders: [], tmpDir: '', net: n }), net: { helper, proxyPorts }, env: null };
@@ -280,7 +295,8 @@ export async function sec1563Checks({ check, skip = (n, why) => console.log(`SKI
     dropFolder(home);
     try { return JSON.parse(String(r.stdout || '').trim().split(/\r?\n/).pop()); } catch { return { failedToRun: `${r.stdout}${r.stderr}`.slice(-800) }; }
   };
-  const J = (o) => String(JSON.stringify(o) ?? String(o)).slice(0, 700);
+  // Long enough for the Linux network checks' diagnostics (versions, AppArmor, each helper's reason).
+  const J = (o) => String(JSON.stringify(o) ?? String(o)).slice(0, 2500);
 
   const f = run('f10');
   const refused = (r) => r.mkdirOut === 'PATH_OUTSIDE_WORKSPACE' && r.saveOut === 'PATH_OUTSIDE_WORKSPACE' && r.saveOutDeep === 'PATH_OUTSIDE_WORKSPACE' && r.inData?.length === 0;
@@ -291,7 +307,7 @@ export async function sec1563Checks({ check, skip = (n, why) => console.log(`SKI
 
   const u = run('netUnits');
   check('SEC-N63a the sandbox\'s own network, the pieces: loopback proxy ports found; resolv.conf names the helper\'s DNS; pasta maps no loopback port in but the proxy, not the gateway, nothing out (and is found to be ended with its sandbox); slirp4netns without host loopback', u.proxy && u.resolv && u.pasta && u.findPasta && u.slirp, J(u));
-  check('SEC-N63b strict mode only: --unshare-net and the sandbox\'s resolv.conf; open (放手) and a machine without a helper share the network as before', u.args, J(u));
+  check('SEC-N63b strict mode only: an outer bwrap (no --dev, so one user namespace) holds the network and the strict bwrap runs inside it, with the sandbox\'s resolv.conf; open (放手) and a machine without a helper share the network as before', u.args, J(u));
   const d = u.decide || {};
   check('SEC-N63c at start: pasta first, slirp4netns when pasta does not work, shared (with the reason for 体检) when none is there, or slirp4netns with a loopback proxy, or DESK_SANDBOX_NET=shared',
     d.none?.state === 'shared' && /passt/.test(d.none.reason) && d.pasta?.state === 'own' && d.pasta.helper === 'pasta'

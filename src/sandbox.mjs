@@ -54,12 +54,13 @@ const under = (p, dir) => p === dir || p.startsWith(`${dir.replace(/\/+$/, '')}/
  * human's display, an ssh-agent or a browser's single-instance socket.
  */
 /**
- * 1.5.63: `net` ({resolv: {file, at}}), strict only: the sandbox gets a network of its own
- * (--unshare-net); a helper (pasta or slirp4netns, see netHelperCommand) connects it to the
- * internet. This machine's loopback ports and abstract unix sockets (the human's X server
- * listens on @/tmp/.X11-unix/X0) are then out of reach; the bot's own screen is a socket file,
- * bound in as before. /etc/resolv.conf (a loopback resolver such as systemd-resolved's
- * 127.0.0.53 is the sandbox's own loopback now) is replaced by one naming the helper's DNS.
+ * 1.5.63: `net` ({resolv: {file, at}}), strict only: the sandbox runs in a network of its own,
+ * which an outer bwrap holds (NET_HOLDER_ARGS, see spawnSandboxed) and a helper (pasta or
+ * slirp4netns) connects to the internet. This machine's loopback ports and abstract unix
+ * sockets (the human's X server listens on @/tmp/.X11-unix/X0) are then out of reach; the
+ * bot's own screen is a socket file, bound in as before. /etc/resolv.conf (a loopback resolver
+ * such as systemd-resolved's 127.0.0.53 is the sandbox's own loopback now) is replaced by one
+ * naming the helper's DNS. These args themselves do not unshare the network: they inherit it.
  */
 export function bwrapArgs({ mode = 'strict', root = P.root, dataDir = P.dataDir, workspaceDir, folders = [], tmpDir = '', screen = null, net = null, exists = fs.existsSync } = {}) {
   const ws = String(workspaceDir || '');
@@ -70,10 +71,7 @@ export function bwrapArgs({ mode = 'strict', root = P.root, dataDir = P.dataDir,
   }
   const args = ['--unshare-pid', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', ...(tmpDir ? ['--bind', tmpDir, '/tmp'] : ['--tmpfs', '/tmp']), '--tmpfs', '/home', '--tmpfs', '/root'];
   if (exists('/run/user')) args.push('--tmpfs', '/run/user');
-  if (net) {
-    args.push('--unshare-net');
-    if (net.resolv?.file && net.resolv.at) args.push('--ro-bind', net.resolv.file, net.resolv.at);
-  }
+  if (net?.resolv?.file && net.resolv.at) args.push('--ro-bind', net.resolv.file, net.resolv.at);
   for (const sock of screen?.bind || []) args.push('--ro-bind', sock, sock);
   const homes = (p) => under(p, '/home') || under(p, '/root');
   if (root && !homes(root) && exists(root)) args.push('--tmpfs', root);
@@ -204,9 +202,9 @@ export function sandboxFor(command, ctx = {}) {
 // The strict sandbox's own network (1.5.63)
 // ---------------------------------------------------------------------------
 //
-// bwrap --unshare-net gives the command a network namespace with only `lo` in it; a helper
-// running as the hub joins it and carries its traffic out through ordinary sockets of the hub
-// (no root, nothing changed on the machine):
+// An outer bwrap (the holder, NET_HOLDER_ARGS) makes a network namespace with only `lo` in it
+// and runs the strict bwrap inside; a helper running as the hub joins it and carries its
+// traffic out through ordinary sockets of the hub (no root, nothing changed on the machine):
 //
 //   pasta (passt)  - Debian 12+, Ubuntu 24.04+, Fedora, RHEL / Rocky 9.5+ and 10 (podman uses it).
 //                    -T/-U none: no port of this machine's loopback is mapped in, except a
@@ -278,10 +276,31 @@ export function netHelperCommand(helper, pid, { proxyPorts = [] } = {}) {
 }
 
 /**
+ * The holder (1.5.63, after the first Linux CI run): an outer bwrap that only makes the user
+ * and network namespaces and runs the real (strict) bwrap inside them. Why not --unshare-net on
+ * the strict bwrap itself: with --dev it maps the uid to 0 first and then makes a second,
+ * nested user namespace, so its first process sits in a user namespace that does not own the
+ * network namespace, and a helper joining it is refused (CI, Ubuntu 24.04: pasta "Couldn't
+ * switch to pasta namespaces", slirp4netns "setns(CLONE_NEWNET): Operation not permitted").
+ * The holder has no --dev: one user namespace, which owns the network namespace; the helper
+ * joins that one. It sees the machine as it is (--dev-bind / /) - the strict bwrap inside makes
+ * the view the bot gets, as before. Joining needs no AppArmor rule (only making a namespace does).
+ */
+export const NET_HOLDER_ARGS = ['--unshare-user', '--unshare-net', '--dev-bind', '/', '/', '--die-with-parent'];
+
+/** [file, args] that run `argv` in `sandbox`: bwrap, or (own network) the holder with bwrap inside. */
+export function sandboxCommand(sandbox, argv) {
+  if (!sandbox?.net) return ['bwrap', [...sandbox.args, '--', ...argv]];
+  // --info-fd 3: the holder's first process (whose namespaces the helper joins); --block-fd 4:
+  // it waits there until the network is up, before the strict bwrap - or anything - runs.
+  return ['bwrap', [...NET_HOLDER_ARGS, '--info-fd', '3', '--block-fd', '4', '--', 'bwrap', ...sandbox.args, '--', ...argv]];
+}
+
+/**
  * Start `argv` in `sandbox` (from sandboxFor). Without a network of its own this is just bwrap.
- * With one: bwrap is told (--info-fd 3) the pid of the sandbox's first process and waits
+ * With one: the holder (above) is told (--info-fd 3) the pid of its first process and waits
  * (--block-fd 4) before running anything; the helper is started on that pid, and only when it
- * says the network is up is bwrap let go. -> {child, ready}: `ready` rejects (code
+ * says the network is up is the holder let go. -> {child, ready}: `ready` rejects (code
  * SANDBOX_UNAVAILABLE) when the network could not be set up - the sandbox is then killed
  * before the command ever ran. The helper goes when the sandbox ends.
  */
@@ -290,10 +309,8 @@ export function spawnSandboxed(sandbox, argv, { cwd, env, detached = true, timeo
     const child = spawn('bwrap', [...sandbox.args, '--', ...argv], { cwd, env, detached });
     return { child, ready: Promise.resolve() };
   }
-  const args = [...sandbox.args];
-  // --info-fd / --block-fd go before the sandbox's own options (any place before `--` works).
-  args.unshift('--info-fd', '3', '--block-fd', '4');
-  const child = spawn('bwrap', [...args, '--', ...argv], { cwd, env, detached, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'] });
+  const [file0, args0] = sandboxCommand(sandbox, argv);
+  const child = spawn(file0, args0, { cwd, env, detached, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'] });
   let helperProc = null;
   let sandboxPid = 0;
   let ended = false;

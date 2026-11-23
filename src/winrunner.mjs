@@ -736,6 +736,8 @@ export function uiRunnerFor(extraEnv = {}, bootEncoded = '') {
   if (!runner) return null;
   const ps = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const env = runnerEnv({ ...childEnv(), ...extraEnv }, { home: runner.home || RUNNER_HOME, tools: toolDirs() });
+  // The script compiles a little C# there (Add-Type writes to TEMP): the account's temp folder must exist.
+  try { fs.mkdirSync(env.TEMP, { recursive: true }); } catch { /* the account's home is the human's to make; the script then says why */ }
   const command = `"${ps}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${bootEncoded}`;
   // Its own home as the folder: always there for it (the workspace need not be).
   return { exe: helperExe(), input: helperPayload({ user: runner.user, password: runner.password, cwd: runner.home || RUNNER_HOME, command, env }) };

@@ -42,16 +42,19 @@ function compile(csc, src, out) {
 }
 
 /** Run a program, its stdin given -> {code, out, err, raw (stdout's bytes)}. */
-function runExe(exe, args, input, timeoutMs = 60000) {
+function runExe(exe, args, input, timeoutMs = 60000, { onExit = false } = {}) {
   return new Promise((resolve) => {
     const chunks = [];
     let err = '';
+    let settled = false;
     const child = spawn(exe, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, timeoutMs);
-    const done = (code, extra = '') => { clearTimeout(timer); const raw = Buffer.concat(chunks); resolve({ code, out: raw.toString('utf8'), err: err + extra, raw }); };
+    const done = (code, extra = '') => { if (settled) return; settled = true; clearTimeout(timer); const raw = Buffer.concat(chunks); resolve({ code, out: raw.toString('utf8'), err: err + extra, raw }); };
     child.stdout.on('data', (c) => { chunks.push(c); });
     child.stderr.on('data', (c) => { err += c; });
     child.on('error', (e) => done(-1, e.message));
+    // onExit: a program left running in the background (as --as-me, which inherits handles) may keep the pipes open.
+    if (onExit) child.on('exit', (code) => setTimeout(() => done(code), 300));
     child.on('close', (code) => done(code));
     child.stdin.on('error', () => {});
     child.stdin.end(input ?? '');
@@ -166,7 +169,7 @@ export async function runnerDesktopChecks({ check, skip, readText }) {
     && inBots.text === 'bots' && inBots.desktop === 'bots' && inYours.text === 'yours' && inYours.desktop === 'yours' && humanOnly.text === 'yours',
     JSON.stringify({ both, inBots, inYours, calls }));
   check('RD6 desktop_ui on the bots\' desktop: the request and the script travel in environment variables, the command line is fixed (nothing a model writes is parsed as PowerShell)',
-    /^[A-Za-z0-9+/=]+$/.test(U.BOOT_ENCODED) && UNB64(U.SCRIPT_B64).includes("DESK_WINUI_ANY_SESSION -ne '1'")
+    /^[A-Za-z0-9+/=]+$/.test(U.BOOT_ENCODED) && UNB64(U.SCRIPT_B64).includes("DESK_WINUI_BOTS -ne '1'")
     && (await readText('../src/winrunner.mjs')).includes('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${bootEncoded}'));
 
   // RD7: what the human sees.
@@ -236,6 +239,32 @@ export async function runnerDesktopChecks({ check, skip, readText }) {
       const bye = JSON.parse((await t.ask('quit')).replace(/^BYE /, '') || '{}');
       check('RD4 control: the same probe on this desktop does find the window and the message window and delivers WM_COPYDATA (so the probe would notice a shared desktop)',
         ctlSeen.sawMarkerWindow === true && ctlSeen.messageWindowFound === true && ctlSeen.copyDataDelivered === true && bye.copyDataReceived === 1, JSON.stringify({ ctlSeen, bye }));
+    }
+
+    // RD10: desktop_ui works a real program on the bots' desktop (here as this account, --as-me).
+    {
+      const U = await import('../src/winui.mjs');
+      const psExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const tempEnv = { TEMP: os.tmpdir(), TMP: os.tmpdir() };
+      const botsRoute = (env, boot) => ({ exe: helper, args: ['--as-me'], input: payload(`"${psExe}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${boot}`, { ...tempEnv, ...env }) });
+      const formTitle = `lamplit-form-${crypto.randomBytes(4).toString('hex')}`;
+      await runExe(helper, ['--as-me'], payload(`start "" "${psExe}" -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = '${formTitle}'; $t = New-Object Windows.Forms.TextBox; $t.Top = 40; $f.Controls.Add($t); $b = New-Object Windows.Forms.Button; $b.Text = 'OK-btn'; $b.Add_Click({ $f.Text = '${formTitle}-clicked' }); $f.Controls.Add($b); [Windows.Forms.Application]::Run($f)" & ping -n 4 127.0.0.1 >nul`, tempEnv), 60000, { onExit: true });
+      const opts = { bots: botsRoute, timeoutMs: 60000 };
+      const step = async (req) => { try { return await U.runWinUi(req, opts); } catch (err) { return { error: err.message }; } };
+      const listed = await step({ action: 'windows' });
+      const mine = (listed.windows || []).find((w) => w.desktop === 'bots' && w.title === formTitle);
+      const controls = await step({ action: 'controls', window: formTitle });
+      const typed = await step({ action: 'type', window: formTitle, text: '灯窗 lamplit' });
+      const read = await step({ action: 'read', window: formTitle });
+      const clicked = await step({ action: 'click', window: formTitle, target: 'OK-btn' });
+      const after = await step({ action: 'windows' });
+      if (mine?.pid) { try { process.kill(mine.pid); } catch { /* gone */ } }
+      check('RD10 desktop_ui on the bots\' desktop: the window is listed there (and the listing says how that desktop stands), its controls, typing, reading and pressing a button all work',
+        mine && /window\(s\) open there/.test(listed.botsDesktop || '') && !(listed.windows || []).some((w) => w.desktop === 'yours' && w.title === formTitle)
+        && controls.desktop === 'bots' && (controls.controls || []).some((c) => c.name === 'OK-btn')
+        && typed.desktop === 'bots' && typed.length === 10 && String(read.text || '').includes('灯窗 lamplit')
+        && clicked.desktop === 'bots' && (after.windows || []).some((w) => w.desktop === 'bots' && w.title === `${formTitle}-clicked`),
+        JSON.stringify({ botsDesktop: listed.botsDesktop, controls: (controls.controls || []).map((c) => c.name).slice(-12).concat(controls.error || []), typed, read: read.text || read.error, clicked, after: (after.windows || []).filter((w) => w.desktop === 'bots') }).slice(0, 1500));
     }
 
     // RD5: no desktop, nothing runs.

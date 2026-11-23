@@ -21,6 +21,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { freeTcpPorts } from './test-ports.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -50,7 +51,8 @@ async function u1(T) {
   const data = process.env.ASSIST_DATA_DIR;
   const profile = s.b.profileDir('bot1');
   fs.mkdirSync(profile, { recursive: true });
-  const port = 30000 + Math.floor(Math.random() * 20000);
+  // A port the system hands out (not one Windows keeps for itself, 1.5.63: test-ports.mjs).
+  const port = await freeTcpPorts(1);
   const old = spawn(s.exe, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--headless=new', 'about:blank'], { stdio: 'ignore', windowsHide: true });
   const answers = async () => { try { return Boolean((await (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) })).json()).webSocketDebuggerUrl); } catch { return false; } };
   let up = false;

@@ -25,6 +25,7 @@ import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
 
 import { createRelay, makeSelfSignedCert, shieldStream } from '../hub/relay/relay.mjs';
+import { listenRelay } from './test-ports.mjs';
 import { createDirectServer } from '../src/direct.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -73,8 +74,8 @@ async function run(dropRate, classes) {
     res.end();
   });
   const relay = createRelay({ identity: makeSelfSignedCert({ commonName: 'lamplit-relay' }), joinSecret: crypto.randomBytes(18).toString('base64url') });
-  const relayPort = await new Promise((r) => relay.server.listen(0, '127.0.0.1', () => r(relay.server.address().port)));
-  await relay.listenStun(relayPort, '127.0.0.1');
+  // TCP and UDP on one number, skipping one Windows keeps for UDP (test-ports.mjs, 1.5.63).
+  const relayPort = await listenRelay(relay, { stun: true });
   const server = createDirectServer({
     acceptStream: (stream) => {
       const sock = new tls.TLSSocket(shieldStream(stream), { isServer: true, secureContext });

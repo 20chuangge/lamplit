@@ -7,7 +7,7 @@
  * knows one of two secrets:
  *
  *   Bearer <token>        the 24-hex token in data/security.json (scripts, curl)
- *   Cookie desk_session   set by a successful POST /api/pair (a browser)
+ *   Cookie desk_session_<port>   set by a successful POST /api/pair (a browser; 1.5.63, sessionCookieName)
  *
  * The pairing code is a *separate*, shorter secret on purpose: it is meant to be
  * read off the screen and typed into a phone, it is rate-limited, and it can be
@@ -296,21 +296,29 @@ export function evaluateAuth(req, security, devices, proxy = {}) {
 
   // A cookie rides along with whatever page triggers the request; SameSite=Lax
   // stops most of that, this stops the rest (another port on the same host).
-  const cookie = isSameOriginRequest(req) ? readCookie(req?.headers?.cookie, sessionCookieName(req)) : '';
-  if (cookie && security?.token && safeEqual(cookie, security.token)) {
-    return { required: true, authorized: true, mode: 'cookie', local: false, address };
-  }
-
-  if (cookie && devices?.findBySession) {
-    const device = devices.findBySession(cookie);
-    if (device) {
-      try {
-        devices.touch?.(device.id);
-      } catch {
-        /* activity tracking must never fail an authenticated request */
+  // Its own name first, then the name from before 1.5.63 (sessionCookieNames).
+  for (const name of isSameOriginRequest(req) ? sessionCookieNames(req) : []) {
+    const cookie = readCookie(req?.headers?.cookie, name);
+    if (!cookie) continue;
+    let auth = null;
+    if (security?.token && safeEqual(cookie, security.token)) {
+      auth = { required: true, authorized: true, mode: 'cookie', local: false, address };
+    } else if (devices?.findBySession) {
+      const device = devices.findBySession(cookie);
+      if (device) {
+        try {
+          devices.touch?.(device.id);
+        } catch {
+          /* activity tracking must never fail an authenticated request */
+        }
+        auth = { required: true, authorized: true, mode: 'cookie', local: false, address, deviceId: device.id };
       }
-      return { required: true, authorized: true, mode: 'cookie', local: false, address, deviceId: device.id };
     }
+    if (!auth) continue;
+    // Signed in with the old name: the answer gives it again under this hub's own
+    // name (server.mjs renewLoginCookie). Hidden from JSON: it is the login itself.
+    if (name !== sessionCookieName(req)) Object.defineProperty(auth, 'renewCookie', { value: cookie, enumerable: false });
+    return auth;
   }
 
   return { required: true, authorized: false, mode: 'none', local: false, address };
@@ -380,8 +388,10 @@ export function carriesLocalKey(req, auth, dir, devices = null, security = null)
   if (!auth || auth.mode !== 'local') return Boolean(auth?.authorized);
   const sent = String(req?.headers?.[LOCAL_KEY_HEADER] || '');
   if (sent && safeEqual(sent, localKey(dir))) return true;
-  const cookie = readCookie(req?.headers?.cookie, sessionCookieName(req));
-  if (cookie && devices?.findBySession?.(cookie)) return true;
+  for (const name of sessionCookieNames(req)) {
+    const cookie = readCookie(req?.headers?.cookie, name);
+    if (cookie && devices?.findBySession?.(cookie)) return true;
+  }
   // The hub's own token, or a paired device's, sent from this computer (1.5.41):
   // another Lamplit on the same computer is a peer like one across the room.
   // Whoever holds it may do all of this from anywhere already.
@@ -414,9 +424,46 @@ export const VIA_HEADER = 'x-lamplit-via';
  * kept per host, not per port: one name let each machine overwrite the
  * other's login (seen: switching between two relay machines asked to pair
  * again). So through the relay each machine uses a name of its own.
+ *
+ * 1.5.63: the same happened with two Lamplits on one computer (127.0.0.1:14390
+ * and a second on another port, or two on one LAN address): pairing with one
+ * logged the browser out of the other. Now the name carries the port of the
+ * address the browser used ("desk_session_14390"); an address with no port
+ * (https on 443) keeps the plain name. A client can work the name out from
+ * the address alone (desktop/guard.mjs loginCookieName).
  */
 export function sessionCookieName(req) {
-  return req?.relayCookieName || SESSION_COOKIE;
+  if (req?.relayCookieName) return req.relayCookieName;
+  const port = requestPort(req);
+  return port ? `${SESSION_COOKIE}_${port}` : SESSION_COOKIE;
+}
+
+/**
+ * Every name this request's login may be under, its own first: browsers paired
+ * before 1.5.63 hold the plain name, which still signs in (and is given again
+ * under the new name). So does one under another port's name (this hub moved
+ * to another port): each is still checked against this hub's own logins, so
+ * another Lamplit's cookie signs in nothing here. Through the relay only its
+ * own name (unchanged since 1.5.39).
+ */
+export function sessionCookieNames(req) {
+  const own = sessionCookieName(req);
+  if (req?.relayCookieName) return [own];
+  const names = [own];
+  if (own !== SESSION_COOKIE) names.push(SESSION_COOKIE);
+  for (const part of String(req?.headers?.cookie || '').split(';')) {
+    const name = part.slice(0, Math.max(0, part.indexOf('='))).trim();
+    if (/^desk_session_\d{1,5}$/.test(name) && !names.includes(name) && names.length < 8) names.push(name);
+  }
+  return names;
+}
+
+/** The port in the address the browser used ('' for none): a proxy's forwarded host first. */
+export function requestPort(req) {
+  const headers = req?.headers || {};
+  const host = String(headers['x-forwarded-host'] || '').split(',')[0].trim() || String(headers.host || '').trim();
+  const m = /:(\d{1,5})$/.exec(host);
+  return m ? String(Number(m[1])) : '';
 }
 
 /**

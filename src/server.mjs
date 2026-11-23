@@ -131,6 +131,8 @@ import {
   safeEqual,
   sessionCookieHeader,
   sessionCookieName,
+  SESSION_COOKIE,
+  readCookie,
   createRateLimiter,
   createPairLinkStore,
   loadOrCreateSecurity,
@@ -1133,6 +1135,7 @@ async function handleRequest(req, res, state) {
     // out it needs to pair and then do it.
     if (!isAuthExemptPath(method, pathname)) {
       const auth = evaluateAuth(req, state.security, state.devices);
+      renewLoginCookie(req, res, auth, state);
       if (!auth.authorized) {
         return errorResponse(
           res,
@@ -1149,10 +1152,31 @@ async function handleRequest(req, res, state) {
   // Static: the app shell has to load before a client can pair, so those files
   // are public. Anything else in public/ is treated like app data.
   const auth = evaluateAuth(req, state.security, state.devices);
+  renewLoginCookie(req, res, auth, state);
   if (!auth.authorized && !isPublicShellPath(pathname)) {
     return errorResponse(res, 401, 'AUTH_REQUIRED', 'this device is not paired');
   }
   return serveStatic(req, res, pathname);
+}
+
+/**
+ * A browser paired before 1.5.63 signs in with the plain cookie name (auth.mjs
+ * sessionCookieNames): the answer gives it the same login again under this
+ * hub's own name, so a second Lamplit on this computer pairing later no longer
+ * logs it out. The old cookie stays (it still signs in if the port changes).
+ */
+function renewLoginCookie(req, res, auth, state) {
+  if (!auth?.authorized || res.headersSent || res.getHeader?.('set-cookie')) return;
+  const name = sessionCookieName(req);
+  if (name === SESSION_COOKIE || readCookie(req.headers?.cookie, name)) return;
+  let token = auth.renewCookie || '';
+  // On this computer the page is the local user anyway; a browser paired with the code still carries its device's cookie (carriesLocalKey).
+  if (!token && auth.mode === 'local') {
+    const old = readCookie(req.headers?.cookie, SESSION_COOKIE);
+    if (old && state.devices?.findBySession?.(old)) token = old;
+  }
+  if (!token) return;
+  res.setHeader('set-cookie', sessionCookieHeader(token, { secure: (isSecureRequest(req) || Boolean(req.viaPublic)) && !req.viaRelay, name }));
 }
 
 async function dispatchApi(req, res, state, pathname, url) {
@@ -1298,7 +1322,7 @@ route('GET', /^\/api\/events$/, async (_req, _res, { query, state }) => {
 //   PUT  /api/settings       {provider,baseUrl,model,apiKey?} -> {ok:true, model:{...}}
 //   POST /api/settings/test  -> {ok, latencyMs, mode, error?}
 //   GET  /api/auth           -> {required, authorized, mode:'local'|'token'|'cookie'|'none'}
-//   POST /api/pair           {code} -> {ok:true} + Set-Cookie: desk_session
+//   POST /api/pair           {code} -> {ok:true} + Set-Cookie: desk_session_<port> (auth.mjs sessionCookieName)
 //   GET  /api/pairing        -> {url, code}
 
 /** http://100.x.y.z:port when this hub listens beyond loopback and the machine is on Tailscale. */
@@ -2274,8 +2298,9 @@ route('POST', /^\/api\/settings\/test$/, async (_req, _res, { body, state }) => 
   };
 });
 
-route('GET', /^\/api\/auth$/, async (req, _res, { state }) => {
+route('GET', /^\/api\/auth$/, async (req, res, { state }) => {
   const auth = evaluateAuth(req, state.security, state.devices);
+  renewLoginCookie(req, res, auth, state);
   // authority: whether this client may decide approvals (1.5.32): a browser on
   // this computer without the app's key is told so before the human clicks.
   // codeAllowed (1.5.47): through the relay, direct or the public door the 8-digit code is refused, so the page does not offer it.
@@ -3415,6 +3440,8 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
     .runTurn({
       botId: bot.id, text, source: h ? 'peer' : 'chat', turnId, ...(handoff || {}),
       ...(h ? { hiddenNote: fromNote, fromBotId: fromLabel } : {}),
+      // A group's introduction asked from another machine (1.5.63): not work for the human here either. Older peers send no flag.
+      ...(h?.kickoff === true ? { kickoff: true } : {}),
       // Said in a voice call (1.5.22): the bot knows it is spoken to and answers for the ear.
       ...(body?.voiceCall === true && !h ? { hiddenNote: VOICE_CALL_NOTE } : {}),
     })

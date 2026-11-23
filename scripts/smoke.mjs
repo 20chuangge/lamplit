@@ -248,6 +248,7 @@ async function main() {
     await stage('1.5.59: the sidebar - 「N 件等你」 / 「N 个在做」, machines with an online dot, status lines, the header counts the chat on screen', async () => (await import('./smoke-sidebar1559.mjs')).sidebar1559Checks({ check, readText }));
     await stage('1.5.61: redesign step 5 - groups on top, a stable order kept on the hub, the first run, the settings home, 连接应用', async () => (await import('./smoke-step5-1561.mjs')).step5Checks({ check, readText }));
     await stage('1.5.62: the reply count, the other machines\' pace, 「以后都允许」 in 审批, this machine\'s cost, introductions not counted', async () => (await import('./smoke-fixes-1562.mjs')).fixes1562Checks({ check, readText }));
+    await stage('1.5.63: introductions on another machine, the developer run, a pairing cookie per port, ports Windows keeps, the chat after a reload', async () => (await import('./smoke-fixes-1563.mjs')).fixes1563Checks({ check, readText, api, base }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -2597,12 +2598,12 @@ async function scenarioPairing() {
   check('the right pairing code pairs the client', ok.status === 200 && ok.json?.ok === true, ok.text.slice(0, 200));
   check(
     'pairing sets an HttpOnly SameSite=Lax session cookie',
-    /desk_session=/.test(setCookie) && /HttpOnly/i.test(setCookie) && /SameSite=Lax/i.test(setCookie) && /Path=\//.test(setCookie) && /Max-Age=31536000/.test(setCookie),
+    /desk_session_\d+=/.test(setCookie) && /HttpOnly/i.test(setCookie) && /SameSite=Lax/i.test(setCookie) && /Path=\//.test(setCookie) && /Max-Age=31536000/.test(setCookie),
     setCookie,
   );
   check(
     'pairing with the 8-digit code also gives the device its own session',
-    /^desk_session=[0-9a-f]{64};/.test(setCookie) && Boolean(ok.json?.device?.id),
+    /^desk_session_\d+=[0-9a-f]{64};/.test(setCookie) && Boolean(ok.json?.device?.id), // named after the port since 1.5.63
     `${setCookie} ${JSON.stringify(ok.json?.device)}`,
   );
 
@@ -2812,7 +2813,7 @@ async function scenarioPairingLink() {
     const setCookie = paired.headers.get('set-cookie') || '';
     check(
       'scanning the link pairs the phone without typing anything',
-      paired.status === 200 && /^desk_session=[0-9a-f]{64};/.test(setCookie),
+      paired.status === 200 && /^desk_session_\d+=[0-9a-f]{64};/.test(setCookie),
       `${paired.status} ${setCookie}`,
     );
     check(
@@ -4024,7 +4025,7 @@ async function scenarioMcp({ home, toolsMod }) {
       && small.output.waiting === true && user.text.length === 5000 && full.status === 200 && compact.status === 200 && Array.isArray(compact.json)
       && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name) && !m.output?.undo && !m.afterCard) /* 1.5.58: the step after an answered card stays, slim */ && srcSrv.includes(".filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo")
       && pg.includes("messages?limit=200${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
-      && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);'));
+      && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups(), primeAttention()]);')); // 1.5.63: what each chat is doing, alongside
   }
   // Two gaps found after release: a stale sync login made the other machines skip this computer; task_finish summaries were not checked.
   {
@@ -5326,7 +5327,7 @@ async function scenarioHardening({ approvals, botsMod, groupsMod, toolsMod, auth
   // --- SEC-06: only the master token or another computer may push an update --
   const machine = await api('/api/pair', { method: 'POST', body: { code: code2 }, headers: { 'user-agent': 'node' } });
   const security = JSON.parse(await fsp.readFile(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8'));
-  const machineToken = /desk_session=([0-9a-f]+)/.exec(machine.headers.get('set-cookie') || '')?.[1] || '';
+  const machineToken = /desk_session(?:_\d+)?=([0-9a-f]+)/.exec(machine.headers.get('set-cookie') || '')?.[1] || '';
   const junk = Buffer.from('not a package');
   const sha = crypto.createHash('sha256').update(junk).digest('hex');
   const push = (headers) => rawHttp('/api/system/update', { method: 'POST', headers: { host: `lamplit.test:${port}`, 'content-type': 'application/gzip', ...headers }, body: junk });

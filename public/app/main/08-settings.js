@@ -1016,6 +1016,19 @@ function othersWaitingLine(ownKey) {
   return others.some((item) => item.working && !item.needsYou && !item.asking) ? `${needs} 件事等你，其余都在正常跑` : `${needs} 件事等你`;
 }
 
+/**
+ * The first look at what each chat is doing, before the page draws its first chat (1.5.63):
+ * whether it is still at work decides 「试试这些」 and 「等你点头…」. Only the state; the
+ * sidebar and the rest follow with loadAttention as before. An older hub: nothing.
+ */
+async function primeAttention() {
+  try {
+    const got = await api('/api/attention', { quiet: true });
+    // Still the empty start (above): loadAttention has not been here yet.
+    if (got && typeof got === 'object' && !Object.keys(state.attention?.items || {}).length) state.attention = got;
+  } catch { /* an older hub: drawn as before */ }
+}
+
 function loadAttention() {
   clearTimeout(attentionTimer);
   attentionTimer = setTimeout(async () => {

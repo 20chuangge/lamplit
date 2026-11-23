@@ -28,6 +28,7 @@ import { Duplex } from 'node:stream';
 import { createPeers } from '../src/peers.mjs';
 
 import { createRelay, makeSelfSignedCert, parseStunAnswer, stunAnswer, stunRequest } from '../hub/relay/relay.mjs';
+import { listenRelay } from './test-ports.mjs';
 import {
   MAX_PACKET, ReplayWindow, cleanCandidates, createDirectDialer, createDirectServer, deriveKeys, openPacket, sealPacket,
 } from '../src/direct.mjs';
@@ -167,9 +168,9 @@ async function directChecksInner({ check }) {
   {
     const relayId = makeSelfSignedCert({ commonName: 'lamplit-relay' });
     const relay = createRelay({ identity: relayId, joinSecret: crypto.randomBytes(18).toString('base64url'), limits: { stunPerIpPerMin: 60, stunBurst: 20 } });
-    const port = await new Promise((r) => relay.server.listen(0, '127.0.0.1', () => r(relay.server.address().port)));
+    // TCP and UDP on one number: a number Windows keeps for UDP is skipped (test-ports.mjs, 1.5.63).
+    const port = await listenRelay(relay, { stun: true });
     try {
-      await relay.listenStun(port, '127.0.0.1');
       const probe = await udpProbe();
       const { buf, txid } = stunRequest();
       probe.s.send(buf, port, '127.0.0.1');
@@ -400,7 +401,8 @@ async function directServerChecksInner({ check, api, makePairLink }) {
   const join = crypto.randomBytes(18).toString('base64url');
   const seen = [];
   const relay = createRelay({ identity: relayId, joinSecret: join, tap: (_id, _dir, bytes) => seen.push(Buffer.from(bytes)) });
-  const relayPort = await new Promise((r) => relay.server.listen(0, '127.0.0.1', () => r(relay.server.address().port)));
+  // Its STUN starts later on the same number: one UDP can have too (test-ports.mjs, 1.5.63).
+  const relayPort = await listenRelay(relay);
   let dialer = null;
   try {
     const on = await api('/api/relay-link', { method: 'PUT', body: { enabled: true, host: '127.0.0.1', port: relayPort, relayFingerprint: relayId.fingerprint, join } });

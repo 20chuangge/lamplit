@@ -853,8 +853,10 @@ async function boot() {
   // Settings, the voice list and the groups do not wait for each other: on a
   // phone over a slow link every round trip is most of a second.
   // (The voice list is in before the chat renders: whether replies get "read aloud".)
+  // So is what each chat is doing (1.5.63): drawn without it, a reload while the first
+  // thing waits on a card put 「试试这些」 above the card for a moment (longer on a slow link).
   renderBots();
-  await Promise.allSettled([loadSettings(), loadVoice(), loadGroups()]);
+  await Promise.allSettled([loadSettings(), loadVoice(), loadGroups(), primeAttention()]);
   const primary = state.bots.find((b) => b.primary) || state.bots[0];
   // A notification tap names the bot it came from: the approval card lives in
   // that transcript, so landing on the primary bot would hide the destination.

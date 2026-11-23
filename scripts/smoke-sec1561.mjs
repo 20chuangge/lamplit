@@ -21,6 +21,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { freeTcpPorts } from './test-ports.mjs';
 
 const ME = fileURLToPath(import.meta.url);
 const REPO = path.resolve(path.dirname(ME), '..');
@@ -238,7 +239,8 @@ async function f7singleton() {
       const opened = await call('browser_open', { url: site.url });
       out.opened = opened.ok === true;
     } else {
-      const port = 30000 + Math.floor(Math.random() * 20000);
+      // A port the system hands out (not one Windows keeps for itself, 1.5.63: test-ports.mjs).
+      const port = await freeTcpPorts(1);
       own = spawn(exe, B.buildLaunchArgs({ port, profileDir: profile, headless: false, extraArgs: OFF }), { stdio: 'ignore' });
       let up = false;
       for (let i = 0; i < 80 && !up; i += 1) { try { up = Boolean(await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()); } catch { await sleep(250); } }
@@ -298,7 +300,8 @@ async function f11sweep() {
   const otherProfile = path.join(process.env.ASSIST_HOME, 'someone-elses-profile');
   fs.mkdirSync(botProfile, { recursive: true });
   fs.mkdirSync(otherProfile, { recursive: true });
-  const port = 30000 + Math.floor(Math.random() * 20000);
+  // Two in a row the system hands out (not ones Windows keeps for itself, 1.5.63: test-ports.mjs).
+  const port = await freeTcpPorts(2);
   const answers = async (p) => { try { return Boolean((await (await fetch(`http://127.0.0.1:${p}/json/version`, { signal: AbortSignal.timeout(1500) })).json()).webSocketDebuggerUrl); } catch { return false; } };
   const start = (p, profile) => spawn(exe, [`--remote-debugging-port=${p}`, `--user-data-dir=${profile}`, '--no-first-run', '--headless=new', 'about:blank'], { stdio: 'ignore', detached: true });
   const old = start(port, botProfile);

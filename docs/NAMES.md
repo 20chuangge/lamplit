@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `com.desk.assistant` | 电脑版 appId、安卓包名 | 换了就是另一个应用：升级变成新装，数据和快捷方式对不上 |
 | `%APPDATA%\Desk` | 1.2.150 及更早装的电脑的数据文件夹（新装的是 `%APPDATA%\Lamplit`，见 `desktop/datadir.mjs`） | 机器人、记忆、保险箱、配对都在里面；老电脑不搬 |
-| `desk_session` | 配对 cookie 名 | 换了所有配对过的浏览器要重新配对 |
+| `desk_session` | 配对 cookie 名（1.5.63 起新配对的叫 `desk_session_<端口>`，经中转的叫 `desk_session_<机器 id>`；旧名照样认，认出后补发新名） | 不再认旧名，1.5.63 之前配对的浏览器要重新配对 |
 | `desk.*` | 网页本地存储的键 | 界面偏好（主题、上次的机器等） |
 | `NightshiftHub` | Windows 计划任务名 | 远程 Windows 机器靠它开机自启、更新 |
 | `Nightshift Hub` | Windows 防火墙规则名 | 远程机器的端口放行 |

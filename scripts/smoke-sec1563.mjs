@@ -93,16 +93,18 @@ async function netUnits() {
   const strict = SB.bwrapArgs({ mode: 'strict', root: '/r', dataDir: '/r/data', workspaceDir: '/r/ws', net, exists: () => true });
   const open = SB.bwrapArgs({ mode: 'open', root: '/r', dataDir: '/r/data', workspaceDir: '/r/ws', net, exists: () => true });
   const plain = SB.bwrapArgs({ mode: 'strict', root: '/r', dataDir: '/r/data', workspaceDir: '/r/ws', exists: () => true });
-  // The network is the holder's (an outer bwrap with no --dev: one user namespace, which owns
-  // the network namespace the helper joins); the strict bwrap inside only gets the resolv.conf.
+  // One bwrap, never one inside another (CI round 2: Ubuntu's bwrap-userns-restrict). Its own
+  // network, and /dev made by hand instead of --dev (no devpts: one user namespace, which owns
+  // the network namespace the helper joins - CI round 1). Without a network: --dev as before.
   const [hf, ha] = SB.sandboxCommand({ args: strict, net: { helper: 'pasta' } }, ['/bin/sh', '-c', 'x']);
   const [, pa2] = SB.sandboxCommand({ args: plain, net: null }, ['/bin/sh', '-c', 'x']);
-  const inner = ha.indexOf('bwrap');
+  const devAt = strict.indexOf('--tmpfs');
   out.args = strict.join(' ').includes('--ro-bind /d/sandbox-net/resolv-pasta.conf /run/systemd/resolve/stub-resolv.conf')
-    && !strict.includes('--unshare-net') && !open.includes('--unshare-net') && !plain.includes('--unshare-net')
-    && hf === 'bwrap' && inner > 0 && ha.slice(0, inner).join(' ') === `${SB.NET_HOLDER_ARGS.join(' ')} --info-fd 3 --block-fd 4 --`
-    && !ha.slice(0, inner).includes('--dev') && ha.slice(0, inner).includes('--unshare-net') && ha.slice(inner + 1, inner + 1 + strict.length).join('\0') === strict.join('\0')
-    && ha.slice(-4).join(' ') === '-- /bin/sh -c x' && pa2[0] === '--unshare-pid' && !pa2.includes('--unshare-net');
+    && strict.slice(0, 2).join(' ') === '--unshare-user --unshare-net' && !strict.includes('--dev') && strict.slice(devAt, devAt + 2).join(' ') === '--tmpfs /dev'
+    && strict.join(' ').includes('--dev-bind /dev/null /dev/null') && strict.join(' ').includes('--dev-bind /dev/urandom /dev/urandom') && strict.join(' ').includes('--symlink /proc/self/fd /dev/fd') && !strict.some((a) => /\/dev\/pts|ptmx/.test(a))
+    && !open.includes('--unshare-net') && !plain.includes('--unshare-net') && plain.join(' ').includes('--dev /dev')
+    && hf === 'bwrap' && ha.filter((a) => a === 'bwrap').length === 0 && ha.slice(0, 4).join(' ') === '--info-fd 3 --block-fd 4' && ha.slice(4, 4 + strict.length).join('\0') === strict.join('\0')
+    && ha.slice(-4).join(' ') === '-- /bin/sh -c x' && pa2[0] === '--unshare-pid' && !pa2.includes('--info-fd');
   // The start-up decision, with stand-ins for "installed?" and the probe.
   const decide = async ({ have = [], ok = [], env = {} }) => SB.checkSandboxNet({
     platform: 'linux', env, workspaceDir: '/w',
@@ -307,7 +309,7 @@ export async function sec1563Checks({ check, skip = (n, why) => console.log(`SKI
 
   const u = run('netUnits');
   check('SEC-N63a the sandbox\'s own network, the pieces: loopback proxy ports found; resolv.conf names the helper\'s DNS; pasta maps no loopback port in but the proxy, not the gateway, nothing out (and is found to be ended with its sandbox); slirp4netns without host loopback', u.proxy && u.resolv && u.pasta && u.findPasta && u.slirp, J(u));
-  check('SEC-N63b strict mode only: an outer bwrap (no --dev, so one user namespace) holds the network and the strict bwrap runs inside it, with the sandbox\'s resolv.conf; open (放手) and a machine without a helper share the network as before', u.args, J(u));
+  check('SEC-N63b strict mode only: one bwrap with its own network and a /dev made by hand (no devpts, so one user namespace the helper can join; never a bwrap inside a bwrap), with the sandbox\'s resolv.conf; open (放手) and a machine without a helper share the network as before', u.args, J(u));
   const d = u.decide || {};
   check('SEC-N63c at start: pasta first, slirp4netns when pasta does not work, shared (with the reason for 体检) when none is there, or slirp4netns with a loopback proxy, or DESK_SANDBOX_NET=shared',
     d.none?.state === 'shared' && /passt/.test(d.none.reason) && d.pasta?.state === 'own' && d.pasta.helper === 'pasta'

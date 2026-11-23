@@ -54,14 +54,30 @@ const under = (p, dir) => p === dir || p.startsWith(`${dir.replace(/\/+$/, '')}/
  * human's display, an ssh-agent or a browser's single-instance socket.
  */
 /**
- * 1.5.63: `net` ({resolv: {file, at}}), strict only: the sandbox runs in a network of its own,
- * which an outer bwrap holds (NET_HOLDER_ARGS, see spawnSandboxed) and a helper (pasta or
- * slirp4netns) connects to the internet. This machine's loopback ports and abstract unix
- * sockets (the human's X server listens on @/tmp/.X11-unix/X0) are then out of reach; the
- * bot's own screen is a socket file, bound in as before. /etc/resolv.conf (a loopback resolver
- * such as systemd-resolved's 127.0.0.53 is the sandbox's own loopback now) is replaced by one
- * naming the helper's DNS. These args themselves do not unshare the network: they inherit it.
+ * 1.5.63: `net` ({resolv: {file, at}}), strict only: the sandbox gets a network of its own
+ * (--unshare-net), which a helper (pasta or slirp4netns, see spawnSandboxed) joins from outside
+ * and connects to the internet. This machine's loopback ports and abstract unix sockets (the
+ * human's X server listens on @/tmp/.X11-unix/X0) are then out of reach; the bot's own screen
+ * is a socket file, bound in as before. /etc/resolv.conf (a loopback resolver such as
+ * systemd-resolved's 127.0.0.53 is the sandbox's own loopback now) is replaced by one naming
+ * the helper's DNS.
+ *
+ * And /dev is made by hand (NET_DEV_ARGS) instead of --dev. Linux CI, two rounds: with --dev
+ * bwrap maps the uid to 0, mounts devpts, then makes a second, nested user namespace; its
+ * first process sits in that inner one, which does not own the network namespace, so a helper
+ * joining it is refused ("setns(CLONE_NEWNET): Operation not permitted"). An outer bwrap
+ * holding the network instead does not work on Ubuntu either: what bwrap runs is confined
+ * (AppArmor's bwrap-userns-restrict -> unpriv_bwrap) and may not make another user namespace.
+ * Without devpts there is one user namespace, which owns the network. The cost: no
+ * pseudo-terminals (/dev/pts) in such a sandbox - commands run without a terminal anyway.
  */
+export function netDevArgs(exists = fs.existsSync) {
+  const args = ['--tmpfs', '/dev'];
+  // The nodes --dev binds from the machine's /dev (bwrap's own list), the same way.
+  for (const d of ['null', 'zero', 'full', 'random', 'urandom', 'tty']) if (exists(`/dev/${d}`)) args.push('--dev-bind', `/dev/${d}`, `/dev/${d}`);
+  args.push('--symlink', '/proc/self/fd', '/dev/fd', '--symlink', '/proc/self/fd/0', '/dev/stdin', '--symlink', '/proc/self/fd/1', '/dev/stdout', '--symlink', '/proc/self/fd/2', '/dev/stderr', '--tmpfs', '/dev/shm');
+  return args;
+}
 export function bwrapArgs({ mode = 'strict', root = P.root, dataDir = P.dataDir, workspaceDir, folders = [], tmpDir = '', screen = null, net = null, exists = fs.existsSync } = {}) {
   const ws = String(workspaceDir || '');
   if (mode === 'open') {
@@ -69,7 +85,8 @@ export function bwrapArgs({ mode = 'strict', root = P.root, dataDir = P.dataDir,
     if (dataDir && exists(dataDir)) args.push('--tmpfs', dataDir);
     return args.concat(['--chdir', ws, '--die-with-parent']);
   }
-  const args = ['--unshare-pid', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', ...(tmpDir ? ['--bind', tmpDir, '/tmp'] : ['--tmpfs', '/tmp']), '--tmpfs', '/home', '--tmpfs', '/root'];
+  const dev = net ? netDevArgs(exists) : ['--dev', '/dev'];
+  const args = [...(net ? ['--unshare-user', '--unshare-net'] : []), '--unshare-pid', '--ro-bind', '/', '/', ...dev, '--proc', '/proc', ...(tmpDir ? ['--bind', tmpDir, '/tmp'] : ['--tmpfs', '/tmp']), '--tmpfs', '/home', '--tmpfs', '/root'];
   if (exists('/run/user')) args.push('--tmpfs', '/run/user');
   if (net?.resolv?.file && net.resolv.at) args.push('--ro-bind', net.resolv.file, net.resolv.at);
   for (const sock of screen?.bind || []) args.push('--ro-bind', sock, sock);
@@ -202,9 +219,9 @@ export function sandboxFor(command, ctx = {}) {
 // The strict sandbox's own network (1.5.63)
 // ---------------------------------------------------------------------------
 //
-// An outer bwrap (the holder, NET_HOLDER_ARGS) makes a network namespace with only `lo` in it
-// and runs the strict bwrap inside; a helper running as the hub joins it and carries its
-// traffic out through ordinary sockets of the hub (no root, nothing changed on the machine):
+// The strict bwrap makes a network namespace with only `lo` in it (--unshare-net, one user
+// namespace: see netDevArgs); a helper running as the hub joins it and carries its traffic
+// out through ordinary sockets of the hub (no root, nothing changed on the machine):
 //
 //   pasta (passt)  - Debian 12+, Ubuntu 24.04+, Fedora, RHEL / Rocky 9.5+ and 10 (podman uses it).
 //                    -T/-U none: no port of this machine's loopback is mapped in, except a
@@ -276,31 +293,22 @@ export function netHelperCommand(helper, pid, { proxyPorts = [] } = {}) {
 }
 
 /**
- * The holder (1.5.63, after the first Linux CI run): an outer bwrap that only makes the user
- * and network namespaces and runs the real (strict) bwrap inside them. Why not --unshare-net on
- * the strict bwrap itself: with --dev it maps the uid to 0 first and then makes a second,
- * nested user namespace, so its first process sits in a user namespace that does not own the
- * network namespace, and a helper joining it is refused (CI, Ubuntu 24.04: pasta "Couldn't
- * switch to pasta namespaces", slirp4netns "setns(CLONE_NEWNET): Operation not permitted").
- * The holder has no --dev: one user namespace, which owns the network namespace; the helper
- * joins that one. It sees the machine as it is (--dev-bind / /) - the strict bwrap inside makes
- * the view the bot gets, as before. Joining needs no AppArmor rule (only making a namespace does).
+ * [file, args] that run `argv` in `sandbox`: one bwrap, never one inside another (Ubuntu's
+ * bwrap-userns-restrict lets what bwrap runs make no user namespace of its own). With a network
+ * of its own: --info-fd 3 says the pid of the sandbox's first process (whose user and network
+ * namespaces the helper joins - one user namespace, see bwrapArgs / netDevArgs); --block-fd 4:
+ * it waits there until the network is up, before anything runs.
  */
-export const NET_HOLDER_ARGS = ['--unshare-user', '--unshare-net', '--dev-bind', '/', '/', '--die-with-parent'];
-
-/** [file, args] that run `argv` in `sandbox`: bwrap, or (own network) the holder with bwrap inside. */
 export function sandboxCommand(sandbox, argv) {
   if (!sandbox?.net) return ['bwrap', [...sandbox.args, '--', ...argv]];
-  // --info-fd 3: the holder's first process (whose namespaces the helper joins); --block-fd 4:
-  // it waits there until the network is up, before the strict bwrap - or anything - runs.
-  return ['bwrap', [...NET_HOLDER_ARGS, '--info-fd', '3', '--block-fd', '4', '--', 'bwrap', ...sandbox.args, '--', ...argv]];
+  return ['bwrap', ['--info-fd', '3', '--block-fd', '4', ...sandbox.args, '--', ...argv]];
 }
 
 /**
  * Start `argv` in `sandbox` (from sandboxFor). Without a network of its own this is just bwrap.
- * With one: the holder (above) is told (--info-fd 3) the pid of its first process and waits
+ * With one: bwrap is told (--info-fd 3) the pid of the sandbox's first process and waits
  * (--block-fd 4) before running anything; the helper is started on that pid, and only when it
- * says the network is up is the holder let go. -> {child, ready}: `ready` rejects (code
+ * says the network is up is bwrap let go. -> {child, ready}: `ready` rejects (code
  * SANDBOX_UNAVAILABLE) when the network could not be set up - the sandbox is then killed
  * before the command ever ran. The helper goes when the sandbox ends.
  */

@@ -50,6 +50,9 @@ jobs:
           sysctl kernel.apparmor_restrict_unprivileged_userns kernel.apparmor_restrict_unprivileged_unconfined user.max_user_namespaces 2>&1 || true
           ls /etc/apparmor.d | grep -iE 'bwrap|pasta|passt|slirp' || echo "no bwrap/pasta/slirp AppArmor profiles"
           sudo aa-status 2>/dev/null | grep -iE 'bwrap|pasta|passt|slirp' || true
+          # CI round 3: bwrap inside bwrap, unshare inside bwrap, and whether a helper can join one
+          # bwrap's network with --dev and with a /dev made by hand (what Lamplit does now).
+          sh scripts/ci-sandbox-probe.sh || true
       # check:i18n parses the page with typescript (locally it comes with desktop/).
       - run: npm install --no-save typescript@5.9.3
       - run: npm run check
@@ -58,13 +61,15 @@ jobs:
       - run: npm run smoke:selfupdate
       # 1.5.63: the sandbox and its own network as on a stock Ubuntu 24.04 that Lamplit set up:
       # AppArmor's userns restriction back on, with Lamplit's rule for /usr/bin/bwrap (what
-      # checkSandbox / setup-linux.sh write). Reported, not blocking, while it is new.
+      # checkSandbox / setup-linux.sh write). Reported, not blocking, while it is new. It runs
+      # even when an earlier step failed (round 2 skipped it).
       - name: sandbox with Ubuntu's AppArmor restriction (Linux)
-        if: runner.os == 'Linux'
+        if: always() && runner.os == 'Linux'
         continue-on-error: true
         run: |
           sudo sh -c "$(node --input-type=module -e "const m = await import('./src/sandbox.mjs'); console.log(m.apparmorInstallCommand())")"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          sh scripts/ci-sandbox-probe.sh || true
           node scripts/smoke-sec1563.mjs
 
   audit:

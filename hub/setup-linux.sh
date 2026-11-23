@@ -153,6 +153,9 @@ has gzip || pm_install gzip
 has curl || has wget || pm_install curl
 # The bots' commands run in a sandbox (1.5.3).
 has bwrap || pm_install bubblewrap
+# 1.5.63: the sandbox's own network (pasta, from passt): bots reach the internet, not this
+# machine's local-only ports. Optional: without it the sandbox shares the network (体检 says so).
+has pasta || pm_install passt || true
 # Ubuntu 23.10+ lets no ordinary program make a user namespace; allow it to
 # bwrap only (Ubuntu's own way for sandboxing programs).
 if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] && has apparmor_parser && [ -x /usr/bin/bwrap ]; then

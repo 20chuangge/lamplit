@@ -1042,6 +1042,8 @@ function renderSandboxState(s) {
   else if (state === 'unknown') box.textContent = '正在检查这台机器能不能用沙箱…';
   else if (state === 'off') box.textContent = `没有生效：${s.reason || '原因不明'}。命令照常运行，但看得到 Lamplit 自己的数据。`;
   else if (s.mode === 'open') box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。这台机器交给了机器人（放手），其他位置照常可用。用 sudo 的命令不在沙箱里。';
+  // 1.5.63: with a network of its own the sandbox reaches the internet, not this machine's local-only ports.
+  else if (s.net?.state === 'own') box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）；系统只读，个人文件夹里只看得到工作区和开放的文件夹。每个机器人有自己的 /tmp，看不到你的 /tmp、你的屏幕和登录会话；它启动的图形程序只会开在它自己的屏幕上，这台机器没给它开屏幕时就打不开图形窗口。沙箱有自己的网络：能上网，但连不到这台机器上只对本机开放的端口（比如本机的数据库、开发服务器）。用 sudo 的命令、你批准越过边界的那一步不在沙箱里。';
   else box.textContent = '已开启：机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）；系统只读，个人文件夹里只看得到工作区和开放的文件夹。每个机器人有自己的 /tmp，看不到你的 /tmp、你的屏幕和登录会话；它启动的图形程序只会开在它自己的屏幕上，这台机器没给它开屏幕时就打不开图形窗口。用 sudo 的命令、你批准越过边界的那一步不在沙箱里。';
 }
 

@@ -256,6 +256,7 @@ async function main() {
     await stage('1.5.56: on a phone, closing settings goes back where it was opened from', async () => (await import('./smoke-nav1556.mjs')).navChecks({ check, readText }));
     await stage('1.5.58: a bot\'s screen on another machine, in 全部机器 (through the relay too)', async () => (await import('./smoke-1558.mjs')).remoteScreenChecks({ check }));
     await stage('1.5.61: security - the browser over a pipe (no debugging port), the hub\'s temp files in data, the bots\' own /tmp, checked root runs, the trust note', async () => { await (await import('./smoke-sec1561.mjs')).sec1561Checks({ check, skip }); await (await import('./smoke-secv1560b.mjs')).verifyChecks({ check, skip }); await (await import('./smoke-secv1561.mjs')).verifyChecks({ check, skip }); });
+    await stage('1.5.63: security - new names made through the held folder (F10), the strict sandbox\'s own network, bot screens view-only and wayvnc on a socket, very-low sends', async () => (await import('./smoke-sec1563.mjs')).sec1563Checks({ check, skip }));
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -6282,7 +6283,7 @@ async function scenarioV153() {
   const setup = await readText('../hub/setup-linux.sh');
   const page = await readText('../public/index.html');
   check('V3 shell: a sandboxed command runs as bwrap … -- /bin/sh -c <command>; the agent says when the human let a step past the fence',
-    toolsSrc.includes("spawn('bwrap', [...sandbox.args, '--', '/bin/sh', '-c', command]") && toolsSrc.includes('sandbox = sandboxFor(command, ctx);') && toolsSrc.includes("code: 'SANDBOX_UNAVAILABLE'")
+    toolsSrc.includes("spawnSandboxed(sandbox, ['/bin/sh', '-c', command]") && toolsSrc.includes('sandbox = sandboxFor(command, ctx);') && toolsSrc.includes("code: 'SANDBOX_UNAVAILABLE'")
     && agentSrc.includes('ctx.shellUnfenced = name === \'shell\' && Boolean(shellFence);'));
   check('V3 ready: the machine checks once that the sandbox works (bwrap starts, Lamplit\'s data is not visible, the workspace is writable) before using it, and says why not',
     typeof SB.checkSandbox === 'function' && SB.PROBE_SCRIPT.includes('[ ! -e "$1" ]') && SB.PROBE_SCRIPT.includes('[ -w "$2" ]')
@@ -9168,8 +9169,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         const deskSrc = await readText('../src/desktops.mjs');
         const relaySrc = await readText('../src/server.mjs');
         check('N3 screens: x11 and wayland screens start without VNC; the relay starts it before connecting; liveness ignores the VNC part',
-          deskSrc.includes('const startViewer = async () => {') && deskSrc.split('const startViewer = async () => {').length === 3
-          && relaySrc.includes('void ensureViewer(safeDecode(match[1])).catch(() => false).then((ok) => {')
+          deskSrc.split('const startViewer = async ({ viewOnly = false } = {}) => {').length === 3
+          && relaySrc.includes('void ensureViewer(safeDecode(match[1]), { viewOnly }).catch(() => false).then((ok) => {')
           && deskSrc.includes('if (existing.procs.every(alive)) { existing.lastUsed = Date.now();'));
         for (const id of ['view-idle', 'view-watched', 'view-recent']) D.stopDesktop(id);
       }
@@ -9186,8 +9187,9 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
       const deskSrc = await readText('../src/desktops.mjs');
       {
         // Batch K: Rocky/RHEL 10 have no Xvfb/x11vnc; their bot screens are cage + wayvnc.
-        const wl = D.waylandCommands({ display: 121, vncPort: 5921, webPort: 6101 });
-        check('desktops (Rocky 10): a Wayland screen is headless cage + wayvnc speaking WebSocket itself on 127.0.0.1 (no websockify fork per viewer)', wl.cage[0] === 'cage' && wl.cage[1].join(' ') === '-d -- sleep 2147121000' && wl.vnc[1].join(' ') === '-w -r 127.0.0.1 6101' && !wl.web && deskSrc.includes("WLR_BACKENDS: 'headless'") && deskSrc.includes("mode: 'kiosk'"));
+        const wl = D.waylandCommands({ display: 121, socket: '/d/desktop-vnc/w121.sock' });
+        // 1.5.63: wayvnc on a unix socket in data/desktop-vnc/ (no port, no websockify fork per viewer).
+        check('desktops (Rocky 10): a Wayland screen is headless cage + wayvnc on a unix socket in data/desktop-vnc (no port, no websockify)', wl.cage[0] === 'cage' && wl.cage[1].join(' ') === '-d -- sleep 2147121000' && wl.vnc[1].join(' ') === '-r -u /d/desktop-vnc/w121.sock' && D.waylandCommands({ display: 121, socket: '/s', viewOnly: true }).vnc[1].join(' ') === '-r --disable-input -u /s' && !wl.web && deskSrc.includes("WLR_BACKENDS: 'headless'") && deskSrc.includes("mode: 'kiosk'"));
         const wlArgs = B.buildLaunchArgs({ port: 9, profileDir: 'x', wayland: true });
         const brSrc = await readText('../src/browser.mjs');
         check('desktops (Rocky 10): the bot browser draws natively on its Wayland screen, without an X display', wlArgs.includes('--ozone-platform=wayland') && !B.buildLaunchArgs({ port: 9, profileDir: 'x' }).includes('--ozone-platform=wayland') && brSrc.includes('delete launchEnv.DISPLAY'));
@@ -9901,8 +9903,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
   // Bot desktops are reachable only through the hub's authenticated relay.
   {
     const desktopsSrc = await readText('../src/desktops.mjs');
-    // 1.5.61 (F12): x11vnc on loopback with a password the hub signs in with; no websockify; wayvnc on loopback.
-    check('bot screens: VNC on loopback only - x11vnc asks for a password (no websockify), wayvnc binds 127.0.0.1', desktopsSrc.includes("'-localhost', '-rfbauth', authFile,") && !/spawnChild\('websockify'/.test(desktopsSrc) && desktopsSrc.includes("vnc: ['wayvnc', ['-w', '-r', '127.0.0.1', String(webPort)]]"));
+    // 1.5.61 (F12): x11vnc on loopback with a password the hub signs in with; no websockify. 1.5.63: wayvnc on a unix socket in data/.
+    check('bot screens: VNC on loopback only - x11vnc asks for a password (no websockify), wayvnc listens on a unix socket in data/desktop-vnc', desktopsSrc.includes("'-localhost', '-rfbauth', authFile,") && !/spawnChild\('websockify'/.test(desktopsSrc) && desktopsSrc.includes("vnc: ['wayvnc', ['-r', ...(viewOnly ? ['--disable-input'] : []), '-u', socket]]"));
     check('the bot desktop URL goes through the hub relay', desktopsSrc.includes('desktop/ws') && !/http:\/\/\$\{lanAddress\(\)\}:\$\{entry\.webPort\}/.test(desktopsSrc));
     const unauth = await new Promise((resolve) => {
       const req = http.request(`${base}/api/bots/chief/desktop/ws`, {

@@ -76,7 +76,7 @@ import * as groups from './groups.mjs';
 import * as settingsModule from './settings.mjs';
 import { publicProviderCatalogue } from './providers.mjs';
 import * as providersModule from './providers.mjs';
-import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled, desktopEnv, desktopViewerPassword } from './desktops.mjs';
+import { configure as configureDesktops, desktopInfo, desktopSupport, ensureDesktop, listDesktops, stopDesktop, setDesktopHooks, setDesktopMode, getDesktopMode, desktopViewerOpened, ensureViewer, DESKTOP_IDLE_MS, fullDesktopInstalled, desktopEnv, desktopViewerPassword, desktopViewerSocket } from './desktops.mjs';
 import { loadPlan } from './plans.mjs';
 import { setClipboard, getClipboard, CLIPBOARD_MAX_CHARS, sudoInstall } from './clipboard.mjs';
 import { createMcpManager } from './mcp.mjs';
@@ -976,7 +976,10 @@ function attachHubUpgrade(server, state, viaPublic) {
     const viewerDone = desktopViewerOpened(safeDecode(match[1]));
     socket.on('close', viewerDone);
     // The VNC part runs only while someone watches: start it now if needed.
-    void ensureViewer(safeDecode(match[1])).catch(() => false).then((ok) => {
+    // 1.5.63: 接管桌面 「只能看」 - the VNC server itself takes no input then (x11vnc -viewonly,
+    // wayvnc --disable-input), as TightVNC's view-only password does on Windows.
+    const viewOnly = state.config.policy?.takeover === 'view';
+    void ensureViewer(safeDecode(match[1]), { viewOnly }).catch(() => false).then((ok) => {
     if (!ok || socket.destroyed) { refuse(503, 'Service Unavailable'); return; }
     // 1.5.61 (F12): x11vnc asks for a password; the hub signs in and offers the page none.
     const viewerPassword = desktopViewerPassword(safeDecode(match[1]));
@@ -984,17 +987,14 @@ function attachHubUpgrade(server, state, viaPublic) {
       if (!bridgeWebSocket(req, socket, head, { port: info.vncPort, vnc: { password: viewerPassword } })) refuse(400, 'Bad Request');
       return;
     }
-    const upstream = net.connect(info.webPort, '127.0.0.1', () => {
-      // Replay the client's handshake to websockify; it answers the upgrade.
-      const lines = ['GET / HTTP/1.1'];
-      for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
-      upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
-      if (head && head.length) upstream.write(head);
-      upstream.pipe(socket);
-      socket.pipe(upstream);
-    });
-    upstream.on('error', () => socket.destroy());
-    socket.on('close', () => upstream.destroy());
+    // 1.5.63: wayvnc (Rocky 10) on a unix socket in data/desktop-vnc/, which only the hub reaches.
+    const viewerSocket = desktopViewerSocket(safeDecode(match[1]));
+    if (viewerSocket) {
+      if (!bridgeWebSocket(req, socket, head, { path: viewerSocket })) refuse(400, 'Bad Request');
+      return;
+    }
+    // Nothing else is bridged: no screen server here listens on a port without a password any more.
+    refuse(503, 'Service Unavailable');
     });
   });
 }
@@ -2938,8 +2938,11 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
   } else if (sb.state === 'on') {
     // Linux with the sandbox working (1.5.33): said as it is, in green.
     // 1.5.61 (F8): strict mode gives each bot a /tmp of its own; no screen is reachable from inside.
-    if (sb.mode === 'strict') items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱），也看不到你的 /tmp、你的屏幕和登录会话。每个机器人有自己的 /tmp；图形程序只能开在它自己的屏幕上，这台机器没给机器人开屏幕时就打不开图形窗口。'));
-    else items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。'));
+    if (sb.mode === 'strict') {
+      items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱），也看不到你的 /tmp、你的屏幕和登录会话。每个机器人有自己的 /tmp；图形程序只能开在它自己的屏幕上，这台机器没给机器人开屏幕时就打不开图形窗口。'));
+      // 1.5.63: no helper for a network of its own - the bots' commands share this machine's.
+      if (sb.net?.state === 'shared') items.push(checkupItem('sandbox-net', '沙箱网络', 'warn', `机器人的命令和这台机器共用网络${sb.net.reason ? `（${sb.net.reason}）` : ''}：它们连得到这台机器上只对本机开放的端口（比如数据库、开发服务器），也连得到你屏幕的 X 服务器。装上 passt（sudo apt install passt，或 sudo dnf install passt）再重启 Lamplit，沙箱就有自己的网络，上网照常。`));
+    } else items.push(checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令在沙箱里跑，看不到 Lamplit 自己的数据（密钥、配对凭据、保险箱）。'));
   } else if (sb.state === 'off') {
     items.push(checkupItem('isolation', '命令隔离', 'warn', `沙箱没有生效${sb.reason ? `（${sb.reason}）` : ''}：机器人执行的命令看得到 Lamplit 自己的数据。`, { kind: 'settings', target: 'sec-bounds', label: '看看' }));
   }

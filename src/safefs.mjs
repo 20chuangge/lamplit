@@ -84,6 +84,30 @@ async function checkHandle(root, abs, fh) {
   if (cmp(again) !== cmp(real) || !same(await fsp.stat(again, { bigint: true }))) throw outside(abs);
 }
 
+/**
+ * 1.5.63 (F10): Linux with /proc - a folder can be held open and names made through it
+ * (/proc/self/fd/N/<name>), as trash.mjs does for moves. Tests can turn it off to play
+ * the other systems' way.
+ */
+let heldOffForTests = false;
+export const _safefsTest = { setHeldFolders: (on) => { heldOffForTests = !on; } };
+function heldFoldersWork() {
+  return !heldOffForTests && process.platform === 'linux' && fs.existsSync('/proc/self/fd');
+}
+
+/** Open the folder `dir` (or `{fd}` of one already held + a name in it) and check it is inside `root`. -> {fd, at(name), close()} */
+function holdFolderInside(root, dir, realRoot = realPathOf(root)) {
+  const fd = fs.openSync(dir, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0));
+  let where = '';
+  try { where = fs.readlinkSync(`/proc/self/fd/${fd}`); } catch { /* checked below */ }
+  if (!where || !isBelow(realRoot, where)) {
+    try { fs.closeSync(fd); } catch { /* closed */ }
+    throw outside(dir);
+  }
+  let open = true;
+  return { fd, at: (name) => `/proc/self/fd/${fd}/${name}`, close: () => { if (open) { open = false; try { fs.closeSync(fd); } catch { /* closed */ } } } };
+}
+
 /** Read a file in the workspace, checked (see the top). */
 export async function readInside(root, abs, encoding = null) {
   const fh = await openInside(root, abs, 'r');
@@ -103,6 +127,25 @@ async function openForWrite(root, abs, append) {
     if (err.code !== 'ENOENT') throw err;
   }
   if (!isBelow(realPathOf(root), realPathOf(path.dirname(abs)))) throw outside(abs);
+  // 1.5.63 (F10), Linux: the new file is made through its folder held open and checked
+  // (/proc/self/fd/N/<name>), so it is made in that folder - inside - however the names on the
+  // way are swapped meanwhile. Nothing is ever made in the data folder, not even an empty file.
+  if (heldFoldersWork()) {
+    const here = holdFolderInside(root, path.dirname(abs));
+    let fh;
+    try {
+      fh = await fsp.open(here.at(path.basename(abs)), c.O_WRONLY | c.O_CREAT | c.O_EXCL | (c.O_NOFOLLOW || 0) | (append ? c.O_APPEND : 0));
+    } finally { here.close(); }
+    try {
+      await checkHandle(root, abs, fh);
+      return fh;
+    } catch (err) {
+      await fh.close().catch(() => {});
+      throw err;
+    }
+  }
+  // Elsewhere (Windows: Node has no way to make a file relative to an open folder): accepted -
+  // a swap at the right moment can leave one empty file outside; nothing is written to it.
   // Made new (O_EXCL: nothing was there), then checked. Refused (a link swapped in between):
   // the empty file just made is taken away again - only while its name still leads to it.
   const fh = await fsp.open(abs, c.O_WRONLY | c.O_CREAT | c.O_EXCL | (append ? c.O_APPEND : 0));
@@ -141,9 +184,10 @@ export async function writeInside(root, abs, data, { append = false } = {}) {
  * makes folders wherever it leads (the data folder); here every level is looked
  * at before the next is made: it must be a folder (a link only when it leads
  * to a folder) whose real place is inside `root`. -> undefined; throws code
- * PATH_OUTSIDE_WORKSPACE. A name swapped after its check can still lead one
- * mkdir astray (an empty folder at most); what is written goes through
- * writeInside's own checks.
+ * PATH_OUTSIDE_WORKSPACE. Linux (1.5.63, F10): through held-open folders, see
+ * mkdirHeld. Elsewhere a name swapped after its check can still lead one mkdir
+ * astray (an empty folder at most; accepted on Windows); what is written goes
+ * through writeInside's own checks.
  */
 export async function mkdirInside(root, absDir) {
   const rootAbs = path.resolve(root);
@@ -152,6 +196,7 @@ export async function mkdirInside(root, absDir) {
   await fsp.mkdir(rootAbs, { recursive: true }); // the workspace itself: the hub's own choice
   const realRoot = realPathOf(root);
   const rel = path.relative(rootAbs, target);
+  if (heldFoldersWork()) { await mkdirHeld(rootAbs, realRoot, rel ? rel.split(path.sep) : []); return; }
   let cur = rootAbs;
   for (const part of rel ? rel.split(path.sep) : []) {
     cur = path.join(cur, part);
@@ -170,6 +215,36 @@ export async function mkdirInside(root, absDir) {
     let real = '';
     try { real = fs.realpathSync.native(cur); } catch { throw outside(cur); }
     if (!isBelow(realRoot, real)) throw outside(cur);
+  }
+}
+
+/**
+ * mkdirInside on Linux (1.5.63, F10): each level is made through the level above held open
+ * (/proc/self/fd/N/<part>), and the next level is opened through it in turn and checked. No
+ * name is looked up from the start again, so a link swapped in on the way can only be refused
+ * - never lead a mkdir into the data folder (the empty folders SECV-N2c found).
+ */
+async function mkdirHeld(rootAbs, realRoot, parts) {
+  let held = holdFolderInside(rootAbs, rootAbs, realRoot);
+  try {
+    for (const part of parts) {
+      if (!part || part === '.' || part === '..') throw outside(path.join(rootAbs, ...parts));
+      const at = held.at(part);
+      // mkdir never follows a last part that is a link (EEXIST): nothing is made where one leads.
+      try { await fsp.mkdir(at); } catch (err) { if (err.code !== 'EEXIST') throw err; }
+      let next;
+      try {
+        next = holdFolderInside(rootAbs, at, realRoot);
+      } catch (err) {
+        if (err.code === 'ENOTDIR') throw Object.assign(new Error(`${part} is a file, not a folder`), { code: 'ENOTDIR', status: 400 });
+        if (err.code === 'PATH_OUTSIDE_WORKSPACE') throw err;
+        throw outside(part);
+      }
+      held.close();
+      held = next;
+    }
+  } finally {
+    held.close();
   }
 }
 

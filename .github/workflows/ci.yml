@@ -31,11 +31,13 @@ jobs:
       # The bots' sandbox on Linux (bubblewrap), so its checks run for real instead of being
       # skipped (1.5.60, SECV-6). Ubuntu 24.04 lets no ordinary program make a user namespace
       # unless told; on a throwaway runner that is fine to allow.
+      # 1.5.63: passt (pasta) and slirp4netns for the sandbox's own network, xvfb for the X
+      # abstract-socket checks (SECV-X1, SEC-N63) - so they run instead of being skipped.
       - name: bubblewrap (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap
+          sudo apt-get install -y -qq bubblewrap passt slirp4netns xvfb
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # check:i18n parses the page with typescript (locally it comes with desktop/).
       - run: npm install --no-save typescript@5.9.3

@@ -45,14 +45,15 @@ const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32BE(n >>> 0, 0); ret
  * to host:port. Returns false when the request is not a WebSocket handshake.
  * vnc: {password} - authenticate to the VNC server here (see the top).
  */
-export function bridgeWebSocket(req, socket, head, { host = '127.0.0.1', port, vnc = null, timeoutMs = 15000 }) {
+export function bridgeWebSocket(req, socket, head, { host = '127.0.0.1', port, path: socketPath = '', vnc = null, timeoutMs = 15000 }) {
   const key = req.headers['sec-websocket-key'];
   if (!key || String(req.headers.upgrade || '').toLowerCase() !== 'websocket') return false;
   const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');
   const offered = String(req.headers['sec-websocket-protocol'] || '').split(',').map((p) => p.trim()).filter(Boolean);
   const protocol = offered.includes('binary') ? 'binary' : '';
 
-  const upstream = net.connect(port, host);
+  // path (1.5.63): a unix socket only the hub can reach (wayvnc's, in data/desktop-vnc/).
+  const upstream = socketPath ? net.connect({ path: socketPath }) : net.connect(port, host);
   let pending = head && head.length ? Buffer.from(head) : Buffer.alloc(0);
   let open = false;
   let closed = false;

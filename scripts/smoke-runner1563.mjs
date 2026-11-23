@@ -377,19 +377,38 @@ async function ciAccountChecks({ check, W, helper, probe, target, sysEnv }) {
     const st = await W.checkRunner({ workspaceDir: ws });
     check('RD8e Lamplit\'s own check with this account: on (its data hidden, the workspace writable, on the bots\' own desktop)', st.state === 'on', JSON.stringify(st));
     // A window of its own (a plain WinForms form, titled with a marker), left open in the background.
+    // Through Lamplit's own lamplit-run.exe (the one checkRunner just built in its data folder), as the
+    // shell tool runs it: the bots' desktop's name is kept next to that program, so a second copy (this
+    // test's own, above) would make a second desktop - which is what rounds 3 and 5 of CI saw.
+    const product = W.helperExe();
+    const asBot = (command) => runExe(product, ['--say-where'], W.helperPayload({ user, password, cwd: ws, command, env }), 120000, { onExit: true });
+    const whereOf = (r) => ((/^LAMPLIT_RUNNER_ON (.+)$/m.exec(r.err) || [])[1] || '').trim();
     const formTitle = `lamplit-form-${crypto.randomBytes(4).toString('hex')}`;
-    const opened = await viaHelper(`start "" powershell.exe -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = '${formTitle}'; [Windows.Forms.Application]::Run($f)" & ping -n 6 127.0.0.1 >nul & echo started`);
+    const formLog = path.join(ws, 'form.log');
+    const opened = await asBot(`start "" powershell.exe -NoProfile -NonInteractive -Command "try { Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = '${formTitle}'; [Windows.Forms.Application]::Run($f) } catch { $_ | Out-File -LiteralPath '${formLog}' }" & ping -n 6 127.0.0.1 >nul & echo started`);
     const U = await import('../src/winui.mjs');
     let listed = null;
-    // Until the form is up (a slow machine), at most half a minute.
+    // Until the form is up (a slow machine, an account's first PowerShell), at most half a minute.
     for (let i = 0; i < 20; i++) {
       if (i) await new Promise((r) => setTimeout(r, 1500));
       try { listed = await U.runWinUi({ action: 'windows' }, { timeoutMs: 60000 }); } catch (err) { listed = { error: err.message }; }
       if ((listed?.windows || []).some((w) => w.desktop === 'bots' && String(w.title || '').includes(formTitle))) break;
     }
     const titled = (desk) => (listed?.windows || []).filter((w) => w.desktop === desk && String(w.title || '').includes(formTitle));
-    check('RD8f a window the account opened is on the bots\' desktop for desktop_ui (UI Automation there, as the account), and not on the hub\'s',
-      /started/.test(opened.out) && titled('bots').length === 1 && titled('yours').length === 0, JSON.stringify({ listed, opened: opened.out.slice(0, 200) }));
+    // What happened, whichever way it went: is the form's process alive (and with its title), what the
+    // form said if it failed, and what plain EnumWindows sees as the account on the bots' desktop.
+    const tl = spawnSync('tasklist', ['/v', '/fo', 'csv', '/fi', `USERNAME eq ${user}`], { encoding: 'utf8', windowsHide: true }).stdout || '';
+    const seenBy = await asBot(`"${probeHere}" ${formTitle} X Y "${ready.winsta}" "${ready.desktop}"`);
+    const diag = {
+      openedOn: whereOf(opened), probedOn: whereOf(seenBy), probe: jsonLine(seenBy.out),
+      formAlive: tl.includes(formTitle), accountProcesses: tl.split(/\r?\n/).slice(1).map((l) => l.split('","')[0].replace(/^"/, '')).filter(Boolean),
+      formError: fs.existsSync(formLog) ? fs.readFileSync(formLog, 'utf8').slice(0, 300) : '',
+    };
+    console.log(`      RD8f ${JSON.stringify(diag)}`);
+    check('RD8f every way Lamplit runs something as the account (the shell tool, desktop_ui, its check) lands on one and the same bots\' desktop',
+      diag.openedOn && diag.openedOn === diag.probedOn && /\\lamplit-bots-/.test(diag.openedOn), JSON.stringify(diag));
+    check('RD8f a window the account opened is on the bots\' desktop for desktop_ui (as the account, through MSAA), and not on the hub\'s',
+      /started/.test(opened.out) && titled('bots').length === 1 && titled('yours').length === 0, JSON.stringify({ listed, opened: opened.out.slice(0, 200), diag }));
     let read = null;
     try { read = await U.runWinUi({ action: 'controls', window: formTitle }, { timeoutMs: 60000 }); } catch (err) { read = { error: err.message }; }
     check('RD8f desktop_ui works that window there (controls, as the account on the bots\' desktop)', read?.desktop === 'bots' && String(read?.window || '').includes(formTitle), JSON.stringify(read));

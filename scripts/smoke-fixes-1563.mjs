@@ -343,3 +343,116 @@ export async function fixes1563Checks({ check, readText, api, base }) {
       !/el\([^)]*['"]最近['"]/.test(page) && /function noteActivity/.test(page) && /FREEZE_MS/.test(page));
   }
 }
+
+// --- 6. 管理助手 for a bot on another machine (1.5.63, the user: 「完整修好」) ---------------------------
+// Two hubs: the one under test (this machine) and a second one standing for 「书房电脑」.
+export async function remoteEditChecks({ check, readText, api, base, rawFetch, startServerChild, stopProcess, seedHome }) {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const otherHome = fs.mkdtempSync(path.join(os.tmpdir(), 'assist-smoke-farbot-'));
+  await seedHome(otherHome);
+  let other = null;
+  const M = '书房电脑';
+  const enc = encodeURIComponent(M);
+  const aKey = () => fs.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'local-key'), 'utf8').trim();
+  try {
+    other = await startServerChild(otherHome, { ASSIST_DATA_DIR: path.join(otherHome, 'data'), ASSIST_WORKSPACE_DIR: path.join(otherHome, 'workspace') });
+    const B = other.url;
+    const bKey = fs.readFileSync(path.join(otherHome, 'data', 'local-key'), 'utf8').trim();
+    const bToken = JSON.parse(fs.readFileSync(path.join(otherHome, 'data', 'security.json'), 'utf8')).token;
+    const aToken = JSON.parse(fs.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8')).token;
+    const bApi = async (p, { method = 'GET', body } = {}) => {
+      const res = await rawFetch(`${B}${p}`, { method, headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), 'x-lamplit-local': bKey }, body: body !== undefined ? JSON.stringify(body) : undefined });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* not json */ }
+      return { status: res.status, json, text };
+    };
+    const readAudit = (dir) => { try { return fs.readFileSync(path.join(dir, 'audit.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+    await api('/api/peers', { method: 'PUT', body: { peers: [{ name: M, url: B, token: bToken }] } });
+
+    // On 书房电脑 itself: ops can run commands but not delete; a model only that machine has.
+    await bApi('/api/bots/ops', { method: 'PATCH', body: { tools: ['shell', 'fs_list', 'fs_read', 'fs_write', 'fs_mkdir'] } });
+    const bModel = (await bApi('/api/models', { method: 'POST', body: { label: '书房专用', provider: 'openai', baseUrl: 'http://127.0.0.1:9/v1', model: 'far-only', apiKey: 'test-only-key' } })).json?.model;
+
+    const read = await api(`/api/peers/${enc}/bots/ops`);
+    const far = read.json?.bot;
+    const localModels = (await api('/api/models')).json?.models || [];
+    check('F63-6a 管理助手 for a bot on another machine reads it from there: its real tools and trust, the id as ops@书房电脑, and that machine\'s own models (not this one\'s), no key in the answer',
+      read.status === 200 && far?.id === `ops@${M}` && far.tools.includes('shell') && !far.tools.includes('fs_delete') && typeof far.policy?.autoApproveMedium === 'boolean'
+      && Boolean(read.json.models?.models?.some((m) => m.id === bModel?.id)) && !localModels.some((m) => m.id === bModel?.id) && read.json.machine === M && !JSON.stringify(read.json).includes('test-only-key'),
+      JSON.stringify({ status: read.status, tools: far?.tools, models: read.json?.models?.models?.map((m) => m.id) }));
+
+    // 保存: the same body as a save here, applied and audited there; primary is never passed on.
+    const beforeB = readAudit(path.join(otherHome, 'data')).length;
+    const saved = await api(`/api/peers/${enc}/bots/ops`, { method: 'PATCH', body: { name: far?.name, role: '从这台改的职责', tools: [...(far?.tools || []), 'fs_delete'], policy: { autoApproveMedium: false }, model: bModel?.id, voice: '', primary: true } });
+    const there = (await bApi('/api/bots/ops')).json?.bot;
+    const auditedThere = readAudit(path.join(otherHome, 'data')).slice(beforeB).find((e) => e.kind === 'bot.abilities' && e.botId === 'ops');
+    const auditedHere = readAudit(process.env.ASSIST_DATA_DIR).reverse().find((e) => e.kind === 'peer.bot.update' && e.machine === M && e.botId === 'ops');
+    check('F63-6b 保存 lands on that machine (role, abilities, its model), is audited there like a save there, and here as passed on; making it the main assistant is not passed on',
+      saved.status === 200 && saved.json?.bot?.id === `ops@${M}` && there?.role === '从这台改的职责' && there.tools.includes('fs_delete') && there.model === bModel?.id && !there.primary
+      && Boolean(auditedThere?.added?.includes('fs_delete')) && Array.isArray(auditedHere?.fields) && !auditedHere.fields.includes('primary'),
+      JSON.stringify({ saved: saved.status, role: there?.role, model: there?.model, primary: there?.primary, auditedThere, auditedHere }));
+
+    // The picture: the same checks as here, then on that machine; removing it too.
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360f8cfc0f01f0005000201a5f6a1b40000000049454e44ae426082', 'hex');
+    const up = await rawFetch(`${base}/api/peers/${enc}/bots/ops/avatar`, { method: 'POST', headers: { 'content-type': 'image/png', 'x-lamplit-local': aKey() }, body: png });
+    const upJson = await up.json().catch(() => null);
+    const hasImage = (await bApi('/api/bots/ops')).json?.bot?.avatar?.hasImage;
+    const lie = await rawFetch(`${base}/api/peers/${enc}/bots/ops/avatar`, { method: 'POST', headers: { 'content-type': 'image/png', 'x-lamplit-local': aKey() }, body: Buffer.from('<html>not a picture</html>') });
+    await lie.text().catch(() => '');
+    const viaHere = await rawFetch(`${base}/api/peers/${enc}/avatar/ops`, { headers: { 'x-lamplit-local': aKey() } });
+    await viaHere.arrayBuffer().catch(() => null);
+    const gone = await api(`/api/peers/${enc}/bots/ops/avatar`, { method: 'DELETE' });
+    const hasImageAfter = (await bApi('/api/bots/ops')).json?.bot?.avatar?.hasImage;
+    check('F63-6c its picture can be changed from here: a real PNG goes to that machine and shows through this hub; one that is not a picture is refused here; removing it removes it there',
+      up.status === 200 && upJson?.imageUrl === `/api/peers/${enc}/avatar/ops` && hasImage === true && lie.status === 400 && viaHere.status === 200 && gone.status === 200 && hasImageAfter === false,
+      JSON.stringify({ up: up.status, upJson, hasImage, lie: lie.status, viaHere: viaHere.status, gone: gone.status, hasImageAfter }));
+
+    // A call another hub passed on is never passed on (no hop to a third machine); only paired machines; only the human.
+    const passed = await rawFetch(`${base}/api/peers/${enc}/bots/ops`, { method: 'PATCH', headers: { authorization: `Bearer ${aToken}`, 'x-lamplit-via': '1', 'content-type': 'application/json', 'x-no-local-key': '1' }, body: JSON.stringify({ role: '第三台机器改的' }) });
+    const passedGet = await rawFetch(`${base}/api/peers/${enc}/bots/ops`, { headers: { authorization: `Bearer ${aToken}`, 'x-lamplit-via': '1', 'x-no-local-key': '1' } });
+    const stranger = await api('/api/peers/%E6%B2%A1%E6%9C%89%E8%BF%99%E5%8F%B0/bots/ops', { method: 'PATCH', body: { role: 'x' } });
+    const noKey = await rawFetch(`${base}/api/peers/${enc}/bots/ops`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-no-local-key': '1' }, body: JSON.stringify({ role: '机器人自己改的' }) });
+    const roleNow = (await bApi('/api/bots/ops')).json?.bot?.role;
+    check('F63-6d a request another hub passed on is refused (403, nothing changes there), an unknown machine is refused, and a program on this computer without the key gets nowhere',
+      passed.status === 403 && passedGet.status === 403 && stranger.status === 404 && noKey.status === 403 && roleNow === '从这台改的职责',
+      JSON.stringify({ passed: passed.status, passedGet: passedGet.status, stranger: stranger.status, noKey: noKey.status, roleNow }));
+
+    // That machine off: the read says so; nothing is written.
+    await stopProcess(other.child);
+    other = null;
+    const off = await api(`/api/peers/${enc}/bots/ops`);
+    const offSave = await api(`/api/peers/${enc}/bots/ops`, { method: 'PATCH', body: { role: 'x' } });
+    check('F63-6e with that machine off the read answers 「连不上」 (502), and a save cannot land anywhere',
+      off.status === 502 && off.json?.error?.code === 'PEER_UNREACHABLE' && /连不上/.test(off.json?.error?.message || '') && offSave.status === 502, JSON.stringify({ off: off.status, offSave: offSave.status, err: off.json?.error }));
+  } finally {
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
+    if (other) await stopProcess(other.child).catch(() => {});
+  }
+
+  // The page: nothing is shown or saved as real until that machine answered; off or older: the note, no PATCH.
+  const bots = await readText('../public/app/main/04-bots.js');
+  const sent = [];
+  const nodes = {};
+  const node = (id) => (nodes[id] ||= { id, hidden: false, disabled: false, checked: false, textContent: '', innerHTML: '', value: '', appendChild() {}, closest: () => node('danger') });
+  const st = { botEditRemote: null, bots: [] };
+  // eslint-disable-next-line no-new-func
+  const page = new Function('$', 'state', 'api', 'el', 'remoteApi', 'setBotEditNote', 'renderBotModelSelect', 'renderBotVoiceSelect', 'renderAbilities', 'botById', 'isRemoteId', 'toolsFromAbilities',
+    `${fnSource(bots, 'loadRemoteBotEdit')}\n${fnSource(bots, 'saveBotEdit')}\nreturn { loadRemoteBotEdit, saveBotEdit };`)(
+    node, st, async (p, o = {}) => { sent.push({ p, method: o.method || 'GET' }); const e = new Error('「书房电脑」现在连不上'); e.code = 'NOT_FOUND'; e.status = 502; throw e; },
+    () => ({}), (id) => `/api/peers/x/bots/${id}`, (t) => { node('botedit-note').textContent = t; }, () => {}, () => {}, () => {}, () => null, () => true, () => [],
+  );
+  st.botEditRemote = { id: 'ops@书房电脑', machine: '书房电脑', bot: null, error: '' };
+  node('botedit-save').disabled = true;
+  await page.loadRemoteBotEdit('ops@书房电脑');
+  node('botedit-name-input').value = 'x';
+  await page.saveBotEdit();
+  check('F63-6f in the page: a machine that does not answer (off, or an older Lamplit without the route) gives 「<machine> 现在连不上，连上后再改」, 保存 stays off and no PATCH is sent',
+    node('botedit-note').textContent === '「书房电脑」现在连不上，连上后再改' && node('botedit-save').disabled === true && !sent.some((s) => s.method === 'PATCH'),
+    JSON.stringify({ note: node('botedit-note').textContent, sent }));
+  const html = await readText('../public/index.html');
+  check('F63-6g the drawer\'s labels are unchanged (保存, 删除这个助手, 设为主助理, 试听); deleting it or making it the main assistant there is hidden for a bot on another machine',
+    html.includes('>保存</button>') && html.includes('>删除这个助手</button>') && html.includes('>设为主助理</button>') && html.includes('>试听</button>')
+    && /danger\.hidden = remote/.test(bots) && /prim\.hidden = Boolean\(bot\.primary\) \|\| remote/.test(bots) && /if \(!bot \|\| isRemoteId\(bot\.id\)\) return;/.test(bots));
+}

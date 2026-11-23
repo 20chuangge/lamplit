@@ -63,10 +63,12 @@ async function revokeRemembered(bot, { key = '', grant = null } = {}) {
   const policy = { ...(bot.policy || {}) };
   if (grant) policy.phoneGrants = (bot.policy?.phoneGrants || []).filter((x) => !(x.app === grant.app && x.kind === grant.kind));
   else policy.allowed = (bot.policy?.allowed || []).filter((a) => a.key !== key);
-  const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { policy } });
+  const res = await api(botApiUrl(bot.id), { method: 'PATCH', body: { policy } });
   const updated = (res && res.bot) || { ...bot, policy };
   const index = state.bots.findIndex((b) => b.id === bot.id);
   if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
+  // A bot on another machine (1.5.63): the drawer keeps what that machine now has.
+  if (state.botEditRemote?.id === bot.id && state.botEditRemote.bot) state.botEditRemote.bot = { ...state.botEditRemote.bot, ...updated };
   return state.bots[index] || updated;
 }
 
@@ -144,25 +146,46 @@ function toolsFromAbilities(bot) {
   return [...next];
 }
 
+/** Where a bot's settings live: this hub, or (1.5.63) passed on to the machine it is on. */
+function botApiUrl(id, rest = '') {
+  return isRemoteId(id) ? remoteApi(id, rest) : `/api/bots/${encodeURIComponent(id)}${rest}`;
+}
+
 function openBotEdit(botId, options = {}) {
   const bot = botById(botId);
   if (!bot) return;
   closeMenus();
   closeSidebar();
   state.botEditingId = botId;
-  state.deleteArmed = Boolean(options.armDelete) && !bot.primary;
+  const remote = isRemoteId(botId);
+  state.deleteArmed = Boolean(options.armDelete) && !bot.primary && !remote;
   $('botedit-title').textContent = `管理助手 · ${bot.name}`;
   $('botedit-name-input').value = bot.name || '';
   $('botedit-role-input').value = bot.role || '';
-  renderBotModelSelect(bot);
-  renderBotVoiceSelect(bot);
-  renderAbilities(bot);
   $('botedit-note').hidden = true;
   lampMount($('botedit-preview'), bot, 60);
+  // A bot on another machine (1.5.63): its settings are read from there first; the
+  // sidebar only knows its name, so nothing is shown (or saved) as if it were real until then.
+  state.botEditRemote = remote ? { id: botId, machine: remoteOf(botId).machine, bot: null, models: null, tts: null, error: '' } : null;
+  $('botedit-save').disabled = remote;
+  $('botedit-trust').disabled = remote;
+  const tryBtn = $('botedit-voice-try');
+  if (tryBtn) tryBtn.hidden = remote; // 试听 plays this machine's voices
+  const danger = $('botedit-delete')?.closest('.be-danger');
+  // Deleting it, or making it the main assistant, stays on its own machine.
+  if (danger) danger.hidden = remote;
+  if (remote) {
+    showRemoteBotEditLoading();
+    loadRemoteBotEdit(botId);
+  } else {
+    renderBotModelSelect(bot);
+    renderBotVoiceSelect(bot);
+    renderAbilities(bot);
+  }
 
   // The way the 「主助理不能删」 note points to (1.5.33, C8).
   const prim = $('botedit-primary');
-  if (prim) prim.hidden = Boolean(bot.primary);
+  if (prim) prim.hidden = Boolean(bot.primary) || remote;
   const del = $('botedit-delete');
   del.disabled = Boolean(bot.primary);
   del.textContent = state.deleteArmed ? `再点一次确认删除「${bot.name}」` : '删除这个助手';
@@ -179,8 +202,53 @@ function openBotEdit(botId, options = {}) {
   }
 }
 
+/** Until that machine answers: no switches, no model, no 保存. */
+function showRemoteBotEditLoading() {
+  const far = state.botEditRemote;
+  const box = $('botedit-abilities');
+  if (box) { box.innerHTML = ''; box.appendChild(el('div', 'row-note', `正在从「${far.machine}」读取…`)); }
+  $('botedit-trust').checked = false;
+  const allowed = $('botedit-allowed');
+  if (allowed) { allowed.innerHTML = ''; allowed.hidden = true; }
+  const select = $('botedit-model');
+  if (select) { select.innerHTML = '<option value="">正在读取…</option>'; select.disabled = true; }
+  $('botedit-model-note').textContent = '';
+  const voiceSec = $('botedit-voice-sec');
+  if (voiceSec) voiceSec.hidden = true;
+}
+
+/** That machine's bot, models and voices; or why they cannot be had (and 保存 stays off). */
+async function loadRemoteBotEdit(botId) {
+  const far = state.botEditRemote;
+  let got = null;
+  try {
+    got = await api(remoteApi(botId), { quiet: true });
+  } catch (err) {
+    if (state.botEditRemote !== far) return;
+    // Gone there, or only the human's app may: say so. Anything else (off, an older Lamplit there): the note.
+    far.error = err.code === 'BOT_NOT_FOUND' || err.code === 'LOCAL_KEY_REQUIRED' ? err.message : `「${far.machine}」现在连不上，连上后再改`;
+    const box = $('botedit-abilities');
+    if (box) box.innerHTML = '';
+    const select = $('botedit-model');
+    if (select) select.innerHTML = '<option value="">—</option>';
+    setBotEditNote(far.error);
+    return;
+  }
+  if (state.botEditRemote !== far || !got?.bot) return;
+  far.bot = got.bot;
+  far.models = got.models;
+  far.tts = got.tts;
+  $('botedit-model').disabled = false;
+  $('botedit-trust').disabled = false;
+  renderBotModelSelect(far.bot, far);
+  renderBotVoiceSelect(far.bot, far.tts);
+  renderAbilities(far.bot);
+  $('botedit-save').disabled = false;
+}
+
 function closeBotEdit() {
   state.botEditingId = null;
+  state.botEditRemote = null;
   state.deleteArmed = false;
   $('botedit-sheet').classList.remove('open');
   $('botedit-sheet').setAttribute('aria-hidden', 'true');
@@ -188,7 +256,10 @@ function closeBotEdit() {
 }
 
 async function saveBotEdit() {
-  const bot = botById(state.botEditingId);
+  const far = state.botEditRemote;
+  // A bot on another machine is saved only over what was read from there (1.5.63), never over a guess.
+  if (far && (!far.bot || far.error)) { if (far.error) setBotEditNote(far.error); return; }
+  const bot = far ? far.bot : botById(state.botEditingId);
   if (!bot) return;
   const name = $('botedit-name-input').value.trim();
   const role = $('botedit-role-input').value.trim();
@@ -201,16 +272,21 @@ async function saveBotEdit() {
     const model = $('botedit-model')?.value || '';
     const voiceSec = $('botedit-voice-sec');
     const voiceId = voiceSec && !voiceSec.hidden ? ($('botedit-voice').value || '') : (bot.voice || '');
-    const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, { method: 'PATCH', body: { name, role, tools, policy, model, voice: voiceId } });
+    const res = await api(botApiUrl(bot.id), { method: 'PATCH', body: { name, role, tools, policy, model, voice: voiceId } });
     const updated = (res && res.bot) || { ...bot, name, role, tools, model, voice: voiceId, policy: { ...(bot.policy || {}), ...policy } };
     const index = state.bots.findIndex((b) => b.id === bot.id);
     if (index >= 0) state.bots[index] = { ...state.bots[index], ...updated };
+    if (far && state.botEditRemote === far) {
+      far.bot = { ...far.bot, ...updated };
+      patchRemoteRosterBot(bot.id, { name: updated.name, role: updated.role });
+      loadRoster({ fresh: true });
+    }
     renderBots();
     renderGroups();
     if (state.botId === bot.id && !isGroupMode()) {
       $('chat-title').textContent = name;
       $('chat-sub').textContent = role || '还没有设定职责';
-      renderChatAvatar(state.bots[index] || bot);
+      renderChatAvatar(state.bots[index] || botById(bot.id) || bot);
     }
     $('botedit-title').textContent = `管理助手 · ${name}`;
     setBotEditNote('');
@@ -226,7 +302,7 @@ async function saveBotEdit() {
 /** Two-step delete: arm on the first click, act on the second. */
 async function deleteBotFlow() {
   const bot = botById(state.botEditingId);
-  if (!bot) return;
+  if (!bot || isRemoteId(bot.id)) return; // stays on its own machine (1.5.63)
   if (bot.primary) { setBotEditNote('主助理不能删：先把另一个助手设为主助理，再删这个。'); return; }
   const button = $('botedit-delete');
   if (!state.deleteArmed) {
@@ -260,7 +336,7 @@ async function confirmDeleteBot(bot) {
 /** Make another bot the main assistant (the way to delete the one there was). */
 async function makePrimary() {
   const bot = botById(state.botEditingId);
-  if (!bot || bot.primary) return;
+  if (!bot || bot.primary || isRemoteId(bot.id)) return;
   try {
     await api(`/api/bots/${encodeURIComponent(bot.id)}/primary`, { method: 'POST' });
     state.bots = await api('/api/bots');

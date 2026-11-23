@@ -999,6 +999,14 @@ function remoteBotById(id) {
   if (!b) return null;
   return { id, name: b.name, role: b.role || '', primary: Boolean(b.primary), mainThere: Boolean(b.primary), preview: b.preview || null, ...(b.avatar ? { avatar: b.avatar } : {}), remote: { machine: far.machine, botId: far.botId, online: Boolean(m.online) } };
 }
+/** Saved on its machine from here (1.5.63, 管理助手): the list shows it now, before the next look there. */
+function patchRemoteRosterBot(id, fields) {
+  const far = remoteOf(id);
+  const m = far && (state.peerRoster || []).find((x) => x.machine === far.machine);
+  const b = m?.bots?.find((x) => x.id === far.botId);
+  if (!b) return;
+  for (const [k, v] of Object.entries(fields || {})) if (v !== undefined) b[k] = v;
+}
 
 /**
  * A group on another machine as the page draws it (1.5.43): its members as

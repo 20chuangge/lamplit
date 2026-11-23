@@ -249,6 +249,7 @@ async function main() {
     await stage('1.5.61: redesign step 5 - groups on top, a stable order kept on the hub, the first run, the settings home, 连接应用', async () => (await import('./smoke-step5-1561.mjs')).step5Checks({ check, readText }));
     await stage('1.5.62: the reply count, the other machines\' pace, 「以后都允许」 in 审批, this machine\'s cost, introductions not counted', async () => (await import('./smoke-fixes-1562.mjs')).fixes1562Checks({ check, readText }));
     await stage('1.5.63: introductions on another machine, the developer run, a pairing cookie per port, ports Windows keeps, the chat after a reload', async () => (await import('./smoke-fixes-1563.mjs')).fixes1563Checks({ check, readText, api, base }));
+    await stage('1.5.63: 管理助手 for a bot on another machine - read there, saved there, its picture, never a third machine', async () => (await import('./smoke-fixes-1563.mjs')).remoteEditChecks({ check, readText, api, base, rawFetch, startServerChild, stopProcess, seedHome }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -5043,7 +5044,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         botsSrc.includes("voice: String(raw.voice || '').trim().slice(0, 120),") && srvSrc.includes('async function voiceForBot(state, botId)')
         && srvSrc.includes('ttsVoice: body?.voice ? String(body.voice) : await voiceForBot(state, body?.botId)') && srvSrc.includes('speak: async (text, botId) =>')
         && feishuSrc.includes('await o.speak(text, to.botId)') && feishuSrc.includes('botId: id, texts: [], spoken, label')
-        && pageSrc.includes('function renderBotVoiceSelect(bot)') && pageSrc.includes('voice: voiceId } });') && pageSrc.includes('queueSpeech(text, speaker)') && pageSrc.includes('id="botedit-voice-try"'));
+        && pageSrc.includes('function renderBotVoiceSelect(bot, farTts = undefined)') && pageSrc.includes('voice: voiceId } });') && pageSrc.includes('queueSpeech(text, speaker)') && pageSrc.includes('id="botedit-voice-try"'));
       const setupSrc = await readText('../hub/setup-linux.sh');
       const remoteSrc = await readText('../src/remote.mjs');
       const clipSrc = await readText('../src/clipboard.mjs');

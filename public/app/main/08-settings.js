@@ -1016,15 +1016,10 @@ function othersWaitingLine(ownKey) {
   return others.some((item) => item.working && !item.needsYou && !item.asking) ? `${needs} 件事等你，其余都在正常跑` : `${needs} 件事等你`;
 }
 
-/**
- * The first look at what each chat is doing, before the page draws its first chat (1.5.63):
- * whether it is still at work decides 「试试这些」 and 「等你点头…」. Only the state; the
- * sidebar and the rest follow with loadAttention as before. An older hub: nothing.
- */
+/** What each chat is doing, before the first chat is drawn (1.5.63: 「试试这些」 / 「等你点头…」); only while loadAttention has not been here. */
 async function primeAttention() {
   try {
     const got = await api('/api/attention', { quiet: true });
-    // Still the empty start (above): loadAttention has not been here yet.
     if (got && typeof got === 'object' && !Object.keys(state.attention?.items || {}).length) state.attention = got;
   } catch { /* an older hub: drawn as before */ }
 }
@@ -1415,11 +1410,12 @@ function providerLabel(name) {
 
 /** The bot's model picker: default, then every extra model. */
 /** 朗读声音 in the bot panel: the speech service's voices, "默认" = the machine's choice. */
-function renderBotVoiceSelect(bot) {
+function renderBotVoiceSelect(bot, farTts = undefined) {
   const sec = $('botedit-voice-sec');
   const select = $('botedit-voice');
   if (!sec || !select) return;
-  const tts = voice.status?.tts || {};
+  // A bot on another machine (1.5.63): that machine's voices.
+  const tts = (farTts !== undefined ? farTts : voice.status?.tts) || {};
   sec.hidden = !tts.available;
   if (!tts.available) return;
   const voices = tts.voices || [];
@@ -1428,21 +1424,27 @@ function renderBotVoiceSelect(bot) {
   select.value = voices.some((x) => x.id === bot.voice) ? bot.voice : (voices.some((x) => x.id === tts.voice) ? tts.voice : voices[0]?.id || '');
 }
 
-function renderBotModelSelect(bot) {
+// far (1.5.63): a bot on another machine - {machine, models} as that machine has them, not this one's.
+function renderBotModelSelect(bot, far = null) {
   const select = $('botedit-model');
   if (!select) return;
   const fill = () => {
-    const list = state.models?.models || [];
-    select.innerHTML = `<option value="">${escapeHtml(defaultModelLabel())}</option>`
+    const list = (far ? far.models?.models : state.models?.models) || [];
+    const d = far ? far.models?.default : null;
+    const label = far ? (d && d.model ? `默认（${d.model}）` : '默认') : defaultModelLabel();
+    select.innerHTML = `<option value="">${escapeHtml(label)}</option>`
       + list.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(`${m.label} · ${providerLabel(m.provider)}${m.hasKey ? '' : '（缺密钥）'}`)}</option>`).join('');
     const known = !bot.model || list.some((m) => m.id === bot.model);
     select.value = known ? (bot.model || '') : '';
     $('botedit-model-note').textContent = !known
       ? '它原来的模型已被删除，现在用默认模型。'
-      : list.length ? '没选的话用这台机器的默认模型。' : '想要更多选择：设置 → 模型 → 其他模型。';
+      : far
+        ? (list.length ? `没选的话用「${far.machine}」的默认模型。` : `想要更多选择：在「${far.machine}」上 设置 → 模型 → 其他模型。`)
+        : list.length ? '没选的话用这台机器的默认模型。' : '想要更多选择：设置 → 模型 → 其他模型。';
   };
   fill();
-  Promise.all([ensureProviderOptions(), loadModels()]).then(fill).catch(() => {});
+  // The provider names are the same everywhere; that machine's model list came with its bot.
+  Promise.all([ensureProviderOptions(), far ? null : loadModels()]).then(fill).catch(() => {});
 }
 
 function renderModels() {

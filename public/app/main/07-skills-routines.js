@@ -350,7 +350,8 @@ async function loadMemory() {
    so the change stays as a local preview and a quiet note explains it.
    --------------------------------------------------------------------- */
 function currentAvatarBot() {
-  return state.bots.find((b) => b.id === state.avatarBotId) || null;
+  // A bot on another machine too (1.5.63): its face as the list has it, saved on its machine.
+  return state.bots.find((b) => b.id === state.avatarBotId) || (isRemoteId(state.avatarBotId) ? botById(state.avatarBotId) : null) || null;
 }
 
 function setAvatarNote(text) {
@@ -361,7 +362,7 @@ function setAvatarNote(text) {
 }
 
 function openAvatarCustomizer(botId) {
-  const bot = state.bots.find((b) => b.id === botId);
+  const bot = state.bots.find((b) => b.id === botId) || (isRemoteId(botId) ? botById(botId) : null);
   if (!bot) return;
   state.avatarBotId = botId;
   closeSettings();
@@ -372,7 +373,7 @@ function openAvatarCustomizer(botId) {
   $('avatar-scrim').classList.add('show');
   setAvatarNote('');
   renderCustomizer();
-  if (!state.bots.some((b) => b && b.avatar)) {
+  if (!isRemoteId(botId) && !state.bots.some((b) => b && b.avatar)) {
     setAvatarNote('这个版本的服务端还没提供头像接口（404），下面的改动只在当前页面生效。');
   }
 }
@@ -437,13 +438,30 @@ function renderCustomizer() {
   $('avatar-remove-btn').hidden = !a.hasImage;
 }
 
+/**
+ * A picture changed on another machine (1.5.63): this hub's copy of it is kept for
+ * ten minutes, so the browser fetches it anew (and keeps that), and this page
+ * draws it under a new address. -> the address to draw now.
+ */
+function freshRemoteAvatar(id) {
+  const far = remoteOf(id);
+  const plain = `/api/peers/${encodeURIComponent(far.machine)}/avatar/${encodeURIComponent(far.botId)}`;
+  fetch(plain, { cache: 'reload' }).catch(() => {});
+  return `${plain}?v=${Date.now()}`;
+}
+
 async function persistAvatar(bot, patch) {
   try {
-    const res = await api(`/api/bots/${encodeURIComponent(bot.id)}`, {
+    const res = await api(botApiUrl(bot.id), {
       method: 'PATCH',
       body: { avatar: patch },
     });
-    if (res && res.bot) {
+    // On its machine (1.5.63): the list keeps the face that machine now has.
+    if (res && res.bot && isRemoteId(bot.id)) {
+      patchRemoteRosterBot(bot.id, { avatar: { ...avatarOf(bot), ...(res.bot.avatar || {}) } });
+      renderBots();
+      if (state.botId === bot.id) renderChatAvatar(botById(bot.id));
+    } else if (res && res.bot) {
       const index = state.bots.findIndex((b) => b.id === bot.id);
       if (index >= 0) {
         const merged = { ...state.bots[index], ...res.bot };
@@ -537,7 +555,7 @@ async function uploadAvatarFile(file) {
     const blob = await downscaleImage(file, 512);
     let res;
     try {
-      res = await fetch(`/api/bots/${encodeURIComponent(bot.id)}/avatar`, {
+      res = await fetch(botApiUrl(bot.id, '/avatar'), {
         method: 'POST',
         headers: { 'content-type': blob.type || file.type },
         body: blob,
@@ -559,7 +577,7 @@ async function uploadAvatarFile(file) {
     }
     setAvatarLocal(bot, {
       hasImage: true,
-      imageUrl: `/api/bots/${encodeURIComponent(bot.id)}/avatar?v=${Date.now()}`,
+      imageUrl: isRemoteId(bot.id) ? freshRemoteAvatar(bot.id) : `/api/bots/${encodeURIComponent(bot.id)}/avatar?v=${Date.now()}`,
     });
     renderCustomizer();
     setAvatarNote('');
@@ -576,13 +594,14 @@ async function removeAvatarImage() {
   setAvatarLocal(bot, { hasImage: false, imageUrl: '' });
   renderCustomizer();
   try {
-    const res = await fetch(`/api/bots/${encodeURIComponent(bot.id)}/avatar`, { method: 'DELETE' });
+    const res = await fetch(botApiUrl(bot.id, '/avatar'), { method: 'DELETE' });
     if (res.status === 404) {
       setAvatarNote('服务端还没头像接口（404）：这里只是本地预览。');
       return;
     }
     if (res.status === 401) { enterAuth('这台设备的授权已失效，请重新配对。'); return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (isRemoteId(bot.id)) freshRemoteAvatar(bot.id);
     toast('已移除头像图片');
   } catch (err) {
     setAvatarLocal(bot, before);
@@ -597,7 +616,8 @@ async function resetAvatar() {
   setAvatarLocal(bot, { ...AVATAR_DEFAULT, hasImage: false, imageUrl: '' });
   renderCustomizer();
   try {
-    await fetch(`/api/bots/${encodeURIComponent(bot.id)}/avatar`, { method: 'DELETE' });
+    await fetch(botApiUrl(bot.id, '/avatar'), { method: 'DELETE' });
+    if (isRemoteId(bot.id)) freshRemoteAvatar(bot.id);
   } catch { /* the PATCH below still restores shape/colour */ }
   const result = await persistAvatar(bot, { ...AVATAR_DEFAULT });
   if (result === 'failed') {

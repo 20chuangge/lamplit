@@ -96,7 +96,7 @@ import { createPhoneLink, makePhoneExec } from './phonelink.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
 import { resolveRemoteMember, isRemoteMember, askPeerBot } from './crossmachine.mjs';
-import { createRoster, cleanBotId } from './roster.mjs';
+import { createRoster, cleanBotId, safeAvatar } from './roster.mjs';
 import { createXAccount, X_DEVELOPER_URL } from './xpost.mjs';
 import { createMachineNotes, suggestNote, machinesPrompt } from './machinenotes.mjs';
 import { readOrder, writeOrder } from './rosterorder.mjs';
@@ -5086,6 +5086,110 @@ route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/desktop$/, a
     const desktop = out?.desktop && typeof out.desktop === 'object' ? { ...out.desktop, url: remoteViewerUrl(out.desktop.url, peer.name, botId) } : { running: false, url: null };
     return { botId: `${botId}@${peer.name}`, machine: peer.name, support: out?.support || null, desktop };
   } catch (err) { throw peerFailure(err, peer); }
+});
+
+// --- 管理助手 for a bot on another machine (1.5.63) ------------------------------
+//   GET    /api/peers/:m/bots/:id         -> {machine, bot, models, tts}: the bot as that machine
+//          has it (tools, policy, model, voice), and that machine's models and voices
+//   PATCH  /api/peers/:m/bots/:id         {name?, role?, tools?, policy?, model?, voice?, avatar?}
+//          -> {bot}: the same body as a save here, applied (and audited) there
+//   POST   /api/peers/:m/bots/:id/avatar  raw image bytes (same limits as here) -> {ok, imageUrl}
+//   DELETE /api/peers/:m/bots/:id/avatar  -> {ok}
+// Only the human (isAuthorityRequest), only a paired machine (exactPeer), never a
+// call another hub passed on (remoteTarget): no hop to a third machine. Deleting
+// it or making it the main assistant there is not passed on.
+const PEER_BOT_FIELDS = ['name', 'role', 'tools', 'policy', 'model', 'voice', 'avatar'];
+const farStr = (v, n) => String(v ?? '').slice(0, n);
+/** That machine's bot as this page may draw it: its own fields, the id as "id@machine", the picture through this hub. */
+function farBot(raw, machine) {
+  const b = raw && typeof raw === 'object' ? raw : {};
+  const policy = b.policy && typeof b.policy === 'object' ? b.policy : {};
+  const avatar = safeAvatar(b.avatar, machine, b.id);
+  return {
+    id: `${farStr(b.id, 80)}@${machine}`,
+    name: farStr(b.name || b.id, 80),
+    role: farStr(b.role, 200),
+    primary: Boolean(b.primary),
+    tools: (Array.isArray(b.tools) ? b.tools : []).map((t) => farStr(t, 60)).slice(0, 200),
+    policy: {
+      autoApproveMedium: Boolean(policy.autoApproveMedium),
+      allowed: (Array.isArray(policy.allowed) ? policy.allowed : []).slice(0, 200).map((a) => ({ ...a, key: farStr(a?.key, 300), label: farStr(a?.label, 300) })),
+      phoneGrants: (Array.isArray(policy.phoneGrants) ? policy.phoneGrants : []).slice(0, 50).map((g) => ({ app: farStr(g?.app, 60), kind: farStr(g?.kind, 20), until: farStr(g?.until, 40), at: farStr(g?.at, 40) })),
+    },
+    model: farStr(b.model, 80),
+    voice: farStr(b.voice, 80),
+    ...(avatar ? { avatar } : {}),
+    remote: { machine, botId: farStr(b.id, 80), online: true },
+  };
+}
+function farModels(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const d = raw.default && typeof raw.default === 'object' ? raw.default : null;
+  return {
+    default: d ? { provider: farStr(d.provider, 40), model: farStr(d.model, 120) } : null,
+    models: (Array.isArray(raw.models) ? raw.models : []).slice(0, 100).map((m) => ({ id: farStr(m?.id, 80), label: farStr(m?.label, 80), provider: farStr(m?.provider, 40), model: farStr(m?.model, 120), hasKey: Boolean(m?.hasKey) })),
+  };
+}
+function farTts(raw) {
+  const t = raw?.tts;
+  if (!t || typeof t !== 'object') return null;
+  return { available: Boolean(t.available), voice: farStr(t.voice, 80), voices: (Array.isArray(t.voices) ? t.voices : []).slice(0, 100).map((v) => ({ id: farStr(v?.id, 80), label: farStr(v?.label, 80) })) };
+}
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  let got;
+  try { got = await passOn(state, peer, 'GET', `/api/bots/${encodeURIComponent(botId)}`, { timeoutMs: 10000 }); } catch (err) { throw peerFailure(err, peer); }
+  if (!got?.bot || got.bot.id !== botId) throw httpError(502, 'PEER_BAD_ANSWER', `「${peer.name}」没有回这个助手的设置`);
+  // Its machine's choices, not this one's; an older machine without them: the drawer says what it can.
+  const [models, voiceStatus] = await Promise.all([
+    passOn(state, peer, 'GET', '/api/models', { timeoutMs: 8000 }).catch(() => null),
+    passOn(state, peer, 'GET', '/api/voice', { timeoutMs: 8000 }).catch(() => null),
+  ]);
+  return { machine: peer.name, bot: farBot(got.bot, peer.name), models: farModels(models), tts: farTts(voiceStatus) };
+});
+
+route('PATCH', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)$/, async (req, _res, { params, body, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  const patch = {};
+  for (const k of PEER_BOT_FIELDS) if (body?.[k] !== undefined) patch[k] = body[k];
+  if (!Object.keys(patch).length) throw httpError(400, 'NOTHING_TO_SAVE', `body needs one of: ${PEER_BOT_FIELDS.join(', ')}`);
+  let out;
+  try { out = await passOn(state, peer, 'PATCH', `/api/bots/${encodeURIComponent(botId)}`, { body: patch }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.bot.update', machine: peer.name, botId, fields: Object.keys(patch) });
+  // The sidebar shows the new name / face on its next look, not the one kept for 15 s.
+  state.roster.list({ fresh: true }).catch(() => {});
+  return { bot: farBot(out?.bot, peer.name) };
+});
+
+route(
+  'POST',
+  /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/avatar$/,
+  async (req, _res, { params, state }) => {
+    const { peer, botId } = remoteTarget(req, state, params);
+    // The same checks as a picture for a bot here (POST /api/bots/:id/avatar), before anything goes out.
+    const declared = avatarMimeFromHeader(req.headers['content-type']);
+    if (!declared) throw httpError(400, 'AVATAR_BAD_TYPE', `content-type must be one of: ${AVATAR_MIME_TYPES.join(', ')}`);
+    const bytes = await readRawBody(req, AVATAR_MAX_BYTES, { code: 'AVATAR_TOO_LARGE', message: `an avatar image must be ${AVATAR_MAX_BYTES / (1024 * 1024)} MB or smaller` });
+    const sniffed = sniffImageType(bytes);
+    if (!sniffed) throw httpError(400, 'AVATAR_BAD_TYPE', 'body is not a PNG, JPEG or WebP image');
+    if (sniffed !== declared) throw httpError(400, 'AVATAR_BAD_TYPE', `content-type says ${declared} but the bytes look like ${sniffed}`);
+    try {
+      await passOn(state, peer, 'POST', `/api/bots/${encodeURIComponent(botId)}/avatar`, { raw: bytes, headers: { 'content-type': sniffed }, timeoutMs: 20000 });
+    } catch (err) { throw peerFailure(err, peer); }
+    await audit({ kind: 'peer.bot.update', machine: peer.name, botId, fields: ['avatarImage'] });
+    state.roster.list({ fresh: true }).catch(() => {});
+    return { ok: true, imageUrl: `/api/peers/${encodeURIComponent(peer.name)}/avatar/${encodeURIComponent(botId)}` };
+  },
+  { rawBody: true },
+);
+
+route('DELETE', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/avatar$/, async (req, _res, { params, state }) => {
+  const { peer, botId } = remoteTarget(req, state, params);
+  try { await passOn(state, peer, 'DELETE', `/api/bots/${encodeURIComponent(botId)}/avatar`); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.bot.update', machine: peer.name, botId, fields: ['avatarImage'] });
+  state.roster.list({ fresh: true }).catch(() => {});
+  return { ok: true };
 });
 
 // --- another machine's groups (1.5.43): the same as its bots, by the human only ---------

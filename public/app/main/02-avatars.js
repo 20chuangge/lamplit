@@ -177,6 +177,8 @@ function avatarOf(bot) {
 function setAvatarLocal(bot, patch) {
   if (!bot) return;
   bot.avatar = { ...avatarOf(bot), ...patch };
+  // A bot on another machine is drawn from the list (1.5.63): the list keeps it.
+  if (isRemoteId(bot.id)) patchRemoteRosterBot(bot.id, { avatar: bot.avatar });
   renderBots();
   const current = botById(state.botId);
   if (current && current.id === bot.id) renderChatAvatar(current);

@@ -47,7 +47,8 @@ jobs:
       # cannot reach the hub's windows, clipboard or desktop, and removes the user. Only here: a
       # throwaway runner where the job is an administrator (never on someone's own computer).
       - name: The bots' own desktop, with a throwaway account (Windows)
-        if: runner.os == 'Windows'
+        # Even when the smoke step above failed: this result is wanted on its own.
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         env:
           LAMPLIT_CI_RUNNER_ACCOUNT: '1'
           SMOKE_ONLY: '1\.5\.63: security - the bots'

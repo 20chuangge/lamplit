@@ -195,12 +195,12 @@ export async function runnerDesktopChecks({ check, skip, readText }) {
     const target = compile(csc, path.join(HERE, 'runner-target.cs'), path.join(dir, 'target.exe'));
     const sysEnv = { SystemRoot: process.env.SystemRoot, windir: process.env.windir || process.env.SystemRoot, ComSpec: process.env.ComSpec, PATH: process.env.PATH, PATHEXT: process.env.PATHEXT };
     const payload = (command, env = {}, user = 'me', password = '') => W.helperPayload({ user, password, cwd: dir, command, env: { ...sysEnv, ...env } });
-    const r3 = await runExe(helper, ['--as-me', '--say-where'], payload('echo 灯窗 中文 & exit /b 7'));
-    // The same command run the plain way: byte for byte the same output (cmd's echo writes the ANSI code page; tools.mjs decodes it).
-    const direct = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"chcp 65001>nul & echo 灯窗 中文 & exit /b 7"'], { windowsVerbatimArguments: true, windowsHide: true });
+    const r3 = await runExe(helper, ['--as-me', '--say-where'], payload('echo lamplit-rd3 灯窗 中文 & exit /b 7'));
+    // The same command run the plain way: byte for byte the same output, whatever the code page (cmd's echo writes the ANSI one, which may turn the Chinese into '?'; tools.mjs decodes it). The ASCII marker is there on any locale.
+    const direct = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', '"chcp 65001>nul & echo lamplit-rd3 灯窗 中文 & exit /b 7"'], { windowsVerbatimArguments: true, windowsHide: true });
     const where = ((/^LAMPLIT_RUNNER_ON (.+)$/m.exec(r3.err) || [])[1] || '').trim();
     check('RD3 as this account (--as-me) on the bots\' desktop: output (Chinese too) and the exit code come back as before; it ran on lamplit-bots-* outside WinSta0',
-      r3.code === 7 && r3.raw.equals(direct.stdout) && direct.stdout.length > 8 && /^[^\\]+\\lamplit-bots-[0-9a-f]{16}$/.test(where) && !/^winsta0\\/i.test(where),
+      r3.code === 7 && r3.raw.equals(direct.stdout) && r3.raw.includes('lamplit-rd3') && /^[^\\]+\\lamplit-bots-[0-9a-f]{16}$/.test(where) && !/^winsta0\\/i.test(where),
       JSON.stringify({ code: r3.code, out: r3.raw.toString('hex'), direct: direct.stdout.toString('hex'), where }));
     const r3b = await runExe(helper, ['--as-me', '--say-where'], payload('exit /b 0'));
     check('RD3 the same desktop for the next command (a program a bot left open is still there for desktop_ui)', r3b.err.includes(`LAMPLIT_RUNNER_ON ${where}`), r3b.err);

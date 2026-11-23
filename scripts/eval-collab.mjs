@@ -21,12 +21,16 @@
  *
  *   --peer-drop cut|pause   scenario 3 on test hubs: switch the other hub off and on (cut, the --fake
  *               default) or pause the first hub's link to it (pause: what a run on the human's machines does)
- *   --keep      leave the test hubs' folders (and an attached hub's run folder) for a look
+ *   --keep      leave the test hubs' folders (and on an attached hub what the bots made or changed) for a look
+ *   --allow-leftovers  run a scenario on an attached hub even when an earlier run's files are in its workspace
+ *               (without it the scenario stops: they would be taken for this run's work)
  *   --verbose   print every model call and human step
  *   --out <dir> where the report goes (default eval-results/, gitignored)
  *
  * The bots are 「评测-」 bots made fresh per scenario (eval: true, apart on the cost page) and
- * deleted afterwards with their group. The mock sites listen on 127.0.0.1 only (EVAL_MOCK_HOST to
+ * deleted afterwards with their group. On a hub you point it at, a real model works in 评测-协作/<run>/<scenario>/;
+ * the workspace is copied before each scenario and put back after it (new files removed, changed ones
+ * restored, all of it whatever tool did it), with what was taken out kept in the system temp folder. The mock sites listen on 127.0.0.1 only (EVAL_MOCK_HOST to
  * change); a hub must allow private addresses (ALLOW_PRIVATE=1) for its bots to reach them - the
  * test hubs do. Nothing here ever touches a real platform.
  */
@@ -107,7 +111,7 @@ try {
   } else {
     for (const sc of scenarios) {
       process.stdout.write(`- ${sc.id} ${sc.title} … `);
-      const r = await runScenario(sc, { mode, plant, mock, real, appDir: appDir || undefined, log, keep: flag('--keep'), peerDrop: opt('--peer-drop'), runId: run.at.replace(/[-:.TZ]/g, '').slice(0, 14) });
+      const r = await runScenario(sc, { mode, plant, mock, real, appDir: appDir || undefined, log, keep: flag('--keep'), allowLeftovers: flag('--allow-leftovers'), peerDrop: opt('--peer-drop'), runId: run.at.replace(/[-:.TZ]/g, '').slice(0, 14) });
       mock.reset();
       run.results.push(r);
       const bad = [...r.checks, ...r.extra].filter((c) => !c.ok);

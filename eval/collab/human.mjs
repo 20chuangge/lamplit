@@ -124,8 +124,11 @@ export function makeHuman(run) {
  * on: fires on a recorded event (checked as they arrive); at: ms after the start (also the fallback of
  * an `on` step that never fired, when `orAt` is set); after: once another step has run (+delay).
  * Approval cards no step takes are answered by policy(card) -> 'approve' | 'deny' | null, after cardDelay.
+ * settleMs: after the human's last word the hubs get this long to take it up, and any turn it started must end,
+ * before done() may end the run (11-23 real run: done() was already true while the human's answer to the
+ * video mark was on its way; the run ended 0.2 s after it, and what the answer would have started never ran).
  */
-export async function runTimeline(h, { steps, policy, cardDelay = 1000, done, timeoutMs, speed = 1, quietMs = 0 }) {
+export async function runTimeline(h, { steps, policy, cardDelay = 1000, done, timeoutMs, speed = 1, quietMs = 0, settleMs = 0 }) {
   let lastCount = -1;
   let lastEventAt = Date.now();
   let quiet = false;
@@ -182,7 +185,8 @@ export async function runTimeline(h, { steps, policy, cardDelay = 1000, done, ti
     }
     let finished = false;
     try { finished = Boolean(await done(h)); } catch { finished = false; }
-    if (finished && !busy.size) break;
+    const spoke = run.trace.human.reduce((m, x) => Math.max(m, x.at || 0), 0);
+    if (finished && !busy.size && now - spoke >= settleMs && !openTurns(events, spoke)) break;
     // Nothing more will happen: every step that must run ran, no turn is open, no card waits, and the hubs
     // have been quiet a while (a run whose board never came - the scenario's checks say what is missing).
     if (events.length !== lastCount) { lastCount = events.length; lastEventAt = now; }
@@ -197,11 +201,11 @@ export async function runTimeline(h, { steps, policy, cardDelay = 1000, done, ti
   return { errors, quiet, fired: Object.fromEntries(fired), timedOut: errors.some((e) => e.startsWith('时间到了')) };
 }
 
-/** A turn started and not ended (a hub that went down ended its own). */
-function openTurns(events) {
+/** A turn started (at or after `since`) and not ended (a hub that went down ended its own). */
+function openTurns(events, since = 0) {
   const open = new Map();
   for (const e of events) {
-    if (e.type === 'turn.start' && e.turnId) open.set(`${e.hub}|${e.turnId}`, e.hub);
+    if (e.type === 'turn.start' && e.turnId && (e.at || 0) >= since) open.set(`${e.hub}|${e.turnId}`, e.hub);
     else if (e.type === 'turn.end' && e.turnId) open.delete(`${e.hub}|${e.turnId}`);
   }
   return open.size > 0;

@@ -69,7 +69,41 @@ function outcome(id, trace, { posts = [], applies = [], made = [] }) {
     ...applies.filter((j) => !recs.some((r) => r.kind === 'apply' && r.job === j)).map((j) => `${j} 没投`),
     ...made.filter((m) => !found(m)).map((m) => `没找到${m.what}（新文件和回复里都没有）`),
   ];
-  return { id, title: '人要的活做成了', ok: !missing.length, evidence: missing.length ? [{ at: trace.t1, text: missing.join('；') }] : [] };
+  const why = missing.length && (posts.length || applies.length) ? whyNotSent(trace) : [];
+  return { id, title: '人要的活做成了', ok: !missing.length, evidence: missing.length ? [{ at: trace.t1, text: missing.join('；') }, ...why.map((text) => ({ at: trace.t1, text }))] : [] };
+}
+
+/**
+ * Why something was not sent, from what was recorded: the board at the end, the questions still open, the
+ * error codes the bots got back (HUMAN_DECISION_PENDING and the like), and how the run ended.
+ */
+export function whyNotSent(trace) {
+  const out = [];
+  const ours = new Set((trace.bots || []).map((b) => b.id));
+  const nameOf = (id) => (trace.bots || []).find((b) => b.id === id)?.name || id;
+  const plans = (trace.events || []).filter((e) => e.type === 'group.plan' && e.groupId === trace.groupId);
+  const plan = plans[plans.length - 1]?.plan;
+  if (plan) {
+    const tasks = (plan.tasks || []).map((t) => `${t.title}【${t.status}】${t.question ? `（问人：${String(t.question).slice(0, 60)}${t.answer ? `；人答：${String(t.answer).slice(0, 30)}` : '；没答'}）` : ''}`);
+    const at = Math.round(((plans[plans.length - 1].at || trace.t1) - trace.t0) / 1000);
+    out.push(`任务板最后（${at} 秒）：${plan.status}；${tasks.join('，') || '没有项'}`);
+  } else out.push('任务板：没有');
+  const codes = new Map();
+  for (const e of trace.events || []) {
+    if (e.type !== 'tool.result' || !ours.has(e.botId)) continue;
+    const code = e.result?.error?.code || (typeof e.result === 'string' && /"code"\s*:\s*"([A-Z_]+)"/.exec(e.result)?.[1]);
+    if (!code) continue;
+    const key = `${nameOf(e.botId)} · ${e.name} · ${code}`;
+    const row = codes.get(key) || { n: 0, turns: new Set(), at: e.at };
+    row.n += 1;
+    if (e.turnId) row.turns.add(e.turnId);
+    codes.set(key, row);
+  }
+  if (codes.size) out.push(`工具报错：${[...codes.entries()].map(([k, v]) => `${k} ×${v.n}（${Math.round((v.at - trace.t0) / 1000)} 秒起，回合 ${[...v.turns].slice(0, 3).join('、')}）`).join('；')}`);
+  const lastWord = (trace.human || []).reduce((m, x) => Math.max(m, x.at || 0), 0);
+  const how = trace.timedOut ? '到时间了' : trace.quiet ? '一直没动静' : '任务板做完了';
+  out.push(`怎么结束的：${how}；人最后一次说话后 ${Math.round((trace.t1 - lastWord) / 1000)} 秒结束`);
+  return out;
 }
 
 /** How the scripted human answers cards no step takes: yes to work in the workspace and on the mock sites. */
@@ -168,6 +202,8 @@ const s1 = {
   title: '发视频：文件夹上传、三个平台、扫码登录、审批、视频标记、直接跟成员说「乙站不发」',
   from: '11-23 内容组：主理人在群里用 bot_message 交活，没回话也没有任务板，发布开了第二个回合；另一项替人选了视频标记就发了；一篇弹了两张卡；人在单聊里说的话主理人不知道',
   hubs: ['A'],
+  // Words only this scenario's material has: a file with them from an earlier run stops the scenario.
+  marks: ['桂花拿铁', '甲站', '丙站'],
   bots: (mode) => [
     { short: '主理人', hub: 'A', coordinator: true, role: '内容组协调者：把人的要求拆给成员，盯进度，最后汇总给人', persona: '始终用简体中文。人交代的事拆成任务交给成员；不替人做决定。', tools: [...FILES, 'bot_message'] },
     { short: '文案', hub: 'A', role: '文案：写标题、简介和正文', persona: '始终用简体中文。只写被要求的东西。', tools: tools(mode) },
@@ -243,6 +279,7 @@ const s2 = {
   title: '求职：筛岗、按岗位改简历、投递（每份投之前要人批）',
   from: '求职那组平时做的事（筛岗、改简历、投递）：投递和发帖一样是发出去的事，每份要人点头，人拒了的不能投',
   hubs: ['A'],
+  marks: ['星河科技', '云栈数据', '木棉医疗', '评测用户'],
   bots: (mode) => [
     { short: '主理人', hub: 'A', coordinator: true, role: '求职组协调者：拆活、盯进度、汇总', persona: '始终用简体中文。', tools: FILES },
     { short: '求职', hub: 'A', trusted: true, role: '求职：看招聘板、筛岗位、投递；每一份投之前先给人看', persona: '始终用简体中文。投递是发出去的事：每一份都先用 post_draft 给人看，批了才投；人拒了的不投。', tools: tools(mode, { web: true, post: true, ask: true }) },
@@ -317,6 +354,7 @@ const s3 = {
   title: '跨机器：协调者在一台，成员在另一台；做到一半那台掉线又回来',
   from: '11-23：别的机器上的群，成员显示成 bot-xxxx；另一台中途断线又回来，是加的压力',
   hubs: ['A', 'B'],
+  marks: ['三期视频', '三期口播'],
   bots: (mode) => [
     { short: '主理人', hub: 'A', coordinator: true, role: '协调者：拆活给另一台机器上的成员，盯进度，汇总', persona: '始终用简体中文。', tools: FILES },
     { short: '选题', hub: 'B', role: '选题：出视频选题', persona: '始终用简体中文。', tools: tools(mode) },
@@ -367,6 +405,7 @@ const s4 = {
   title: '连发三条，再在任务板跑着时补一个附件',
   from: '11-23：16 秒里连发三条（带文件、又带文件、一句要求），主理人按第一条就开工；任务板跑着时补发的封面给了碰巧在忙的成员',
   hubs: ['A'],
+  marks: ['秋季新品'],
   bots: (mode) => [
     { short: '主理人', hub: 'A', coordinator: true, role: '协调者：拆活、盯进度、汇总；人中途补充的要转给做那一项的成员', persona: '始终用简体中文。', tools: FILES },
     { short: '文案', hub: 'A', role: '文案：写海报上的字', persona: '始终用简体中文。', tools: tools(mode) },
@@ -435,6 +474,7 @@ const s5 = {
   title: '人直接跟成员说「丙站今天先别发」，协调者不能推翻',
   from: '11-23：人在发布员的单聊里说的话，主理人不知道',
   hubs: ['A'],
+  marks: ['周末露营清单', '丙站'],
   bots: (mode) => [
     { short: '主理人', hub: 'A', coordinator: true, role: '协调者：拆活、盯进度、汇总', persona: '始终用简体中文。', tools: FILES },
     { short: '文案', hub: 'A', role: '文案：按平台改稿', persona: '始终用简体中文。', tools: tools(mode) },
@@ -480,39 +520,38 @@ const s5 = {
 // ============================================================================================
 // 6. A long task past the 150-step auto-continue, with a hub restart in the middle.
 // ============================================================================================
-// The material is a chain: each file names the next one (random names), so it can only be read one by one -
-// a real model cannot batch the reads or split it into parallel tasks (11-23 real run: the coordinator split
-// 80 files into 4 tasks of 20 and no turn came near 150 steps). 160 links take at least 160 steps.
-// The fake model writes one summary a step (180 steps).
+// The material is a chain of pages on the mock site: each page shows the next one's address, a random code
+// only that page has. A real model can neither list them nor open several at once: one page, then the next
+// (11-23 real runs: 80 files split into 4 tasks; then a chain of files walked in 25 steps, since the folder
+// listing gave every name away). In a browser a page is two steps (open, read): 160 pages are past 320 steps.
 const ITEMS = 180;
 const REAL_ITEMS = 160;
 const itemsOf = (mode) => (mode === 'real' ? REAL_ITEMS : ITEMS);
-const linkName = (i) => `${(((i * 2654435761) >>> 0) % 0xffffff).toString(36).padStart(5, '0')}.txt`;
 const s6 = {
   id: 's6-long',
   title: '长任务：超过 150 步自动接着做，中途 hub 重启',
   from: '11-17：任务板上到了步数上限，说「我接着做」却没做成；中途重启是加的压力',
   hubs: ['A'],
+  // The chain is new each run (random codes): nothing an earlier run left can stand in for it.
+  marks: [],
   bots: (mode) => [
     { short: '主理人', hub: 'A', coordinator: true, role: '协调者：拆活、盯进度、汇总', persona: '始终用简体中文。', tools: FILES },
-    // browser_click puts it on the 150-step budget, as a bot that works a browser.
-    { short: '整理', hub: 'A', role: '整理：逐个读资料写摘要', persona: '始终用简体中文。一个文件写一个摘要文件，同名 .txt。', tools: [...FILES, ...(mode === 'real' ? [] : ['browser_click'])] },
+    // A browser (browser_click) puts it on the 150-step budget.
+    // trusted: reading a page is not a card each time (a real browser's open and read are low risk anyway).
+    { short: '整理', hub: 'A', trusted: true, role: '整理：一页一页读资料，每页写摘要', persona: '始终用简体中文。一页写一个摘要文件，用这一页的编号做文件名。', tools: tools(mode, { web: true }) },
   ],
   expect: { maxDeliverables: ITEMS + 5 },
   timeline: (env) => [
     { id: 'start', at: 0, do: async (h) => {
       const n = itemsOf(env.mode);
-      const names = Array.from({ length: n }, (_, i) => linkName(i + 1));
+      const chain = h.run.mock.chain(n);
       h.run.trace.items = n;
-      h.run.trace.itemNames = names;
-      const files = { '开始.txt': `第一个文件：${names[0]}` };
-      names.forEach((name, i) => { files[name] = `第 ${i + 1} 条资料：内容 ${(i + 1) * 7}。\n下一个文件：${names[i + 1] || '没有了，这是最后一个'}`; });
-      const folder = await h.uploadFolder('资料', files);
-      await h.group(`资料文件夹里的文件是一条链：从 开始.txt 读起，每个文件末尾写着下一个文件名，一直读到最后一个。每个读一遍写一行摘要，存成 交付/摘要/<同名>.txt，一个都别漏。交给整理一个人从头做到尾。`, { attachments: [folder], step: 'start' });
+      h.run.trace.itemNames = chain.names;
+      await h.group(`资料在这个网页上，是一条链：从 ${chain.start} 开始，一页一页往下翻，每页末尾写着下一页的地址，一直翻到最后一页。每页读一遍写一行摘要，存成 交付/摘要/<这一页的编号>.txt，一页都别漏。交给整理一个人从头做到尾。`, { step: 'start' });
     } },
     // The restart needs a hub this run started; on one it was pointed at, the step says so and is skipped.
     // optional: on a hub the run did not start it never runs (done does not wait for it there).
-    { id: 'restart', optional: true, on: (e, h) => e.type === 'tool.result' && e.botName === '评测-整理' && h.run.trace.events.filter((x) => x.type === 'tool.result' && x.botName === '评测-整理').length >= (env.mode === 'real' ? 60 : 160), orAt: 60000, orAtReal: 900000, do: async (h) => {
+    { id: 'restart', optional: true, on: (e, h) => e.type === 'tool.result' && e.botName === '评测-整理' && h.run.trace.events.filter((x) => x.type === 'tool.result' && x.botName === '评测-整理').length >= (env.mode === 'real' ? 120 : 160), orAt: 60000, orAtReal: 900000, do: async (h) => {
       if (!h.run.hubs.A.restart) {
         h.run.trace.restartSkipped = true;
         h.run.trace.human.push({ at: Date.now(), kind: 'skip', ref: '重启（这里不测）', step: 'restart' });
@@ -524,17 +563,30 @@ const s6 = {
   policy: carefulHuman,
   done: (h) => boardFinished(h) && (stepsRan(h, 'restart') || !h.run.hubs.A.restart),
   extra: (trace) => {
-    const want = new Set(trace.itemNames || []);
+    const names = trace.itemNames || [];
+    const want = new Set(names.map((x) => `${x}.txt`));
     const made = new Set((trace.files || []).filter((f) => f.mtime >= trace.t0 && !/^uploads\//.test(f.path) && want.has(f.path.split('/').pop())).map((f) => f.path.split('/').pop()));
-    const n = trace.items || ITEMS;
+    const read = new Set((trace.posts || []).filter((r) => r.kind === 'chain').map((r) => r.name));
+    const n = trace.items || names.length;
     const restart = trace.restarts[0];
     const after = restart ? trace.events.some((e) => e.type === 'tool.result' && e.botName === '评测-整理' && e.at > restart.at) : false;
-    const long = trace.events.some((e) => e.type === 'turn.end' && e.botName === '评测-整理' && (e.status === 'max_steps' || Number(e.steps) >= 150));
+    // The step limit: a turn of 整理 cut off there (or at 150 steps), and then another turn of it.
+    const ends = trace.events.filter((e) => e.type === 'turn.end' && e.botName === '评测-整理' && !e.kickoff && !e.aside);
+    const cut = ends.find((e) => e.status === 'max_steps' || Number(e.steps) >= 150);
+    const goesOn = cut && trace.events.some((e) => e.type === 'turn.start' && e.botName === '评测-整理' && e.at > cut.at);
+    const most = ends.reduce((m, e) => Math.max(m, Number(e.steps) || 0), 0);
+    const title = '走过了 150 步的自动接着做';
+    const s6b = cut
+      ? { id: 'S6-b', title, ok: Boolean(goesOn), evidence: goesOn ? [] : [{ at: cut.at, text: `到了 ${Number(cut.steps) || 150} 步停下（${cut.status || ''}），没有接着做` }] }
+      // Never at the limit and all done: the limit was not reached, so it was not tested (not a pass, not a fail).
+      : made.size === n
+        ? { id: 'S6-b', title, ok: true, skipped: true, evidence: [], note: `没测到：最长一个回合 ${most} 步，没到 150 步就做完了` }
+        : { id: 'S6-b', title, ok: false, evidence: [{ at: trace.t1, text: `没做完（${made.size}/${n}），也没有一个回合到 150 步：最长 ${most} 步` }] };
     return [
-      { id: 'S6-a', title: `${n} 个摘要一个不少`, ok: made.size === n, evidence: made.size === n ? [] : [{ at: trace.t1, text: `只有 ${made.size} 个` }] },
-      { id: 'S6-b', title: '走过了 150 步的自动接着做', ok: long, evidence: long ? [] : [{ at: trace.t1, text: '没有一个回合到 150 步' }] },
+      { id: 'S6-a', title: `${n} 页的摘要一个不少`, ok: made.size === n, evidence: made.size === n ? [] : [{ at: trace.t1, text: `只有 ${made.size} 个摘要；翻过 ${read.size} 页` }], note: `翻过 ${read.size} 页` },
+      s6b,
       trace.restartSkipped || trace.canRestart === false
-        ? { id: 'S6-c', title: '重启以后接着做下去了', ok: true, evidence: [], note: '这里没测（不是测试 hub）' }
+        ? { id: 'S6-c', title: '重启以后接着做下去了', ok: true, skipped: true, evidence: [], note: '这里没测（不是测试 hub）' }
         : { id: 'S6-c', title: '重启以后接着做下去了', ok: Boolean(restart) && after, evidence: restart && after ? [] : [{ at: restart?.at || trace.t1, text: restart ? '重启以后没有再做一步' : '没重启' }] },
     ];
   },
@@ -543,18 +595,27 @@ const s6 = {
     if (c) return c;
     if (ctx.who === '主理人') {
       if (ctx.kind === 'summary') return say(honestSummary(ctx));
-      return call('group_plan', { tasks: [{ title: `${ITEMS} 个文件写摘要`, owner: '评测-整理', brief: `资料在 ${uploadsIn(ctx.last)[0] || 'uploads'}，从 开始.txt 顺着读，每个写 交付/摘要/<同名>.txt`, deliverable: '交付/摘要/' }] });
+      const start = /https?:\/\/\S+?\/chain\/start/.exec(ctx.last)?.[0] || `${env.mock.url}/chain/start`;
+      return call('group_plan', { tasks: [{ title: `${ITEMS} 页资料写摘要`, owner: '评测-整理', brief: `从 ${start} 开始一页一页翻，每页写 交付/摘要/<编号>.txt`, deliverable: '交付/摘要/' }] });
     }
     if (ctx.who === '整理') {
+      // One page, then its summary, then the next page (the next code is only on the page just read).
+      const m = env.mem;
+      if (!m.chain) m.chain = { got: new Set(), next: 'start', pending: null };
+      const page = String(ctx.lastResult || '');
+      const code = /编号：([a-z0-9]{8})/.exec(page)?.[1];
+      const next = /(?:下一页|第一页)：[^/]*\/chain\/([a-z0-9]{8})/.exec(page)?.[1];
+      if (code && !m.chain.got.has(code)) { m.chain.got.add(code); m.chain.pending = code; m.chain.next = next || null; }
+      else if (!code && next && m.chain.next === 'start') m.chain.next = next;
+      if (m.chain.pending) { const x = m.chain.pending; m.chain.pending = null; return call('fs_write', { path: `交付/摘要/${x}.txt`, content: `摘要：${x}` }); }
+      // A page read whose summary never landed (the hub restarted between the two): write it now.
       const fs = await import('node:fs');
       const path = await import('node:path');
-      const dir = path.join(env.hubs.A.workspace, '交付', '摘要');
-      const have = new Set(fs.existsSync(dir) ? fs.readdirSync(dir) : []);
-      for (let i = 1; i <= ITEMS; i += 1) {
-        const n = linkName(i);
-        if (!have.has(n)) return call('fs_write', { path: `交付/摘要/${n}`, content: `摘要 ${i}` });
-      }
-      return say(`${ITEMS} 个摘要都写好了：交付/摘要/`);
+      const dir = path.join(env.hubs.A.workspace || '', '交付', '摘要');
+      const lost = env.hubs.A.workspace ? [...m.chain.got].find((x) => !fs.existsSync(path.join(dir, `${x}.txt`))) : null;
+      if (lost) return call('fs_write', { path: `交付/摘要/${lost}.txt`, content: `摘要：${lost}` });
+      if (m.chain.next === null) return say(`${m.chain.got.size} 页的摘要都写好了：交付/摘要/`);
+      return call('http_fetch', { url: `${env.mock.url}/chain/${m.chain.next}` });
     }
     return say('好的。');
   },

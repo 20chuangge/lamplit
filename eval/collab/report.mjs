@@ -20,7 +20,7 @@ export const TUNING = {
   I7: '协调者推翻了人对成员说的话：看人在单聊里说的话有没有记到群的任务板上（noteDirectWord），以及汇总时协调者有没有读到。',
   I8: '做了人没要的活：看协调者的 group_plan 提示（不加没要的项）和成员人设（只做被要求的）。',
   I9: '给人看的文字里有 id：看远程成员名字的解析（roster / chatBotById），以及喂给模型的成员列表里是不是只有名字。',
-  'S1-a': '要发的没发出去：先看是不是被拦（HUMAN_DECISION_PENDING / 审批被拒），再看扫码接管后任务有没有接上。',
+  'S1-a': '要发的没发出去：看证据里的「任务板最后」「工具报错」两行：是不是被拦（HUMAN_DECISION_PENDING / 审批被拒）、问人的那一项人答了以后有没有接上；全部事件在报告旁边的 .trace.json。',
   'S5-a': '改好的稿子哪儿都没找到（新文件和回复里都没有）：看人叫停以后成员有没有把已经做好的留下。',
   'S4-c': '海报哪儿都没找到（新文件和回复里都没有）：看成员有没有被打断、循环检测有没有误停。',
   'S2-a': '该投的没投：看投递那一项的卡是不是都弹了、批了以后有没有真的提交。',
@@ -28,7 +28,7 @@ export const TUNING = {
   'S4-a': '连发的几条开了多个回合：看 GATHER_MS / 合并连发的逻辑。',
   'S4-b': '任务板跑着时补发的附件没转给成员：看 reviewPlan（协调者那一眼）和 task_change。',
   'S6-a': '长任务少做了：看 150 步自动接着做和重启后的接续（readBoards / 被打断的任务）。',
-  'S6-b': '没走到 150 步的自动接着做：资料是一条链，只能一个个读；没到 150 步多半是中途停了，看 S6-a 少了多少。',
+    'S6-b': '到了 150 步停下没接着做：看那个回合结束时的状态（max_steps）和之后有没有自动开下一回合（autoContinue / limitRuns）。资料是网页上的一条链，只能一页页翻；没到 150 步就做完的，记成「没测到」。',
   'S6-c': '重启后没接着做：看任务板重启后的恢复（readBoards）。',
 };
 
@@ -98,13 +98,13 @@ export function renderReport(run, prev = null) {
   const prevOf = (id) => prev?.results?.find((r) => r.id === id) || null;
   for (const r of all) {
     const p = prevOf(r.id);
-    const mark = (c, pc) => `${c.ok ? '✅' : '❌'}${pc && pc.ok !== c.ok ? (c.ok ? '↑' : '↓') : ''}`;
+    const mark = (c, pc) => (c.skipped ? '➖' : `${c.ok ? '✅' : '❌'}${pc && !pc.skipped && pc.ok !== c.ok ? (c.ok ? '↑' : '↓') : ''}`);
     const inv = INVARIANTS.map((i) => { const c = r.checks.find((x) => x.id === i.id); return c ? mark(c, p?.checks?.find((x) => x.id === i.id)) : '—'; });
     const extra = r.extra.map((c) => `${c.id}${mark(c, p?.extra?.find((x) => x.id === c.id))}`).join(' ') || '—';
     L.push(`| ${cell(r.id)}${r.errors.length ? ' ⚠️' : ''} | ${inv.join(' | ')} | ${extra} |`);
   }
   L.push('');
-  L.push(INVARIANTS.map((i) => `${i.id} ${i.title}`).join('；') + '。↑↓：和上一次比变好 / 变差。⚠️：这个场景没跑完或运行出错。');
+  L.push(INVARIANTS.map((i) => `${i.id} ${i.title}`).join('；') + '。↑↓：和上一次比变好 / 变差。➖：这一项这次没测到（不算过也不算不过，原因见下面「没测到的」）。⚠️：这个场景没跑完或运行出错。');
   L.push('');
 
   // Numbers.
@@ -125,6 +125,14 @@ export function renderReport(run, prev = null) {
     L.push('## 说明');
     L.push('');
     for (const r of noted) for (const n of r.notes) L.push(`- ${cell(r.id)}：${cell(n)}`);
+    L.push('');
+  }
+
+  const untested = all.flatMap((r) => r.extra.filter((c) => c.skipped).map((c) => ({ r, c })));
+  if (untested.length) {
+    L.push('## 没测到的');
+    L.push('');
+    for (const { r, c } of untested) L.push(`- ${cell(r.id)} · ${c.id} ${c.title}：${cell(c.note || '')}`);
     L.push('');
   }
 
@@ -191,5 +199,10 @@ export function writeReport(run, { dir }) {
   fs.writeFileSync(`${base}.md`, md);
   // The JSON keeps the results without the full traces (they hold the run's texts; the .md has excerpts).
   fs.writeFileSync(jsonPath, JSON.stringify({ ...run, results: run.results.map(({ trace, ...r }) => r) }, null, 1));
-  return { md: `${base}.md`, json: jsonPath, prev: prev ? `${prev.version} ${prev.at}` : null };
+  // The traces beside it, for a question the report does not answer (11-23: why S1-a stopped): every event,
+  // what the human did, the messages, the cards, the mock sites' records, the files (paths only).
+  const tracePath = `${base}.trace.json`;
+  const keepOf = (t) => t && ({ scenario: t.scenario, t0: t.t0, t1: t.t1, quiet: t.quiet, timedOut: t.timedOut, bots: t.bots, groupId: t.groupId, human: t.human, events: t.events, groupMessages: t.groupMessages, botChats: t.botChats, approvals: t.approvals, posts: t.posts, restarts: t.restarts, files: (t.files || []).map(({ text, ...f }) => f), changedFiles: t.changedFiles || [], notes: t.notes, errors: t.errors });
+  fs.writeFileSync(tracePath, JSON.stringify(run.results.map((r) => ({ id: r.id, trace: keepOf(r.trace) }))));
+  return { md: `${base}.md`, json: jsonPath, trace: tracePath, prev: prev ? `${prev.version} ${prev.at}` : null };
 }

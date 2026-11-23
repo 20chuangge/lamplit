@@ -8,6 +8,9 @@ import { readCall } from '../eval/collab/fakemodel.mjs';
 import { runSelfCheck } from '../eval/collab/selfcheck.mjs';
 import { INVARIANTS } from '../eval/collab/invariants.mjs';
 import { SCENARIOS } from '../eval/collab/scenarios.mjs';
+import fs from 'node:fs';
+import { snapshot, diff, restore, leftovers } from '../eval/collab/workspace.mjs';
+import { runTimeline } from '../eval/collab/human.mjs';
 
 const rawFetch = (...a) => globalThis.fetch(...a);
 
@@ -125,6 +128,66 @@ export async function collabSelfChecks({ check }) {
     check('COLLAB-3 the fake model knows the bot (评测-发布 → 发布), a board task, its own steps, and the human\'s word pushed in mid-turn as a note (not a new task); the coordinator\'s one-look is a review',
       member.who === '发布' && member.kind === 'task' && member.step === 1 && member.notes.length === 1 && /乙站不发了/.test(member.notes[0]) && review.who === '主理人' && review.kind === 'review',
       JSON.stringify({ member: { who: member.who, kind: member.kind, step: member.step, notes: member.notes.length }, review: review.kind }));
+
+    // The chain of scenario 6: one page at a time, the next code only on the page before it.
+    const chain = mock.chain(5);
+    const startPage = await (await rawFetch(chain.start)).text();
+    const first = await (await rawFetch(`${mock.url}/chain/${chain.names[0]}`)).text();
+    const lastPage = await (await rawFetch(`${mock.url}/chain/${chain.names[4]}`)).text();
+    const guess = await rawFetch(`${mock.url}/chain/aaaaaaaa`);
+    const reads = mock.records().filter((r) => r.kind === 'chain');
+    check('COLLAB-8 scenario 6\'s chain: the start page names only the first page, each page only the next (random codes, new each run), the last says so, a guessed code is 404, every page read is recorded',
+      startPage.includes(chain.names[0]) && !startPage.includes(chain.names[1]) && first.includes(chain.names[1]) && !first.includes(chain.names[2]) && /最后一页/.test(lastPage)
+      && guess.status === 404 && reads.length === 2 && reads[0].i === 1 && new Set(chain.names).size === 5 && mock.chain(5).names[0] !== chain.names[0],
+      JSON.stringify({ reads: reads.map((r) => r.i), guess: guess.status }));
+    mock.reset();
+
+    // A hub the run is pointed at: its workspace is put back after a scenario, whatever tool changed it.
+    {
+      const os = await import('node:os');
+      const path = await import('node:path');
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-ws-'));
+      const ws = path.join(tmp, 'ws');
+      const W = (...x) => path.join(ws, ...x);
+      fs.mkdirSync(W('old'), { recursive: true });
+      fs.mkdirSync(W('uploads', 'd'), { recursive: true });
+      fs.writeFileSync(W('old', 'a.md'), '原来的 a');
+      fs.writeFileSync(W('old', 'b.md'), '原来的 b');
+      fs.writeFileSync(W('old', 'c.md'), '原来的 c');
+      fs.writeFileSync(W('uploads', 'd', '简历.md'), '评测用户');
+      const lefts = leftovers(ws, ['评测用户', '桂花拿铁']);
+      fs.writeFileSync(W('old', 'log.md'), '桂花拿铁 发过了');
+      const lefts2 = leftovers(ws, ['评测用户', '桂花拿铁']);
+      const snap = snapshot(ws, path.join(tmp, 'backup'));
+      fs.writeFileSync(W('old', 'a.md'), '评测改过');
+      fs.rmSync(W('old', 'b.md'));
+      fs.mkdirSync(W('eval', '丙站'), { recursive: true });
+      fs.writeFileSync(W('eval', '丙站', 'shot.png'), Buffer.alloc(10, 1));
+      fs.writeFileSync(W('old', 'c.md'), '别的机器人改的');
+      const d = diff(ws, snap);
+      const done = restore(ws, snap, d, { backupDir: path.join(tmp, 'backup'), owner: (x) => (x === 'old/c.md' ? 'other' : 'eval') });
+      check('COLLAB-9 a workspace not ours: an earlier run\'s file with the scenario\'s words is found (uploads aside); after the scenario a new file (a screenshot no bot named too) is removed and kept in the backup, a file written over and one removed are put back, what another bot did is left and said, the folders the run made are gone',
+        lefts.length === 0 && lefts2.length === 1 && lefts2[0].path === 'old/log.md'
+        && fs.readFileSync(W('old', 'a.md'), 'utf8') === '原来的 a' && fs.readFileSync(W('old', 'b.md'), 'utf8') === '原来的 b' && fs.readFileSync(W('old', 'c.md'), 'utf8') === '别的机器人改的'
+        && !fs.existsSync(W('eval')) && fs.existsSync(path.join(tmp, 'backup', 'removed', 'eval', '丙站', 'shot.png'))
+        && done.removed.length === 1 && done.restored.length === 1 && done.putBack.length === 1 && done.left.join() === 'old/c.md',
+        JSON.stringify({ lefts: lefts.length, lefts2, done }));
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+
+    // After the human's last word the hubs get time to take it up (11-23: the run ended 0.2 s after the answer).
+    {
+      const trace = { events: [], human: [] };
+      const t = Date.now();
+      await runTimeline({ run: { trace } }, { steps: [{ id: 'answer', at: 0, do: () => { trace.human.push({ at: Date.now(), step: 'answer' }); } }], done: () => true, timeoutMs: 5000, settleMs: 600 });
+      const waited = Date.now() - t;
+      const trace2 = { events: [], human: [] };
+      const t2 = Date.now();
+      await runTimeline({ run: { trace: trace2 } }, { steps: [{ id: 'answer', at: 0, do: () => { trace2.human.push({ at: Date.now(), step: 'answer' }); trace2.events.push({ type: 'turn.start', turnId: 'x', at: Date.now() }); setTimeout(() => trace2.events.push({ type: 'turn.end', turnId: 'x', at: Date.now() }), 1200); } }], done: () => true, timeoutMs: 5000, settleMs: 300 });
+      const waited2 = Date.now() - t2;
+      check('COLLAB-10 a run whose work looks done still waits after the human\'s last word (settleMs), and for a turn that word started to end',
+        waited >= 600 && waited < 2000 && waited2 >= 1200 && waited2 < 3000, JSON.stringify({ waited, waited2 }));
+    }
 
     // The self-check proper: proofs, plants, clean runs.
     const sc = await runSelfCheck({ mock });

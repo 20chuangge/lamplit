@@ -22,6 +22,30 @@ function fail(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
+/** A step sent but not answered in time (1.5.66: no more "screen off / Lamplit stopped" - that sent the human to battery settings). */
+export const PHONE_NOT_ANSWERING_MESSAGE = 'the phone did not answer in time: its connection to this machine probably dropped just now. The Lamplit app reconnects by itself (through the relay when this machine has one). Try again in a minute; if it keeps happening, ask the human to open Lamplit on the phone once. This is not about the phone\'s settings.';
+
+/**
+ * Why no phone can be used from here, when one was here before (1.5.66):
+ *   - not heard from for more than 150 s: the phone is not connected to this
+ *     machine right now (last seen N min ago) - the app keeps retrying;
+ *   - heard from, with the service not connected: switched off by the human,
+ *     or (still on in the system settings) disconnected by the system.
+ * Never "the human turned it off" for the second kind: that made a bot send
+ * the human to settings that were fine.
+ */
+export function whyGone(link) {
+  const s = link.stale?.() || [];
+  if (s.length) {
+    const p = s[0];
+    return ` The phone ${p.model} is not connected to this machine right now (last seen ${p.minutes} min ago). The Lamplit app on it keeps reconnecting by itself (through the relay when this machine has one), so try again in a few minutes. If it lasts, ask the human to open Lamplit on the phone once. This is the connection, not the phone's settings: do not ask the human to change 「让机器人用这部手机」 or battery settings.`;
+  }
+  const o = link.off?.() || [];
+  if (!o.length) return '';
+  if (o[0].listed) return ` The phone ${o[0].model} is connected, and 「让机器人用这部手机」 is still switched on in its settings, but the system has disconnected Lamplit's service for now (the human did not turn it off). Ask the human to open Lamplit on the phone once - that reconnects it - or to switch 「让机器人用这部手机」 off and on again; then try again.`;
+  return ` The phone ${o[0].model} is connected but 「让机器人用这部手机」 is off on it (an update of Lamplit or a cleaner app turns it off). Tell the human to turn it on again in the phone's settings (Lamplit shows a notice that opens the right page).`;
+}
+
 // 150 s, not 90 (1.5.17): a phone reports every 30 s, but one machine that
 // did not answer could hold its other reports back (fixed in the app too).
 export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } = {}) {
@@ -33,9 +57,10 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } 
 
   return {
     /** The app says whether this phone may be used (every 30 s and on connecting). caps: steps beyond the first ones (1.5.65: save_media). */
-    register(deviceId, { enabled = false, model = '', name = '', sdk = 0, phoneId = '', caps = [] } = {}) {
+    // listed (1.5.66): off, but the system's accessibility list still has the service - the system disconnected it.
+    register(deviceId, { enabled = false, listed = false, model = '', name = '', sdk = 0, phoneId = '', caps = [] } = {}) {
       if (!deviceId) return;
-      phones.set(String(deviceId), { enabled: Boolean(enabled), model: String(model || '').slice(0, 60), name: String(name || '').slice(0, 60), sdk: Number(sdk) || 0, phoneId: String(phoneId || '').slice(0, 64), caps: (Array.isArray(caps) ? caps : []).map(String).slice(0, 20), at: Date.now() });
+      phones.set(String(deviceId), { enabled: Boolean(enabled), listed: Boolean(listed), model: String(model || '').slice(0, 60), name: String(name || '').slice(0, 60), sdk: Number(sdk) || 0, phoneId: String(phoneId || '').slice(0, 64), caps: (Array.isArray(caps) ? caps : []).map(String).slice(0, 20), at: Date.now() });
     },
 
     /** Can the app on this phone do this step (it said so in its last report)? */
@@ -84,12 +109,16 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } 
     },
 
     /**
-     * Phones that had 「让机器人用这部手机」 on but have not reported lately:
-     * the screen went off and the system put Lamplit to sleep, or it lost the network.
+     * Phones that had 「让机器人用这部手机」 on but have not reported lately
+     * (more than freshMs, 150 s): the phone is not connected to this machine
+     * right now - most often its way here dropped (1.5.66: a dead Tailscale
+     * address); the app keeps retrying, through the relay when there is one.
      */
     stale() {
       const now = Date.now();
-      return [...phones.values()].filter((p) => p.enabled && now - p.at > freshMs)
+      // A phone that reports again through another of its logins is not stale (1.4.1: one phone, two tokens).
+      const fresh = new Set([...phones.values()].filter((p) => now - p.at <= freshMs).map((p) => p.phoneId).filter(Boolean));
+      return [...phones.values()].filter((p) => p.enabled && now - p.at > freshMs && !(p.phoneId && fresh.has(p.phoneId)))
         .map((p) => ({ model: p.model || p.name || '手机', minutes: Math.max(1, Math.round((now - p.at) / 60000)) }));
     },
 
@@ -97,7 +126,7 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } 
     off() {
       const now = Date.now();
       const on = new Set([...phones.values()].filter((p) => p.enabled && now - p.at <= freshMs).map((p) => p.phoneId || p.model));
-      return [...phones.values()].filter((p) => !p.enabled && now - p.at <= freshMs && !on.has(p.phoneId || p.model)).map((p) => ({ model: p.model || p.name || '手机' }));
+      return [...phones.values()].filter((p) => !p.enabled && now - p.at <= freshMs && !on.has(p.phoneId || p.model)).map((p) => ({ model: p.model || p.name || '手机', listed: Boolean(p.listed) }));
     },
 
     /** Send one step to one phone and wait for its answer. */
@@ -106,7 +135,7 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } 
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           waiting.delete(jobId);
-          reject(fail('PHONE_NOT_ANSWERING', 'the phone did not answer: its screen may be off with Lamplit stopped in the background, or it lost the network. Ask the human to open Lamplit on the phone, then try again.'));
+          reject(fail('PHONE_NOT_ANSWERING', PHONE_NOT_ANSWERING_MESSAGE));
         }, timeoutMs);
         if (typeof timer.unref === 'function') timer.unref();
         waiting.set(jobId, { deviceId: String(deviceId), resolve, reject, timer });
@@ -291,14 +320,6 @@ export function makePhoneExec({ adbPath = () => '', link, adbExec = runAdb }) {
   };
 
   // Why no phone answers, when one was here before (phone.mjs adds it to PHONE_NOT_CONNECTED).
-  exec.whyGone = () => {
-    const s = link.stale?.() || [];
-    if (!s.length) {
-      const o = link.off?.() || [];
-      return o.length ? ` The phone ${o[0].model} is connected but 「让机器人用这部手机」 is off on it (an update of Lamplit or a cleaner app turns it off). Tell the human to turn it on again in the phone's settings (Lamplit shows a notice that opens the right page).` : '';
-    }
-    const p = s[0];
-    return ` The phone ${p.model} had 「让机器人用这部手机」 on but has not reported for ${p.minutes} min: its screen is probably off and the system put Lamplit to sleep, or it lost the network. Tell the human to open Lamplit on the phone once (and, in the app, Settings → 机器 → 手机, allow it to keep running in the background); then try again.`;
-  };
+  exec.whyGone = () => whyGone(link);
   return exec;
 }

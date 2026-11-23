@@ -242,44 +242,203 @@ public class NightshiftWatcher extends Service {
         String token = TokenBox.open(prefs(this).getString("desk.token:" + hub, null));
         if (token == null) return;
         try {
-            JSONObject list = new JSONObject(get(hub + "/api/machines", token));
+            // Through the way that works now (1.5.66): the paired address may be dead.
+            String base = via(hub);
+            JSONObject list = new JSONObject(get(base + "/api/machines", token));
             org.json.JSONArray machines = list.optJSONArray("machines");
             if (machines == null) return;
+            java.util.List<JSONObject> rows = new java.util.ArrayList<>();
+            java.util.List<PhoneRoutes.Machine> fleet = new java.util.ArrayList<>();
             for (int i = 0; i < machines.length(); i += 1) {
                 JSONObject machine = machines.optJSONObject(i);
-                if (machine == null || machine.optBoolean("self")) continue;
-                String name = machine.optString("name", "");
+                if (machine == null) continue;
+                rows.add(machine);
+                fleet.add(machineOf(machine));
+            }
+            // Every machine this phone already holds a login for, by what it knows of it.
+            java.util.List<PhoneRoutes.Known> paired = new java.util.ArrayList<>();
+            for (String other : hubsWithToken(prefs(this))) if (!other.equals(hub)) paired.add(knownOf(other));
+            for (int i = 0; i < rows.size(); i += 1) {
+                JSONObject machine = rows.get(i);
+                PhoneRoutes.Machine m = fleet.get(i);
+                // The machine that answered is `hub`, whatever address it was reached by:
+                // its own list of its addresses is the fresh one (1.5.66).
+                if (machine.optBoolean("self")) {
+                    learn(hub, m);
+                    continue;
+                }
+                String name = m.name;
                 if (name.isEmpty()) continue;
-                // A machine has up to two addresses (tailnet, LAN); the phone can
-                // usually reach only one, so try them in turn.
+                // Already paired with it, maybe at an address it no longer has (1.5.66: the
+                // cloud's old Tailscale address): refresh its addresses, no second login.
+                String same = PhoneRoutes.match(m, paired, fleet);
+                if (same != null) {
+                    learn(same, m);
+                    continue;
+                }
+                // A machine has up to three ways (tailnet, its own address, the relay);
+                // only the ones this phone can use now are tried, the relay last.
                 java.util.List<String> targets = new java.util.ArrayList<>();
-                String tailnet = machine.optString("tailnetUrl", "").replaceAll("/+$", "");
-                String lan = machine.optString("url", "").replaceAll("/+$", "");
-                if (!tailnet.isEmpty()) targets.add(tailnet);
-                if (!lan.isEmpty() && !lan.equals(tailnet)) targets.add(lan);
-                // Through the relay (第 1 步原型): works with neither Wi-Fi nor Tailscale.
-                JSONObject relay = machine.optJSONObject("relay");
-                if (relay != null) {
-                    String local = RelayLinks.localUrl(this, relay.optString("host", ""), relay.optInt("port", 0), relay.optString("id", ""), relay.optString("fp", ""));
-                    if (!local.isEmpty()) targets.add(local);
+                for (String target : m.addresses) {
+                    if (RelayLinks.isRelayLocal(target) || NetHints.mayReach(target)) targets.add(target);
                 }
                 for (String target : targets) {
                     if (prefs(this).getString("desk.token:" + target, null) != null) break;
-                    String door = handoff(hub, token, name);
+                    String door = handoff(base, token, name);
                     if (door.isEmpty()) break; // the machine is off or has no address
                     String code = pairCode(door);
                     if (code.isEmpty()) break;
                     String fresh = pair(target, code);
                     if (!fresh.isEmpty()) {
                         prefs(this).edit().putString("desk.token:" + target, fresh).apply();
+                        learn(target, m);
                         Log.i(TAG, "paired with " + name + " at " + target);
                         break;
                     }
+                    Log.i(TAG, "pairing with " + name + " at " + target + " did not work");
                 }
             }
         } catch (Exception err) {
+            forgetRoute(hub);
             Log.d(TAG, "fleet sync from " + hub + " failed: " + err.getClass().getSimpleName());
         }
+    }
+
+    /** A string field; "" for a missing or null one (Android's optString turns null into "null"). */
+    private static String str(JSONObject o, String key) {
+        if (o == null || o.isNull(key)) return "";
+        return o.optString(key, "").trim();
+    }
+
+    /** One /api/machines row: its name, relay id and addresses (tailnet, own, this phone's relay forwarder). */
+    private PhoneRoutes.Machine machineOf(JSONObject machine) {
+        java.util.List<String> addrs = new java.util.ArrayList<>();
+        addrs.add(str(machine, "tailnetUrl"));
+        addrs.add(str(machine, "url"));
+        String relayId = "";
+        JSONObject relay = machine.optJSONObject("relay");
+        if (relay != null) {
+            relayId = str(relay, "id");
+            // Made, or updated in place (a new relay host, port or certificate) - kept by the machine's id.
+            String local = RelayLinks.localUrl(this, str(relay, "host"), relay.optInt("port", 0), relayId, str(relay, "fp"));
+            addrs.add(local);
+        }
+        return new PhoneRoutes.Machine(str(machine, "name"), relayId, addrs);
+    }
+
+    // ------------------------------------------------------------ what a machine is (1.5.66)
+    /*
+     * The phone's login for a machine is kept under the address it paired at
+     * (desk.token:<address>); the machine may have other addresses since. What
+     * the watcher learned of each paired machine from fleet sync is kept here,
+     * apart from the app's own list (desk.hubs, which the page writes):
+     *   "hub:<address>" -> {name, relayId, addrs:[...], at, refused}
+     * refused: its login was turned away at an address learned by name - that
+     * was not the same machine; its learned addresses are not used.
+     */
+    private static final String LEARNED = "lamplit_machines";
+
+    private JSONObject learned(String hub) {
+        try {
+            String raw = getSharedPreferences(LEARNED, Context.MODE_PRIVATE).getString("hub:" + hub, null);
+            return raw == null ? null : new JSONObject(raw);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Learned addresses of `hub` still in use (none once refused). */
+    private java.util.List<String> learnedAddresses(String hub) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        JSONObject row = learned(hub);
+        if (row == null || row.optBoolean("refused")) return out;
+        org.json.JSONArray addrs = row.optJSONArray("addrs");
+        if (addrs != null) for (int i = 0; i < addrs.length(); i += 1) {
+            String a = addrs.optString(i, "").replaceAll("/+$", "");
+            if (!a.isEmpty() && !a.equals(hub) && !out.contains(a)) out.add(a);
+        }
+        return out;
+    }
+
+    /** `hub` is machine `m`: keep its fresh addresses (the old ones it no longer lists go). */
+    private void learn(String hub, PhoneRoutes.Machine m) {
+        try {
+            JSONObject old = learned(hub);
+            org.json.JSONArray addrs = new org.json.JSONArray();
+            for (String a : m.addresses) if (!a.equals(hub)) addrs.put(a);
+            JSONObject row = new JSONObject();
+            row.put("name", m.name);
+            row.put("relayId", m.relayId);
+            row.put("addrs", addrs);
+            row.put("at", System.currentTimeMillis());
+            row.put("refused", false);
+            boolean changed = old == null || old.optBoolean("refused")
+                    || !String.valueOf(old.optJSONArray("addrs")).equals(addrs.toString())
+                    || !m.relayId.equals(str(old, "relayId"));
+            getSharedPreferences(LEARNED, Context.MODE_PRIVATE).edit().putString("hub:" + hub, row.toString()).apply();
+            if (changed) {
+                forgetRoute(hub);
+                Log.i(TAG, "machine " + m.name + " (paired at " + hub + "): addresses refreshed"
+                        + (m.relayId.isEmpty() ? "" : ", its relay known"));
+            }
+        } catch (Exception err) {
+            Log.d(TAG, "could not keep what " + hub + " is: " + err.getClass().getSimpleName());
+        }
+    }
+
+    /** Its login was turned away at a learned address: that address was another machine's. */
+    private void refuseLearned(String hub) {
+        try {
+            JSONObject row = learned(hub);
+            if (row == null) return;
+            row.put("refused", true);
+            getSharedPreferences(LEARNED, Context.MODE_PRIVATE).edit().putString("hub:" + hub, row.toString()).apply();
+        } catch (Exception ignored) {
+            // nothing kept: nothing to undo
+        }
+    }
+
+    /** The names the app's list gives the machine at `hub` (its row, or a row that has it as another address). */
+    private java.util.List<String> rowNames(String hub) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        try {
+            org.json.JSONArray rows = new org.json.JSONArray(prefs(this).getString("desk.hubs", "[]"));
+            for (int i = 0; i < rows.length(); i += 1) {
+                JSONObject row = rows.optJSONObject(i);
+                if (row == null) continue;
+                boolean mine = hub.equals(str(row, "url").replaceAll("/+$", ""));
+                org.json.JSONArray alt = row.optJSONArray("alt");
+                if (!mine && alt != null) for (int j = 0; j < alt.length(); j += 1) {
+                    if (hub.equals(alt.optString(j, "").replaceAll("/+$", ""))) mine = true;
+                }
+                if (mine && !str(row, "name").isEmpty()) out.add(str(row, "name"));
+            }
+        } catch (Exception ignored) {
+            // no list yet
+        }
+        return out;
+    }
+
+    /** Everything this phone knows of the machine it paired with at `hub`. */
+    private PhoneRoutes.Known knownOf(String hub) {
+        PhoneRoutes.Known k = new PhoneRoutes.Known(hub);
+        for (String a : addressesOf(hub)) {
+            k.address(a);
+            String id = RelayLinks.idFor(this, a);
+            if (!id.isEmpty()) k.relayId(id);
+        }
+        String own = RelayLinks.idFor(this, hub);
+        if (!own.isEmpty()) k.relayId(own);
+        for (String n : rowNames(hub)) k.name(n);
+        JSONObject row = learned(hub);
+        if (row != null) {
+            if (row.optBoolean("refused")) k.refusedByName = true;
+            else {
+                k.name(str(row, "name"));
+                k.relayId(str(row, "relayId"));
+            }
+        }
+        return k;
     }
 
     /** POST /api/machines/<name>/handoff -> one-time URL (or "" when it cannot). */
@@ -395,8 +554,16 @@ public class NightshiftWatcher extends Service {
         return host.matches("^(10\\.\\d+|192\\.168|172\\.(1[6-9]|2\\d|3[01]))\\.\\d+\\.\\d+$");
     }
 
-    /** The other addresses the app knows for this machine (desk.hubs rows: {url, alt:[...]}). */
+    /** The other addresses known for this machine: the app's list, then what fleet sync learned. */
     private java.util.List<String> addressesOf(String hub) {
+        java.util.List<String> out = appAddresses(hub);
+        // What fleet sync learned of the same machine (1.5.66): its addresses now, its relay.
+        for (String u : learnedAddresses(hub)) if (!out.contains(u)) out.add(u);
+        return out;
+    }
+
+    /** The other addresses the app knows for this machine (desk.hubs rows: {url, alt:[...]}). */
+    private java.util.List<String> appAddresses(String hub) {
         java.util.List<String> out = new java.util.ArrayList<>();
         try {
             org.json.JSONArray rows = new org.json.JSONArray(prefs(this).getString("desk.hubs", "[]"));
@@ -421,7 +588,9 @@ public class NightshiftWatcher extends Service {
         try {
             conn = (HttpURLConnection) new URL(base + "/api/auth").openConnection();
             conn.setConnectTimeout(1500);
-            conn.setReadTimeout(2500);
+            // Through the relay the forwarder first connects out and does TLS (1.5.66:
+            // 2.5 s was tight on mobile data, and a miss meant the dead address instead).
+            conn.setReadTimeout(RelayLinks.isRelayLocal(base) ? 6000 : 2500);
             return conn.getResponseCode() > 0;
         } catch (Exception e) {
             return false;
@@ -430,45 +599,31 @@ public class NightshiftWatcher extends Service {
         }
     }
 
+    private final PhoneRoutes.Net net = new PhoneRoutes.Net() {
+        @Override public boolean isRelay(String url) { return RelayLinks.isRelayLocal(url); }
+        @Override public boolean isLan(String url) { return isLanAddress(url); }
+        @Override public boolean isTailnet(String url) { return NetHints.isTailnetUrl(url); }
+        @Override public boolean sameLan(String url) { return NetHints.onSameLan(hostOf(url)); }
+        @Override public boolean mayReach(String url) { return NetHints.mayReach(url); }
+        @Override public boolean answers(String url) { return NightshiftWatcher.this.answers(url); }
+    };
+
     /**
-     * Where to reach `hub` now: a LAN address of the same machine that answers,
-     * else `hub` itself, else (when it does not answer) the machine's relay
-     * address (第 1 步原型: no Wi-Fi, no Tailscale). A machine without a relay
-     * address keeps the old behaviour: `hub` itself, untested.
+     * Where to reach `hub` now (PhoneRoutes.pick): a LAN address of the same
+     * machine on this Wi-Fi, else `hub` itself or a newer Tailscale address of
+     * it when this phone can use them, else the machine's relay. With Tailscale
+     * off and nothing answering, the relay stays the way (1.5.66) - not the dead
+     * Tailscale address. A machine with nothing else known: `hub`, untested.
      */
     String via(String hub) {
         String[] known = routes.get(hub);
         if (known != null && System.currentTimeMillis() - Long.parseLong(known[1]) < 60000L) return known[0];
-        java.util.List<String> others = addressesOf(hub);
-        String best = null;
-        if (!isLanAddress(hub)) {
-            for (String other : others) {
-                // Only a LAN address on this phone's own Wi-Fi subnet (1.5.39): the others time out.
-                if (isLanAddress(other) && NetHints.onSameLan(hostOf(other)) && answers(other)) {
-                    best = other;
-                    break;
-                }
-            }
-        }
-        if (best == null) {
-            java.util.List<String> relays = new java.util.ArrayList<>();
-            for (String other : others) if (RelayLinks.isRelayLocal(other)) relays.add(other);
-            // The machine's own address only when this phone can use it now (same Wi-Fi,
-            // or Tailscale on): away from home it went straight to the relay after a timeout.
-            if (relays.isEmpty() || RelayLinks.isRelayLocal(hub) || (NetHints.mayReach(hub) && answers(hub))) {
-                best = hub;
-            } else {
-                for (String relay : relays) {
-                    if (answers(relay)) {
-                        best = relay;
-                        break;
-                    }
-                }
-            }
-            if (best == null) best = hub;
-        }
+        String best = PhoneRoutes.pick(hub, addressesOf(hub), net);
+        String before = known == null ? hub : known[0];
         routes.put(hub, new String[] { best, String.valueOf(System.currentTimeMillis()) });
-        if (!best.equals(hub)) Log.i(TAG, "reaching " + hub + (RelayLinks.isRelayLocal(best) ? " through the relay" : " on the local network"));
+        if (!best.equals(hub) && !best.equals(before)) {
+            Log.i(TAG, "reaching " + hub + (RelayLinks.isRelayLocal(best) ? " through the relay" : isLanAddress(best) ? " on the local network" : " at its newer address"));
+        }
         return best;
     }
 
@@ -518,7 +673,8 @@ public class NightshiftWatcher extends Service {
 
     /** One SSE connection; returns true when it had been established. */
     private boolean connectAndRead(String hub, String token) throws Exception {
-        String url = via(hub) + "/api/stream";
+        String base = via(hub);
+        String url = base + "/api/stream";
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         connections.add(conn);
         try {
@@ -532,6 +688,14 @@ public class NightshiftWatcher extends Service {
             conn.setReadTimeout(45000);
             int status = conn.getResponseCode();
             if (status == 401) {
+                forgetRoute(hub);
+                if (!base.equals(hub) && learnedAddresses(hub).contains(base) && !appAddresses(hub).contains(base)) {
+                    // Turned away at an address only fleet sync matched (by name, 1.5.66): that
+                    // was another machine, not a revoked login. Stop using what was learned.
+                    Log.w(TAG, "token rejected at a learned address of " + hub + ": not using it");
+                    refuseLearned(hub);
+                    return false;
+                }
                 // Revoked on the computer: forget this hub's token, keep the others.
                 Log.w(TAG, "token rejected for " + hub);
                 prefs(this).edit().remove("desk.token:" + hub).apply();
@@ -539,6 +703,7 @@ public class NightshiftWatcher extends Service {
             }
             if (status != 200) throw new IllegalStateException("HTTP " + status);
             Log.i(TAG, "watching " + hub);
+            if (!base.equals(hub)) Log.i(TAG, "  (" + (RelayLinks.isRelayLocal(base) ? "through the relay" : "at " + base) + ")");
             // Say at once whether the bots may use this phone (1.4.1): after the
             // machine restarted it knew nothing until the next 30 s round.
             new Thread(() -> reportPhoneAgent(hub), "phone-agent-hello").start();
@@ -574,6 +739,9 @@ public class NightshiftWatcher extends Service {
         try {
             JSONObject body = new JSONObject();
             body.put("enabled", PhoneAgentService.instance != null);
+            // Off but still switched on in the system settings (1.5.66): the system
+            // disconnected the service; the human did not turn it off.
+            body.put("listed", agentListed());
             body.put("model", (Build.MANUFACTURER + " " + Build.MODEL).trim());
             body.put("sdk", Build.VERSION.SDK_INT);
             // The same phone paired through two addresses is one phone (1.4.1).
@@ -587,6 +755,28 @@ public class NightshiftWatcher extends Service {
             Log.d(TAG, "phone agent report to " + hub + " failed: " + err.getClass().getSimpleName());
             return false;
         }
+    }
+
+    /** Does the system's accessibility list still have Lamplit's service (on, maybe not connected)? */
+    private boolean agentListed() {
+        try {
+            return AgentKeeper.isOn(this);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Why a step cannot run: the service is not connected (1.5.66). Off in the
+     * settings: the human turns it on. Still on in the settings: the system
+     * disconnected it - opening Lamplit or switching it off and on reconnects it.
+     */
+    static String agentOffMessage(boolean listed) {
+        if (listed) {
+            return "Lamplit's 「让机器人用这部手机」 is still switched on in the phone's settings, but the system has disconnected the service for now (the human did not turn it off). "
+                    + "Ask the human to open Lamplit on the phone once - that reconnects it - or to switch 「让机器人用这部手机」 off and on again (设置 → 机器 → 手机). Then try again.";
+        }
+        return "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)";
     }
 
     /** This phone's own id for the machines (made once, kept in the app's storage). */
@@ -631,7 +821,7 @@ public class NightshiftWatcher extends Service {
                 } else if (agent == null) {
                     reply.put("ok", false);
                     reply.put("code", "PHONE_AGENT_OFF");
-                    reply.put("message", "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)");
+                    reply.put("message", agentOffMessage(agentListed()));
                 } else {
                     JSONObject args = event.optJSONObject("args");
                     JSONObject result = agent.run(event.optString("action", ""), args == null ? new JSONObject() : args);
@@ -668,7 +858,9 @@ public class NightshiftWatcher extends Service {
                     short_.put("ok", false);
                     short_.put("code", "PHONE_FAILED");
                     short_.put("message", "the phone did the step but could not send the answer back (" + err.getMessage() + ")");
-                    postJson(hub + "/api/phone/jobs/" + jobId, token, short_);
+                    // The way may have just gone (1.5.66: it was the dead paired address): look again.
+                    forgetRoute(hub);
+                    postJson(via(hub) + "/api/phone/jobs/" + jobId, token, short_);
                 } catch (Exception ignored) {
                     // the machine will time out and say so
                 }

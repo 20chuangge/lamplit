@@ -2764,7 +2764,7 @@ function phoneDevice(req, state) {
 
 route('POST', /^\/api\/phone\/agent$/, async (req, _res, { body, state }) => {
   const device = phoneDevice(req, state);
-  state.phoneLink.register(device.id, { enabled: Boolean(body?.enabled), model: String(body?.model || ''), name: device.name || '', sdk: body?.sdk, phoneId: String(body?.phoneId || ''), caps: Array.isArray(body?.caps) ? body.caps : [] });
+  state.phoneLink.register(device.id, { enabled: Boolean(body?.enabled), listed: body?.listed === true, model: String(body?.model || ''), name: device.name || '', sdk: body?.sdk, phoneId: String(body?.phoneId || ''), caps: Array.isArray(body?.caps) ? body.caps : [] });
   return { ok: true };
 });
 

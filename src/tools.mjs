@@ -1448,14 +1448,30 @@ export function createRegistry(deps) {
     },
   });
 
+  // 1.5.63: one short line per routine, your own first. The whole list with every
+  // instruction ran past the tool-output cut on a machine with many routines, and a
+  // bot could not find (so not move) its own 21:00 one - it made a second one instead.
   add({
     name: 'routine_list',
-    description: 'List routines with their schedule, enabled flag, next run and last result.',
+    description: 'List routines, one short line each (id, name, bot, schedule, on/off, next run, last result, the start of its instruction), your own first. Narrow it with botId (a bot id, or "me" for yours) or query (words in the name or instruction). Pass id to get that one routine in full (its whole instruction and recent runs). A long list ends with a note of how many were left out: narrow it then. Change one with routine_update, remove one with routine_delete.',
     risk: RISK.LOW,
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
-    async run() {
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'One routine in full.' },
+        botId: { type: 'string', description: 'Only this bot\'s routines ("me" = yours).' },
+        query: { type: 'string', description: 'Words in the name or the instruction.' },
+      },
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
       const routines = deps.getRoutines();
-      return { count: routines.list().length, routines: routines.list().map(publicRoutine) };
+      if (args?.id) {
+        const one = routines.get(String(args.id));
+        if (!one) throw toolError('ROUTINE_NOT_FOUND', `no routine with id "${args.id}" (routine_list without id shows them all)`);
+        return { routine: publicRoutine(one) };
+      }
+      return routineLines(routines.list(), { me: ctx?.bot?.id || '', botId: args?.botId, query: args?.query, names: await ctx?.bots?.listBots?.().catch(() => []) });
     },
   });
 
@@ -3081,6 +3097,52 @@ function publicRoutine(routine) {
     onlyChanges: Boolean(routine.onlyChanges),
     pushFeishu: Boolean(routine.pushFeishu),
     offPeak: Boolean(routine.offPeak),
+  };
+}
+
+/** How much of routine_list's answer the lines may take: well under the tool-output cut (agent.mjs MAX_TOOL_OUTPUT, 12000). */
+export const ROUTINE_LIST_BUDGET = 8000;
+
+/**
+ * routine_list's answer (1.5.63): one short line per routine, the caller's own first,
+ * narrowed by botId ("me" = the caller) and query; past the budget it says how many
+ * were left out instead of being cut off without a word.
+ */
+export function routineLines(all, { me = '', botId = '', query = '', names = [], budget = ROUTINE_LIST_BUDGET } = {}) {
+  const nameOf = new Map((names || []).map((b) => [b.id, b.name]));
+  const who = String(botId || '').trim() === 'me' ? me : String(botId || '').trim();
+  const words = String(query || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hit = (r) => (!who || r.botId === who) && words.every((w) => `${r.name || ''} ${r.instruction || ''}`.toLowerCase().includes(w));
+  const found = (all || []).filter(hit);
+  const ordered = [...found.filter((r) => r.botId === me), ...found.filter((r) => r.botId !== me)];
+  const routines = [];
+  let used = 0;
+  for (const r of ordered) {
+    const text = String(r.instruction || '').replace(/\s+/g, ' ').trim();
+    const line = {
+      id: r.id,
+      name: r.name,
+      botId: r.botId,
+      ...(nameOf.get(r.botId) ? { bot: nameOf.get(r.botId) } : {}),
+      ...(r.botId === me ? { mine: true } : {}),
+      schedule: r.schedule,
+      enabled: Boolean(r.enabled),
+      nextRun: r.nextRun || null,
+      lastResult: r.lastStatus || null,
+      instruction: text.length > 60 ? `${text.slice(0, 60)}…` : text,
+    };
+    const size = JSON.stringify(line).length + 1;
+    if (used + size > budget) break;
+    used += size;
+    routines.push(line);
+  }
+  const left = ordered.length - routines.length;
+  return {
+    count: (all || []).length,
+    ...(who || words.length ? { matched: found.length } : {}),
+    routines,
+    ...(left ? { more: left, note: `还有 ${left} 条没列出，用 query 或 botId 缩小（botId "me" 是你自己的）` } : {}),
+    ...(!found.length && (all || []).length ? { note: '没有符合的定时任务；不带 botId 和 query 再看一次全部' } : {}),
   };
 }
 

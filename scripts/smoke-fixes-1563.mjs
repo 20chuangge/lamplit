@@ -636,3 +636,61 @@ export async function remoteRoutineChecks({ check, readText, api, base, rawFetch
     (rt.match(/api\(routinesApi\(`\/api\/routines\/\$\{encodeURIComponent\(rt\.id\)\}/g) || []).length === 9 && !/api\(`\/api\/routines\/\$\{encodeURIComponent\(rt\.id\)\}/.test(rt)
     && rt.includes("head.textContent = machine ? `${machine} 的每日简报` : '每日简报'") && rt.includes('`${who}名下没有定时任务（这台机器上一共 ${state.routines.length} 条，勾选「全部」查看）。`'));
 }
+
+// --- 9. a bot finds (and moves) its own routine on a machine with many (1.5.63) ------------------------------
+export async function routineListChecks({ check, readText }) {
+  const T = await import('../src/tools.mjs');
+  const agentSrc = await readText('../src/agent.mjs');
+  const CUT = Number(/const MAX_TOOL_OUTPUT = (\d+);/.exec(agentSrc)?.[1] || 0);
+  // ~100 routines with long instructions, the user's case: 策略's 21:00 one somewhere in the middle.
+  const store = new Map();
+  const long = '请按下面的要求完成：'.padEnd(900, '把今天的情况整理成一份清楚的简报，列出要处理的事、已经完成的事和明天的安排。');
+  for (let i = 0; i < 100; i += 1) {
+    const id = `rt_${String(i).padStart(3, '0')}`;
+    store.set(id, { id, botId: i === 57 ? 'celue' : ['chief', 'riji', 'xiezuo'][i % 3], name: i === 57 ? '面试题库·每日抽背' : `任务 ${i}`, instruction: i === 57 ? `从面试题库里抽 5 道题考我。${long}` : `${long} 第 ${i} 条`, schedule: i === 57 ? '0 21 * * *' : '0 9 * * *', enabled: true, nextRun: null, lastStatus: 'success', runs: [] });
+  }
+  const routines = {
+    list: () => [...store.values()],
+    get: (id) => store.get(id) || null,
+    update: async (id, patch) => { const r = store.get(id); if (patch.schedule) r.schedule = patch.schedule === '每天 18:00' ? '0 18 * * *' : patch.schedule; return r; },
+  };
+  const reg = T.createRegistry({ getRoutines: () => routines });
+  const bots = { listBots: async () => [{ id: 'celue', name: '策略' }, { id: 'chief', name: '助理' }, { id: 'riji', name: '日记管家' }, { id: 'xiezuo', name: '写稿' }] };
+  const ctx = { bot: { id: 'celue', name: '策略' }, bots };
+  const sizeOf = (x) => JSON.stringify({ ok: true, output: x }).length;
+  const oldWay = JSON.stringify({ count: 100, routines: [...store.values()] }).length;
+
+  const all = await reg.get('routine_list').run({}, ctx);
+  const mineFirst = all.routines[0];
+  check('F63-9a with 100 routines and long instructions, routine_list stays well under the tool-output cut, lists the caller\'s own first, and says how many it left out instead of being cut off without a word',
+    CUT === 12000 && oldWay > CUT && sizeOf(all) < CUT * 0.8 && all.count === 100 && mineFirst?.id === 'rt_057' && mineFirst.mine === true && mineFirst.bot === '策略'
+    && all.more === 100 - all.routines.length && all.more > 0 && /还有 \d+ 条没列出，用 query 或 botId 缩小/.test(all.note) && all.routines.every((r) => r.instruction.length <= 61),
+    JSON.stringify({ CUT, oldWay, size: sizeOf(all), listed: all.routines.length, more: all.more, first: mineFirst?.name }));
+
+  const byQuery = await reg.get('routine_list').run({ query: '面试题库' }, ctx);
+  const byMe = await reg.get('routine_list').run({ botId: 'me' }, ctx);
+  const byOther = await reg.get('routine_list').run({ botId: 'chief' }, ctx);
+  const one = await reg.get('routine_list').run({ id: 'rt_057' }, ctx);
+  let missing = '';
+  try { await reg.get('routine_list').run({ id: 'rt_nope' }, ctx); } catch (e) { missing = e.code; }
+  check('F63-9b it can be narrowed: by words (query), by bot ("me" = the caller\'s own), and one routine comes back in full by id',
+    byQuery.matched === 1 && byQuery.routines[0]?.id === 'rt_057' && !byQuery.more && byMe.matched === 1 && byMe.routines[0]?.id === 'rt_057'
+    && byOther.routines.every((r) => r.botId === 'chief') && one.routine?.instruction.length > 900 && one.routine.schedule === '0 21 * * *' && missing === 'ROUTINE_NOT_FOUND',
+    JSON.stringify({ q: byQuery.matched, me: byMe.matched, other: byOther.matched, full: one.routine?.instruction.length, missing }));
+
+  // The user's case: found by name, moved from 21:00 to 18:00 by the bot itself (its own: no card).
+  const found = (await reg.get('routine_list').run({ query: '面试题库' }, ctx)).routines[0];
+  const tool = reg.get('routine_update');
+  const risk = typeof tool.risk === 'function' ? tool.risk({ id: found.id }, ctx) : tool.risk;
+  const moved = await tool.run({ id: found.id, schedule: '每天 18:00' }, ctx);
+  check('F63-9c the bot finds its 21:00 routine by name and moves it to 18:00 itself (its own routine: no card), instead of making a second one',
+    found.id === 'rt_057' && (risk?.risk || risk) === 'LOW' && moved.updated === true && store.get('rt_057').schedule === '0 18 * * *' && store.size === 100,
+    JSON.stringify({ found: found.id, risk, schedule: store.get('rt_057').schedule }));
+
+  // The scripted demo model still uses routine_list with no arguments.
+  const modelSrc = await readText('../src/model.mjs');
+  const empty = T.routineLines([], { me: 'x' });
+  check('F63-9d the scripted model\'s routine_list calls (no arguments) still work; an empty machine answers count 0 with no note',
+    (modelSrc.match(/tool: 'routine_list',\s*\n?\s*args: \{\}/g) || []).length + (modelSrc.match(/\{ tool: 'routine_list', args: \{\} \}/g) || []).length >= 2
+    && empty.count === 0 && empty.routines.length === 0 && !empty.note && !empty.more);
+}

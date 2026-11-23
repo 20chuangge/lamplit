@@ -275,7 +275,18 @@ async function main() {
     console.log('RESULT  smoke test passed');
     process.exitCode = 0;
   }
+  // 1.5.63: the results are in; something a check left open (a child's pipe, a listener, a timer)
+  // must not keep the run going until CI's timeout. Say what it was, then end with the result.
+  setTimeout(() => {
+    const open = (process._getActiveHandles?.() || []).map((h) => {
+      const name = h?.constructor?.name || typeof h;
+      return h?.spawnfile ? `${name} ${path.basename(h.spawnfile)} pid ${h.pid}` : h?.remotePort ? `${name} :${h.remotePort}` : name;
+    });
+    console.log(`(smoke: still open ${SMOKE_EXIT_GRACE_MS / 1000} s after the result, exiting anyway: ${open.join(', ') || 'nothing listed'})`);
+    process.exit(process.exitCode ?? 1);
+  }, SMOKE_EXIT_GRACE_MS).unref();
 }
+const SMOKE_EXIT_GRACE_MS = 15000;
 
 // ---------------------------------------------------------------------------
 // environment

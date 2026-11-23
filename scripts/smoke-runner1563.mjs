@@ -53,8 +53,8 @@ function runExe(exe, args, input, timeoutMs = 60000, { onExit = false } = {}) {
     child.stdout.on('data', (c) => { chunks.push(c); });
     child.stderr.on('data', (c) => { err += c; });
     child.on('error', (e) => done(-1, e.message));
-    // onExit: a program left running in the background (as --as-me, which inherits handles) may keep the pipes open.
-    if (onExit) child.on('exit', (code) => setTimeout(() => done(code), 300));
+    // onExit: a program it left running in the background may keep the pipes open: done when it exits, and the pipes let go.
+    if (onExit) child.on('exit', (code) => setTimeout(() => { done(code); for (const s of [child.stdout, child.stderr, child.stdin]) { try { s.destroy(); } catch { /* gone */ } } }, 300));
     child.on('close', (code) => done(code));
     child.stdin.on('error', () => {});
     child.stdin.end(input ?? '');
@@ -251,14 +251,30 @@ export async function runnerDesktopChecks({ check, skip, readText }) {
       await runExe(helper, ['--as-me'], payload(`start "" "${psExe}" -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = '${formTitle}'; $t = New-Object Windows.Forms.TextBox; $t.Top = 40; $f.Controls.Add($t); $b = New-Object Windows.Forms.Button; $b.Text = 'OK-btn'; $b.Add_Click({ $f.Text = '${formTitle}-clicked' }); $f.Controls.Add($b); [Windows.Forms.Application]::Run($f)" & ping -n 4 127.0.0.1 >nul`, tempEnv), 60000, { onExit: true });
       const opts = { bots: botsRoute, timeoutMs: 60000 };
       const step = async (req) => { try { return await U.runWinUi(req, opts); } catch (err) { return { error: err.message }; } };
-      const listed = await step({ action: 'windows' });
-      const mine = (listed.windows || []).find((w) => w.desktop === 'bots' && w.title === formTitle);
-      const controls = await step({ action: 'controls', window: formTitle });
-      const typed = await step({ action: 'type', window: formTitle, text: '灯窗 lamplit' });
-      const read = await step({ action: 'read', window: formTitle });
-      const clicked = await step({ action: 'click', window: formTitle, target: 'OK-btn' });
-      const after = await step({ action: 'windows' });
-      if (mine?.pid) { try { process.kill(mine.pid); } catch { /* gone */ } }
+      const pids = new Set();
+      const ours = (r, title) => (r.windows || []).filter((w) => w.desktop === 'bots' && String(w.title || '').startsWith(title));
+      let listed = {};
+      let mine = null;
+      let controls = {}, typed = {}, read = {}, clicked = {}, after = {};
+      try {
+        // The form may take a while to come up (a slow CI machine: PowerShell, then WinForms): look until it is there.
+        for (let i = 0; i < 20 && !mine; i++) {
+          if (i) await new Promise((r) => setTimeout(r, 1500));
+          listed = await step({ action: 'windows' });
+          for (const w of ours(listed, formTitle)) pids.add(w.pid);
+          mine = ours(listed, formTitle).find((w) => w.title === formTitle) || null;
+        }
+        controls = await step({ action: 'controls', window: formTitle });
+        typed = await step({ action: 'type', window: formTitle, text: '灯窗 lamplit' });
+        read = await step({ action: 'read', window: formTitle });
+        clicked = await step({ action: 'click', window: formTitle, target: 'OK-btn' });
+        after = await step({ action: 'windows' });
+        for (const w of ours(after, formTitle)) pids.add(w.pid);
+      } finally {
+        // Whatever happened: the form goes (found by its listing, else by its title).
+        for (const pid of pids) spawnSync('taskkill', ['/f', '/t', '/pid', String(pid)], { windowsHide: true });
+        for (const t of [formTitle, `${formTitle}-clicked`]) spawnSync('taskkill', ['/f', '/t', '/fi', `WINDOWTITLE eq ${t}`], { windowsHide: true });
+      }
       check('RD10 desktop_ui on the bots\' desktop: the window is listed there (and the listing says how that desktop stands), its controls, typing, reading and pressing a button all work',
         mine && /window\(s\) open there/.test(listed.botsDesktop || '') && !(listed.windows || []).some((w) => w.desktop === 'yours' && w.title === formTitle)
         && controls.desktop === 'bots' && (controls.controls || []).some((c) => c.name === 'OK-btn')
@@ -365,7 +381,12 @@ async function ciAccountChecks({ check, W, helper, probe, target, sysEnv }) {
     const opened = await viaHelper(`start "" powershell.exe -NoProfile -NonInteractive -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object Windows.Forms.Form; $f.Text = '${formTitle}'; [Windows.Forms.Application]::Run($f)" & ping -n 6 127.0.0.1 >nul & echo started`);
     const U = await import('../src/winui.mjs');
     let listed = null;
-    try { listed = await U.runWinUi({ action: 'windows' }, { timeoutMs: 60000 }); } catch (err) { listed = { error: err.message }; }
+    // Until the form is up (a slow machine), at most half a minute.
+    for (let i = 0; i < 20; i++) {
+      if (i) await new Promise((r) => setTimeout(r, 1500));
+      try { listed = await U.runWinUi({ action: 'windows' }, { timeoutMs: 60000 }); } catch (err) { listed = { error: err.message }; }
+      if ((listed?.windows || []).some((w) => w.desktop === 'bots' && String(w.title || '').includes(formTitle))) break;
+    }
     const titled = (desk) => (listed?.windows || []).filter((w) => w.desktop === desk && String(w.title || '').includes(formTitle));
     check('RD8f a window the account opened is on the bots\' desktop for desktop_ui (UI Automation there, as the account), and not on the hub\'s',
       /started/.test(opened.out) && titled('bots').length === 1 && titled('yours').length === 0, JSON.stringify({ listed, opened: opened.out.slice(0, 200) }));

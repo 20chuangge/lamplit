@@ -41,7 +41,7 @@ import { listVault, revealVault } from './vault.mjs';
 import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
 import { planAdjust, botPatchOf } from './adjust.mjs';
 import { runWinUi, WINUI_ACTIONS } from './winui.mjs';
-import { createPhone, findAdb, appLabel, PHONE_ACTIONS, PHONE_LOOK_ACTIONS, SENSITIVE_TAP, phoneStepKind, PHONE_KIND_LABEL } from './phone.mjs';
+import { createPhone, findAdb, appLabel, PHONE_ACTIONS, PHONE_LOOK_ACTIONS, SENSITIVE_TAP, phoneStepKind, PHONE_KIND_LABEL, albumFiles, ALBUM_MAX_FILES, ALBUM_MAX_BYTES, ALBUM_APP_VERSION } from './phone.mjs';
 import { CLI_AGENTS, CLI_AGENT_IDS, newTaskDir, runCliAgent } from './cliagents.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -966,7 +966,9 @@ export function createRegistry(deps) {
       'Work the human\'s Android phone like a person holding it: the one with Lamplit\'s 「让机器人用这部手机」 turned on (no cable, from every machine it is paired with), or one plugged into this computer with USB debugging. ' +
       'Actions: status (connected phones, locked or not, the app in front), look (a screenshot saved in the workspace plus the list of texts, buttons and boxes on screen with where to tap), ' +
       'tap (target = the words on it, or index i from look, or x/y; long=true for a long press), swipe (direction up/down/left/right; "up" scrolls down the page), ' +
-      'type (text into the box with the cursor, or the box given by target; Chinese works; submit=true presses enter), key (back, home, enter, recent, delete, search), open (an app by its everyday name like 小红书 or its package), apps (installed apps). ' +
+      'type (text into the box with the cursor, or the box given by target; Chinese works; submit=true presses enter), key (back, home, enter, recent, delete, search), open (an app by its everyday name like 小红书 or its package), apps (installed apps), ' +
+      `save_to_album (paths = workspace files, in order: pictures and videos become the newest in the phone's gallery, first file first, so 「从相册选择」 shows them at the top; other files go to Downloads; up to ${ALBUM_MAX_FILES} files / ${ALBUM_MAX_BYTES / (1024 * 1024)} MB; machine = the machine the phone is connected to, when it is not this one). ` +
+      'Whenever files must get onto the phone (to post them from an app there), use save_to_album - never put them on a public file host or a download link. ' +
       'Work in small steps: look, do one thing, look again. Looking never asks the human; tapping, typing and opening apps ask unless they allowed it for that app; anything that pays, sends, publishes or deletes asks every time. ' +
       'If the phone is locked, ask the human to unlock it - never try yourself. Never type passwords or payment codes: the human does that.',
     risk: (args) => (PHONE_LOOK_ACTIONS.has(String(args?.action || '')) ? { risk: RISK.LOW } : { risk: RISK.MEDIUM }),
@@ -975,6 +977,11 @@ export function createRegistry(deps) {
     async escalate(args, ctx) {
       const action = String(args?.action || '');
       if (PHONE_LOOK_ACTIONS.has(action)) return null;
+      // The human's own files onto their own phone (1.5.65): a phone step like opening an app, not a send.
+      if (action === 'save_to_album') {
+        const n = (Array.isArray(args?.paths) ? args.paths : [args?.paths]).filter(Boolean).length;
+        return { risk: RISK.MEDIUM, reason: `把工作区里的 ${n} 个文件放进你的手机相册${args?.machine ? `（手机连在「${String(args.machine).slice(0, 30)}」上）` : ''}` };
+      }
       const seen = phoneOf(ctx).labelFor(args || {});
       // Enter after typing: looking something up in a search box is ordinary;
       // in any other box (a comment, a message) it may send.
@@ -1009,18 +1016,61 @@ export function createRegistry(deps) {
         submit: { type: 'boolean', description: 'type: press enter afterwards.' },
         key: { type: 'string', enum: ['back', 'home', 'enter', 'recent', 'delete', 'search', 'menu'] },
         app: { type: 'string', description: 'open: 小红书, 微信, 抖音 … or a package name.' },
+        paths: { type: 'array', items: { type: 'string' }, description: 'save_to_album: workspace-relative files, in the order they should appear (the first is the newest in the gallery).' },
+        machine: { type: 'string', description: 'save_to_album: the machine the phone is connected to (bot_list otherMachines), when it is not this one; the files are sent there first.' },
       },
       required: ['action'],
       additionalProperties: false,
     },
     async run(args, ctx) {
+      const action = String(args?.action || '');
       try {
-        return await phoneOf(ctx).act(String(args?.action || ''), { ...args });
+        if (action === 'save_to_album') return await saveToPhoneAlbum(args || {}, ctx);
+        return await phoneOf(ctx).act(action, { ...args });
       } catch (err) {
         throw toolError(err.code || 'PHONE_FAILED', err.message);
       }
     },
   });
+
+  /**
+   * save_to_album (1.5.65): the files checked here (workspace only, the caps),
+   * then onto the phone connected here - or, with machine, sent to that machine
+   * of the human's first (its /api/uploads) and saved by the phone there.
+   */
+  async function saveToPhoneAlbum(args, ctx) {
+    const root = ctx?.workspaceDir || deps.workspaceDir || process.cwd();
+    const files = await albumFiles(root, Array.isArray(args.paths) ? args.paths : [args.paths]);
+    const peers = typeof deps.getPeers === 'function' ? deps.getPeers() : null;
+    const machine = String(args.machine || '').trim();
+    const peer = machine ? peers?.find(machine) : null;
+    if (!peer) {
+      // No machine named, or this one (no other machine has that name): the phone connected here.
+      try {
+        return await phoneOf(ctx).act('save_to_album', { files, device: args.device });
+      } catch (err) {
+        if (err.code === 'PHONE_NOT_CONNECTED' && machine) err.message += ` (No other machine is called "${machine}": bot_list otherMachines has their names.)`;
+        else if (err.code === 'PHONE_NOT_CONNECTED' && peers?.list?.().length) err.message += ' If the phone is connected to another of the human\'s machines, call save_to_album again with machine = that machine.';
+        throw err;
+      }
+    }
+    if (files.some((f) => f.size > 25 * 1024 * 1024)) throw toolError('FILE_TOO_LARGE', 'to another machine a file can be at most 25 MB: put the bigger ones on the phone from a machine it is connected to');
+    const there = [];
+    for (const f of files) {
+      const bytes = await readInside(f.root, f.abs);
+      const out = await peers.json(peer, 'POST', '/api/uploads', { raw: bytes, headers: { 'x-file-name': encodeURIComponent(f.name) }, timeoutMs: 120000 });
+      there.push(out.path);
+    }
+    let res;
+    try {
+      res = await peers.call(peer, 'POST', '/api/phone/album', { body: { paths: there, device: args.device || '' }, timeoutMs: 22 * 60 * 1000 });
+    } catch (err) { throw toolError(err.code || 'PEER_ERROR', err.message); }
+    const out = await res.json().catch(() => ({}));
+    if (res.status === 404 && (!out?.error || out.error.code === 'NOT_FOUND')) throw toolError('PEER_TOO_OLD', `Lamplit on 「${peer.name}」 is older than ${ALBUM_APP_VERSION} and cannot do this yet: the human needs to update it there.`);
+    if (!res.ok) throw toolError(out?.error?.code || 'PHONE_FAILED', `「${peer.name}」: ${out?.error?.message || `HTTP ${res.status}`}`);
+    const back = new Map(there.map((p, i) => [p, files[i].rel]));
+    return { ...out, machine: peer.name, saved: (out.saved || []).map((s) => ({ ...s, path: back.get(s.path) || s.path })), ...(out.failed ? { failed: out.failed.map((s) => ({ ...s, path: back.get(s.path) || s.path })) } : {}) };
+  }
 
   // --- network ------------------------------------------------------------
 

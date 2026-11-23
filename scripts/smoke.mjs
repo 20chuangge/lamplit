@@ -258,6 +258,14 @@ async function main() {
     await stage('1.5.64 folder upload: to another machine - the layout kept there, progress', async () => (await import('./smoke-folder-1564.mjs')).folderPeerChecks({ check, api, base, rawFetch, startServerChild, stopProcess, seedHome }));
     await stage('1.5.64 folder upload: an older Lamplit there - flat with a note, 10 a message', async () => (await import('./smoke-folder-1564.mjs')).folderOldPeerChecks({ check }));
     await stage('1.5.64 folder upload: the page - 选文件夹, a dropped folder, the chip, the card, 正在传', async () => (await import('./smoke-folder-1564.mjs')).folderPageChecks({ check, readText }));
+    // 1.5.65: workspace files into the phone's album - never a public file host again (fakes only: no real phone).
+    await stage('1.5.65 phone album: the rules - workspace files only, 50 files / 200 MB, the order, safe names, the adb command lines', async () => (await import('./smoke-album-1565.mjs')).albumRuleChecks({ check }));
+    await stage('1.5.65 phone album: over the cable - checked copies pushed, the phone\'s clock, the scan', async () => (await import('./smoke-album-1565.mjs')).albumAdbChecks({ check }));
+    await stage('1.5.65 phone album: through the Lamplit app - one-time addresses for that phone only, MediaStore\'s request', async () => (await import('./smoke-album-1565.mjs')).albumAppChecks({ check }));
+    await stage('1.5.65 phone album: an older phone app - update to 1.5.65, or the cable', async () => (await import('./smoke-album-1565.mjs')).albumOldAppChecks({ check }));
+    await stage('1.5.65 phone album: the tool, its approval, another machine\'s phone, the bots\' guidance', async () => (await import('./smoke-album-1565.mjs')).albumToolChecks({ check, toolsMod, readText }));
+    await stage('1.5.65 phone album: the hub\'s routes', async () => (await import('./smoke-album-1565.mjs')).albumRouteChecks({ check, api, readText }));
+    await stage('1.5.65 phone album: the Android app and the page\'s receipt', async () => { const m = await import('./smoke-album-1565.mjs'); await m.albumAndroidChecks({ check, readText }); await m.albumPageChecks({ check, readText }); });
     // 1.5.64: what the user's content group ran into on 11-23.
     await stage('1.5.64: another machine\'s group draws its members by name and face - task board, hand-off, sender', async () => (await import('./smoke-group-1564.mjs')).remoteGroupFaceChecks({ check, readText, api, rawFetch, startServerChild, stopProcess, seedHome }));
     await stage('1.5.64: messages sent in a row start one turn', async () => (await import('./smoke-group-1564.mjs')).burstChecks({ check, toolsMod, groupsMod, startServerChild, stopProcess, seedHome, rawFetch }));

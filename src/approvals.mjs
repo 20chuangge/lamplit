@@ -198,6 +198,8 @@ export function permissionKey(toolName, args = {}, { workspaceDir = '', phoneApp
   }
   // The phone (1.3.0): allowed for good per app ("在手机的小红书里点、滑、输入").
   if (name === 'phone') {
+    // Files into the album (1.5.65): its own 「以后都允许」, never one for every step on the phone.
+    if (args?.action === 'save_to_album') return { key: 'phone:album', label: '把文件放进手机相册' };
     const pkg = String(phoneApp?.pkg || '').trim();
     return pkg ? { key: `phone:${pkg}`, label: `在手机的「${phoneApp.label || pkg}」里点、滑、输入、打开` } : { key: 'phone', label: '在手机上点、滑、输入' };
   }

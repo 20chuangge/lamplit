@@ -91,7 +91,7 @@ import * as backupModule from './backup.mjs';
 import { createVideoJobs } from './videojobs.mjs';
 import { createFeishu, loadFeishu } from './feishu.mjs';
 import { createPeers, friendlyHostname } from './peers.mjs';
-import { createPhone, findAdb, imageExt } from './phone.mjs';
+import { createPhone, findAdb, imageExt, albumFiles } from './phone.mjs';
 import { createPhoneLink, makePhoneExec } from './phonelink.mjs';
 import { createPages, PAGE_HEADERS } from './pages.mjs';
 import { collectBriefing, briefingInstruction } from './briefing.mjs';
@@ -2762,7 +2762,7 @@ function phoneDevice(req, state) {
 
 route('POST', /^\/api\/phone\/agent$/, async (req, _res, { body, state }) => {
   const device = phoneDevice(req, state);
-  state.phoneLink.register(device.id, { enabled: Boolean(body?.enabled), model: String(body?.model || ''), name: device.name || '', sdk: body?.sdk, phoneId: String(body?.phoneId || '') });
+  state.phoneLink.register(device.id, { enabled: Boolean(body?.enabled), model: String(body?.model || ''), name: device.name || '', sdk: body?.sdk, phoneId: String(body?.phoneId || ''), caps: Array.isArray(body?.caps) ? body.caps : [] });
   return { ok: true };
 });
 
@@ -2771,6 +2771,36 @@ route('POST', /^\/api\/phone\/jobs\/(?<id>[\w-]+)$/, async (req, _res, { params,
   const taken = state.phoneLink.resolve(params.id, device.id, body || {});
   return { ok: taken };
 }, { maxBody: 16 * 1024 * 1024 });
+
+// --- workspace files into the phone's album (1.5.65) -----------------------------
+//   GET  /api/phone/files/:token    the paired phone a save_media step went to fetches one file
+//                                   (the token is made for that phone and that file, and goes when the step ends)
+//   POST /api/phone/album {paths, device?}  another of the human's machines asks: put these files
+//                                   (just sent here with /api/uploads) on the phone connected here
+route('GET', /^\/api\/phone\/files\/(?<token>[\w-]+)$/, async (req, res, { params, state }) => {
+  const device = phoneDevice(req, state);
+  const file = state.phoneLink.staged(params.token, device.id);
+  if (!file) return errorResponse(res, 404, 'FILE_NOT_FOUND', 'no such file for this phone (the step is over)');
+  // Opened through the checked open, now: a link swapped in since the bot named the file is refused.
+  const opened = await statInside(file.root, file.abs).catch(() => null);
+  if (!opened?.stat?.isFile()) { await opened?.fh.close().catch(() => {}); return errorResponse(res, 404, 'FILE_NOT_FOUND', 'the file is gone'); }
+  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': opened.stat.size, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+  const stream = opened.fh.createReadStream();
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
+  return undefined;
+});
+
+route('POST', /^\/api\/phone\/album$/, async (req, _res, { body, state }) => {
+  if (!fromAnotherMachine(req, state)) throw httpError(403, 'NOT_A_MACHINE', 'only another of your machines can ask this');
+  try {
+    const files = await albumFiles(state.workspaceDir, Array.isArray(body?.paths) ? body.paths : []);
+    return await state.phone.saveToAlbum({ files, device: String(body?.device || '') });
+  } catch (err) {
+    const asked = ['PHONE_BAD_ARGS', 'PHONE_TOO_MANY_FILES', 'PHONE_FILES_TOO_LARGE', 'PHONE_OUTSIDE_WORKSPACE', 'PHONE_FILE_NOT_FOUND'].includes(err.code);
+    throw httpError(asked ? 400 : 409, err.code || 'PHONE_FAILED', err.message);
+  }
+});
 
 /**
  * This machine's name in the owner's lists: the one given when it was added

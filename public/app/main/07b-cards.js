@@ -291,6 +291,28 @@ function focusNewCard(card) {
   }
 }
 
+/** The phone step that puts workspace files into the album (1.5.65), for describeTool. */
+function albumStepText(out, args, set) {
+  const files = Array.isArray(args.paths) ? args.paths.map(String) : [];
+  out.label = '放进手机相册';
+  out.title = '想把文件放进你的手机相册';
+  out.impact = '工作区里的文件直接传到你自己的手机上：图片和视频进相册，其他文件进「下载」。不经过任何公共网站。';
+  out.detail = files.length ? `${files.length} 个文件` : '';
+  if (files.length) set('文件', '文件', files.slice(0, 9).join('、') + (files.length > 9 ? `，等 ${files.length} 个` : ''));
+  if (args.machine) set('手机连在', '手机连在', args.machine);
+}
+
+/** What save_to_album put on the phone (1.5.65), for the step's line: 「放进了手机相册：9 张」. */
+function albumReceiptText(out) {
+  const p = Number(out?.pictures) || 0;
+  const v = Number(out?.videos) || 0;
+  const d = Number(out?.downloads) || 0;
+  const album = v ? [p ? `${p} 张图` : '', `${v} 段视频`].filter(Boolean).join('、') : p ? `${p} 张` : '';
+  const text = [album ? `放进了手机相册：${album}` : '', d ? `放进了手机的「下载」：${d} 个文件` : ''].filter(Boolean).join('；');
+  const missed = Array.isArray(out?.failed) ? out.failed.length : 0;
+  return missed ? `${text}（${missed} 个没放成）` : text;
+}
+
 /* --- receipts: what actually happened --------------------------------- */
 function receiptRow(kind, text, undo = null) {
   const row = el('div', `approval-receipt ${kind}`);

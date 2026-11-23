@@ -664,3 +664,148 @@ export async function columnChecks({ check, readText, browserMod, toolsMod, skip
     fs.rmSync(ws, { recursive: true, force: true });
   }
 }
+
+// ---------------------------------------------------------------------------
+// G65-8: every way the human answers closes the open question - once
+// (the collaboration eval: after 「扫好了」 in the group every post_draft of 发布 was refused)
+// ---------------------------------------------------------------------------
+export async function answerChecks({ check, toolsMod, groupsMod, readText }) {
+  /** Counts the times the open question was really closed (true), not just looked at. */
+  const spy = (rt) => {
+    const closed = [];
+    const spoke = rt.humanSpoke.bind(rt);
+    rt.humanSpoke = (id) => { const r = spoke(id); if (r) closed.push(id); return r; };
+    return closed;
+  };
+  const ask = (rt, botId = 'g65pub', turnId = 'turn_g65_q') => {
+    rt.pendingHuman = rt.pendingHuman || new Map();
+    rt.pendingHuman.set(botId, { kind: 'takeover', text: '需要你接管屏幕：在打开的知乎页面扫码登录', turnId, at: Date.now() });
+  };
+
+  // 1. In the member's own chat (the page, the phone's page): a new turn, or into the turn at work. 「我弄好了，继续」 is that message.
+  {
+    const r = await teamRig({ toolsMod, groupsMod, script: () => say('好。') });
+    const closed = spy(r.rt);
+    ask(r.rt);
+    await r.rt.runTurn({ botId: 'g65pub', text: '我弄好了，继续', source: 'chat' });
+    const viaTurn = r.rt.pendingFor('g65pub') === null && closed.length === 1;
+    ask(r.rt);
+    const busy = { controller: new AbortController(), botId: 'g65pub', task: '发知乎', startedAt: Date.now(), inbox: [], depth: 1, working: true };
+    r.rt.active.set('turn_g65_work', busy);
+    await r.rt.aside({ botId: 'g65pub', text: '扫好了', busy, source: 'chat' });
+    r.rt.active.delete('turn_g65_work');
+    const viaAside = r.rt.pendingFor('g65pub') === null && closed.length === 2;
+    const chat = await readText('../public/app/main/05-chat.js');
+    const settings = await readText('../public/app/main/08-settings.js');
+    check('G65-8a in the member\'s own chat - a new turn, or a word into the turn at work - the open question closes, once each; the takeover card\'s 「我弄好了，继续」 (in the chat and in the full-window view) is that same message',
+      viaTurn && viaAside && /input\.value = '我弄好了，继续';\s*await send\(\);/.test(chat) && /input\.value = '我弄好了，继续';\s*await send\(\);/.test(settings),
+      JSON.stringify({ viaTurn, viaAside, closed }));
+    r.done();
+  }
+
+  // 2. On a card: a scheduled run stopped on an approval card; the human answers that card (page, phone, Feishu, another machine).
+  {
+    const r = await teamRig({
+      toolsMod, groupsMod,
+      script: ({ who, messages }) => (who === 'pub' && !messages.some((m) => m.role === 'tool') ? call('post_draft', { channel: '知乎', title: '第一次打开', body: '正文' }) : say('停在确认卡上了。')),
+    });
+    r.rt.approvals.request = (req) => { r.cards.push(req); const p = Promise.resolve({ decision: 'needs_approval', approval: { id: 'ap_g65_card' } }); p.record = { id: 'ap_g65_card' }; return p; };
+    const res = await r.rt.runTurn({ botId: 'g65pub', text: '定时发知乎', source: 'routine', unattended: true });
+    const opened = r.rt.pendingFor('g65pub');
+    const other = r.rt.humanAnswered('g65pub', { turnId: 'turn_g65_someother' });
+    const first = r.rt.humanAnswered('g65pub', { turnId: res.turnId });
+    const again = r.rt.humanAnswered('g65pub', { turnId: res.turnId });
+    const server = await readText('../src/server.mjs');
+    check('G65-8b a scheduled run stopped on its card leaves the question open (确认「…」); answering THAT card closes it, exactly once - another card of the bot does not; the page / phone / another machine\'s route and Feishu\'s both do it',
+      res.status === 'needs_approval' && opened?.kind === 'approval' && opened.turnId === res.turnId && other === false && first === true && again === false
+      && server.includes('state.runtime.humanAnswered?.(record.botId, { turnId: record.turnId });') && /runtime\.humanAnswered\?\.\(record\.botId, \{ turnId: record\.turnId \}\);\s*bus\.emit\(\{ type: 'approval\.decided'/.test(server),
+      JSON.stringify({ status: res.status, opened, other, first, again }));
+    r.done();
+  }
+
+  // 3. In the group, the eval's case: a board task raises the takeover; 「扫好了」 in the group; the member goes on and its post is shown.
+  {
+    let drafted = '';
+    const r = await teamRig({
+      toolsMod, groupsMod,
+      script: ({ who, last, all, messages }) => {
+        if (who === 'lead' && /任务板做完了/.test(last)) return say('发好了。');
+        if (who === 'lead') return call('group_plan', { tasks: [{ title: '在知乎发第 1 条', owner: '发布', brief: '登录后发' }] });
+        if (who === 'pub' && /用户的回答：扫好了/.test(all)) {
+          const tool = messages.filter((m) => m.role === 'tool');
+          if (!tool.length) return call('post_draft', { channel: '知乎', title: '第一次打开', body: '正文' });
+          drafted = String(tool[tool.length - 1].content || '');
+          return say('知乎第 1 条发出去了。');
+        }
+        if (who === 'pub') return messages.some((m) => m.role === 'tool') ? say('等你扫码。') : call('request_takeover', { reason: '在打开的知乎页面扫码登录' });
+        return say('好。');
+      },
+    });
+    const closed = spy(r.rt);
+    await r.rt.routeGroupMessage({ group: r.group, text: '先发第一条', turnId: 'turn_g65_board', fromHuman: true });
+    const plan = await until(() => { const p = r.rt.plans?.get(r.group.id); return p?.status === 'waiting' ? p : null; }, 5000);
+    const before = r.rt.pendingFor('g65pub');
+    const took = await r.rt.answerBoard(r.group, '扫好了');
+    await until(() => r.rt.plans.get(r.group.id)?.status === 'done', 5000);
+    check('G65-8c in the group (the eval\'s case): a board task stops on the takeover, the human says 「扫好了」 in the group - that closes the question, once; the member goes back to it and its post_draft is shown on a card (not HUMAN_DECISION_PENDING) and the board ends done',
+      Boolean(plan) && before?.kind === 'takeover' && took === true && closed.filter((id) => id === 'g65pub').length === 1 && r.cards.length === 1
+      && /"approved":true/.test(drafted) && !/HUMAN_DECISION_PENDING/.test(drafted) && r.rt.plans.get(r.group.id)?.status === 'done',
+      JSON.stringify({ before: before?.kind, took, closed, cards: r.cards.length, drafted: drafted.slice(0, 120), status: r.rt.plans.get(r.group.id)?.status }));
+    // Not on a board: any word of the human in the group closes its members' questions - once, also when it is held a moment.
+    ask(r.rt);
+    closed.length = 0;
+    r.rt.gatherMs = 150;
+    await r.rt.routeGroupMessage({ group: r.group, text: '视频号也可以发了', turnId: 'turn_g65_g2', fromHuman: true });
+    await until(() => r.ev.some((e) => e.type === 'turn.end' && e.turnId === 'turn_g65_g2'), 4000);
+    check('G65-8d a word in the group off the board closes its members\' questions once - not again when the message comes back after the short hold',
+      r.rt.pendingFor('g65pub') === null && closed.filter((id) => id === 'g65pub').length === 1, JSON.stringify(closed));
+    r.done();
+  }
+
+  // 4. From the phone: its app uses the page's routes (1-3 above); Feishu is its own way in.
+  {
+    const r = await teamRig({ toolsMod, groupsMod, script: () => say('好。') });
+    const closed = spy(r.rt);
+    ask(r.rt);
+    await r.rt.runTurn({ botId: 'g65pub', text: '扫好了', source: 'feishu' });
+    const viaTurn = r.rt.pendingFor('g65pub') === null && closed.length === 1;
+    ask(r.rt);
+    const busy = { controller: new AbortController(), botId: 'g65pub', task: '发知乎', startedAt: Date.now(), inbox: [], depth: 1, working: true };
+    r.rt.active.set('turn_g65_work', busy);
+    await r.rt.aside({ botId: 'g65pub', text: '扫好了', busy, source: 'feishu' });
+    r.rt.active.delete('turn_g65_work');
+    check('G65-8e from the phone in Feishu - a new turn or a word into the turn at work - the question closes, once each (the phone app itself uses the same routes as the page)',
+      viaTurn && r.rt.pendingFor('g65pub') === null && closed.length === 2, JSON.stringify(closed));
+    r.done();
+  }
+
+  // 5. Through another machine: the group lives here, the member there. The answer goes along with its task.
+  {
+    const sent = [];
+    const r = await teamRig({
+      toolsMod, groupsMod,
+      script: ({ who, last }) => (who === 'lead' && /任务板做完了/.test(last) ? say('发好了。') : say('好。')),
+    });
+    const far = { id: 'g65far', name: '远端发布', role: '发布', remote: { machine: '腾讯云', botId: 'bot-far' } };
+    const group = { ...r.group, members: [...r.group.members, far] };
+    let n = 0;
+    r.rt.getPeers = () => ({
+      find: () => ({ name: '腾讯云' }),
+      json: async (_peer, method, p, opts = {}) => {
+        if (method === 'POST') { sent.push(opts.body); n += 1; return { turnId: `turn_far_${n}` }; }
+        return [{ turnId: `turn_far_${n}`, role: 'assistant', text: '知乎第 1 条发出去了。' }, { turnId: `turn_far_${n}`, role: 'status', status: 'success' }];
+      },
+    });
+    const plan = { id: `plan_g65_far_${Date.now()}`, groupId: group.id, request: '发知乎', coordinatorId: 'g65lead', status: 'waiting', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      tasks: [{ id: 't1', title: '在知乎发第 1 条', owner: 'g65far', brief: '', deliverable: '', needs: [], status: 'waiting_human', question: '需要你接管屏幕：扫码登录', answer: '', result: '' }] };
+    await r.rt.boardChanged(plan);
+    const took = await r.rt.answerBoard(group, '扫好了');
+    await until(() => r.rt.plans.get(group.id)?.status === 'done', 9000);
+    const server = await readText('../src/server.mjs');
+    check('G65-8f a member on another machine: 「扫好了」 in the group goes to that machine with the task, marked as the human\'s answer (handoff.answered), once - and that machine\'s route closes the question when it sees it',
+      took === true && sent.length === 1 && sent[0]?.handoff?.answered === true && /用户的回答：扫好了/.test(sent[0]?.text || '') && r.rt.plans.get(group.id)?.status === 'done'
+      && server.includes('if (h?.answered === true) state.runtime.humanSpoke?.(bot.id);'),
+      JSON.stringify({ took, sent: sent.map((b) => ({ answered: b?.handoff?.answered, text: String(b?.text || '').slice(0, 60) })), status: r.rt.plans.get(group.id)?.status }));
+    r.done();
+  }
+}

@@ -820,7 +820,17 @@ export class AgentRuntime {
 
   /** The human spoke to the bot: whatever it asked them is answered (or moved past). */
   humanSpoke(botId) {
-    this.pendingHuman?.delete(botId);
+    return Boolean(botId && this.pendingHuman?.delete(botId));
+  }
+
+  /**
+   * The human answered a card (1.5.65): only the card the open question is about closes it - the one
+   * a scheduled run stopped on. -> true when it closed it. (The card's answer is the human speaking.)
+   */
+  humanAnswered(botId, { turnId = null } = {}) {
+    const p = this.pendingHuman?.get(botId);
+    if (!p || (turnId && p.turnId !== turnId)) return false;
+    return this.humanSpoke(botId);
   }
 
   /** The claimed turn has started (or will not): the bot counts as busy by its turn alone. */
@@ -1013,7 +1023,8 @@ export class AgentRuntime {
   async routeGroupMessage({ group, text, turnId, parts = null, fromHuman = false, files = false, held: wasHeld = false }) {
     const fail = (err) => this.bus.emit({ type: 'error', groupId: group.id, turnId, message: err.message });
     // The human spoke in the group: a question a member left open is answered here or moved past (1.5.65).
-    if (fromHuman) for (const m of group.members || []) if (!m.remote) this.humanSpoke?.(m.id);
+    // Once per message, before it is held a moment (the held call comes back here with held: true).
+    if (fromHuman && !wasHeld) for (const m of group.members || []) if (!m.remote) this.humanSpoke?.(m.id);
     // The board runs (1.5.64; 11-23: cover 5 went to 发布, 画师 kept making it for 10 minutes):
     // the coordinator hears it and may stop or redirect a step - not whichever member is busy.
     const plan = this.groups ? await this.groupPlan(group.id).catch(() => null) : null;
@@ -3038,7 +3049,12 @@ export class AgentRuntime {
     ].filter(Boolean).join('\n\n');
     let res;
     if (!owner) res = { status: 'failed', summary: '负责人已经不在群里' };
-    else if (owner.remote) res = await this.runRemoteGroupTurn({ group, member: owner, text: prompt, role: 'task' });
+    else if (owner.remote) {
+      // The human answered its question in the group: that machine closes the question too (1.5.65).
+      const answered = Boolean(task.answeredRemote);
+      delete task.answeredRemote;
+      res = await this.runRemoteGroupTurn({ group, member: owner, text: prompt, role: 'task', answered });
+    }
     else {
       // Its turn has a known id (1.5.64): the coordinator can stop it (task_change) or tell it something.
       task.turnId = uid('turn');
@@ -3131,6 +3147,11 @@ export class AgentRuntime {
     if (!waiting) return false;
     await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text) });
     waiting.answer = String(text).slice(0, 2000);
+    // Their answer closes what the member asked (1.5.65; the collaboration eval: after 「扫好了」 in the group
+    // every post_draft of 发布 was refused as still waiting). A member on another machine is told with the task.
+    const ownerHere = (group.members || []).find((m) => m.id === waiting.owner);
+    if (!ownerHere?.remote) this.humanSpoke?.(waiting.owner);
+    else waiting.answeredRemote = true;
     waiting.status = 'todo';
     await this.boardChanged(plan);
     const wake = this.planWakers?.get(plan.id);
@@ -3143,7 +3164,7 @@ export class AgentRuntime {
    * A group member that lives on another machine takes its turn there: it gets
    * the recent group conversation, and its answer is posted here under its name.
    */
-  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false, kickoff = false, parts = null }) {
+  async runRemoteGroupTurn({ group, member, text, role, turnId = null, recordUser = false, kickoff = false, parts = null, answered = false }) {
     const id = turnId || uid('turn');
     if (recordUser) for (const p of parts || [String(text)]) await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(p), turnId: id });
     // A new group's introductions (1.5.63): marked here and, through the handoff, on the member's machine too.
@@ -3170,7 +3191,7 @@ export class AgentRuntime {
       const r = await askPeerBot(peers, peer, {
         botId: member.remote.botId,
         text: prompt,
-        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」`, machine: this.machineName?.() || '' }, ...(kickoff ? { kickoff: true } : {}) },
+        handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」`, machine: this.machineName?.() || '' }, ...(kickoff ? { kickoff: true } : {}), ...(answered ? { answered: true } : {}) },
         workspaceDir: this.config.workspaceDir,
       });
       status = r.status === 'success' ? 'success' : (r.status || 'failed');

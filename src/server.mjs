@@ -664,6 +664,8 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
         const record = approvals.decide(id, decision, '飞书', 'feishu');
         if (!record) throw new Error('找不到这个审批');
         if (record.error) throw new Error(record.error);
+        // Answered in Feishu: the question that card was closes, as on the page (1.5.65).
+        runtime.humanAnswered?.(record.botId, { turnId: record.turnId });
         bus.emit({ type: 'approval.decided', approvalId: record.id, botId: record.botId, turnId: record.turnId, status: record.status, note: record.note, late: Boolean(record.late) });
       },
     },
@@ -3446,6 +3448,8 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   // The bot is busy with something the human asked: answer now (no second
   // turn racing the first), and hand the message to the running turn.
   // Also when the work is a teammate's hand-off or a routine (1.2.165).
+  // A group on another machine passes on the human's answer to what this bot asked (1.5.65): the question closes.
+  if (h?.answered === true) state.runtime.humanSpoke?.(bot.id);
   const busyNow = !h && state.runtime.busyTurn?.(bot.id, { any: true });
   // Said to a member that has work on a group's task board (1.5.65): the row keeps it and the coordinator hears it.
   if (!h) state.runtime.noteDirectWord?.(bot.id, text, { turnId: busyNow ? null : turnId }).catch(() => {});
@@ -5653,6 +5657,9 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
   // A draft the human made too long (1.5.45): said so, the card stays open.
   if (record.editError) throw httpError(400, 'DRAFT_INVALID', record.error);
   if (record.error) throw httpError(409, 'APPROVAL_CONFLICT', record.error);
+  // The card a stopped run left open was the question to the human (1.5.65): answered here (this page, the phone,
+  // another machine passing it on), the next job for that bot no longer waits on it.
+  state.runtime.humanAnswered?.(record.botId, { turnId: record.turnId });
   // A routine's card (1.3.2): "现在跑一次（我看着）" runs that routine now, attended,
   // so the same step asks again and waits for the human; "不用了" just puts it away.
   if (record.status === 'dismissed') {

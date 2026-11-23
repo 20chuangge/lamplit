@@ -23,5 +23,20 @@ export function childEnv(source = process.env, { keep = [] } = {}) {
   for (const key of keep) {
     if (!HUB_OWN.test(key) && source[key] !== undefined) env[key] = source[key];
   }
+  return dropPwshModulePath(env);
+}
+
+/**
+ * PSModulePath as PowerShell 7 leaves it (1.5.63). A hub started from a pwsh window inherits
+ * PowerShell 7's module folders ("...\PowerShell\7\Modules", "Documents\PowerShell\Modules");
+ * Windows PowerShell 5.1 started with them cannot load its own modules ("ConvertTo-SecureString
+ * ... the module could not be loaded"). Taken out, each PowerShell builds its own default again.
+ * Windows PowerShell's own value (WindowsPowerShell folders only) is left as it is. Changes env.
+ */
+export const PWSH7_MODULES = /\\PowerShell\\(?:7[^\\;]*\\)?Modules/i;
+export function dropPwshModulePath(env = process.env) {
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'psmodulepath' && PWSH7_MODULES.test(String(env[key] || ''))) delete env[key];
+  }
   return env;
 }

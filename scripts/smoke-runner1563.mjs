@@ -179,6 +179,15 @@ export async function runnerDesktopChecks({ check, skip, readText }) {
     && en.includes('"机器人的命令现在都不会运行：{0}。不会改用你的账户或你的桌面去跑。重启电脑通常就好了。"')
     && en.includes('在它自己的隐藏桌面上：碰不到你的个人文件夹和 Lamplit 的密钥，也看不到你的窗口、剪贴板和键盘。'));
 
+  // RD9: a hub started from a PowerShell 7 window: its PSModulePath would break every powershell.exe (5.1) it starts.
+  const C = await import('../src/childenv.mjs');
+  const pwsh7 = { PSModulePath: 'C:\\Users\\x\\Documents\\PowerShell\\Modules;C:\\Program Files\\PowerShell\\Modules;c:\\program files\\powershell\\7\\Modules;C:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\Modules', PATH: 'C:\\x' };
+  const ps51 = { Psmodulepath: 'C:\\Program Files\\WindowsPowerShell\\Modules;C:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\Modules' };
+  const kids = C.childEnv(pwsh7);
+  check('RD9 PowerShell 7\'s PSModulePath is dropped (hub start and every bot\'s command), Windows PowerShell\'s own kept',
+    !('PSModulePath' in C.dropPwshModulePath({ ...pwsh7 })) && !('PSModulePath' in kids) && kids.PATH === 'C:\\x'
+    && C.dropPwshModulePath({ ...ps51 }).Psmodulepath === ps51.Psmodulepath && server.includes("if (process.platform === 'win32') dropPwshModulePath(process.env);"));
+
   if (process.platform !== 'win32') {
     for (const id of ['RD3', 'RD4', 'RD5', 'RD8']) skip(`${id} the bots' desktop on Windows`, 'Windows only');
     return;
@@ -253,6 +262,8 @@ function ps(script, env = {}) {
 
 /** RD8: a throwaway local account on a CI machine (an administrator there), the real launch path. */
 async function ciAccountChecks({ check, W, helper, probe, target, sysEnv }) {
+  // As the hub does at start (server.mjs): a CI step's shell is pwsh, whose PSModulePath breaks powershell.exe 5.1.
+  (await import('../src/childenv.mjs')).dropPwshModulePath(process.env);
   const user = `lamplit-ci-${crypto.randomBytes(3).toString('hex')}`;
   const password = `Lp-${crypto.randomBytes(18).toString('base64url')}9!`;
   const box = path.join(process.env.SystemDrive || 'C:', `lamplit-ci-${crypto.randomBytes(4).toString('hex')}`);

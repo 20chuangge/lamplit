@@ -145,6 +145,11 @@ import { loadDeviceStore, describeAgent, deviceKind, mayPushUpdate } from './dev
 import { realPathOf } from './realpath.mjs';
 import { statInside, mkdirInside, readInside, writeInside } from './safefs.mjs';
 import { createUpdateChecker } from './updates.mjs';
+import { dropPwshModulePath } from './childenv.mjs';
+
+// Started from a PowerShell 7 window, every powershell.exe (5.1) the hub starts would fail to load
+// its own modules (1.5.63): PowerShell 7's PSModulePath goes, before anything is started.
+if (process.platform === 'win32') dropPwshModulePath(process.env);
 
 // One version for the hub and the app: package.json (shipped with every hub).
 const VERSION = (() => {

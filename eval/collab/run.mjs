@@ -39,6 +39,44 @@ function botSteps(trace, hubName) {
 /** Does that text name this workspace path (with / or, from Windows, \ between the parts)? */
 const mentions = (said, p) => said.includes(p) || said.includes(p.replace(/\//g, '\\\\'));
 
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const argsOf = (x) => { if (typeof x === 'string') { try { return JSON.parse(x); } catch { return {}; } } return x || {}; };
+/**
+ * What this run's members on the other machine made, wherever they put it (scenario 3, judged by content):
+ * the files they wrote (fs_write) that are still there, the files in this run's folder there they named in
+ * the group, and the copies the first hub fetched of those (from-machines/). The human's own files a member
+ * merely named (11-23: its old 选题库) are not among them: only what was written this run, or sits in its folder.
+ * -> [{ path, at, how: 'write' | 'named' | 'copy', from?, text }]
+ */
+export async function peerDeliverables(trace, hubB, folder) {
+  const ids = new Set(trace.bots.filter((b) => b.hub === 'B').flatMap((b) => [b.id, b.remoteId]).filter(Boolean));
+  const cands = new Map();
+  for (const e of trace.events) {
+    if (e.type !== 'tool.result' || e.name !== 'fs_write' || !ids.has(e.botId) || e.result?.error) continue;
+    const a = argsOf(e.args);
+    const p = String(e.result?.path || a.path || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    if (p && !cands.has(p)) cands.set(p, { at: e.at, how: 'write', text: String(a.content || '').slice(0, 4000) });
+  }
+  const fetched = [];
+  const inFolder = folder ? new RegExp(`${escapeRe(folder)}/[^\\s，。；;、）)」\`'"]+`, 'g') : null;
+  for (const m of trace.groupMessages || []) {
+    if (!ids.has(m.from)) continue;
+    const text = String(m.text || '');
+    // A machine's name may have a space in it (「腾讯云 -ubuntu」): the copy's path runs to its file extension.
+    for (const x of text.matchAll(/([^\s；;：:（(「]+?) → (from-machines\/[^；;）)」\n]+?\.[A-Za-z0-9]+)(?=[；;）)」\s]|$)/g)) fetched.push({ from: x[1], to: x[2], at: m.at });
+    if (inFolder) for (const x of text.matchAll(inFolder)) if (!x[0].endsWith('/') && !cands.has(x[0])) cands.set(x[0], { at: m.at, how: 'named', text: '' });
+  }
+  const out = [];
+  for (const [p, c] of cands) if (await hubB.fileSha(p).catch(() => null)) out.push({ path: p, ...c });
+  const mine = new Set(out.map((x) => x.path));
+  for (const f of fetched) {
+    if (!mine.has(f.from) && !(folder && f.from.startsWith(`${folder}/`))) continue;
+    const copy = (trace.files || []).find((x) => x.hub === 'A' && x.path === f.to);
+    if (copy) out.push({ path: f.to, at: copy.mtime || f.at, how: 'copy', from: f.from, text: copy.text || '' });
+  }
+  return out;
+}
+
 // The copies of the human's workspace, kept for the whole run and refreshed where a file changed (runId|url -> cache).
 const COPIES = new Map();
 
@@ -248,6 +286,7 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
       for (const f of d.added) trace.files.push({ hub: name, ...f, byEval: mentions(said, f.path) });
       trace.changedFiles = [...(trace.changedFiles || []), ...d.changed.map((f) => ({ hub: name, path: f.path })), ...d.gone.map((x) => ({ hub: name, path: x, gone: true }))];
     }
+    if (hubs.B?.via) trace.peerMade = await peerDeliverables(trace, hubs.B, folder).catch(() => []);
     for (const u of trace.uploads) {
       const hub = hubs[u.hub];
       let now = null;

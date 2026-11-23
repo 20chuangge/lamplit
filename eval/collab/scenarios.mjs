@@ -411,10 +411,25 @@ const s3 = {
   ],
   policy: carefulHuman,
   done: (h) => boardFinished(h) && stepsRan(h, 'peer-up'),
+  // The two things asked for, judged by what they are, wherever that machine's members put them (in this run's
+  // folder there, anywhere they wrote this run, or as the copies fetched to the first hub). The item the drop
+  // interrupted must be done once the link is back; a drop after both were done interrupted nothing (➖).
   extra: (trace) => {
-    const made = (trace.files || []).filter((f) => f.hub === 'B' && /^交付\/(选题|脚本)\.md$/.test(f.path));
+    const title = '另一台掉线又回来以后，那边的活接着做完了';
+    const made = [...(trace.peerMade || []), ...(trace.files || []).filter((f) => f.hub === 'B').map((f) => ({ path: f.path, at: f.mtime, how: 'write', text: '' }))];
+    const base = (p) => p.split('/').pop();
+    const KINDS = { 选题: /选题|topic/i, 脚本: /脚本|口播|script/i };
+    const kindOf = (x) => Object.keys(KINDS).filter((k) => KINDS[k].test(base(x.path))).concat(Object.keys(KINDS).every((k) => !KINDS[k].test(base(x.path))) ? Object.keys(KINDS).filter((k) => KINDS[k].test(x.text || '')) : []);
+    const first = {};
+    for (const x of made) for (const k of kindOf(x)) if (!first[k] || x.at < first[k].at) first[k] = x;
     const down = trace.human.find((x) => x.step === 'peer-down');
-    return [{ id: 'S3-a', title: '另一台掉线又回来以后，那边的活接着做完了', ok: made.length === 2, evidence: made.length === 2 ? [] : [{ at: trace.t1, from: down?.at, text: `另一台上只有 ${made.length} 个交付物（要 2 个）：掉线打断的那一项没有接着做` }] }];
+    const up = trace.human.find((x) => x.step === 'peer-up');
+    const where = Object.entries(first).map(([k, x]) => `${k}：${x.path}（${x.how === 'copy' ? '取回的副本' : x.how === 'named' ? '成员在群里说的' : '成员写的'}，${Math.round((x.at - trace.t0) / 1000)} 秒）`).join('；');
+    const missing = Object.keys(KINDS).filter((k) => !first[k]);
+    if (!down) return [{ id: 'S3-a', title, ok: false, evidence: [{ at: trace.t1, text: '这次没有断线' }] }];
+    if (!missing.length && Object.values(first).every((x) => x.at < down.at)) return [{ id: 'S3-a', title, ok: true, skipped: true, evidence: [], note: `掉线没打断任何一项：掉线（${Math.round((down.at - trace.t0) / 1000)} 秒）之前两样都做完了。${where}` }];
+    const back = up ? `连接在 ${Math.round((up.at - trace.t0) / 1000)} 秒恢复` : '连接没恢复';
+    return [{ id: 'S3-a', title, ok: !missing.length, note: where || undefined, evidence: missing.length ? [{ at: trace.t1, from: down.at, text: `另一台上没找到${missing.join('和')}（这次的文件夹里、成员写的文件里、取回的副本里都没有）：掉线（${Math.round((down.at - trace.t0) / 1000)} 秒）打断的那一项没有接着做完，${back}${where ? `；找到的：${where}` : ''}` }] : [] }];
   },
   brain: (env) => async (ctx) => {
     const c = commonTurns(ctx);

@@ -3231,6 +3231,19 @@
 
   /* @mention picker --------------------------------------------------- */
   .composer { position: relative; }
+  /* 1.5.64: 📎 → 选文件 / 选文件夹; a folder waiting as a chip, what it leaves out, its card in a message */
+  .attach-menu { left: 0; right: auto; bottom: calc(100% + 6px); top: auto; }
+  .att-chip-folder { max-width: 320px; }
+  .att-note { flex-basis: 100%; font-size: var(--t-xs); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .att-folder { display: flex; flex-direction: column; gap: 4px; max-width: 320px; border-radius: 10px; background: var(--tint-2); }
+  .att-folder-main { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; border-radius: 10px; }
+  .att-folder-main .att-name { font-weight: 600; max-width: 240px; }
+  .att-folder-list { display: flex; flex-direction: column; gap: 2px; padding: 0 10px 8px 38px; max-height: 240px; overflow: auto; font-size: var(--t-xs); }
+  .att-folder-list[hidden] { display: none; }
+  .att-folder-item { flex: none; line-height: 1.5; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; }
+  a.att-folder-item { color: var(--text); text-decoration: underline; text-decoration-color: var(--border-strong); }
+  .att-folder-item.more { color: var(--dim); }
+  .att-folder-open { align-self: flex-start; margin-top: 4px; font-size: var(--t-xs); }
   .mention-pop { left: 0; right: auto; bottom: calc(100% + 6px); top: auto; min-width: 220px; max-width: 320px; max-height: 260px; overflow: auto; }
   .mention-pop .mp-item { display: flex; align-items: center; gap: 10px; width: 100%; }
   .mention-pop .mp-item.on { background: var(--panel-2); color: var(--text); }

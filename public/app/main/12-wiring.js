@@ -341,8 +341,12 @@ function wireChrome() {
   });
 
   // composer
-  $('attach-btn').addEventListener('click', () => $('attach-input').click());
+  // 📎: on a computer 「选文件」 / 「选文件夹」 (1.5.64, 05b-folder.js); on a phone the file picker as before.
+  $('attach-btn').addEventListener('click', onAttachClick);
+  $('attach-pick-files')?.addEventListener('click', () => { closeMenus(); $('attach-input').click(); });
+  $('attach-pick-folder')?.addEventListener('click', () => { closeMenus(); $('attach-folder-input').click(); });
   $('attach-input').addEventListener('change', (event) => { addFiles(event.target.files); event.target.value = ''; });
+  $('attach-folder-input')?.addEventListener('change', (event) => { const picked = [...event.target.files]; event.target.value = ''; addPickedFolder(picked); });
   $('composer').addEventListener('paste', (event) => {
     const files = [...(event.clipboardData?.files || [])];
     if (files.length) { event.preventDefault(); addFiles(files); }
@@ -352,7 +356,7 @@ function wireChrome() {
   dropZone?.addEventListener('dragleave', (event) => { if (event.target === dropZone) dropZone.classList.remove('dragging'); });
   dropZone?.addEventListener('drop', (event) => {
     dropZone.classList.remove('dragging');
-    if (event.dataTransfer?.files?.length) { event.preventDefault(); addFiles(event.dataTransfer.files); }
+    onChatDrop(event); // files as before; a folder too (1.5.64, 05b-folder.js)
   });
   $('send-btn').addEventListener('click', send);
   $('botedit-primary')?.addEventListener('click', makePrimary);

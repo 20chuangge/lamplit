@@ -127,9 +127,10 @@ export async function videoChecks({ check, base, keyDir }) {
   await fetch(`${base}/api/peers`, { method: 'PUT', headers: { ...H, 'content-type': 'application/json' }, body: JSON.stringify({ peers: [] }) });
 
   // The card (page code): attachments that are videos are cards with a frame, play and duration.
-  const chat = read('public/app/main/05-chat.js');
+  // 1.5.64: splitAttachments moved to 05b-folder.js (folder upload); its match is named m.
+  const chat = read('public/app/main/05b-folder.js');
   const media = read('public/app/main/10-computer.js');
-  check('video card: an attached .mp4 / .webm / .mov is a video (not a generic file)', /video: kind === '文件' && \/\\\.\(mp4\|webm\|mov\|m4v\)\$\/i\.test\(p\)/.test(chat), 'splitAttachments');
+  check('video card: an attached .mp4 / .webm / .mov is a video (not a generic file)', /video: m\[2\] === '文件' && \/\\\.\(mp4\|webm\|mov\|m4v\)\$\/i\.test\(m\[1\]\)/.test(chat), 'splitAttachments');
   check('video card: a first frame as poster, a play button and the duration; tap plays inline with the native controls (full screen there)',
     /function videoCard\(/.test(media) && /#t=0\.1/.test(media) && /att-video-play/.test(media) && /att-video-dur/.test(media) && /v\.controls = true/.test(media) && /v\.play\(\)/.test(media));
   check('video card: no frame readable -> a clear 「视频」 card, still downloadable', /att-video-fallback/.test(media) && media.includes("'视频'"));

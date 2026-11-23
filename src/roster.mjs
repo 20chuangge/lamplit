@@ -89,7 +89,23 @@ export function rosterBusy(row) {
 
 const isUnreachable = (err) => err?.code === 'PEER_UNREACHABLE' || err?.code === 'PEER_PROXY_ERROR';
 
-export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpload = null, audit = async () => {}, selfName = () => '', streamIdleMs = 45000 } = {}) {
+/** What an older Lamplit (before 1.5.64) takes in one message. */
+const OLD_ATTACH_MAX = 10;
+const NOTE_LINES = 30;
+
+/** A folder an older Lamplit could not keep: where its files went instead. */
+export function flatNote(machine, folderName, flat) {
+  const lines = flat.slice(0, NOTE_LINES).map((f) => `- ${f.path}（原来是 ${folderName}/${f.rel}）`);
+  if (flat.length > NOTE_LINES) lines.push(`…还有 ${flat.length - NOTE_LINES} 个，也在 ${String(flat[0]?.path || 'uploads/').replace(/[^/]+$/, '')} 里`);
+  return `（文件夹「${folderName}」：「${machine}」上的 Lamplit 版本较旧，不能保留文件夹结构，${flat.length} 个文件平放在共享工作区里：\n${lines.join('\n')}）`;
+}
+
+/** Attachments an older Lamplit could not take in one message: named in the text. */
+export function overflowNote(machine, rest) {
+  return `（「${machine}」上的 Lamplit 版本较旧，一条消息最多收 ${OLD_ATTACH_MAX} 个附件；另外 ${rest.length} 个也已传到共享工作区：\n${rest.map((a) => `- ${a.path}`).join('\n')}）`;
+}
+
+export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpload = null, listUpload = null, audit = async () => {}, selfName = () => '', streamIdleMs = 45000 } = {}) {
   // machine -> {at, online, bots, attention}; bots outlive a machine going away.
   const live = new Map();
   let known = {}; // machine -> {bots:[{id,name,role,primary}]} kept on disk for machines that are off
@@ -205,38 +221,98 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
    * attachments go to that machine first and are named by their path there.
    * Only text, attachments and a hand-off's limits go over.
    */
-  async function send(peer, botId, { text, attachments = [], handoff = null, groupId = '' } = {}) {
+  async function send(peer, botId, { text, attachments = [], handoff = null, groupId = '', tag = '' } = {}) {
     if (!botId && !groupId) {
       // A hand-off to "that machine" (machine_switch): its main assistant.
       const data = await peers.json(peer, 'GET', '/api/bots', { timeoutMs: 8000 });
       botId = (Array.isArray(data) ? data : data?.bots || []).find((b) => b.primary)?.id || '';
       if (!botId) throw Object.assign(new Error(`「${peer.name}」上没有主助理`), { code: 'BOT_NOT_FOUND' });
     }
-    const carried = [];
-    for (const a of attachments) {
-      if (!readUpload) break;
-      const file = await readUpload(a.path);
-      const up = await peers.json(peer, 'POST', '/api/uploads', { raw: file.bytes, headers: { 'x-file-name': encodeURIComponent(file.name), [VIA]: '1' }, timeoutMs: 120000 });
-      if (up?.path) carried.push({ path: up.path });
-    }
-    if (groupId) {
-      const sent = await peers.json(peer, 'POST', `/api/groups/${encodeURIComponent(groupId)}/message`, {
-        body: { text: String(text || ''), ...(carried.length ? { attachments: carried } : {}) },
+    const { carried, notes } = await carryAttachments(peer, attachments, { tag });
+    let words = String(text || '') + (notes.length ? `${text ? '\n\n' : ''}${notes.join('\n\n')}` : '');
+    const post = (list) => (groupId
+      ? peers.json(peer, 'POST', `/api/groups/${encodeURIComponent(groupId)}/message`, {
+        body: { text: words, ...(list.length ? { attachments: list } : {}) },
         headers: { [VIA]: '1' },
         timeoutMs: 20000,
-      });
-      return { ...sent, groupId };
+      }).then((sent) => ({ ...sent, groupId }))
+      : peers.json(peer, 'POST', `/api/bots/${encodeURIComponent(botId)}/message`, {
+        body: { text: words, ...(list.length ? { attachments: list } : {}), ...(handoff ? { handoff } : {}) },
+        headers: { [VIA]: '1' },
+        timeoutMs: 20000,
+      }).then((out) => ({ ...out, botId })));
+    try {
+      return await post(carried);
+    } catch (err) {
+      // An older Lamplit takes 10 attachments at most (1.5.64 takes 20): the rest are named in the text.
+      if (err?.code !== 'TOO_MANY_ATTACHMENTS' || carried.length <= OLD_ATTACH_MAX) throw err;
+      words += `${words ? '\n\n' : ''}${overflowNote(peer.name, carried.slice(OLD_ATTACH_MAX))}`;
+      return post(carried.slice(0, OLD_ATTACH_MAX));
     }
-    const out = await peers.json(peer, 'POST', `/api/bots/${encodeURIComponent(botId)}/message`, {
-      body: { text: String(text || ''), ...(carried.length ? { attachments: carried } : {}), ...(handoff ? { handoff } : {}) },
-      headers: { [VIA]: '1' },
-      timeoutMs: 20000,
-    });
-    return { ...out, botId };
+  }
+
+  /**
+   * The attachments, onto that machine first (1.5.64: folders too). A file goes
+   * as it always did; a folder keeps its layout there (POST /api/uploads/folder,
+   * then each file with x-folder / x-rel-path), one item in the message. An
+   * older Lamplit there has no folder uploads (404): its files go flat into
+   * that day's uploads, named in a note in the text instead.
+   * Progress, for the page's 「正在传 12/40…」: {type:'peer.upload', tag, done, total}.
+   */
+  async function carryAttachments(peer, attachments, { tag = '' } = {}) {
+    const carried = [];
+    const notes = [];
+    if (!readUpload || !attachments.length) return { carried, notes };
+    const plan = [];
+    for (const a of attachments) plan.push({ a, folder: listUpload ? await listUpload(a.path) : null });
+    const total = plan.reduce((n, p) => n + (p.folder ? p.folder.files.length : 1), 0);
+    let done = 0;
+    let told = 0;
+    const tell = () => {
+      // Not every file of a big folder: a line a second or so, and the last one.
+      if (total < 2 || (done > 0 && done < total && Date.now() - told < 700)) return;
+      told = Date.now();
+      bus?.emit({ type: 'peer.upload', machine: peer.name, ...(tag ? { tag } : {}), done, total });
+    };
+    const upload = async (rel, extra = {}) => {
+      const file = await readUpload(rel);
+      const up = await peers.json(peer, 'POST', '/api/uploads', { raw: file.bytes, headers: { 'x-file-name': encodeURIComponent(file.name), ...extra, [VIA]: '1' }, timeoutMs: 120000 });
+      done += 1;
+      tell();
+      return up;
+    };
+    tell();
+    for (const { a, folder } of plan) {
+      if (!folder) {
+        const up = await upload(a.path);
+        if (up?.path) carried.push({ path: up.path });
+        continue;
+      }
+      const base = String(a.path).replace(/\/$/, '');
+      let made = null;
+      try {
+        made = await peers.json(peer, 'POST', '/api/uploads/folder', { body: { name: folder.name }, headers: { [VIA]: '1' }, timeoutMs: 20000 });
+      } catch (err) {
+        if (err?.code !== 'NOT_FOUND') throw err;
+      }
+      if (made?.path) {
+        for (const f of folder.files) await upload(`${base}/${f.rel}`, { 'x-folder': encodeURIComponent(made.path), 'x-rel-path': encodeURIComponent(f.rel) });
+        carried.push({ path: made.path });
+        continue;
+      }
+      // An older Lamplit there: flat, with a note.
+      const flat = [];
+      for (const f of folder.files) {
+        const up = await upload(`${base}/${f.rel}`);
+        if (up?.path) flat.push({ rel: f.rel, path: up.path });
+      }
+      notes.push(flatNote(peer.name, folder.name, flat));
+    }
+    return { carried, notes };
   }
 
   /** Send now, or keep it here until that machine answers (it is off). */
-  async function deliver({ machine, botId, groupId = '', text, attachments = [], from = null }) {
+  async function deliver({ machine, botId, groupId = '', text, attachments = [], from = null, tag = '' }) {
     await load();
     const peer = peers.find(machine);
     if (!peer) throw Object.assign(new Error('没有这台机器（可能已经从「机器」里删掉了）'), { code: 'PEER_NOT_FOUND' });
@@ -244,7 +320,7 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
     // Messages already waiting go first: their order is the human's order.
     if (!queue.some((i) => i.machine === peer.name)) {
       try {
-        return await send(peer, botId, { text, attachments, handoff, groupId });
+        return await send(peer, botId, { text, attachments, handoff, groupId, tag });
       } catch (err) {
         if (!isUnreachable(err)) throw err;
       }

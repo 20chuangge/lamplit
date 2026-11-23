@@ -16,7 +16,7 @@ import java.util.Set;
  */
 public final class PhoneRoutesCheck {
 
-    private static final String PC_LAN = "http://192.168.1.5:4390";
+    private static final String PC_LAN = "http://192.168.50.10:4390";
     private static final String PC_RELAY = "http://127.0.0.1:14440";
     private static final String CLOUD_OLD_TS = "http://100.64.0.1:4390";
     private static final String CLOUD_NEW_TS = "http://100.64.0.2:4390";
@@ -123,11 +123,11 @@ public final class PhoneRoutesCheck {
         FakeNet tsOnNothing = new FakeNet().tailscale(true);
         out.put("tailscaleOnNothingAnswers", q(PhoneRoutes.pick(CLOUD_OLD_TS, Arrays.asList(CLOUD_RELAY), tsOnNothing)));
 
-        FakeNet sameWifi = new FakeNet().lan("http://192.168.1.9:4390").up("http://192.168.1.9:4390", CLOUD_RELAY);
-        out.put("sameWifiWay", q(PhoneRoutes.pick(CLOUD_OLD_TS, Arrays.asList(CLOUD_RELAY, "http://192.168.1.9:4390"), sameWifi)));
+        FakeNet sameWifi = new FakeNet().lan("http://192.168.50.20:4390").up("http://192.168.50.20:4390", CLOUD_RELAY);
+        out.put("sameWifiWay", q(PhoneRoutes.pick(CLOUD_OLD_TS, Arrays.asList(CLOUD_RELAY, "http://192.168.50.20:4390"), sameWifi)));
 
         FakeNet otherWifi = new FakeNet().up(CLOUD_RELAY);
-        out.put("otherWifiLanSkipped", q(PhoneRoutes.pick(CLOUD_OLD_TS, Arrays.asList("http://192.168.1.9:4390", CLOUD_RELAY), otherWifi) + "|" + String.join(",", otherWifi.probed)));
+        out.put("otherWifiLanSkipped", q(PhoneRoutes.pick(CLOUD_OLD_TS, Arrays.asList("http://192.168.50.20:4390", CLOUD_RELAY), otherWifi) + "|" + String.join(",", otherWifi.probed)));
 
         FakeNet pairedRelay = new FakeNet();
         out.put("pairedAtRelay", q(PhoneRoutes.pick(CLOUD_RELAY, Arrays.asList(CLOUD_OLD_TS), pairedRelay) + "|" + pairedRelay.probed.size()));

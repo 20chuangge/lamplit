@@ -59,13 +59,13 @@ export async function routeChecks({ check, skip }) {
       r.nameTwiceInList === null && r.nameButAnotherRelayId === null && r.refusedByName === null && r.addressLabelIsNoName === null && r.nameOnAnotherMachinesAddress === null
       && r.nameKeys === '|cafe||cloud', JSON.stringify(r));
     check('PR66-4 at home nothing changes: the PC\'s LAN address is used after one quick probe (none at all without a relay)',
-      r.homeWay === 'http://192.168.1.5:4390' && r.homeProbes === 'http://192.168.1.5:4390' && r.homeNoRelayWay === 'http://192.168.1.5:4390' && r.homeNoRelayProbes === 0, JSON.stringify(r));
+      r.homeWay === 'http://192.168.50.10:4390' && r.homeProbes === 'http://192.168.50.10:4390' && r.homeNoRelayWay === 'http://192.168.50.10:4390' && r.homeNoRelayProbes === 0, JSON.stringify(r));
     check('PR66-5 Tailscale off: straight to the relay, no Tailscale address probed; the relay stays the way while it does not answer yet (not the dead address)',
       r.awayWay === RELAY && r.awayProbes === RELAY && r.relayDownWay === RELAY, JSON.stringify(r));
     check('PR66-6 Tailscale on: the machine\'s newer Tailscale address before the relay; nothing answering with Tailscale on keeps the paired address (as before)',
       r.newTailnetWay === 'http://100.64.0.2:4390' && r.tailscaleOnNothingAnswers === OLD_TS, JSON.stringify(r));
     check('PR66-7 the order stays: the same Wi-Fi first, another Wi-Fi\'s LAN address skipped, a phone paired through the relay stays on it, a public http address is never a way (the login would go in the clear)',
-      r.sameWifiWay === 'http://192.168.1.9:4390' && r.otherWifiLanSkipped === `${RELAY}|${RELAY}` && r.pairedAtRelay === `${RELAY}|0` && r.publicNotUsed === `${OLD_TS}|0`, JSON.stringify(r));
+      r.sameWifiWay === 'http://192.168.50.20:4390' && r.otherWifiLanSkipped === `${RELAY}|${RELAY}` && r.pairedAtRelay === `${RELAY}|0` && r.publicNotUsed === `${OLD_TS}|0`, JSON.stringify(r));
   } finally {
     fs.rmSync(classes, { recursive: true, force: true });
   }
@@ -164,7 +164,7 @@ export async function appChecks({ check, readText }) {
   const src = nestedFn(launcher, 'sameNamedRow');
   let named = () => [];
   try { named = new Function(`${src}; return sameNamedRow;`)(); } catch { /* checked below */ }
-  const PC = 'http://192.168.1.5:4390';
+  const PC = 'http://192.168.50.10:4390';
   const machines = [
     { name: '书房电脑', url: PC, self: true },
     { name: '腾讯云', url: 'http://203.0.113.10:4390', tailnetUrl: 'http://100.64.0.2:4390', relay: { id: 'x' } },

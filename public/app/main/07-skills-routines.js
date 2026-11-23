@@ -58,13 +58,41 @@ function renderSkills() {
 /* ---------------------------------------------------------------------
    routines
    --------------------------------------------------------------------- */
+/**
+ * The machine the 任务 panel is about (1.5.63): the open chat's - a bot or a group on
+ * another machine is that machine's ('' = this one). Its routines and 每日简报 are read
+ * and changed there, never this machine's in their place.
+ */
+function routinesMachine() {
+  const id = isGroupMode() ? state.groupId : state.botId;
+  return isRemoteId(id) ? remoteOf(id).machine : '';
+}
+/** /api/routines… here, or passed on to that machine: /api/peers/<machine>/routines… */
+function routinesApi(path, machine = state.routinesMachine || '') {
+  return machine ? `/api/peers/${encodeURIComponent(machine)}${path.replace(/^\/api/, '')}` : path;
+}
+
 async function loadRoutines() {
+  const machine = routinesMachine();
+  state.routinesLoading = machine || 'here';
   try {
-    state.routines = await api('/api/routines');
+    const list = await api(routinesApi('/api/routines', machine), machine ? { quiet: true } : {});
+    if (routinesMachine() !== machine) return; // the chat moved to another machine meanwhile
+    state.routines = list;
+    state.routinesError = '';
   } catch (err) {
-    if (err.status !== 401) toast(`定时任务加载失败：${err.message}`, true);
-    return;
+    if (routinesMachine() !== machine) return;
+    if (!machine) {
+      if (err.status !== 401) toast(`定时任务加载失败：${err.message}`, true);
+      return;
+    }
+    // Off, or an older Lamplit there: said so - never this machine's list in its place.
+    state.routines = [];
+    state.routinesError = err.code === 'LOCAL_KEY_REQUIRED' ? err.message : `「${machine}」现在连不上`;
+  } finally {
+    if (state.routinesLoading === (machine || 'here')) state.routinesLoading = '';
   }
+  state.routinesMachine = machine;
   renderRoutines();
   loadBriefing().catch(() => { /* older server: no briefing */ });
   loadNudge().catch(() => { /* older server: no daily note */ });
@@ -72,7 +100,18 @@ async function loadRoutines() {
 
 /** The daily briefing card: one switch, a time, Feishu or not. */
 async function loadBriefing() {
-  const b = await api('/api/briefing');
+  const machine = state.routinesMachine || '';
+  // Each machine has its own (1.5.63): the card says whose; off there, it is not shown at all.
+  const head = $('briefing-card')?.previousElementSibling?.querySelector('span');
+  if (head) head.textContent = machine ? `${machine} 的每日简报` : '每日简报';
+  let b;
+  try { b = await api(routinesApi('/api/briefing', machine), machine ? { quiet: true } : {}); } catch (err) {
+    if (machine) { $('briefing-card').hidden = true; if (head) head.parentElement.hidden = true; return; }
+    throw err;
+  }
+  if ((state.routinesMachine || '') !== machine) return;
+  $('briefing-card').hidden = false;
+  if (head) head.parentElement.hidden = false;
   state.briefing = b;
   $('brief-on').checked = Boolean(b.enabled);
   $('brief-time').value = b.time || '08:30';
@@ -83,7 +122,7 @@ async function loadBriefing() {
 }
 
 async function saveBriefing(extra = {}) {
-  const b = await api('/api/briefing', { method: 'PUT', body: { enabled: $('brief-on').checked, time: $('brief-time').value || '08:30', feishu: $('brief-feishu').checked, ...extra } });
+  const b = await api(routinesApi('/api/briefing'), { method: 'PUT', body: { enabled: $('brief-on').checked, time: $('brief-time').value || '08:30', feishu: $('brief-feishu').checked, ...extra } });
   state.briefing = b;
   await loadRoutines();
   return b;
@@ -94,7 +133,10 @@ function renderRoutineBotOptions() {
   if (!select) return;
   const current = select.value;
   select.innerHTML = '';
-  for (const bot of state.bots) {
+  // The panel on another machine (1.5.63): that machine's bots.
+  const far = state.routinesMachine ? (state.peerRoster || []).find((m) => m.machine === state.routinesMachine) : null;
+  const bots = far ? (far.bots || []).map((b) => ({ id: `${b.id}@${far.machine}`, name: b.name })) : state.bots;
+  for (const bot of bots) {
     const opt = el('option', null, bot.name);
     opt.value = bot.id;
     select.appendChild(opt);
@@ -130,6 +172,14 @@ function routinePeakHint() {
 function renderRoutines() {
   const list = $('routines-list');
   list.innerHTML = '';
+  // The open chat is on another machine than the list shown (1.5.63): read that one first.
+  const machine = routinesMachine();
+  if ((state.routinesMachine || '') !== machine) {
+    list.appendChild(el('div', 'muted tiny', machine ? `正在从「${machine}」读取…` : '正在读取…'));
+    if (state.routinesLoading !== (machine || 'here')) loadRoutines();
+    return;
+  }
+  if (state.routinesError) { list.appendChild(el('div', 'muted tiny', state.routinesError)); return; }
   renderRoutineBotOptions();
   // 「闲时再跑」 only where the model has peak hours (1.5.50).
   const offPeakRow = $('rt-off-peak')?.closest('label');
@@ -137,7 +187,7 @@ function renderRoutines() {
   routinePeakHint();
 
   for (const rt of routinesInView()) {
-    const bot = state.bots.find((b) => b.id === rt.botId);
+    const bot = state.bots.find((b) => b.id === rt.botId) || (isRemoteId(rt.botId) ? botById(rt.botId) : null);
     const card = el('div', 'card');
     const title = el('div', 'card-title');
     title.appendChild(el('span', null, rt.name));
@@ -183,7 +233,7 @@ function renderRoutines() {
       test.textContent = '运行中…';
       try {
         // You are here: a step that needs your OK asks you in its chat (1.5.41).
-        await api(`/api/routines/${encodeURIComponent(rt.id)}/test`, { method: 'POST', body: { watched: true } });
+        await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}/test`), { method: 'POST', body: { watched: true } });
         toast(`开始跑了：要你点头的步骤会在「${botById(rt.botId)?.name || '它'}」的对话里问你`);
       } catch (err) {
         toast(err.message, true);
@@ -195,7 +245,7 @@ function renderRoutines() {
     toggle.type = 'button';
     toggle.addEventListener('click', async () => {
       try {
-        await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { enabled: !rt.enabled } });
+        await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}`), { method: 'PATCH', body: { enabled: !rt.enabled } });
         await loadRoutines();
       } catch (err) {
         toast(err.message, true);
@@ -207,7 +257,7 @@ function renderRoutines() {
       // Asked first (1.5.33): one click deleted it.
       if (!(await askConfirm({ title: `删除定时任务「${rt.name}」？`, text: '删了就不会再跑；它以前的运行记录也一起删掉。', confirmLabel: '删除' }))) return;
       try {
-        await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'DELETE' });
+        await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}`), { method: 'DELETE' });
         await loadRoutines();
       } catch (err) {
         toast(err.message, true);
@@ -219,7 +269,7 @@ function renderRoutines() {
     cheap.title = rt.offPeak ? '不再等闲时：到点就跑' : OFF_PEAK_WORDS;
     cheap.addEventListener('click', async () => {
       try {
-        await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { offPeak: !rt.offPeak } });
+        await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}`), { method: 'PATCH', body: { offPeak: !rt.offPeak } });
         await loadRoutines();
         toast(rt.offPeak ? '改好了：到点就跑' : `改好了：${OFF_PEAK_WORDS}`);
       } catch (err) {
@@ -233,7 +283,7 @@ function renderRoutines() {
       const next = await askText({ title: `「${rt.name}」什么时候跑`, text: '可以写：每天 9:00、工作日 8:30、每周五 18:00、每月 1 号 10:00、每 30 分钟。', value: scheduleText(rt.schedule), confirmLabel: '保存' });
       if (next === null || next === undefined || !String(next).trim() || String(next).trim() === scheduleText(rt.schedule)) return;
       try {
-        await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { schedule: String(next).trim() } });
+        await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}`), { method: 'PATCH', body: { schedule: String(next).trim() } });
         await loadRoutines();
         toast('时间改好了');
       } catch (err) {
@@ -247,7 +297,7 @@ function renderRoutines() {
         const primary = (state.bots || []).find((b) => b.primary);
         if (!primary) return;
         try {
-          await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { botId: primary.id } });
+          await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}`), { method: 'PATCH', body: { botId: primary.id } });
           await loadRoutines();
           toast(`交给「${primary.name}」了；要它接着跑，点「启用」。`);
         } catch (err) {
@@ -272,7 +322,7 @@ function renderRoutines() {
   if (!state.routines.length) list.appendChild(el('div', 'muted tiny', '还没有定时任务。'));
   else if (!routinesInView().length) {
     const who = isGroupMode() ? (groupById(state.groupId)?.name || '这个群') : (botById(state.botId)?.name || '它');
-    list.appendChild(el('div', 'muted tiny', `${who}名下没有定时任务（这台机器上一共 ${state.routines.length} 条，勾选「全部」查看）。`));
+    list.appendChild(el('div', 'muted tiny', state.routinesMachine ? `${who}名下没有定时任务（「${state.routinesMachine}」上一共 ${state.routines.length} 条，勾选「全部」查看）。` : `${who}名下没有定时任务（这台机器上一共 ${state.routines.length} 条，勾选「全部」查看）。`));
   }
 }
 
@@ -302,7 +352,7 @@ async function createRoutine() {
   const instruction = $('rt-instruction').value.trim();
   if (!instruction) { toast('定时任务需要一条指令', true); return; }
   try {
-    await api('/api/routines', {
+    await api(routinesApi('/api/routines'), {
       method: 'POST',
       body: {
         name: $('rt-name').value.trim() || '未命名任务',
@@ -695,7 +745,7 @@ function routineRunRow(item) {
       save.type = 'button';
       save.addEventListener('click', async () => {
         try {
-          await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { instruction: box.value.trim() } });
+          await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}`), { method: 'PATCH', body: { instruction: box.value.trim() } });
           rt.instruction = box.value.trim();
           toast('指令已更新，下次运行按新的来');
           text.textContent = rt.instruction;
@@ -709,7 +759,7 @@ function routineRunRow(item) {
     });
     button(rt.enabled ? '暂停' : '恢复', async () => {
       try {
-        await api(`/api/routines/${encodeURIComponent(rt.id)}`, { method: 'PATCH', body: { enabled: !rt.enabled } });
+        await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}`), { method: 'PATCH', body: { enabled: !rt.enabled } });
         rt.enabled = !rt.enabled;
         toast(rt.enabled ? '已恢复，按计划继续跑' : '已暂停，不会再自动跑');
         renderMessages();
@@ -719,7 +769,7 @@ function routineRunRow(item) {
       again.disabled = true;
       again.textContent = '运行中…';
       try {
-        await api(`/api/routines/${encodeURIComponent(rt.id)}/test`, { method: 'POST', body: { watched: true } });
+        await api(routinesApi(`/api/routines/${encodeURIComponent(rt.id)}/test`), { method: 'POST', body: { watched: true } });
         toast('开始跑了：要你点头的步骤会在这里问你');
       } catch (err) { toast(err.message, true); } finally { again.disabled = false; again.textContent = '现在再跑一次'; }
     });

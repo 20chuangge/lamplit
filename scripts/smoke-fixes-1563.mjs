@@ -525,3 +525,114 @@ export async function chatScrollChecks({ check, readText }) {
     && /for \(const type of \['load', 'loadedmetadata'\]\) messagesEl\?\.addEventListener\(type, \(\) => \{ if \(chatStick\) jumpChat\(messagesEl\.scrollHeight\); \}, true\);/.test(bots)
     && /messagesEl\?\.addEventListener\('scroll', \(\) => \{ chatStick = nearBottom\(\); \}/.test(bots));
 }
+
+// --- 8. the 任务 panel follows a chat on another machine (1.5.63) --------------------------------------------
+export async function remoteRoutineChecks({ check, readText, api, base, rawFetch, startServerChild, stopProcess, seedHome }) {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const otherHome = fs.mkdtempSync(path.join(os.tmpdir(), 'assist-smoke-farrt-'));
+  await seedHome(otherHome);
+  let other = null;
+  const M = '书房电脑';
+  const enc = encodeURIComponent(M);
+  try {
+    other = await startServerChild(otherHome, { ASSIST_DATA_DIR: path.join(otherHome, 'data'), ASSIST_WORKSPACE_DIR: path.join(otherHome, 'workspace') });
+    const B = other.url;
+    const bKey = fs.readFileSync(path.join(otherHome, 'data', 'local-key'), 'utf8').trim();
+    const bToken = JSON.parse(fs.readFileSync(path.join(otherHome, 'data', 'security.json'), 'utf8')).token;
+    const aToken = JSON.parse(fs.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'security.json'), 'utf8')).token;
+    const bApi = async (p, { method = 'GET', body } = {}) => {
+      const res = await rawFetch(`${B}${p}`, { method, headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), 'x-lamplit-local': bKey }, body: body !== undefined ? JSON.stringify(body) : undefined });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* not json */ }
+      return { status: res.status, json };
+    };
+    await api('/api/peers', { method: 'PUT', body: { peers: [{ name: M, url: B, token: bToken }] } });
+    const farRt = (await bApi('/api/routines', { method: 'POST', body: { name: '面试题库·每日抽背', instruction: '抽 5 道题', botId: 'ops', schedule: '每天 21:00' } })).json?.routine;
+    const hereRt = (await api('/api/routines', { method: 'POST', body: { name: '这台的复盘', instruction: '复盘', botId: 'chief', schedule: '每天 22:00' } })).json?.routine;
+
+    const list = await api(`/api/peers/${enc}/routines`);
+    const mine = (list.json || []).find((r) => r.id === farRt?.id);
+    check('F63-8a a chat on another machine: the 任务 panel lists that machine\'s routines (each bot as id@machine), not this one\'s',
+      list.status === 200 && mine?.botId === `ops@${M}` && mine.name === '面试题库·每日抽背' && !(list.json || []).some((r) => r.id === hereRt?.id),
+      JSON.stringify((list.json || []).map((r) => [r.name, r.botId])));
+
+    // The buttons: 暂停, 改时间, 立即运行, + 新建, 删除 - on that machine, audited here.
+    const paused = await api(`/api/peers/${enc}/routines/${farRt.id}`, { method: 'PATCH', body: { enabled: false } });
+    const moved = await api(`/api/peers/${enc}/routines/${farRt.id}`, { method: 'PATCH', body: { schedule: '每天 18:00', instruction: '不该转过去的' } });
+    const run = await api(`/api/peers/${enc}/routines/${farRt.id}/test`, { method: 'POST', body: { watched: true } });
+    const there = (await bApi('/api/routines')).json.find((r) => r.id === farRt.id);
+    const made = await api(`/api/peers/${enc}/routines`, { method: 'POST', body: { name: '从这台新建', instruction: '提醒我', botId: `researcher@${M}`, schedule: '每周一 9:00' } });
+    const wrongBot = await api(`/api/peers/${enc}/routines`, { method: 'POST', body: { name: 'x', instruction: 'x', botId: 'chief@别的机器', schedule: '每天 9:00' } });
+    const madeThere = (await bApi('/api/routines')).json.find((r) => r.name === '从这台新建');
+    const gone = await api(`/api/peers/${enc}/routines/${madeThere?.id}`, { method: 'DELETE' });
+    const goneThere = !(await bApi('/api/routines')).json.some((r) => r.name === '从这台新建');
+    const hereNow = (await api('/api/routines')).json.find((r) => r.id === hereRt?.id);
+    const audited = fs.readFileSync(path.join(process.env.ASSIST_DATA_DIR, 'audit.jsonl'), 'utf8').split('\n').filter((l) => l.includes('"peer.routine"')).length;
+    check('F63-8b 暂停, 改时间, 立即运行, + 新建 and 删除 land on that machine (only the fields the panel sends); this machine\'s routines are untouched; each is audited here',
+      paused.status === 200 && moved.status === 200 && run.status === 200 && run.json?.started === true
+      && there.enabled === false && there.schedule === '0 18 * * *' && there.instruction === '抽 5 道题'
+      && made.status === 200 && madeThere?.botId === 'researcher' && wrongBot.status === 400 && gone.status === 200 && goneThere
+      && hereNow?.enabled === true && hereNow.schedule === '0 22 * * *' && audited >= 5,
+      JSON.stringify({ paused: paused.status, moved: moved.status, run: run.json, there: [there?.enabled, there?.schedule, there?.instruction], made: made.status, madeBot: madeThere?.botId, wrongBot: wrongBot.status, gone: gone.status, audited }));
+
+    // 每日简报: that machine's, read and changed there.
+    await bApi('/api/briefing', { method: 'PUT', body: { enabled: true, time: '07:15' } });
+    const hereBrief = (await api('/api/briefing')).json?.time;
+    const farBrief = await api(`/api/peers/${enc}/briefing`);
+    const setBrief = await api(`/api/peers/${enc}/briefing`, { method: 'PUT', body: { enabled: true, time: '07:45', feishu: false } });
+    const thereBrief = (await bApi('/api/briefing')).json?.time;
+    check('F63-8c the 每日简报 card shows and changes that machine\'s briefing; this machine\'s stays as it was',
+      farBrief.json?.time === '07:15' && farBrief.json.enabled === true && setBrief.status === 200 && thereBrief === '07:45' && (await api('/api/briefing')).json?.time === hereBrief,
+      JSON.stringify({ farBrief: farBrief.json, thereBrief, hereBrief }));
+
+    // Never passed on again, only paired machines, only the human.
+    const viaHeaders = { authorization: `Bearer ${aToken}`, 'x-lamplit-via': '1', 'content-type': 'application/json' };
+    const passed = await rawFetch(`${base}/api/peers/${enc}/routines/${farRt.id}`, { method: 'PATCH', headers: viaHeaders, body: JSON.stringify({ enabled: true }) });
+    const passedList = await rawFetch(`${base}/api/peers/${enc}/routines`, { headers: viaHeaders });
+    const passedBrief = await rawFetch(`${base}/api/peers/${enc}/briefing`, { method: 'PUT', headers: viaHeaders, body: JSON.stringify({ enabled: false, time: '06:00' }) });
+    const stranger = await api('/api/peers/%E6%B2%A1%E6%9C%89%E8%BF%99%E5%8F%B0/routines');
+    const noKey = await rawFetch(`${base}/api/peers/${enc}/routines/${farRt.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+    const still = (await bApi('/api/routines')).json.find((r) => r.id === farRt.id);
+    check('F63-8d a request another hub passed on is refused (403) and changes nothing there; an unknown machine is refused; a program on this computer without the key gets nowhere',
+      passed.status === 403 && passedList.status === 403 && passedBrief.status === 403 && stranger.status === 404 && noKey.status === 403 && still.enabled === false && (await bApi('/api/briefing')).json?.time === '07:45',
+      JSON.stringify({ passed: passed.status, passedList: passedList.status, passedBrief: passedBrief.status, stranger: stranger.status, noKey: noKey.status }));
+
+    await stopProcess(other.child);
+    other = null;
+    const off = await api(`/api/peers/${enc}/routines`);
+    const offBrief = await api(`/api/peers/${enc}/briefing`);
+    check('F63-8e with that machine off, its routines and briefing answer 「连不上」 (502), never this machine\'s',
+      off.status === 502 && off.json?.error?.code === 'PEER_UNREACHABLE' && offBrief.status === 502 && !JSON.stringify(off.json).includes('这台的复盘'), JSON.stringify({ off: off.status, offBrief: offBrief.status }));
+    await api(`/api/routines/${hereRt?.id}`, { method: 'DELETE' }).catch(() => {});
+  } finally {
+    await api('/api/peers', { method: 'PUT', body: { peers: [] } }).catch(() => {});
+    if (other) await stopProcess(other.child).catch(() => {});
+  }
+
+  // The page: which machine the panel is about, and an answer that does not come.
+  const rt = await readText('../public/app/main/07-skills-routines.js');
+  const calls = [];
+  let drawn = 0;
+  const st = { botId: 'chief', groupId: null, routines: [{ id: 'here', botId: 'chief' }], routinesMachine: '' };
+  // eslint-disable-next-line no-new-func
+  const P = new Function('state', 'isGroupMode', 'isRemoteId', 'remoteOf', 'api', 'toast', 'renderRoutines', 'loadBriefing', 'loadNudge',
+    `${fnSource(rt, 'routinesMachine')}\n${fnSource(rt, 'routinesApi')}\n${fnSource(rt, 'loadRoutines')}\nreturn { routinesMachine, routinesApi, loadRoutines };`)(
+    st, () => Boolean(st.groupId), (id) => String(id || '').includes('@'), (id) => ({ botId: id.split('@')[0], machine: id.split('@')[1] }),
+    async (p) => { calls.push(p); if (p.startsWith('/api/peers/')) { const e = new Error('off'); e.code = 'PEER_UNREACHABLE'; e.status = 502; throw e; } return [{ id: 'here', botId: 'chief' }]; },
+    () => {}, () => { drawn += 1; }, async () => {}, async () => {},
+  );
+  await P.loadRoutines();
+  const local = { calls: [...calls], machine: st.routinesMachine, routines: st.routines.length };
+  st.groupId = `g1@${M}`;
+  await P.loadRoutines();
+  check('F63-8f in the page: a chat here still reads /api/routines here; a group on another machine reads that machine\'s (/api/peers/<machine>/routines), and when it does not answer shows 「<machine> 现在连不上」 with no routines - never this machine\'s list',
+    local.calls[0] === '/api/routines' && local.machine === '' && local.routines === 1
+    && calls.at(-1) === `/api/peers/${enc}/routines` && st.routinesMachine === M && st.routines.length === 0 && st.routinesError === `「${M}」现在连不上` && drawn === 2
+    && P.routinesApi('/api/routines/abc/test', M) === `/api/peers/${enc}/routines/abc/test` && P.routinesApi('/api/briefing', '') === '/api/briefing',
+    JSON.stringify({ local, calls, err: st.routinesError }));
+  check('F63-8g every button on a routine (and a routine\'s line in its chat) goes through the panel\'s machine; the local labels are unchanged',
+    (rt.match(/api\(routinesApi\(`\/api\/routines\/\$\{encodeURIComponent\(rt\.id\)\}/g) || []).length === 9 && !/api\(`\/api\/routines\/\$\{encodeURIComponent\(rt\.id\)\}/.test(rt)
+    && rt.includes("head.textContent = machine ? `${machine} 的每日简报` : '每日简报'") && rt.includes('`${who}名下没有定时任务（这台机器上一共 ${state.routines.length} 条，勾选「全部」查看）。`'));
+}

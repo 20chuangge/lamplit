@@ -3486,4 +3486,7 @@ window.DESK_I18N_EN = {
   "「{0}」现在连不上，连上后再改": "Can't reach “{0}” right now. Change it once it's back.",
   "没选的话用「{0}」的默认模型。": "Without a pick it uses the default model of “{0}”.",
   "想要更多选择：在「{0}」上 设置 → 模型 → 其他模型。": "Want more choices: on “{0}”, Settings → Models → Other models.",
+  "「{0}」现在连不上": "Can't reach “{0}” right now",
+  "{0} 的每日简报": "Daily briefing on {0}",
+  "{0}名下没有定时任务（「{1}」上一共 {2} 条，勾选「全部」查看）。": "{0} has no routines ({2} on “{1}” in all; tick All to see them).",
 };

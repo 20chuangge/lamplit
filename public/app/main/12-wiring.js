@@ -558,7 +558,7 @@ function wireChrome() {
     btn.textContent = '正在写简报…';
     try {
       const b = state.briefing?.routineId ? state.briefing : await saveBriefing();
-      const res = await api(`/api/routines/${encodeURIComponent(b.routineId)}/test`, { method: 'POST', body: {} });
+      const res = await api(routinesApi(`/api/routines/${encodeURIComponent(b.routineId)}/test`), { method: 'POST', body: {} });
       toast(res.run.status === 'success' ? '简报写好了，在助理的对话里' : `简报没写成：${runStatusLabel(res.run.status)}`, res.run.status !== 'success');
     } catch (err) {
       toast(err.message, true);

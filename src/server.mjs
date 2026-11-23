@@ -4995,6 +4995,98 @@ const passOn = (state, peer, method, p, opts = {}) => state.peers.json(peer, met
 
 route('GET', /^\/api\/peers\/roster$/, async (_req, _res, { state, query }) => ({ machines: await state.roster.list({ fresh: query.get('fresh') === '1', quick: query.get('quick') === '1' }) }));
 
+// --- the 任务 panel for a chat on another machine (1.5.63) ------------------------
+//   GET    /api/peers/:m/routines              that machine's routines, each bot as "id@machine"
+//   POST   /api/peers/:m/routines              {name, instruction, botId, schedule, onlyChanges, pushFeishu, offPeak}
+//   PATCH  /api/peers/:m/routines/:id          {enabled?, schedule?, offPeak?}: what the panel's buttons send
+//   DELETE /api/peers/:m/routines/:id
+//   POST   /api/peers/:m/routines/:id/test     {watched?}: 立即运行 / the briefing's 现在试一次
+//   GET    /api/peers/:m/briefing  ·  PUT {enabled, time, feishu}: that machine's 每日简报
+// The same rules as 管理助手 there: only the human, only a paired machine, never a call
+// another hub passed on (no hop to a third machine); changes audited here as peer.routine.
+function peerOnly(req, state, params) {
+  if (req.headers[VIA_HEADER]) throw httpError(403, 'NOT_PASSED_ON', '别的机器转来的请求不会再转给第三台机器');
+  const peer = exactPeer(state, params.machine);
+  if (!peer) throw httpError(404, 'PEER_NOT_FOUND', '没有这台机器（可能已经从「机器」里删掉了）');
+  if (params.id !== undefined && !/^[\w.-]{1,80}$/.test(params.id)) throw httpError(400, 'BAD_ROUTINE_ID', '没有这个定时任务');
+  return peer;
+}
+const pickFields = (body, keys) => Object.fromEntries(keys.filter((k) => body?.[k] !== undefined).map((k) => [k, body[k]]));
+/** That machine's routine as the panel draws it: its own fields, its bot as "id@machine". */
+function farRoutine(r, machine) {
+  const x = r && typeof r === 'object' ? r : {};
+  return {
+    id: farStr(x.id, 80), botId: `${farStr(x.botId, 80)}@${machine}`, machine, name: farStr(x.name, 120), instruction: farStr(x.instruction, 4000),
+    schedule: farStr(x.schedule, 120), kind: farStr(x.kind, 20), timezone: farStr(x.timezone, 60), enabled: Boolean(x.enabled),
+    lastRun: x.lastRun ? farStr(x.lastRun, 40) : null, nextRun: x.nextRun ? farStr(x.nextRun, 40) : null, lastStatus: x.lastStatus ? farStr(x.lastStatus, 40) : null,
+    runs: (Array.isArray(x.runs) ? x.runs : []).slice(-10).map((u) => ({ startedAt: farStr(u?.startedAt, 40), status: farStr(u?.status, 40), summary: farStr(u?.summary, 300), ...(u?.quiet ? { quiet: true } : {}) })),
+    onlyChanges: Boolean(x.onlyChanges), pushFeishu: Boolean(x.pushFeishu), offPeak: Boolean(x.offPeak), preset: x.preset ? farStr(x.preset, 40) : null,
+  };
+}
+const farBriefing = (b) => ({ enabled: Boolean(b?.enabled), time: farStr(b?.time || '08:30', 5), feishu: Boolean(b?.feishu), lastRun: b?.lastRun ? farStr(b.lastRun, 40) : null, lastStatus: b?.lastStatus ? farStr(b.lastStatus, 40) : null, nextRun: b?.nextRun ? farStr(b.nextRun, 40) : null, routineId: b?.routineId ? farStr(b.routineId, 80) : null });
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/routines$/, async (req, _res, { params, state }) => {
+  const peer = peerOnly(req, state, params);
+  let list;
+  try { list = await passOn(state, peer, 'GET', '/api/routines', { timeoutMs: 10000 }); } catch (err) { throw peerFailure(err, peer); }
+  if (!Array.isArray(list)) throw httpError(502, 'PEER_BAD_ANSWER', `「${peer.name}」没有回它的定时任务`);
+  return list.slice(0, 500).map((r) => farRoutine(r, peer.name));
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/routines$/, async (req, _res, { params, body, state }) => {
+  const peer = peerOnly(req, state, params);
+  const fields = pickFields(body, ['name', 'instruction', 'botId', 'schedule', 'onlyChanges', 'pushFeishu', 'offPeak']);
+  // The panel names that machine's bot as "id@machine": there it is just the id (never another machine's).
+  if (fields.botId !== undefined) {
+    const at = String(fields.botId).lastIndexOf('@');
+    if (at > 0 && String(fields.botId).slice(at + 1) !== peer.name) throw httpError(400, 'ROUTINE_OTHER_MACHINE', '这个助手不在那台机器上');
+    fields.botId = at > 0 ? String(fields.botId).slice(0, at) : String(fields.botId);
+  }
+  let out;
+  try { out = await passOn(state, peer, 'POST', '/api/routines', { body: fields }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'create', routineId: out?.routine?.id || null });
+  return { routine: farRoutine(out?.routine, peer.name) };
+});
+
+route('PATCH', /^\/api\/peers\/(?<machine>[^/]+)\/routines\/(?<id>[^/]+)$/, async (req, _res, { params, body, state }) => {
+  const peer = peerOnly(req, state, params);
+  const fields = pickFields(body, ['enabled', 'schedule', 'offPeak']);
+  if (!Object.keys(fields).length) throw httpError(400, 'NOTHING_TO_SAVE', 'body needs one of: enabled, schedule, offPeak');
+  let out;
+  try { out = await passOn(state, peer, 'PATCH', `/api/routines/${encodeURIComponent(params.id)}`, { body: fields }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'update', routineId: params.id, fields: Object.keys(fields) });
+  return { routine: farRoutine(out?.routine, peer.name) };
+});
+
+route('DELETE', /^\/api\/peers\/(?<machine>[^/]+)\/routines\/(?<id>[^/]+)$/, async (req, _res, { params, state }) => {
+  const peer = peerOnly(req, state, params);
+  try { await passOn(state, peer, 'DELETE', `/api/routines/${encodeURIComponent(params.id)}`); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'delete', routineId: params.id });
+  return { ok: true };
+});
+
+route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/routines\/(?<id>[^/]+)\/test$/, async (req, _res, { params, body, state }) => {
+  const peer = peerOnly(req, state, params);
+  let out;
+  // An unattended test run waits for its answer (the briefing's 现在试一次): give it the time it takes there.
+  try { out = await passOn(state, peer, 'POST', `/api/routines/${encodeURIComponent(params.id)}/test`, { body: body?.watched === true ? { watched: true } : {}, timeoutMs: body?.watched === true ? 15000 : 10 * 60 * 1000 }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'run', routineId: params.id });
+  return { ...(out?.started ? { started: true } : {}), routine: farRoutine(out?.routine, peer.name), ...(out?.run ? { run: { status: farStr(out.run.status, 40), summary: farStr(out.run.summary, 2000) } } : {}) };
+});
+
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/briefing$/, async (req, _res, { params, state }) => {
+  const peer = peerOnly(req, state, params);
+  try { return farBriefing(await passOn(state, peer, 'GET', '/api/briefing', { timeoutMs: 10000 })); } catch (err) { throw peerFailure(err, peer); }
+});
+
+route('PUT', /^\/api\/peers\/(?<machine>[^/]+)\/briefing$/, async (req, _res, { params, body, state }) => {
+  const peer = peerOnly(req, state, params);
+  let out;
+  try { out = await passOn(state, peer, 'PUT', '/api/briefing', { body: pickFields(body, ['enabled', 'time', 'feishu']) }); } catch (err) { throw peerFailure(err, peer); }
+  await audit({ kind: 'peer.routine', machine: peer.name, action: 'briefing' });
+  return farBriefing(out);
+});
+
 route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/messages$/, async (req, _res, { params, state, query }) => {
   const { peer, botId } = remoteTarget(req, state, params);
   const limit = Math.min(Number(query.get('limit')) || 200, 1000);

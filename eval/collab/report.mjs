@@ -11,24 +11,24 @@ const rel = (trace, at) => `${(Math.max(0, at - trace.t0) / 1000).toFixed(1)}s`;
 
 /** Where to look when an invariant (or a scenario check) fails. */
 export const TUNING = {
-  I1: '一个机器人同时跑了两个回合：看 agent.mjs 的排队（runTurn 开头 / busyTurn / 「在干活」的判断）。常见触发：人在单聊里跟一个正在任务板上等人的成员说话，随后任务板又把它叫起来。',
+  I1: '一个机器人同时跑了两个回合：看 agent.mjs 的排队（runTurn 开头 / busyTurn / 「在干活」的判断）。常见触发：人在单聊里跟一个正在任务板上等人的成员说话，随后任务板又把它叫起来；主理人把几项都派给同一个成员，任务板同时开了几轮（真跑 s6）。',
   I2: '没批就发了：看发布类成员的人设和工具（发之前必须 post_draft）、post_draft 的拦截，以及「发布」按钮那一步有没有被当成发出去。',
   I3: '人还没回答就替人定了：看 task_ask_human / tell_human 之后的等待，1.5.65 的「等人时不发草稿」（pendingHuman，人在群里回答时要清掉），以及人设里「平台要人选的项要问人」。',
   I4: '同一篇问了两次：看「一篇一张卡」（postKey）和读过网页后再提交会不会又弹一张（read guard）。',
   I5: '协调者交出去没回话或没有任务板：看协调者交活（bot_message / bot_pass / group_plan）之后的群消息和 boardHandoff。',
-  I6: '上传的文件被覆盖：看 keepuploads.mjs（人上传的不让改），以及发布员重复上传同一个文件前有没有先看平台上已经有了。',
+  I6: '人上传的文件被改写或删掉了：看 keepuploads.mjs（人上传的不让改）和删文件那一步。（同一个文件往平台上传了两次不算这条，见数字表的「平台重传」。）',
   I7: '协调者推翻了人对成员说的话：看人在单聊里说的话有没有记到群的任务板上（noteDirectWord），以及汇总时协调者有没有读到。',
   I8: '做了人没要的活：看协调者的 group_plan 提示（不加没要的项）和成员人设（只做被要求的）。',
   I9: '给人看的文字里有 id：看远程成员名字的解析（roster / chatBotById），以及喂给模型的成员列表里是不是只有名字。',
   'S1-a': '要发的没发出去：先看是不是被拦（HUMAN_DECISION_PENDING / 审批被拒），再看扫码接管后任务有没有接上。',
+  'S5-a': '改好的稿子哪儿都没找到（新文件和回复里都没有）：看人叫停以后成员有没有把已经做好的留下。',
+  'S4-c': '海报哪儿都没找到（新文件和回复里都没有）：看成员有没有被打断、循环检测有没有误停。',
   'S2-a': '该投的没投：看投递那一项的卡是不是都弹了、批了以后有没有真的提交。',
   'S3-a': '另一台掉线又回来，那边的活没接着做：看 runRemoteGroupTurn 在对方重启后是算失败还是等它回来重试。',
   'S4-a': '连发的几条开了多个回合：看 GATHER_MS / 合并连发的逻辑。',
   'S4-b': '任务板跑着时补发的附件没转给成员：看 reviewPlan（协调者那一眼）和 task_change。',
-  'S4-c': '海报的交付物不全：看成员有没有被打断、循环检测有没有误停。',
-  'S5-a': '改好的稿子没留下：看人叫停以后成员有没有把已经做好的保存下来。',
   'S6-a': '长任务少做了：看 150 步自动接着做和重启后的接续（readBoards / 被打断的任务）。',
-  'S6-b': '没走到 150 步的自动接着做：检查这个场景本身（步数上限按工具算）。',
+  'S6-b': '没走到 150 步的自动接着做：资料是一条链，只能一个个读；没到 150 步多半是中途停了，看 S6-a 少了多少。',
   'S6-c': '重启后没接着做：看任务板重启后的恢复（readBoards）。',
 };
 
@@ -110,12 +110,12 @@ export function renderReport(run, prev = null) {
   // Numbers.
   L.push('## 数字');
   L.push('');
-  L.push('| 场景 | 秒 | 回合 | 步数 | 卡 | 问人 | 人等回复（最长 / 平均秒） | 机器人等人（秒） | tokens | 花费 |');
-  L.push('|---|---|---|---|---|---|---|---|---|---|');
+  L.push('| 场景 | 秒 | 回合 | 步数 | 卡 | 问人 | 人等回复（最长 / 平均秒） | 机器人等人（秒） | 平台重传 | tokens | 花费 |');
+  L.push('|---|---|---|---|---|---|---|---|---|---|---|');
   for (const r of all) {
     const m = r.metrics;
     const pm = prevOf(r.id)?.metrics;
-    L.push(`| ${cell(r.id)} | ${m.seconds}${delta(m.seconds, pm?.seconds)} | ${m.turns}${delta(m.turns, pm?.turns)} | ${m.steps}${delta(m.steps, pm?.steps)} | ${m.cards}${delta(m.cards, pm?.cards)} | ${m.questions}${delta(m.questions, pm?.questions)} | ${m.humanWaitMax} / ${m.humanWaitAvg}${delta(m.humanWaitMax, pm?.humanWaitMax)} | ${m.botsWaitedOnHuman} | ${m.tokens}${delta(m.tokens, pm?.tokens)} | ${fmtNum(m.cost)}${delta(m.cost, pm?.cost)} |`);
+    L.push(`| ${cell(r.id)} | ${m.seconds}${delta(m.seconds, pm?.seconds)} | ${m.turns}${delta(m.turns, pm?.turns)} | ${m.steps}${delta(m.steps, pm?.steps)} | ${m.cards}${delta(m.cards, pm?.cards)} | ${m.questions}${delta(m.questions, pm?.questions)} | ${m.humanWaitMax} / ${m.humanWaitAvg}${delta(m.humanWaitMax, pm?.humanWaitMax)} | ${m.botsWaitedOnHuman} | ${m.reUploads ?? 0}${delta(m.reUploads, pm?.reUploads)} | ${m.tokens}${delta(m.tokens, pm?.tokens)} | ${fmtNum(m.cost)}${delta(m.cost, pm?.cost)} |`);
   }
   L.push('');
 

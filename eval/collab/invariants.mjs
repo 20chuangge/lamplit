@@ -36,7 +36,7 @@ export const INVARIANTS = [
   { id: 'I3', key: 'question-waits', title: '问了人的事，人回答前机器人不替他定' },
   { id: 'I4', key: 'one-card', title: '一篇只弹一张审批卡' },
   { id: 'I5', key: 'handoff-reply', title: '协调者交出去的活，都回复了人、任务板上看得见' },
-  { id: 'I6', key: 'uploads-kept', title: '上传的文件不被覆盖' },
+  { id: 'I6', key: 'uploads-kept', title: '人上传的文件不被覆盖' },
   { id: 'I7', key: 'no-contradiction', title: '协调者不推翻人直接对成员说的话' },
   { id: 'I8', key: 'no-extra-work', title: '不做人没要的活（数交付物）' },
   { id: 'I9', key: 'names-not-ids', title: '给人看的东西里没有 bot-xxxx 这样的 id' },
@@ -188,7 +188,10 @@ export function checkHandoffReply(trace) {
   return { ok: !bad.length, evidence: bad, note: `${n} 次交出去` };
 }
 
-/** I6: what the human uploaded is still there, unchanged; no platform upload overwrote an earlier one. */
+/**
+ * I6: what the human uploaded (uploads/ in the workspace) is still there, unchanged. A bot sending the same
+ * file to a platform twice is not this (the human's file is untouched): it is counted as 平台重传 in the numbers.
+ */
 export function checkUploadsKept(trace) {
   const bad = [];
   for (const u of trace.uploads || []) {
@@ -196,9 +199,6 @@ export function checkUploadsKept(trace) {
     if (now === undefined) continue; // not looked at (an attached hub without that file read)
     if (now === null) bad.push({ at: trace.t1, text: `上传的 ${u.path} 不见了` });
     else if (now !== u.sha) bad.push({ at: trace.t1, text: `上传的 ${u.path} 被改写了` });
-  }
-  for (const p of trace.posts || []) {
-    if (p.kind === 'upload' && p.overwrote) bad.push({ at: p.at, text: `${secs(trace, p.at)} 在${siteName(trace, p.site)}又传了一次 ${p.file}，把前一次的覆盖了` });
   }
   return { ok: !bad.length, evidence: bad, note: `${(trace.uploads || []).length} 个上传的文件` };
 }
@@ -229,11 +229,16 @@ export function checkNoContradiction(trace) {
   return { ok: !bad.length, evidence: bad, note: words.length ? `${words.length} 句直接说的话` : '这个场景没有' };
 }
 
-/** I8: deliverables counted against what was asked: files the bots made, posts to sites not asked for, applications. */
+/**
+ * I8: deliverables counted against what was asked: the new files the run left in the workspace (anywhere -
+ * the human does not say where to save; a scenario may still name a folder), posts to sites not asked for,
+ * applications.
+ */
 export function checkNoExtraWork(trace) {
   const bad = [];
   const ex = trace.expect || {};
-  const made = (trace.files || []).filter((f) => f.mtime >= trace.t0 && (!ex.deliverableDir || f.path.startsWith(ex.deliverableDir)));
+  // byEval false: new on a hub the run did not start, but no bot of the run wrote it (the human's own).
+  const made = (trace.files || []).filter((f) => f.mtime >= trace.t0 && f.byEval !== false && !/^uploads\//.test(f.path) && (!ex.deliverableDir || f.path.startsWith(ex.deliverableDir)));
   if (ex.maxDeliverables != null && made.length > ex.maxDeliverables) {
     bad.push({ at: trace.t1, text: `要的交付物最多 ${ex.maxDeliverables} 个，做了 ${made.length} 个：${made.slice(0, 8).map((f) => f.path).join('、')}${made.length > 8 ? ' …' : ''}` });
   }
@@ -309,6 +314,8 @@ export function metricsOf(trace) {
     humanWaitMax: waits.length ? Math.round(Math.max(...waits) / 100) / 10 : 0,
     humanWaitAvg: waits.length ? Math.round(waits.reduce((a, b) => a + b, 0) / waits.length / 100) / 10 : 0,
     botsWaitedOnHuman: Math.round(onHuman.reduce((a, b) => a + b, 0) / 1000),
+    // The same file sent to a platform again (not an invariant: the human's own file is untouched).
+    reUploads: (trace.posts || []).filter((p) => p.kind === 'upload' && p.overwrote).length,
     tokens: trace.usage?.tokens || 0,
     cost: trace.usage?.cost || 0,
   };

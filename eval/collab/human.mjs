@@ -63,6 +63,7 @@ export function makeHuman(run) {
         const res = await api.call('/api/uploads', { method: 'POST', raw: bytes, headers: { 'content-type': 'application/octet-stream', 'x-folder': encodeURIComponent(folder.path), 'x-rel-path': encodeURIComponent(rel), 'x-file-name': encodeURIComponent(rel.split('/').pop()) } });
         trace.uploads.push({ hub, path: res.path, sha: sha(bytes) });
       }
+      trace.uploadDirs = [...(trace.uploadDirs || []), { hub, path: folder.path }];
       note({ kind: 'upload', ref: `${folder.path}/（${Object.keys(files).length} 个文件）` });
       return { path: folder.path };
     },

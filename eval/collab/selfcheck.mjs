@@ -112,7 +112,7 @@ const LANDED = {
     },
     mark: 'bot_message',
   },
-  'overwrite-upload': { landed: (t) => t.posts.some((p) => p.kind === 'upload' && p.overwrote), mark: '1.mp4' },
+  'overwrite-upload': { landed: (t) => (t.uploads || []).some((u) => t.uploadsAfter?.[u.path] !== undefined && t.uploadsAfter[u.path] !== u.sha), mark: '文案.md' },
   'extra-work': { landed: (t) => t.files.some((f) => /备选标题/.test(f.path)), mark: '备选标题' },
   'second-turn': {
     landed: (t) => {

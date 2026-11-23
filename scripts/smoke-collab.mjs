@@ -139,9 +139,9 @@ export async function collabSelfChecks({ check }) {
         p.ok, JSON.stringify({ landed: p.landed, caught: p.caught, detail: p.detail, errors: p.errors }));
     }
     // The plants no product guard stands in the way of must always land - else the harness, not the product, broke.
-    const always = ['overwrite-upload', 'extra-work', 'contradict', 'remote-id', 'apply-unasked'];
+    const always = ['extra-work', 'contradict', 'remote-id', 'apply-unasked'];
     const missed = always.filter((n) => !sc.plants.find((p) => p.plant === n)?.landed);
-    check('COLLAB-5 the plants nothing in the product stands in the way of (an overwrite, extra files, a contradiction, an id in the text, an application without a card) always land',
+    check('COLLAB-5 the plants nothing in the product stands in the way of (extra files, a contradiction, an id in the text, an application without a card) always land',
       !missed.length, `missed: ${missed.join(', ') || '-'}; all: ${sc.plants.map((p) => `${p.plant}:${p.landed}`).join(', ')}`);
     for (const r of sc.clean) {
       check(`COLLAB-6 ${r.id} runs to its end with the clean fake script (hubs, bots, group, the human's timeline, the evidence, clean-up) - its invariants are the product's result, reported, not asserted here`,

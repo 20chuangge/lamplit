@@ -146,6 +146,7 @@ import {
 import { loadDeviceStore, describeAgent, deviceKind, mayPushUpdate } from './devices.mjs';
 import { realPathOf } from './realpath.mjs';
 import { statInside, mkdirInside, readInside, writeInside } from './safefs.mjs';
+import { ATTACH_MAX_ITEMS, FOLDER_MAX_BYTES, FOLDER_MAX_FILES, checkRelPath, folderLines, isFolderUploadPath, isImageName, listFolderFiles, safeFolderName, sizeText, taken } from './folderupload.mjs';
 import { createUpdateChecker } from './updates.mjs';
 import { dropPwshModulePath } from './childenv.mjs';
 
@@ -758,6 +759,15 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
       if (!/^uploads\//.test(p)) throw httpError(400, 'BAD_ATTACHMENT', 'attachments must be uploaded first');
       const abs = workspaceFile(state, p);
       return { bytes: await fsp.readFile(abs), name: path.basename(abs) };
+    },
+    // A folder upload (1.5.64): its files, to send one by one keeping the layout; null for a file.
+    listUpload: async (rel) => {
+      const p = String(rel || '').replace(/\/$/, '');
+      if (!isFolderUploadPath(p)) return null;
+      const abs = workspaceFile(state, p);
+      const st = await fsp.stat(abs).catch(() => null);
+      if (!st?.isDirectory()) return null;
+      return { name: path.basename(abs), files: await listFolderFiles(abs, { max: FOLDER_MAX_FILES }) };
     },
     audit: (record) => audit(record).catch(() => {}),
     selfName: () => selfMachineName(),
@@ -3511,6 +3521,9 @@ route(
       code: 'UPLOAD_TOO_LARGE',
       message: `an attachment must be ${UPLOAD_MAX_BYTES / (1024 * 1024)} MB or smaller`,
     });
+    // A file of a folder upload (1.5.64): x-folder is the folder POST /api/uploads/folder made,
+    // x-rel-path its place inside it ("素材/a.png"); both checked before anything is written.
+    if (req.headers['x-folder'] !== undefined || req.headers['x-rel-path'] !== undefined) return folderFileUpload(req, state, bytes);
     const day = new Date().toISOString().slice(0, 10);
     const dir = workspaceFile(state, path.join('uploads', day));
     // 1.5.60 (the verifier's F1): uploads/<day> made one level at a time and the file written through
@@ -3526,6 +3539,61 @@ route(
   },
   { rawBody: true },
 );
+
+// --- folder upload (1.5.64) ------------------------------------------------------
+//   POST /api/uploads/folder {name}  -> {path:"uploads/2026-11-23/视频", name}
+//        A new, empty folder for one upload: a name already used today gets a
+//        suffix ("视频-1"), as files do; an earlier upload is never written into.
+//   POST /api/uploads  + x-folder: that path, x-rel-path: "素材/a.png" (URI-encoded)
+//        -> {path:"uploads/2026-11-23/视频/素材/a.png", name, size, mime}
+// An older Lamplit answers the first with 404: the sender then falls back (roster.mjs).
+const outsideWorkspace = (err) => (err.code === 'PATH_OUTSIDE_WORKSPACE' ? httpError(400, 'PATH_OUTSIDE_WORKSPACE', 'path must stay inside the workspace') : err);
+const folderReserving = new Set(); // names being taken right now, between the look and the mkdir
+
+route('POST', /^\/api\/uploads\/folder$/, async (_req, _res, { state, body }) => {
+  const name = safeFolderName(body?.name);
+  const day = new Date().toISOString().slice(0, 10);
+  const dayDir = workspaceFile(state, path.join('uploads', day));
+  await mkdirInside(state.workspaceDir, dayDir).catch((err) => { throw outsideWorkspace(err); });
+  let candidate = name;
+  for (let i = 1; ; i += 1) {
+    const key = path.join(dayDir, candidate).toLowerCase();
+    if (!folderReserving.has(key) && !(await taken(path.join(dayDir, candidate))) && !folderReserving.has(key)) { folderReserving.add(key); break; }
+    candidate = `${name}-${i}`;
+  }
+  const key = path.join(dayDir, candidate).toLowerCase();
+  try {
+    await mkdirInside(state.workspaceDir, path.join(dayDir, candidate)).catch((err) => { throw outsideWorkspace(err); });
+  } finally {
+    setTimeout(() => folderReserving.delete(key), 1000).unref?.();
+  }
+  return { path: `uploads/${day}/${candidate}`, name: candidate };
+});
+
+async function folderFileUpload(req, state, bytes) {
+  const decode = (v) => { try { return decodeURIComponent(String(v ?? '')); } catch { return '\u0000'; } };
+  const folder = decode(req.headers['x-folder']);
+  if (!isFolderUploadPath(folder)) throw httpError(400, 'BAD_FOLDER', 'x-folder must be a folder made by POST /api/uploads/folder');
+  const rel = checkRelPath(decode(req.headers['x-rel-path']));
+  const folderAbs = workspaceFile(state, folder);
+  const st = await fsp.lstat(folderAbs).catch(() => null);
+  if (!st?.isDirectory()) throw httpError(400, 'BAD_FOLDER', 'no such upload folder');
+  // The folder's limits, counted from what is there (another file of it may be on its way meanwhile).
+  const have = await listFolderFiles(folderAbs, { max: FOLDER_MAX_FILES });
+  const haveBytes = have.reduce((s, f) => s + f.size, 0);
+  if (have.length + 1 > FOLDER_MAX_FILES) throw httpError(400, 'FOLDER_TOO_MANY_FILES', `a folder may hold at most ${FOLDER_MAX_FILES} files`);
+  if (haveBytes + bytes.length > FOLDER_MAX_BYTES) throw httpError(400, 'FOLDER_TOO_LARGE', `a folder may hold at most ${FOLDER_MAX_BYTES / (1024 * 1024)} MB`);
+  const abs = workspaceFile(state, `${folder}/${rel}`);
+  await mkdirInside(state.workspaceDir, path.dirname(abs)).catch((err) => { throw outsideWorkspace(err); });
+  // Never over a file already there (A.txt and a.txt on Windows, or a file sent twice): a suffix, as for files.
+  const ext = path.extname(abs);
+  const stem = abs.slice(0, abs.length - ext.length);
+  let target = abs;
+  for (let i = 1; await taken(target); i += 1) target = `${stem}-${i}${ext}`;
+  await writeInside(state.workspaceDir, target, bytes).catch((err) => { throw outsideWorkspace(err); });
+  const out = path.relative(path.resolve(state.workspaceDir), target).replace(/\\/g, '/');
+  return { path: out, name: path.basename(target), size: bytes.length, mime: mimeOf(target) };
+}
 
 //   GET /api/workspace/stat?path=… -> {exists, size}   is a file a reply names here (1.5.11)
 route('GET', /^\/api\/workspace\/stat$/, async (_req, _res, { state, query }) => {
@@ -3633,26 +3701,36 @@ route('POST', /^\/api\/tasks\/import$/, async (req, _res, { state, body }) => {
 /** Attachments named in a message must be files we stored. */
 async function checkAttachments(state, list) {
   if (!Array.isArray(list) || !list.length) return [];
-  if (list.length > 10) throw httpError(400, 'TOO_MANY_ATTACHMENTS', 'at most 10 attachments per message');
+  // 1.5.64: 20 (was 10); a folder is one item.
+  if (list.length > ATTACH_MAX_ITEMS) throw httpError(400, 'TOO_MANY_ATTACHMENTS', `at most ${ATTACH_MAX_ITEMS} attachments per message`);
   const out = [];
   for (const item of list) {
-    const rel = String(item?.path || '');
+    const rel = String(item?.path || '').replace(/\\/g, '/').replace(/\/$/, '');
     if (!/^uploads\//.test(rel)) throw httpError(400, 'BAD_ATTACHMENT', 'attachments must be uploaded first');
     const abs = workspaceFile(state, rel);
-    let size = 0;
-    try { size = (await fsp.stat(abs)).size; } catch { throw httpError(400, 'BAD_ATTACHMENT', `no uploaded file at ${rel}`); }
-    out.push({ path: rel.replace(/\\/g, '/'), mime: mimeOf(rel), size });
+    let st = null;
+    try { st = await fsp.stat(abs); } catch { throw httpError(400, 'BAD_ATTACHMENT', `no uploaded file at ${rel}`); }
+    if (st.isDirectory()) {
+      // A folder upload (1.5.64): only one made for an upload, and within its limits.
+      if (!isFolderUploadPath(rel)) throw httpError(400, 'BAD_ATTACHMENT', `${rel} is not an uploaded folder`);
+      const files = await listFolderFiles(abs, { max: FOLDER_MAX_FILES });
+      if (!files.length) throw httpError(400, 'BAD_ATTACHMENT', `the folder ${rel} is empty`);
+      if (files.length > FOLDER_MAX_FILES) throw httpError(400, 'FOLDER_TOO_MANY_FILES', `a folder may hold at most ${FOLDER_MAX_FILES} files`);
+      const size = files.reduce((s, f) => s + f.size, 0);
+      out.push({ path: rel, folder: true, files, size, mime: 'inode/directory' });
+      continue;
+    }
+    out.push({ path: rel, mime: mimeOf(rel), size: st.size });
   }
   return out;
 }
 
-/** The text the bot sees: what you wrote, then where each attachment is. */
+/** The text the bot sees: what you wrote, then where each attachment is (a folder: its path and a short list). */
 function withAttachments(text, attachments) {
   if (!attachments.length) return text;
-  const kb = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
-  const lines = attachments.map((a) => `- ${a.path}（${a.mime.startsWith('image/') ? '图片' : '文件'}，${kb(a.size)}）`);
-  // The chat model reads text only: point it at image_view for the pictures.
-  const hint = attachments.some((a) => a.mime.startsWith('image/')) ? '\n（图片的内容要用 image_view 工具看。）' : '';
+  const lines = attachments.flatMap((a) => (a.folder ? folderLines(a.path, a.files) : [`- ${a.path}（${a.mime.startsWith('image/') ? '图片' : '文件'}，${sizeText(a.size)}）`]));
+  // The chat model reads text only: point it at image_view for the pictures (in a folder too).
+  const hint = attachments.some((a) => a.mime.startsWith('image/') || (a.folder && a.files.some((f) => isImageName(f.rel)))) ? '\n（图片的内容要用 image_view 工具看。）' : '';
   return `${text || '（见附件）'}\n\n[附件] 都在共享工作区里：\n${lines.join('\n')}${hint}`;
 }
 
@@ -5106,6 +5184,9 @@ route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/messages$/, 
   } catch (err) { throw peerFailure(err, peer); }
 });
 
+/** The page's name for one send, so its 「正在传 12/40…」 line hears its own progress (1.5.64). */
+const uploadTag = (body) => (typeof body?.uploadTag === 'string' && /^[\w-]{1,40}$/.test(body.uploadTag) ? body.uploadTag : '');
+
 route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/message$/, async (req, _res, { params, body, state }) => {
   const { peer, botId } = remoteTarget(req, state, params);
   // Only what the human wrote: no hand-off or voice-call flags ride along.
@@ -5114,7 +5195,7 @@ route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/message$/, 
   if (!text && !attachments.length) throw httpError(400, 'EMPTY_MESSAGE', 'text is required');
   if (text.length > 20000) throw httpError(400, 'MESSAGE_TOO_LONG', 'text is limited to 20000 characters');
   try {
-    const out = await state.roster.deliver({ machine: peer.name, botId, text, attachments: attachments.map((a) => ({ path: a.path })) });
+    const out = await state.roster.deliver({ machine: peer.name, botId, text, attachments: attachments.map((a) => ({ path: a.path })), tag: uploadTag(body) });
     if (!out.queued) await audit({ kind: 'peer.message', machine: peer.name, botId, turnId: out.turnId || null });
     return out.queued ? out : { turnId: out.turnId, botId: `${botId}@${peer.name}`, machine: peer.name, ...(out.aside ? { aside: true } : {}) };
   } catch (err) {
@@ -5323,7 +5404,7 @@ route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/message$
   if (!text && !attachments.length) throw httpError(400, 'EMPTY_MESSAGE', 'text is required');
   if (text.length > 20000) throw httpError(400, 'MESSAGE_TOO_LONG', 'text is limited to 20000 characters');
   try {
-    const out = await state.roster.deliver({ machine: peer.name, botId: '', groupId, text, attachments: attachments.map((a) => ({ path: a.path })) });
+    const out = await state.roster.deliver({ machine: peer.name, botId: '', groupId, text, attachments: attachments.map((a) => ({ path: a.path })), tag: uploadTag(body) });
     if (!out.queued) await audit({ kind: 'peer.group.message', machine: peer.name, groupId, turnId: out.turnId || null });
     return out.queued ? out : { turnId: out.turnId, groupId: `${groupId}@${peer.name}`, machine: peer.name };
   } catch (err) {
@@ -6057,7 +6138,7 @@ route('GET', /^\/api\/stream$/, async (req, res, { query, state }) => {
   const streamDevice = req.auth?.deviceId || '';
   // Roster edits are global: every window needs them regardless of which bot
   // or group it happens to be looking at.
-  const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed', 'feishu.changed', 'initiative.say']);
+  const GLOBAL_EVENTS = new Set(['roster.changed', 'ui.command', 'settings.changed', 'attention.changed', 'feishu.changed', 'initiative.say', 'peer.upload']); // peer.upload: 「正在传 12/40…」 for the page that sent it (1.5.64)
   const send = (event) => {
     if (closed) return;
     if (event.to && event.to !== streamDevice) return;

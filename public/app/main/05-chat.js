@@ -464,21 +464,6 @@ function renderItem(item) {
   }
 }
 
-/** "[附件]" block the server appends for the bot: split it off for display. */
-const ATTACH_MARK = '\n\n[附件] 都在共享工作区里：\n';
-function splitAttachments(text) {
-  const raw = String(text || '');
-  const at = raw.indexOf(ATTACH_MARK);
-  if (at < 0) return { text: raw, files: [] };
-  const files = raw.slice(at + ATTACH_MARK.length).split('\n')
-    .map((line) => /^- (.+?)（(图片|文件)，([^）]+)）$/.exec(line.trim()))
-    .filter(Boolean)
-    // A video attached as a file is a video (1.5.49: an .mp4 showed as a plain file icon).
-    .map(([, p, kind, size]) => ({ path: p, image: kind === '图片', video: kind === '文件' && /\.(mp4|webm|mov|m4v)$/i.test(p), size, name: p.split('/').pop() }));
-  const body = raw.slice(0, at);
-  return { text: body === '（见附件）' ? '' : body, files };
-}
-
 /** A "显示 / 隐藏" button inside each password box (keys, SSH passwords). */
 function addRevealButtons(root) {
   const inputs = root.matches?.('input[type="password"]') ? [root] : [...(root.querySelectorAll?.('input[type="password"]') || [])];
@@ -528,6 +513,7 @@ function findElsewhere(path) {
 const remoteFileUrl = (machine, path) => `/api/peers/${encodeURIComponent(machine)}/file?path=${encodeURIComponent(path)}`;
 
 function attachmentNode(file) {
+  if (file.folder) return folderCard(file); // 1.5.64, 05b-folder.js
   if (file.page) {
     const card = el('button', 'att-page');
     card.type = 'button';
@@ -602,7 +588,6 @@ function attachmentNode(file) {
   return a;
 }
 
-
 /** A message one bot sent another: "文案 → 质检", with the sender's face. */
 function botMessageRow(item) {
   const sender = botById(item.fromBot) || { id: item.fromBot, name: item.fromBot };
@@ -671,7 +656,17 @@ function renderAttachStrip() {
   strip.innerHTML = '';
   strip.hidden = state.pendingFiles.length === 0;
   syncComposerActions();
+  const notes = [];
   for (const f of state.pendingFiles) {
+    if (f.folder) {
+      // A folder (1.5.64): one chip; what was left out, named under the chips before sending.
+      const chip = folderChip(f);
+      chip.appendChild(removeChipButton(f));
+      strip.appendChild(chip);
+      const note = folderLeftOut(f);
+      if (note) notes.push(note);
+      continue;
+    }
     const chip = el('div', `att-chip${f.status === 'uploading' ? ' busy' : ''}${f.status === 'error' ? ' bad' : ''}`);
     if (f.preview) {
       const img = document.createElement('img');
@@ -682,17 +677,10 @@ function renderAttachStrip() {
       chip.appendChild(el('span', 'att-icon', '📄'));
     }
     chip.appendChild(el('span', 'att-chip-name', f.status === 'uploading' ? '上传中…' : f.status === 'error' ? `上传失败：${f.error}` : f.name));
-    const x = el('button', 'att-x', '✕');
-    x.type = 'button';
-    x.setAttribute('aria-label', '移除');
-    x.addEventListener('click', () => {
-      state.pendingFiles = state.pendingFiles.filter((p) => p !== f);
-      if (f.preview) URL.revokeObjectURL(f.preview);
-      renderAttachStrip();
-    });
-    chip.appendChild(x);
+    chip.appendChild(removeChipButton(f));
     strip.appendChild(chip);
   }
+  notes.forEach((n) => strip.appendChild(n));
 }
 
 /* --- voice input ---------------------------------------------------------
@@ -801,7 +789,6 @@ async function speakText(text, button = null, voiceOf = {}, ready = null) {
   if (button) { button.classList.remove('playing'); button.textContent = '🔊 朗读'; }
   updateSpeakBar();
 }
-
 
 
 
@@ -1335,8 +1322,9 @@ function onMentionKey(event) {
 }
 
 async function addFiles(fileList) {
-  for (const file of [...fileList].slice(0, 10)) {
-    if (state.pendingFiles.length >= 10) { toast('一条消息最多 10 个附件', true); break; }
+  // 1.5.64: 20 a message (was 10); a folder counts once.
+  for (const file of [...fileList]) {
+    if (state.pendingFiles.length >= FOLDER_LIMITS.items) { toast(`一条消息最多 ${FOLDER_LIMITS.items} 个附件`, true); break; }
     if (file.size > 25 * 1024 * 1024) { toast(`「${file.name}」超过 25 MB`, true); continue; }
     const entry = { name: file.name || 'image.png', status: 'uploading', preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '' };
     state.pendingFiles.push(entry);

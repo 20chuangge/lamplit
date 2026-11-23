@@ -253,6 +253,11 @@ async function main() {
     await stage('1.5.63: the chat does not jump when a reply lands - instant moves, the reader keeps their place, one redraw', async () => (await import('./smoke-fixes-1563.mjs')).chatScrollChecks({ check, readText }));
     await stage('1.5.63: the 任务 panel follows a chat on another machine - its routines and briefing, changed there', async () => (await import('./smoke-fixes-1563.mjs')).remoteRoutineChecks({ check, readText, api, base, rawFetch, startServerChild, stopProcess, seedHome }));
     await stage('1.5.63: a bot finds and moves its own routine on a machine with many (routine_list stays under the cut)', async () => (await import('./smoke-fixes-1563.mjs')).routineListChecks({ check, readText }));
+    await stage('1.5.64 folder upload: the rules - safe names, the skip list, the limits', async () => (await import('./smoke-folder-1564.mjs')).folderRuleChecks({ check, readText }));
+    await stage('1.5.64 folder upload: on this hub - the layout kept, clashes suffixed, unsafe paths refused, limits, one item in the message, 20 a message', async () => (await import('./smoke-folder-1564.mjs')).folderHubChecks({ check, api, base, rawFetch }));
+    await stage('1.5.64 folder upload: to another machine - the layout kept there, progress', async () => (await import('./smoke-folder-1564.mjs')).folderPeerChecks({ check, api, base, rawFetch, startServerChild, stopProcess, seedHome }));
+    await stage('1.5.64 folder upload: an older Lamplit there - flat with a note, 10 a message', async () => (await import('./smoke-folder-1564.mjs')).folderOldPeerChecks({ check }));
+    await stage('1.5.64 folder upload: the page - 选文件夹, a dropped folder, the chip, the card, 正在传', async () => (await import('./smoke-folder-1564.mjs')).folderPageChecks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -7406,12 +7411,13 @@ async function scenarioV163() {
   // 1.5.58: a 15th, 07b-cards.js (the cards you answer: titles, risk tags, receipts, next steps), after skills.
   // 1.5.59: a 16th, 11a-network.js (网络诊断, the two relays, 体检), split from 11-machines.js at its cap; a 17th, 04b-sidebar.js (the sidebar's filters, redesign step 4).
   // 1.5.61: 04c-order.js (the sidebar's stable order) and 08b-settings-home.js (the settings home).
-  check('ENG-04b split: the page script is 19 files by feature (core, avatars, groups, bots, sidebar, order, chat, live, skills, cards, settings, settings home, apps, computer, machines, network, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
-    PS.MAIN_PARTS.length === 19 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
+  // 1.5.64: 05b-folder.js (folder upload), after chat.
+  check('ENG-04b split: the page script is 20 files by feature (core, avatars, groups, bots, sidebar, order, chat, folder upload, live, skills, cards, settings, settings home, apps, computer, machines, network, lamp, wiring, backup), none over 2 000 lines; the old main.js is gone',
+    PS.MAIN_PARTS.length === 20 && JSON.stringify(tags) === JSON.stringify(PS.MAIN_PARTS) && sizes.every((n) => n < 2000)
     && !fsx.existsSync(path.join(pub, 'app', 'main.js')) && !raw.includes('type="module"'), JSON.stringify(sizes));
   const order = (await import('./check-page-parts.mjs')).checkPageParts(pub);
   check('ENG-04b split: load-time code never needs a later part, no name is declared twice, nothing clashes with the browser (scripts/check-page-parts.mjs)',
-    !order.skipped && order.problems.length === 0 && order.parts === 19, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
+    !order.skipped && order.problems.length === 0 && order.parts === 20, JSON.stringify(order.skipped || order.problems.slice(0, 5)));
   const auth = await import('../src/auth.mjs');
   const part = await fetch(`${base}/app/main/05-chat.js`);
   const body = await part.text();
@@ -7620,7 +7626,7 @@ async function scenarioV160() {
   const whole = PS.pageSource(path.join(REPO, 'public'));
   const i18n = await readText('../scripts/check-i18n.mjs');
   check('ENG-04 checks: the self-tests and the English check read the split page as one text (every part present, in page order)',
-    PS.PAGE_PARTS.length === 23 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js; 1.5.58: + 07b-cards.js; 1.5.59: + 11a-network.js, 04b-sidebar.js; 1.5.61: + 04c-order.js, 08b-settings-home.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
+    PS.PAGE_PARTS.length === 24 && whole.includes('<style>') // 1.5.56: + 11b-lamp.js; 1.5.58: + 07b-cards.js; 1.5.59: + 11a-network.js, 04b-sidebar.js; 1.5.61: + 04c-order.js, 08b-settings-home.js; 1.5.64: + 05b-folder.js && whole.includes('<script type="module">') && whole.indexOf('</style>') < whole.indexOf('<script type="module">')
     && i18n.includes("import { pageSource } from './page-source.mjs';") && (await readText('../public/index.html')) === whole);
 
   const auth = await import('../src/auth.mjs');

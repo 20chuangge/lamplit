@@ -31,23 +31,25 @@ async function send() {
   // Optimistic user bubble; the authoritative reload happens on turn.end.
   if (messagesEl.querySelector('.empty')) messagesEl.innerHTML = '';
   const shown = files.length
-    ? `${text || '（见附件）'}${ATTACH_MARK}${files.map((f) => `- ${f.path}（${/\.(png|jpe?g|gif|webp)$/i.test(f.path) ? '图片' : '文件'}，…）`).join('\n')}`
+    ? `${text || '（见附件）'}${ATTACH_MARK}${files.map((f) => (f.folder ? folderAttachLine(f) : `- ${f.path}（${/\.(png|jpe?g|gif|webp)$/i.test(f.path) ? '图片' : '文件'}，…）`)).join('\n')}`
     : text;
   state.lastSent = { text, at: Date.now() }; // its turn.start is not drawn twice (1.5.42 test)
   const myRow = messagesEl.appendChild(userRow({ text: shown, ts: new Date().toISOString() }));
   keepTypingLast();
   scrollToBottom(true);
+  // Several files for another machine: 「正在传 12/40…」 under the message while this hub passes them on (1.5.64).
+  const uploadTag = remoteChatMachine() ? watchPeerUpload(files, myRow) : '';
 
   try {
     if (isGroupMode() && isRemoteId(state.groupId)) {
       // Another machine's group (1.5.43): passed on, or kept until that machine is back.
-      const res = await api(remoteGroupApi(state.groupId, '/message'), { method: 'POST', body: { text, attachments } });
+      const res = await api(remoteGroupApi(state.groupId, '/message'), { method: 'POST', body: { text, attachments, ...(uploadTag ? { uploadTag } : {}) } });
       if (res?.queued) { myRow.remove(); await loadOutbox(); }
     } else if (isGroupMode()) {
       await api(`/api/groups/${encodeURIComponent(state.groupId)}/message`, { method: 'POST', body: { text, attachments } });
     } else if (isRemoteId(state.botId)) {
       // A bot on another machine (1.5.42): this hub passes it on, or keeps it until that machine is back.
-      const res = await api(remoteApi(state.botId, '/message'), { method: 'POST', body: { text, attachments } });
+      const res = await api(remoteApi(state.botId, '/message'), { method: 'POST', body: { text, attachments, ...(uploadTag ? { uploadTag } : {}) } });
       // Kept here: it is drawn with the others that wait, under the chat (not twice).
       if (res?.queued) { myRow.remove(); await loadOutbox(); }
     } else {
@@ -58,6 +60,7 @@ async function send() {
     if (err.code === 'LOCAL_KEY_REQUIRED' && state.afterPair) state.afterPair.then = (res) => { if (res?.queued) { myRow.remove(); loadOutbox(); } };
     if (err.status !== 401) toast(err.status === 404 ? '服务端还没有群组消息接口（404）' : err.message, true);
   } finally {
+    if (uploadTag) endPeerUpload();
     state.sending = false;
     $('send-btn').disabled = false;
     updateComposerMode();
@@ -253,6 +256,11 @@ function handleEvent(ev) {
   // A message waiting for a machine that was off (1.5.42): sent, or not.
   if (ev.type === 'peer.outbox') {
     onOutboxEvent(ev);
+    return;
+  }
+  // Files on their way to another machine (1.5.64): 「正在传 12/40…」 for the send that asked.
+  if (ev.type === 'peer.upload') {
+    onPeerUpload(ev);
     return;
   }
   if (ev.type === 'settings.changed') {

@@ -41,7 +41,7 @@ function rawRequest(base, pathname, { method = 'GET', headers = {}, body } = {})
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-export async function fixes1563Checks({ check, readText, api, base }) {
+export async function fixes1563Checks({ check, readText, api, base, rawFetch, startServerChild, stopProcess, seedHome }) {
   // --- 1. a group's introductions on another machine: the marker goes along -------------------------
   const A = await import('../src/agent.mjs');
   {
@@ -87,23 +87,48 @@ export async function fixes1563Checks({ check, readText, api, base }) {
       JSON.stringify({ withFlag, without, endWith: endWith?.kickoff, endWithout: endWithout?.kickoff }));
   }
   {
-    // The receiving side, on a real hub: kickoff:true marks the turn an introduction; none, or anything but true (an older or odd peer), does not.
-    const say = (handoff) => api('/api/bots/researcher/message', { method: 'POST', body: { text: '（群聊介绍）请介绍一下你自己', handoff } });
-    const itemOf = async () => (await api('/api/attention')).json?.items?.['bot:researcher'] || {};
-    const waitDone = async () => { for (let i = 0; i < 80; i += 1) { const it = await itemOf(); if (!it.working && it.unread) return it; await sleep(100); } return itemOf(); };
-    const hand = { depth: 1, chain: ['group:g63', 'researcher'], budgetLeft: 4, from: { bot: '群「介绍组」', machine: '书房电脑' } };
-    const r1 = await say({ ...hand, kickoff: true });
-    const marked = await waitDone();
-    const note1 = (await api('/api/nudge/preview')).json?.text || '';
-    const r2 = await say({ ...hand, kickoff: 'yes' });
-    const odd = await waitDone();
-    const r3 = await say({ ...hand });
-    const old = await waitDone();
-    const note3 = (await api('/api/nudge/preview')).json?.text || '';
-    check('F63-1c a hub given kickoff:true in a hand-over marks the turn as an introduction, and its daily note does not count it as unseen work; without it (an older peer) it counts as before',
-      r1.status === 200 && r2.status === 200 && r3.status === 200 && marked.intro === true && !/做完了你还没看[^\n]*研究/.test(note1) && !odd.intro && !old.intro && /做完了你还没看[^\n]*研究/.test(note3),
-      JSON.stringify({ marked, odd, old, note1: note1.slice(0, 120), note3: note3.slice(0, 160) }));
-    await api('/api/attention/seen', { method: 'POST', body: { key: 'bot:researcher' } }).catch(() => null);
+    // The receiving side, on a hub of its own (no other bot's unread work in its daily note, nothing else running):
+    // kickoff:true marks the turn an introduction; none, or anything but true (an older or odd peer), does not.
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const ownHome = fs.mkdtempSync(path.join(os.tmpdir(), 'assist-smoke-kickoff-'));
+    await seedHome(ownHome);
+    let own = null;
+    try {
+      own = await startServerChild(ownHome, { ASSIST_DATA_DIR: path.join(ownHome, 'data'), ASSIST_WORKSPACE_DIR: path.join(ownHome, 'workspace') });
+      const ownKey = fs.readFileSync(path.join(ownHome, 'data', 'local-key'), 'utf8').trim();
+      const ownApi = async (p, { method = 'GET', body } = {}) => {
+        const res = await rawFetch(`${own.url}${p}`, { method, headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), 'x-lamplit-local': ownKey }, body: body !== undefined ? JSON.stringify(body) : undefined });
+        const text = await res.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch { /* not json */ }
+        return { status: res.status, json };
+      };
+      const itemOf = async () => (await ownApi('/api/attention')).json?.items?.['bot:researcher'] || {};
+      // Each hand-over starts from a looked-at chat, so 「unread, not working」 can only be that hand-over's own end
+      // (a slow runner answers the POST before the turn starts: the last turn's state must not pass for it).
+      const say = async (handoff) => {
+        await ownApi('/api/attention/seen', { method: 'POST', body: { key: 'bot:researcher' } });
+        const r = await ownApi('/api/bots/researcher/message', { method: 'POST', body: { text: '（群聊介绍）请介绍一下你自己', handoff } });
+        let it = {};
+        for (let i = 0; i < 300; i += 1) { it = await itemOf(); if (!it.working && it.unread) break; await sleep(100); }
+        return { status: r.status, item: it };
+      };
+      const hand = { depth: 1, chain: ['group:g63', 'researcher'], budgetLeft: 4, from: { bot: '群「介绍组」', machine: '书房电脑' } };
+      const r1 = await say({ ...hand, kickoff: true });
+      const note1 = (await ownApi('/api/nudge/preview')).json?.text || '';
+      const r2 = await say({ ...hand, kickoff: 'yes' });
+      const r3 = await say({ ...hand });
+      const note3 = (await ownApi('/api/nudge/preview')).json?.text || '';
+      check('F63-1c a hub given kickoff:true in a hand-over marks the turn as an introduction, and its daily note does not count it as unseen work; without it (an older peer) it counts as before',
+        r1.status === 200 && r2.status === 200 && r3.status === 200
+        && r1.item.unread && r1.item.intro === true && !/做完了你还没看/.test(note1)
+        && r2.item.unread && !r2.item.intro && r3.item.unread && !r3.item.intro && /1 件做完了你还没看[^\n]*\n- 1 件做完了你还没看：研究/.test(note3),
+        JSON.stringify({ marked: r1.item, odd: r2.item, old: r3.item, note1: note1.slice(0, 120), note3: note3.slice(0, 160) }));
+    } finally {
+      if (own) await stopProcess(own.child).catch(() => {});
+      fs.rmSync(ownHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
   }
 
   // --- 2. the desktop app against a developer page: no master.key in HOME, TightVNC left alone ------

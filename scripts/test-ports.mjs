@@ -68,12 +68,19 @@ export async function listenRelay(relay, { host = '127.0.0.1', stun = false, stu
  * `count` free TCP ports in a row (port, port+1, ...) for a program that is
  * told its port up front (a browser's --remote-debugging-port): the system's
  * own pick, so not a kept one, and checked free before it is used.
+ * range [from, to]: picked at random there instead, each one checked by a real
+ * bind (a kept one fails it). Below the system's own range (Windows 49152+,
+ * Linux 32768+), the next port it hands out for a connection is never one of these.
  */
-export async function freeTcpPorts(count = 1, host = '127.0.0.1') {
+export async function freeTcpPorts(count = 1, host = '127.0.0.1', { range = null } = {}) {
   for (let tries = 1; tries <= TRIES * 2; tries += 1) {
-    const probe = net.createServer();
-    const port = await listen(probe, 0, host);
-    await close(probe);
+    let port;
+    if (range) port = range[0] + Math.floor(Math.random() * (range[1] - range[0] - count + 2));
+    else {
+      const probe = net.createServer();
+      port = await listen(probe, 0, host);
+      await close(probe);
+    }
     if (port + count - 1 > 65535) continue;
     let ok = true;
     for (let i = 0; i < count && ok; i += 1) ok = await tcpFree(port + i, host);

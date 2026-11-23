@@ -300,9 +300,12 @@ async function f11sweep() {
   const otherProfile = path.join(process.env.ASSIST_HOME, 'someone-elses-profile');
   fs.mkdirSync(botProfile, { recursive: true });
   fs.mkdirSync(otherProfile, { recursive: true });
-  // Two in a row the system hands out (not ones Windows keeps for itself, 1.5.63: test-ports.mjs).
-  const port = await freeTcpPorts(2);
+  // Two free ones in a row, below the system's own range and checked by a bind (not ones Windows keeps for itself; 1.5.63: test-ports.mjs).
+  const port = await freeTcpPorts(2, '127.0.0.1', { range: [20000, 32000] });
   const answers = async (p) => { try { return Boolean((await (await fetch(`http://127.0.0.1:${p}/json/version`, { signal: AbortSignal.timeout(1500) })).json()).webSocketDebuggerUrl); } catch { return false; } };
+  // A busy runner can be slow to answer right after the sweep: the one left alone gets up to 10 s.
+  const answersSoon = async (p) => { for (let i = 0; i < 10; i += 1) { if (await answers(p)) return true; await sleep(500); } return false; };
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const start = (p, profile) => spawn(exe, [`--remote-debugging-port=${p}`, `--user-data-dir=${profile}`, '--no-first-run', '--headless=new', 'about:blank'], { stdio: 'ignore', detached: true });
   const old = start(port, botProfile);
   const other = start(port + 1, otherProfile);
@@ -310,10 +313,15 @@ async function f11sweep() {
   out.bothUp = (await answers(port)) && (await answers(port + 1));
   fs.writeFileSync(path.join(data, 'browser-state-old1.json'), JSON.stringify({ port, pid: 0, executable: exe, headless: false, onDesktop: true }));
   try {
-    out.stopped = (await B.sweepLeftoverBrowsers()).length;
+    const pids = await B.sweepLeftoverBrowsers();
+    out.stopped = pids.length;
+    // What the sweep stopped, by pid: never the other profile's browser (if that one is gone anyway, this tells who did it).
+    out.stoppedOther = pids.includes(other.pid);
+    out.pids = { stopped: pids, old: old.pid, other: other.pid, port };
     await sleep(1000);
     out.oldStillAnswers = await answers(port);
-    out.otherStillAnswers = await answers(port + 1);
+    out.otherStillAnswers = await answersSoon(port + 1);
+    if (!out.otherStillAnswers) out.otherAlive = alive(other.pid);
     out.stateGone = !fs.existsSync(path.join(data, 'browser-state-old1.json'));
   } finally {
     for (const c of [old, other]) { try { if (process.platform === 'win32') execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(c.pid)], { stdio: 'ignore' }); else process.kill(-c.pid); } catch { /* gone */ } }
@@ -637,7 +645,7 @@ export async function sec1561Checks({ check, skip = (n, why) => console.log(`SKI
   const sw = run('f11sweep');
   check('SEC-F11a at hub start (before the trust note and any bot command) every browser left on a bot profile is stopped; --user-data-dir read quoted or bare', sw.atStart && sw.parse, J(sw));
   if (sw.skipped) skip('SEC-F11b (browser)', sw.skipped);
-  else check('SEC-F11b a browser 1.5.60 left on a bot profile (its debugging port, pid 0 noted) no longer answers; a browser on a profile that is not Lamplit\'s is left alone; the old notes go', sw.bothUp && sw.stopped >= 1 && !sw.oldStillAnswers && sw.otherStillAnswers && sw.stateGone, J(sw));
+  else check('SEC-F11b a browser 1.5.60 left on a bot profile (its debugging port, pid 0 noted) no longer answers; a browser on a profile that is not Lamplit\'s is left alone; the old notes go', sw.bothUp && sw.stopped >= 1 && !sw.stoppedOther && !sw.oldStillAnswers && sw.otherStillAnswers && sw.stateGone, J(sw));
   const ft = run('f12to14');
   check('SEC-F12 Linux bot screens: x11vnc asks for a password (a new one each time, in data/), the hub signs in and the page types none; no websockify; the password is never in an API answer', Object.values(ft.f12 || {}).every(Boolean), J(ft));
   check('SEC-F13 the relay server\'s Go: downloaded into mktemp -d and checked against Go\'s SHA-256 before it is unpacked', ft.f13 === true, J(ft));

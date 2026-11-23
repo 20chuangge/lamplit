@@ -2011,18 +2011,21 @@ export function createRegistry(deps) {
   add({
     name: 'tell_human',
     description:
-      'Tell the human, right away, about something only they can decide or clear: publish or not, choose between options, a blocker (login, money, a missing file). Works even when a teammate or a routine asked you: your other replies may only reach that teammate. The human sees it in your chat, as a phone notification and in Feishu. In a few short lines: what is ready, what you need from them, and your recommendation. Not for progress reports.',
+      'Tell the human, right away, about something only they can decide or clear: publish or not, choose between options, a blocker (login, money, a missing file). Works even when a teammate or a routine asked you: your other replies may only reach that teammate. The human sees it in your chat, as a phone notification and in Feishu. In a few short lines: what is ready, what you need from them, and your recommendation. Not for progress reports. Until they answer, nothing goes out (no draft, no post, no upload, no form sent) - that waits for their answer; set blocking to false only for a question whose answer nothing you send depends on.',
     risk: RISK.LOW,
     parameters: {
       type: 'object',
-      properties: { text: { type: 'string', description: 'What they need to decide, with the facts and your recommendation.' } },
+      properties: {
+        text: { type: 'string', description: 'What they need to decide, with the facts and your recommendation.' },
+        blocking: { type: 'boolean', description: 'Default true: nothing goes out until they answer. false: only for a question no send depends on (you can go on meanwhile).' },
+      },
       required: ['text'],
       additionalProperties: false,
     },
     async run(args, ctx) {
       const text = String(args?.text || '').trim();
       if (!text) throw toolError('TEXT_REQUIRED', 'say what the human needs to decide');
-      return deps.getRuntime().tellHuman({ bot: ctx.bot, turnId: ctx.turnId, text });
+      return deps.getRuntime().tellHuman({ bot: ctx.bot, turnId: ctx.turnId, text, blocking: args?.blocking !== false });
     },
   });
 

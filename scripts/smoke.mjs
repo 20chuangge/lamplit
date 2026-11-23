@@ -278,6 +278,7 @@ async function main() {
     await stage('1.5.65: every line of the chat sits in the 760 px column, with its own indent', async () => (await import('./smoke-group-1565.mjs')).columnChecks({ check, readText, browserMod, toolsMod, skip }));
     await stage('1.5.65: every way the human answers closes the open question, once', async () => (await import('./smoke-group-1565.mjs')).answerChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.65: 「这一轮都允许」, sends approved by where they go, stopping after two failed sends', async () => (await import('./smoke-group-1565.mjs')).chainChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.65: what the first real-model collaboration run found - board items one by one, a direct word mid-board, one card for one post, no send before an answer', async () => (await import('./smoke-group-1565.mjs')).realEvalChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -5157,14 +5158,15 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         const waitingAfterFirst = plan.status === 'waiting' && plan.tasks[1].status === 'waiting_human' && plan.tasks[3].status === 'todo';
         const handed = plan.tasks[2].owner === 'a1' && plan.tasks[2].handoffFrom === 'w1' && plan.tasks[2].status === 'done';
         const started = (name) => calls.filter((c) => c.text?.includes(`你负责的任务：${name}`)).map((c) => c.at);
-        // Independent tasks overlap: the second starts before the first one ends (no timing window).
-        const parallel = seq.indexOf('start:配乐清单') > -1 && seq.indexOf('start:配乐清单') < seq.indexOf('end:写分镜') && started('写分镜').length >= 1;
+        // 1.5.65: two items of ONE member (编剧: 写分镜, 配乐清单) run one after another - one bot, one working turn
+        // (the collaboration eval's s6). Different members still run at once (smoke-group-1564 G64-3, smoke-group-1565 G65-10a).
+        const parallel = seq.indexOf('start:配乐清单') > -1 && seq.indexOf('start:配乐清单') > seq.indexOf('end:写分镜') && started('写分镜').length >= 1;
         const took = await brt.answerBoard(grp, '卡通');
         await waitUntil(() => plan.status === 'done', 8000, 'board done').catch(() => false);
         const second = calls.filter((c) => c.text?.includes('你负责的任务：画首帧'));
         const remote = calls.find((c) => c.remote);
         const summary = calls.find((c) => c.role === 'coordinator');
-        check('M15 task board: independent tasks run at once; a task waits for what it needs; a hand-off changes the owner; a question parks the board until the human answers',
+        check('M15 task board: independent tasks run at once (one member\'s own items one after another, 1.5.65); a task waits for what it needs; a hand-off changes the owner; a question parks the board until the human answers',
           waitingAfterFirst && handed && parallel && took === true && second.length === 2 && /用户的回答：卡通/.test(second[1].text) && /前面几项的结果/.test(second[1].text) && /写分镜/.test(second[1].text), JSON.stringify(calls.map((c) => [c.who, c.role, (c.text || '').slice(0, 30)])));
         check('M15 task board: a member on another machine does its task there; at the end the coordinator sums up once and cannot plan again; the board is done and the group is told',
           remote?.who === 'r1' && /画首帧/.test(remote.text) && summary?.noPlan === true && /任务板做完了/.test(summary.text) && plan.status === 'done' && plan.tasks.every((t) => t.status === 'done')

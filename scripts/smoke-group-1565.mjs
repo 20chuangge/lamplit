@@ -974,3 +974,123 @@ export async function chainChecks({ check, toolsMod, groupsMod, readText }) {
       && server.includes("edits, chain: body?.chain === true });") && server.includes("...(body?.chain === true ? { chain: true } : {})"));
   }
 }
+
+// ---------------------------------------------------------------------------
+// G65-10: what the first real-model run of the collaboration eval (1.5.64, DeepSeek) found
+// ---------------------------------------------------------------------------
+export async function realEvalChecks({ check, toolsMod, groupsMod }) {
+  // 1. Four board items for one member (s6): one after another, never two at once, never two 「在做」.
+  {
+    const r = await teamRig({
+      toolsMod, groupsMod,
+      script: async ({ who, last, messages }) => {
+        if (who === 'lead' && /任务板做完了/.test(last)) return say('四段都整理好了。');
+        if (who === 'lead') return call('group_plan', { tasks: [1, 2, 3, 4].map((n) => ({ title: `整理第 ${n} 段`, owner: '文案', brief: `第 ${n} 段` })) });
+        if (who === 'copy') { await sleep(60); return messages.some((m) => m.role === 'tool') ? say('这一段整理好了：g65/seg.txt') : call('fs_write', { path: `g65/seg-${Math.random().toString(36).slice(2, 6)}.txt`, content: 'x' }); }
+        return say('好。');
+      },
+    });
+    // How many of its items say 「在做」, at every change of the board (counted then, not read back later).
+    const doing = [];
+    const changed = r.rt.boardChanged.bind(r.rt);
+    r.rt.boardChanged = async (plan) => { doing.push(plan.tasks.filter((t) => t.owner === 'g65copy' && t.status === 'doing').length); return changed(plan); };
+    await r.rt.routeGroupMessage({ group: r.group, text: '把资料分四段整理', turnId: 'turn_g65_four', fromHuman: true });
+    await until(() => r.rt.plans?.get(r.group.id)?.status === 'done', 8000);
+    const ts = r.turns('g65copy');
+    const overlapping = ts.some((a, i) => ts.some((b, j) => i < j && overlap(a, b)));
+    const doingAtOnce = Math.max(0, ...doing);
+    const plan = r.rt.plans.get(r.group.id);
+    check('G65-10a four board items for one member (the eval\'s s6) run one after another: its turns never overlap, the board never shows two of them 「在做」 at once, and all four end done',
+      ts.length === 4 && !overlapping && doingAtOnce === 1 && plan?.tasks?.filter((t) => t.status === 'done').length === 4,
+      JSON.stringify({ turns: ts.map((t) => [t.start - ts[0].start, t.end - ts[0].start]), doingAtOnce, status: plan?.status }));
+    r.done();
+  }
+
+  // 2. A direct word while its board item runs (s1 「跳过乙站」, s5 「丙站今天先别发」): into that turn, on the board, no second turn.
+  {
+    let release = null;
+    let after = '';
+    const r = await teamRig({
+      toolsMod, groupsMod,
+      script: async ({ who, last, all, messages }) => {
+        if (who === 'lead' && /任务板做完了/.test(last)) return say('发好了。');
+        if (who === 'lead') return call('group_plan', { tasks: [{ title: '在甲站、乙站发第 1 条', owner: '发布', brief: '两个站都发' }] });
+        if (who === 'pub') {
+          const n = messages.filter((m) => m.role === 'tool').length;
+          if (n === 0) { await new Promise((resolve) => { release = resolve; }); return call('fs_write', { path: 'g65/甲站.txt', content: 'x' }); }
+          after = all;
+          return say(/跳过乙站/.test(all) ? '甲站发好了，乙站按你说的跳过。' : '甲站、乙站都发了。');
+        }
+        return say('好。');
+      },
+    });
+    await r.rt.routeGroupMessage({ group: r.group, text: '先发第一条', turnId: 'turn_g65_ab', fromHuman: true });
+    await until(() => release, 5000);
+    // What the chat route does with 「跳过乙站」 written in 发布's own chat (server.mjs): note it, then into the turn at work.
+    await r.rt.noteDirectWord('g65pub', '跳过乙站');
+    const busy = r.rt.busyTurn('g65pub', { any: true });
+    await r.rt.aside({ botId: 'g65pub', text: '跳过乙站', busy, source: 'chat' });
+    const row = r.rt.plans.get(r.group.id)?.tasks?.[0];
+    release();
+    await until(() => r.rt.plans.get(r.group.id)?.status === 'done', 6000);
+    const started = r.ev.filter((e) => e.type === 'turn.start' && !e.aside && e.botId === 'g65pub');
+    check('G65-10b a word to a member in its own chat while its board item runs goes into that turn (it reads 「跳过乙站」 before its next step and does not do 乙站), is noted on the board row, and starts no second turn',
+      busy?.source === 'group' && busy.groupRole === 'task' && /跳过乙站/.test(after) && row?.said?.[0]?.text === '跳过乙站' && started.length === 1
+      && /乙站按你说的跳过/.test(r.rt.plans.get(r.group.id)?.tasks?.[0]?.result || ''),
+      JSON.stringify({ busy: busy && `${busy.source}/${busy.groupRole}`, said: row?.said, started: started.length, result: r.rt.plans.get(r.group.id)?.tasks?.[0]?.result }));
+    r.done();
+  }
+
+  // 3. The same post from two turns that may run side by side (the coordinator in the group and in its own chat): one card.
+  {
+    const r = await teamRig({
+      toolsMod, groupsMod,
+      script: ({ who, messages }) => (who === 'lead' && !messages.some((m) => m.role === 'tool') ? call('post_draft', { channel: '甲站', title: '第一次打开', body: '正文' }) : say('好。')),
+    });
+    r.rt.approvals.request = (req) => { r.cards.push(req); const p = new Promise((resolve) => setTimeout(() => resolve({ decision: 'approved', approval: { id: `ap_${r.cards.length}` } }), 200)); p.record = { id: `ap_${r.cards.length}` }; return p; };
+    const results = [];
+    const grab = (res) => results.push(res);
+    await Promise.all([
+      r.rt.runGroupMessage({ group: r.group, text: '发甲站' }).then(grab),
+      (async () => { await sleep(30); return r.rt.runTurn({ botId: 'g65lead', text: '发甲站', source: 'chat' }); })().then(grab),
+    ]);
+    const posts = r.ev.filter((e) => e.type === 'tool.result' && e.name === 'post_draft');
+    check('G65-10c the same post asked by two turns running side by side (the coordinator in the group and in its own chat) raises ONE card; the second waits for its answer and gets it, told it was approved already',
+      r.cards.length === 1 && posts.length === 2 && posts.every((e) => e.ok !== false) && posts.some((e) => e.result?.samePost),
+      JSON.stringify({ cards: r.cards.length, posts: posts.map((e) => ({ ok: e.ok, same: Boolean(e.result?.samePost) })) }));
+    r.done();
+  }
+
+  // 4. A question to the human (s2): nothing goes out until they answer - in the same turn too; blocking: false is an FYI.
+  {
+    const seen = {};
+    let answerNow = null;
+    const r = await teamRig({
+      toolsMod, groupsMod,
+      script: async ({ who, last, all, messages }) => {
+        if (who !== 'pub') return say('好。');
+        const key = /FYI/.test(all) ? 'fyi' : /回答以后/.test(all) ? 'answered' : 'ask';
+        const tool = messages.filter((m) => m.role === 'tool');
+        if (tool.length) seen[key] = [...(seen[key] || []), String(tool[tool.length - 1].content || '')];
+        if (tool.length === 0) return call('tell_human', { text: '简历里缺工作年限，你补一下？', ...(key === 'fyi' ? { blocking: false } : {}) });
+        if (tool.length === 1) { if (key === 'answered') await answerNow(); return call('post_draft', { channel: '招聘板', title: `投递 后端（${key}）`, body: '评测用户' }); }
+        if (tool.length === 2 && key === 'ask') return call('shell', { command: 'curl -s -d "name=a" https://jobs.example.com/apply' });
+        return say('等你回答。');
+      },
+    });
+    r.bots.get('g65pub').tools.push('shell');
+    r.rt.registry.get('shell').run = async () => ({ ok: true, exitCode: 0, stdout: 'applied' });
+    await r.rt.runTurn({ botId: 'g65pub', text: '投两份', source: 'chat' });
+    const blockedCards = r.cards.length;
+    await r.rt.runTurn({ botId: 'g65pub', text: '投一份（FYI 那种问题）', source: 'chat' });
+    const fyiCards = r.cards.length - blockedCards;
+    answerNow = async () => { const busy = r.rt.busyTurn('g65pub', { any: true }); await r.rt.aside({ botId: 'g65pub', text: '5 年', busy, source: 'chat' }); };
+    await r.rt.runTurn({ botId: 'g65pub', text: '投一份（回答以后）', source: 'chat' });
+    const answeredCards = r.cards.length - blockedCards - fyiCards;
+    check('G65-10d after tell_human, nothing goes out until the human answers - in the same turn too: the draft and a command that posts are both refused (HUMAN_DECISION_PENDING), no card; tell_human with blocking: false is only an FYI; the human\'s answer (a word into the turn) lifts it',
+      blockedCards === 0 && /HUMAN_DECISION_PENDING/.test(seen.ask?.[1] || '') && /HUMAN_DECISION_PENDING/.test(seen.ask?.[2] || '')
+      && fyiCards === 1 && answeredCards === 1 && !/HUMAN_DECISION_PENDING/.test((seen.answered || []).join('')),
+      JSON.stringify({ blockedCards, fyiCards, answeredCards, ask: (seen.ask || []).map((s) => s.slice(0, 60)) }));
+    r.done();
+  }
+}

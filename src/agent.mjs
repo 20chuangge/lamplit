@@ -930,10 +930,17 @@ export class AgentRuntime {
    * any depth. In the bot's chat, on the phone (human.notice), in Feishu, and
    * the sidebar shows "需要你拍板" once the turn ends.
    */
-  async tellHuman({ bot, turnId, text }) {
+  async tellHuman({ bot, turnId, text, blocking = true }) {
     const said = String(text || '').trim().slice(0, 2000);
     const live = this.active.get(turnId);
-    if (live) live.waitingFor = 'decision';
+    // A question something waits on (1.5.65; the collaboration eval, s2: asked about the CV, then applied twice
+    // without an answer): open from now on - not only when the turn ends - so nothing goes out meanwhile, in this
+    // turn or a later one, until the human answers. blocking: false is an FYI that nothing sent depends on.
+    if (live && blocking) live.waitingFor = 'decision';
+    if (blocking && isWorkingInfo(live || {})) {
+      this.pendingHuman = this.pendingHuman || new Map();
+      this.pendingHuman.set(bot.id, { kind: 'decision', text: said, turnId, at: Date.now() });
+    }
     // What to decide, for the strip on top of the chat (1.2.165).
     if (live) live.waitingText = said;
     const note = `【需要你拍板】${said}`;
@@ -945,7 +952,7 @@ export class AgentRuntime {
     try {
       if (typeof this.pushOut === 'function') feishu = Number(await this.pushOut(`【${bot.name}·需要你拍板】\n${said}`)) > 0;
     } catch { /* Feishu not connected or down: the chat and the phone still have it */ }
-    return { told: true, feishu, note: 'The human has been told (chat, phone, Feishu if connected). Finish your turn; do not wait for the answer here.' };
+    return { told: true, feishu, ...(blocking ? { blocking: true } : {}), note: blocking ? 'The human has been told (chat, phone, Feishu if connected). Nothing goes out until they answer (drafts, posts, uploads, forms are refused meanwhile). Finish your turn; do not wait for the answer here.' : 'The human has been told (chat, phone, Feishu if connected); you may go on meanwhile.' };
   }
 
   /**
@@ -3056,6 +3063,9 @@ export class AgentRuntime {
       for (const t of readyTasks(plan)) {
         if (running.size >= 3) break;
         if (running.has(t.id)) continue;
+        // One member, one board item at a time (1.5.65; the collaboration eval, s6: four items for 整理 started at
+        // once). Its next item stays 待开始 until this one ends - runTurn would make it wait anyway.
+        if ([...running.keys()].some((id) => plan.tasks.find((x) => x.id === id)?.owner === t.owner)) continue;
         running.set(t.id, this.runPlanTask(group, plan, t, byId, names).finally(() => running.delete(t.id)));
       }
       if (!running.size) break;
@@ -3550,10 +3560,14 @@ export class AgentRuntime {
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: `这一轮读过${ctx.readFrom.join('、')}里的内容，之后${guarded}先问你，免得资料里藏着的指令带偏机器人（设置 → 边界 里可以关掉）` };
     }
 
-    // 1.5.65: a question to the human is still open and this turn is not theirs (a hand-off, a routine):
-    // nothing goes out until they answer. 11-23: a second job picked 知乎's 视频标记 itself and published.
-    if (draft && ctx.decisionPending && verdict.decision !== DECISION.DENY) {
-      const p = ctx.decisionPending;
+    // 1.5.65: a question to the human is still open (tell_human - unless it said blocking: false -, a takeover, a card a
+    // stopped run left): nothing goes out until they answer. 11-23: a second job picked 知乎's 视频标记 itself and
+    // published; the collaboration eval (s2): asked about the CV, then applied twice before any answer.
+    // Looked up at the step, not at the turn's start: a question asked earlier in this very turn counts too, and the
+    // human's answer (a word into the turn, a new message) lifts it. Any send: a draft, or one with no draft to show.
+    const openQuestion = (draft || sendsWithoutDraft) && verdict.decision !== DECISION.DENY ? this.pendingFor(bot.id) : null;
+    if (openQuestion) {
+      const p = openQuestion;
       const result = { error: { code: 'HUMAN_DECISION_PENDING', message: `not shown: you asked the human something and they have not answered yet (「${String(p.text || '').slice(0, 200)}」). Nothing goes out before they answer - not this post either. Finish this turn: tell whoever handed you this job that it waits for the human's answer.` } };
       this.bus.emit({ type: 'tool.call', ...baseEvent, callId: call.id, name, args, risk: 'HIGH', decision: DECISION.DENY, reason: '在等用户回答上一个问题' });
       this.pushToolResult(messages, call, result);

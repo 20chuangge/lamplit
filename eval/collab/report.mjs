@@ -18,7 +18,7 @@ export const TUNING = {
   I5: '协调者交出去没回话或没有任务板：看协调者交活（bot_message / bot_pass / group_plan）之后的群消息和 boardHandoff。',
   I6: '人上传的文件被改写或删掉了：看 keepuploads.mjs（人上传的不让改）和删文件那一步。（同一个文件往平台上传了两次不算这条，见数字表的「平台重传」。）',
   I7: '协调者推翻了人对成员说的话：看人在单聊里说的话有没有记到群的任务板上（noteDirectWord），以及汇总时协调者有没有读到。',
-  I8: '做了人没要的活：看协调者的 group_plan 提示（不加没要的项）和成员人设（只做被要求的）。',
+  I8: '做了人没要的活：只数交给人的东西（群里、单聊、问人、任务板结果里点了名的文件，和发布的页面；自己留着的笔记不算）。看协调者的 group_plan 有没有加没要的项、成员有没有多做版本或多做平台。',
   I9: '给人看的文字里有 id：看远程成员名字的解析（roster / chatBotById），以及喂给模型的成员列表里是不是只有名字。',
   'S1-a': '要发的没发出去：看证据里的「任务板最后」「工具报错」两行：是不是被拦（HUMAN_DECISION_PENDING / 审批被拒）、问人的那一项人答了以后有没有接上；全部事件在报告旁边的 .trace.json。',
   'S5-a': '改好的稿子哪儿都没找到（新文件和回复里都没有）：看人叫停以后成员有没有把已经做好的留下。',
@@ -202,7 +202,7 @@ export function writeReport(run, { dir }) {
   // The traces beside it, for a question the report does not answer (11-23: why S1-a stopped): every event,
   // what the human did, the messages, the cards, the mock sites' records, the files (paths only).
   const tracePath = `${base}.trace.json`;
-  const keepOf = (t) => t && ({ scenario: t.scenario, t0: t.t0, t1: t.t1, quiet: t.quiet, timedOut: t.timedOut, bots: t.bots, groupId: t.groupId, human: t.human, events: t.events, groupMessages: t.groupMessages, botChats: t.botChats, approvals: t.approvals, posts: t.posts, restarts: t.restarts, files: (t.files || []).map(({ text, ...f }) => f), changedFiles: t.changedFiles || [], notes: t.notes, errors: t.errors });
+  const keepOf = (t) => t && ({ scenario: t.scenario, coordinator: t.coordinator, canRestart: t.canRestart, restartSkipped: t.restartSkipped, items: t.items, itemNames: t.itemNames, t0: t.t0, t1: t.t1, quiet: t.quiet, timedOut: t.timedOut, bots: t.bots, groupId: t.groupId, human: t.human, events: t.events, groupMessages: t.groupMessages, botChats: t.botChats, approvals: t.approvals, posts: t.posts, restarts: t.restarts, files: (t.files || []).map(({ text, ...f }) => f), changedFiles: t.changedFiles || [], notes: t.notes, errors: t.errors });
   fs.writeFileSync(tracePath, JSON.stringify(run.results.map((r) => ({ id: r.id, trace: keepOf(r.trace) }))));
   return { md: `${base}.md`, json: jsonPath, trace: tracePath, prev: prev ? `${prev.version} ${prev.at}` : null };
 }

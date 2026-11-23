@@ -46,7 +46,7 @@ export function cleanTrace() {
       { hub: 'A', at: at(60), kind: 'user', from: 'user', text: '把视频发到甲站，乙站不用' },
       { hub: 'A', at: at(260), kind: 'plan', from: C, text: '1. 发甲站 —— 评测-发布' },
       { hub: 'A', at: at(300), kind: 'assistant', from: C, turnId: 'tc1', text: '分成 1 项，由评测-发布负责。' },
-      { hub: 'A', at: at(3050), kind: 'assistant', from: P, text: '甲站发好了。' },
+      { hub: 'A', at: at(3050), kind: 'assistant', from: P, text: '甲站发好了，标题在 交付/标题.md。' },
       { hub: 'A', at: at(3200), kind: 'assistant', from: C, text: '甲站发好了，乙站按你说的没发。' },
     ],
     botChats: [{ hub: 'A', botId: P, at: at(1600), role: 'assistant', text: '好，乙站不发。' }],
@@ -74,7 +74,8 @@ export const MUTATIONS = {
   I5: (t) => { t.groupMessages = t.groupMessages.filter((m) => !(m.from === 'bot-c00001' && m.at === at(300))); },
   I6: (t) => { t.uploadsAfter['uploads/2026-11-23/素材/1.mp4'] = 'bbbb'; },
   I7: (t) => { t.groupMessages.push({ hub: 'A', at: at(3300), kind: 'assistant', from: 'bot-c00001', text: '乙站刚才没发成，我稍后重试。' }); },
-  I8: (t) => { t.files.push({ hub: 'A', path: '交付/备选标题.md', size: 5, mtime: at(1200) }); },
+  // A file nobody asked for, handed to the human (a working note kept to itself would not count).
+  I8: (t) => { t.files.push({ hub: 'A', path: '交付/备选标题.md', size: 5, mtime: at(1200) }); t.groupMessages.push({ hub: 'A', at: at(1250), kind: 'assistant', from: 'bot-p00001', text: '另外写了备选标题：交付/备选标题.md' }); },
   I9: (t) => { t.groupMessages.push({ hub: 'A', at: at(3100), kind: 'assistant', from: 'bot-p00001', text: '已经交给 bot-w00001 了' }); },
 };
 

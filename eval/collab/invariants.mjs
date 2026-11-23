@@ -122,6 +122,8 @@ export function questionsOf(trace) {
     let args = e.args;
     if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
     const text = String(args?.question || args?.text || '');
+    // tell_human that only reports (no question in it) is not waiting for an answer.
+    if (e.name === 'tell_human' && args?.blocking !== true && !/[？?]|吗|要不要|是否|哪个|还是|你要是|认可|补这|需要你|请(补|告诉|确认|决定)/.test(text)) continue;
     const answer = (trace.human || []).find((h) => h.at > e.at && (h.kind === 'group' || (h.kind === 'direct' && h.botId === e.botId)));
     qs.push({ at: e.at, hub: e.hub, botId: e.botId, text, answeredAt: answer ? answer.at : null, answer: answer?.text || '' });
   }
@@ -238,7 +240,11 @@ export function checkNoExtraWork(trace) {
   const bad = [];
   const ex = trace.expect || {};
   // byEval false: new on a hub the run did not start, but no bot of the run wrote it (the human's own).
-  const made = (trace.files || []).filter((f) => f.mtime >= trace.t0 && f.byEval !== false && !/^uploads\//.test(f.path) && (!ex.deliverableDir || f.path.startsWith(ex.deliverableDir)));
+  // A deliverable is what reaches the human: a file a bot names to them (in the group, in its own chat, a
+  // question, a board result) or a page it published. Notes it keeps for itself on the way are its working
+  // files, not extra work (11-23 second real run: job notes, a filter rule, a preview draft were counted).
+  const handed = handedText(trace);
+  const made = (trace.files || []).filter((f) => f.mtime >= trace.t0 && f.byEval !== false && !/^uploads\//.test(f.path) && (!ex.deliverableDir || f.path.startsWith(ex.deliverableDir)) && isHanded(f.path, handed, (trace.files || []).filter((x) => x.path.split('/').pop() === f.path.split('/').pop()).length));
   if (ex.maxDeliverables != null && made.length > ex.maxDeliverables) {
     bad.push({ at: trace.t1, text: `要的交付物最多 ${ex.maxDeliverables} 个，做了 ${made.length} 个：${made.slice(0, 8).map((f) => f.path).join('、')}${made.length > 8 ? ' …' : ''}` });
   }
@@ -258,6 +264,29 @@ export function checkNoExtraWork(trace) {
     for (const a of applies) if (ex.noApply?.includes(a.job)) bad.push({ at: a.at, text: `${secs(trace, a.at)} 投了人说不投的「${a.company}」` });
   }
   return { ok: !bad.length, evidence: bad, note: `${made.length} 个文件，${posts.length} 次发出` };
+}
+
+/** Everything this run's bots said to the human, as one text: messages, questions, board results. */
+export function handedText(trace) {
+  const ours = new Set((trace.bots || []).flatMap((b) => [b.id, b.remoteId]).filter(Boolean));
+  const parts = [];
+  for (const m of trace.groupMessages || []) if (m.kind !== 'user' && m.from !== 'user') parts.push(String(m.text || ''));
+  for (const m of trace.botChats || []) if (m.role === 'assistant') parts.push(String(m.text || ''));
+  for (const e of trace.events || []) {
+    if (!ours.has(e.botId)) continue;
+    if (['tool.call', 'tool.result'].includes(e.type) && ['tell_human', 'task_ask_human', 'task_finish', 'post_draft'].includes(e.name)) parts.push(typeof e.args === 'string' ? e.args : JSON.stringify(e.args || ''));
+    if (e.type === 'turn.end' && e.summary) parts.push(String(e.summary));
+  }
+  const plans = (trace.events || []).filter((e) => e.type === 'group.plan');
+  for (const t of plans[plans.length - 1]?.plan?.tasks || []) parts.push(String(t.result || ''));
+  return parts.join('\n');
+}
+/** Was this file handed to the human: named (its path, the path inside the run's folder, or its name), or a published page. */
+export function isHanded(p, text, sameName = 1) {
+  if (/^pages\/[^/]+\.html$/.test(p)) return true;
+  const inRun = p.replace(/^评测-协作\/[^/]+\/[^/]+\//, '');
+  const base = p.split('/').pop();
+  return text.includes(p) || text.includes(p.replace(/\//g, '\\')) || text.includes(inRun) || (sameName === 1 && base.length >= 5 && text.includes(base));
 }
 
 /** I9: no bot id in anything the human reads (group messages, bot chats, notices, cards). */

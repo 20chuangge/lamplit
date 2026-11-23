@@ -17,10 +17,24 @@ const toMs = (ts) => (typeof ts === 'number' ? ts : Date.parse(ts || '') || 0);
 const listOf = (x, ...keys) => (Array.isArray(x) ? x : keys.map((k) => x?.[k]).find(Array.isArray) || []);
 const MACHINE = { A: '评测机甲', B: '评测机乙' };
 
-/** What this run's bots on one hub did, as text: the paths they wrote are in it. */
+/** This run's bots by every id they go by on any hub (a member on another machine: id@machine). */
+const ourIds = (trace) => new Set(trace.bots.flatMap((b) => [b.id, b.remoteId]).filter(Boolean));
+/**
+ * What this run's bots did and said on one hub, as text: the paths they wrote are in it, and so are the
+ * files the hub fetched from another machine because a member named them (11-23 second real run: a remote
+ * member's self-introduction named two of the human's files there; the hub copied them into from-machines/).
+ */
 function botSteps(trace, hubName) {
-  const ours = new Set(trace.bots.filter((b) => b.hub === hubName).map((b) => b.id));
-  return trace.events.filter((e) => e.hub === hubName && ours.has(e.botId) && /^tool\./.test(e.type)).map((e) => JSON.stringify([e.args, e.result])).join('\n');
+  const ours = ourIds(trace);
+  const out = [];
+  for (const e of trace.events) {
+    if (e.hub !== hubName) continue;
+    if (ours.has(e.botId) && /^tool\./.test(e.type)) out.push(JSON.stringify([e.args, e.result]));
+    else if (ours.has(e.botId) && e.type === 'turn.end' && e.summary) out.push(String(e.summary));
+    else if (e.type === 'group.message' && ours.has(e.message?.from)) out.push(String(e.message?.text || ''));
+  }
+  for (const m of trace.groupMessages || []) if (m.hub === hubName && ours.has(m.from)) out.push(String(m.text || ''));
+  return out.join('\n');
 }
 /** Does that text name this workspace path (with / or, from Windows, \ between the parts)? */
 const mentions = (said, p) => said.includes(p) || said.includes(p.replace(/\//g, '\\\\'));
@@ -90,6 +104,7 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     if (hubs.B) {
       const drop = hubs.B.testHub && peerDrop !== 'pause' ? 'cut' : 'pause';
       hubs.B.drop = drop;
+      if (folder) trace.notes.push(`另一台上的评测成员也只在「${folder}」里做，不给列文件夹的工具；那台上这个文件夹评测不去建、也不去删（经第一台删不了文件）。`);
       if (drop === 'pause') trace.notes.push(`另一台「${hubs.B.machine}」的断线是在第一台这边模拟的：暂停这条连接（进行中的请求被切断，新请求马上失败），那台机器本身一直在跑${peerDrop === 'cut' ? '（它不是这次自己起的测试 hub，不能真的关掉）' : ''}。`);
       else trace.notes.push(`另一台「${hubs.B.machine}」是这次自己起的测试 hub：断线是真的把它关掉，过几秒再开。`);
     }
@@ -104,6 +119,22 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
         trace.notes.push(`${line}（按 --allow-leftovers 照跑了，结果可能受影响）`);
       }
     }
+    // A hub that is not ours: what its workspace held before, so only what this run made is counted and removed.
+    // Taken before the bots exist: their introductions already work (11-23 second real run: a member's hello named
+    // two of the human's files on the other machine, and the hub fetched them in before the human said a word).
+    if (attached) {
+      for (const [name, hub] of Object.entries(hubs)) {
+        if (hub.via || !hub.workspace || !fs.existsSync(hub.workspace)) continue;
+        const key = `${runId}|${hub.url}`;
+        if (!COPIES.has(key)) COPIES.set(key, new Map());
+        const snap = snapshot(hub.workspace, path.join(backupDir, name), COPIES.get(key));
+        snaps.set(name, snap);
+        if (snap.cut) trace.notes.push('工作区文件太多（超过 6 万个），只看了前面的：后面的文件改了也看不到。');
+        if (snap.notCopied) trace.notes.push(`工作区里有 ${snap.notCopied} 个文件太大（或总量超过上限）没有先复制一份：它们要是被改了，评测放不回去，只在这里列出来。`);
+      }
+      // The files the scenario looks for on the other machine, if they are there already (an earlier run's).
+      if (hubs.B?.via) trace.peerHad = new Set((await Promise.all((sc.expect.peerFiles || []).map(async (rel) => ((await hubs.B.fileSha(rel).catch(() => null)) ? rel : null)))).filter(Boolean));
+    }
     // The other machine's name as the coordinator's hub knows it.
     const peerName = hubs.B?.machine || MACHINE.B;
     for (const hub of Object.values(hubs)) if (!hub.via) recorders.push(recordEvents(hub, trace.events));
@@ -112,10 +143,13 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     // Names are fixed (the timelines and checks know the bots by them). On a hub that is not ours the id is
     // given, unique to this run: a Chinese name makes no id of its own, and nothing there may be hit.
     const tag = attached ? `-${runId.slice(-4)}` : '';
-    const pin = folder ? `\n这次的活都在「${folder}」这个文件夹里做：你写的文件都放在它下面（别人说「存成 交付/x」，就是 ${folder}/交付/x）。工作区里别的文件夹是以前的东西，不是这次的活，别去读也别去改；人这次上传的文件（uploads/ 下）可以读。` : '';
+    const pin = folder ? `\n这次的活都在「${folder}」这个文件夹里做：你写的文件都放在它下面（别人说「存成 交付/x」，就是 ${folder}/交付/x）。工作区里别的文件夹是以前的东西，不是这次的活，别去列、别去读、别去改，介绍自己的时候也一样；人这次上传的文件（uploads/ 下）可以读。` : '';
     for (const [i, raw] of sc.bots(mode).entries()) {
       const b = { ...raw, persona: `${raw.persona || ''}${pin}` };
       const hub = hubs[b.hub];
+      // On the other machine a real model gets no folder listing: it writes its own files and reads what it is
+      // given, and does not browse that machine's workspace (11-23: a member there listed the human's folders).
+      if (hub.via && folder) b.tools = b.tools.filter((t) => t !== 'fs_list');
       if (hub.via) {
         const bot = await hub.createBot({ name: `评测-${b.short}`, role: b.role, persona: b.persona, tools: b.tools, trusted: b.trusted, model: real?.peerModel || '' });
         trace.bots.push({ hub: b.hub, id: bot.id, name: bot.name, short: b.short, coordinator: Boolean(b.coordinator), remoteId: `${bot.id}@${peerName}` });
@@ -145,26 +179,22 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
     const members = trace.bots.length;
     const kickoffEnd = Date.now() + (mode === 'fake' ? 20000 : 240000);
     while (Date.now() < kickoffEnd) {
-      const said = new Set(trace.events.filter((e) => e.type === 'turn.end' && e.kickoff).map((e) => e.botId));
+      // A member on the other machine ends its hello on both hubs (id there, id@machine here): counted once.
+      const said = new Set(trace.events.filter((e) => e.type === 'turn.end' && e.kickoff).map((e) => trace.bots.find((b) => b.id === e.botId || b.remoteId === e.botId)?.name).filter(Boolean));
       if (said.size >= members) break;
       await sleep(300);
     }
     await sleep(500);
 
     // --- the human ---
-    // A hub that is not ours: what its workspace held before, so only what this run made is counted and removed.
-    if (attached) {
-      for (const [name, hub] of Object.entries(hubs)) {
-        if (hub.via || !hub.workspace || !fs.existsSync(hub.workspace)) continue;
-        const key = `${runId}|${hub.url}`;
-        if (!COPIES.has(key)) COPIES.set(key, new Map());
-        const snap = snapshot(hub.workspace, path.join(backupDir, name), COPIES.get(key));
-        snaps.set(name, snap);
-        if (snap.cut) trace.notes.push('工作区文件太多（超过 6 万个），只看了前面的：后面的文件改了也看不到。');
-        if (snap.notCopied) trace.notes.push(`工作区里有 ${snap.notCopied} 个文件太大（或总量超过上限）没有先复制一份：它们要是被改了，评测放不回去，只在这里列出来。`);
+    // The run's folder (and 交付/ in it) is there before the first message: the bots look into it first
+    // (11-23 second real run: FS_NOT_FOUND at the start of every scenario). On the other machine it is made
+    // only when it is a test hub of this run (nothing is written there through the first one).
+    if (folder) {
+      for (const hub of Object.values(hubs)) {
+        const ws = hub.via ? hub.testHub?.workspace : hub.workspace;
+        if (ws && fs.existsSync(ws)) fs.mkdirSync(path.join(ws, ...folder.split('/'), '交付'), { recursive: true });
       }
-      // The files the scenario looks for on the other machine, if they are there already (an earlier run's).
-      if (hubs.B?.via) trace.peerHad = new Set((await Promise.all((sc.expect.peerFiles || []).map(async (rel) => ((await hubs.B.fileSha(rel).catch(() => null)) ? rel : null)))).filter(Boolean));
     }
     // Whether this run may restart the first hub (only one it started itself).
     trace.canRestart = Boolean(hubs.A?.restart);
@@ -270,7 +300,7 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
         if (!snap || !hub.workspace) continue;
         const d = diff(hub.workspace, snap);
         const evalSaid = botSteps(trace, name);
-        const ours = new Set(trace.bots.map((b) => b.id));
+        const ours = ourIds(trace);
         const otherSaid = trace.events.filter((e) => e.hub === name && e.botId && !ours.has(e.botId) && /^tool\./.test(e.type)).map((e) => JSON.stringify([e.args, e.result])).join('\n');
         const othersBusy = trace.events.some((e) => e.hub === name && e.type === 'turn.start' && e.botId && !ours.has(e.botId));
         const uploaded = [...trace.uploads, ...(trace.uploadDirs || [])].filter((u) => hubs[u.hub] === hub).map((u) => u.path);

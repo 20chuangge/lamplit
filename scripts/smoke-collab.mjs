@@ -6,7 +6,7 @@
 import { startMockSites, SITES } from '../eval/collab/mocksites.mjs';
 import { readCall } from '../eval/collab/fakemodel.mjs';
 import { runSelfCheck } from '../eval/collab/selfcheck.mjs';
-import { INVARIANTS } from '../eval/collab/invariants.mjs';
+import { INVARIANTS, checkNoExtraWork } from '../eval/collab/invariants.mjs';
 import { SCENARIOS } from '../eval/collab/scenarios.mjs';
 import fs from 'node:fs';
 import { snapshot, diff, restore, leftovers } from '../eval/collab/workspace.mjs';
@@ -187,6 +187,30 @@ export async function collabSelfChecks({ check }) {
       const waited2 = Date.now() - t2;
       check('COLLAB-10 a run whose work looks done still waits after the human\'s last word (settleMs), and for a turn that word started to end',
         waited >= 600 && waited < 2000 && waited2 >= 1200 && waited2 < 3000, JSON.stringify({ waited, waited2 }));
+    }
+
+    // The material and what counts (11-23 second real run): real media, deliverables are what reaches the
+    // human, and a question the script never answers is the script's gap.
+    {
+      const fx = (n) => fs.readFileSync(new URL(`../eval/collab/fixtures/${n}`, import.meta.url));
+      const jpg = fx('cover.jpg');
+      const mp4 = fx('clip.mp4');
+      const png = fx('ref.png');
+      const media = jpg[0] === 0xff && jpg[1] === 0xd8 && jpg.at(-2) === 0xff && jpg.at(-1) === 0xd9 && mp4.toString('latin1', 4, 8) === 'ftyp' && mp4.includes('avc1') && png.toString('latin1', 1, 4) === 'PNG'
+        && [jpg, mp4, png].every((b) => b.length > 2000 && b.length < 64 * 1024);
+      const base = { t0: 0, t1: 10, bots: [{ id: 'b1', name: '评测-文案' }], events: [], botChats: [], expect: { maxDeliverables: 1 },
+        files: [{ hub: 'A', path: '评测-协作/r/s/交付/标题.md', mtime: 5 }, { hub: 'A', path: '评测-协作/r/s/笔记/想法.md', mtime: 5 }, { hub: 'A', path: 'pages/预览.html', mtime: 5 }] };
+      const said = { ...base, groupMessages: [{ kind: 'assistant', from: 'b1', text: '标题在 交付/标题.md' }] };
+      const i8 = checkNoExtraWork(said);
+      const { SCENARIOS: all } = await import('../eval/collab/scenarios.mjs');
+      const s2 = all.find((x) => x.id === 's2-jobs');
+      const gapTrace = { t0: 0, t1: 10, bots: [{ id: 'b2', name: '评测-求职' }], posts: [], files: [], groupMessages: [], botChats: [], siteNames: {}, human: [{ at: 1, kind: 'group', text: '投吧' }],
+        events: [{ hub: 'A', at: 3, type: 'tool.call', name: 'tell_human', botId: 'b2', callId: 'c1', args: { text: '简历太薄，补这 4 条：工作经历、项目……', blocking: false } }] };
+      const gap = s2.extra(gapTrace)[0];
+      const answered = s2.extra({ ...gapTrace, human: [...gapTrace.human, { at: 5, kind: 'group', text: '没有更多了' }] })[0];
+      check('COLLAB-11 the media are real and small (a JPEG cover, an MP4 clip, a PNG); I8 counts what a bot names to the human and the pages it published, not its own notes; work stopped on a question the script never answers is a gap in the script (➖), answered and still not done is a fail',
+        media && i8.ok === false && /2 个文件/.test(i8.note) && gap.skipped === true && /剧本缺口/.test(gap.note) && answered.ok === false && !answered.skipped,
+        JSON.stringify({ media, i8: i8.note, gap: gap.note, answered: answered.ok }));
     }
 
     // The self-check proper: proofs, plants, clean runs.

@@ -250,6 +250,7 @@ async function main() {
     await stage('1.5.62: the reply count, the other machines\' pace, 「以后都允许」 in 审批, this machine\'s cost, introductions not counted', async () => (await import('./smoke-fixes-1562.mjs')).fixes1562Checks({ check, readText }));
     await stage('1.5.63: introductions on another machine, the developer run, a pairing cookie per port, ports Windows keeps, the chat after a reload', async () => (await import('./smoke-fixes-1563.mjs')).fixes1563Checks({ check, readText, api, base }));
     await stage('1.5.63: 管理助手 for a bot on another machine - read there, saved there, its picture, never a third machine', async () => (await import('./smoke-fixes-1563.mjs')).remoteEditChecks({ check, readText, api, base, rawFetch, startServerChild, stopProcess, seedHome }));
+    await stage('1.5.63: the chat does not jump when a reply lands - instant moves, the reader keeps their place, one redraw', async () => (await import('./smoke-fixes-1563.mjs')).chatScrollChecks({ check, readText }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
     await m.m7RaceChecks({ check }); await m.m6Checks({ check, readText }); await m.lowChecks({ check, readText }); await m.vncLowChecks({ check }); });
     await stage('1.5.55: security - moves through the bots\' account, more ways out that ask', async () => { const m = await import('./smoke-sec1555.mjs'); await m.fenceChecks({ check }); await m.sendChecks({ check, readText }); });
@@ -11100,7 +11101,7 @@ async function scenarioRoster1542() {
     const pageNow = await readText('../public/index.html');
     const rosterSrcNow = await readText('../src/roster.mjs');
     check('RC-15 a remote chat whose machine is off keeps what is on screen (the last turn, a card undone) instead of an older saved copy; a message typed elsewhere shows live; the pairing box says why for another machine',
-      pageNow.includes('if (cached && !remoteChatOnScreen(botId))') && pageNow.includes("if (remoteChatOnScreen(botId)) appendQueuedMessages();")
+      pageNow.includes('if (cached && !remoteChatOnScreen(botId) && messagesEl.dataset.shown !== `bot:${botId}`)') && pageNow.includes("if (remoteChatOnScreen(botId)) appendQueuedMessages();") // 1.5.63: nor a chat already on screen
       && pageNow.includes("ev.source === 'chat' && ev.text && !ev.aside && !isGroupMode() && ev.botId === state.botId && !sentHere(ev.text)")
       && pageNow.includes('和别的机器上的助手说话、看它的文件') && rosterSrcNow.includes("from: { bot: from.name || '', machine: selfName() }"));
 

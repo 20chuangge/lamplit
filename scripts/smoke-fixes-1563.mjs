@@ -456,3 +456,72 @@ export async function remoteEditChecks({ check, readText, api, base, rawFetch, s
     html.includes('>保存</button>') && html.includes('>删除这个助手</button>') && html.includes('>设为主助理</button>') && html.includes('>试听</button>')
     && /danger\.hidden = remote/.test(bots) && /prim\.hidden = Boolean\(bot\.primary\) \|\| remote/.test(bots) && /if \(!bot \|\| isRemoteId\(bot\.id\)\) return;/.test(bots));
 }
+
+// --- 7. the chat does not jump when a reply lands (1.5.63, the user's recording) -------------------------
+export async function chatScrollChecks({ check, readText }) {
+  const bots = await readText('../public/app/main/04-bots.js');
+  const chat = await readText('../public/app/main/05-chat.js');
+  const groupsJs = await readText('../public/app/main/03-groups.js');
+  const css = await readText('../public/app/style.css');
+
+  // A fake chat list: what scroll-behavior was in force when the page moved it.
+  const fakeList = (scrollHeight = 5000, clientHeight = 600) => {
+    const el = { style: { scrollBehavior: '' }, scrollHeight, clientHeight, dataset: {}, firstChild: {}, sets: [], listeners: [] };
+    let top = 0;
+    Object.defineProperty(el, 'scrollTop', { get: () => top, set: (v) => { top = Math.max(0, Math.min(v, el.scrollHeight - el.clientHeight)); el.sets.push({ to: v, behavior: el.style.scrollBehavior }); } });
+    el.addEventListener = (type, fn, opt) => el.listeners.push({ type, fn, capture: opt === true });
+    return el;
+  };
+  const part = fnSource(bots, 'nearBottom') + fnSource(bots, 'jumpChat') + fnSource(bots, 'scrollToBottom') + fnSource(bots, 'chatPlace') + fnSource(bots, 'restoreChatPlace');
+  const make = (list) => new Function('messagesEl', `let chatStick = true; ${part}; return { nearBottom, jumpChat, scrollToBottom, chatPlace, restoreChatPlace, stick: () => chatStick, setStick: (v) => { chatStick = v; } };`)(list);
+
+  const list = fakeList();
+  const S = make(list);
+  S.scrollToBottom(true);
+  check('F63-7a the page moves the chat instantly (scroll-behavior auto just for that move, then back): the list\'s smooth scrolling no longer slides through the whole chat from the top after a redraw',
+    list.sets.length === 1 && list.sets[0].behavior === 'auto' && list.style.scrollBehavior === '' && list.scrollTop === 4400 && S.stick() === true && /\.messages \{\s*padding: 26px 24px 10px; gap: 18px;\s*scroll-behavior: smooth;/.test(css),
+    JSON.stringify(list.sets));
+
+  // A redraw of the same chat: at the bottom stays at the bottom; scrolled up stays put; another chat opens at the bottom.
+  const atBottom = fakeList(); const A = make(atBottom);
+  atBottom.dataset.shown = 'bot:chief'; A.scrollToBottom(true);
+  const p1 = A.chatPlace('bot:chief'); atBottom.scrollTop = 0; atBottom.scrollHeight = 5600; A.restoreChatPlace(p1, 'bot:chief');
+  const reading = fakeList(); const B = make(reading);
+  reading.dataset.shown = 'bot:chief'; reading.scrollTop = 1200; B.setStick(false);
+  const p2 = B.chatPlace('bot:chief'); reading.scrollTop = 0; reading.scrollHeight = 5600; B.restoreChatPlace(p2, 'bot:chief');
+  const other = fakeList(); const C = make(other);
+  other.dataset.shown = 'bot:chief'; other.scrollTop = 1200; C.setStick(false);
+  const p3 = C.chatPlace('bot:w'); other.scrollTop = 0; C.restoreChatPlace(p3, 'bot:w');
+  check('F63-7b a chat drawn again keeps the reader where they were: at the bottom it stays at the bottom, scrolled up to read it stays at their place; another chat opens at the bottom',
+    atBottom.scrollTop === 5000 && reading.scrollTop === 1200 && other.scrollTop === 4400 && other.dataset.shown === 'bot:w',
+    JSON.stringify({ atBottom: atBottom.scrollTop, reading: reading.scrollTop, other: other.scrollTop }));
+
+  // Both redraws use it, and neither forces the bottom any more.
+  const render = fnSource(chat, 'renderMessages');
+  const renderGroup = fnSource(groupsJs, 'renderGroupMessages');
+  check('F63-7c the 1:1 and group redraws note the reader\'s place before emptying the list and put it back after (no forced jump to the bottom)',
+    render.indexOf('chatPlace(') > 0 && render.indexOf('chatPlace(') < render.indexOf("messagesEl.innerHTML = ''") && render.includes('restoreChatPlace(place,') && !/scrollToBottom\(true\);\n\}\n$/.test(render)
+    && renderGroup.indexOf('chatPlace(') > 0 && renderGroup.indexOf('chatPlace(') < renderGroup.indexOf("messagesEl.innerHTML = ''") && renderGroup.includes('restoreChatPlace(place,') && !/scrollToBottom\(true\);\n\}\n$/.test(renderGroup));
+
+  // At a turn end the chat on screen is not first drawn from the older saved copy (one redraw, not two).
+  let draws = 0;
+  const st = { botId: 'chief', showProcess: false, messages: [{ role: 'user', text: 'a' }] };
+  const shown = { dataset: { shown: 'bot:chief', chat: 'chief' }, firstChild: {} };
+  // eslint-disable-next-line no-new-func
+  const load = new Function('state', 'messagesEl', 'isGroupMode', 'loadGroupMessages', 'chatCacheGet', 'chatCachePut', 'remoteChatOnScreen', 'renderMessages', 'api', 'isRemoteId', 'remoteApi', 'remoteChatFailed', 'toast',
+    `${fnSource(chat, 'loadMessages')}; return loadMessages;`)(
+    st, shown, () => false, () => {}, () => [{ role: 'user', text: 'a' }], () => true, () => false, () => { draws += 1; },
+    async () => [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }], () => false, () => '', () => false, () => {},
+  );
+  await load();
+  const onScreen = draws;
+  draws = 0;
+  shown.dataset.shown = 'bot:other';
+  await load();
+  check('F63-7d a turn end redraws the chat on screen once, from the new answer (it drew the older saved copy first); opening a chat still shows the saved copy at once',
+    onScreen === 1 && draws === 2, JSON.stringify({ onScreen, opening: draws }));
+  check('F63-7e the same for a group on screen, and a picture or video that loads later keeps a reader at the bottom at the bottom',
+    /if \(cached && messagesEl\.dataset\.shown !== `group:\$\{groupId\}`\)/.test(groupsJs)
+    && /for \(const type of \['load', 'loadedmetadata'\]\) messagesEl\?\.addEventListener\(type, \(\) => \{ if \(chatStick\) jumpChat\(messagesEl\.scrollHeight\); \}, true\);/.test(bots)
+    && /messagesEl\?\.addEventListener\('scroll', \(\) => \{ chatStick = nearBottom\(\); \}/.test(bots));
+}

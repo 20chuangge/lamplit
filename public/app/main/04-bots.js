@@ -655,10 +655,38 @@ function nearBottom() {
   return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 120;
 }
 
+/*
+ * 1.5.63: .messages scrolls smoothly for the reader (style.css), but a jump the page
+ * makes is instant. A redraw empties the list (back to the top), and a smooth jump to
+ * the bottom then slid down through the whole chat at every reply (the user's recording).
+ */
+let chatStick = true; // the reader is at the bottom (their last scroll left them there)
+function jumpChat(top) {
+  const was = messagesEl.style.scrollBehavior;
+  messagesEl.style.scrollBehavior = 'auto';
+  messagesEl.scrollTop = top;
+  messagesEl.style.scrollBehavior = was;
+}
+
 function scrollToBottom(force = false) {
   if (!force && !nearBottom()) return;
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  jumpChat(messagesEl.scrollHeight);
+  chatStick = true;
 }
+
+/** Before the chat on screen is drawn again (key: which chat): is it the same one, and where is the reader. */
+function chatPlace(key) {
+  return { same: Boolean(key) && messagesEl.dataset.shown === key && Boolean(messagesEl.firstChild), atBottom: chatStick || nearBottom(), top: messagesEl.scrollTop };
+}
+/** After: another chat, or a reader at the bottom - the bottom; a reader who scrolled up to read - their place. */
+function restoreChatPlace(place, key) {
+  messagesEl.dataset.shown = key || '';
+  if (!place.same || place.atBottom) scrollToBottom(true);
+  else jumpChat(place.top);
+}
+messagesEl?.addEventListener('scroll', () => { chatStick = nearBottom(); }, { passive: true });
+// A picture or video that loads after the chat was drawn: still at the bottom if the reader was.
+for (const type of ['load', 'loadedmetadata']) messagesEl?.addEventListener(type, () => { if (chatStick) jumpChat(messagesEl.scrollHeight); }, true);
 
 /* ---------------------------------------------------------------------
    service worker - only where it can actually work

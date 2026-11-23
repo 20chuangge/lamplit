@@ -12,9 +12,17 @@
  * The request goes in as base64 JSON in an environment variable and the
  * script is passed as -EncodedCommand, so nothing a model writes is ever
  * parsed as PowerShell.
+ *
+ * Two desktops (1.5.63, F11): with the bots' own account on (命令隔离), a
+ * program a bot starts with the shell tool opens on the bots' own hidden
+ * desktop, not the human's. desktop_ui then looks there too, through the
+ * account (winrunner.mjs uiRunnerFor, the same lamplit-run.exe): "windows"
+ * lists both, each window with desktop 'bots' or 'yours'; the other actions
+ * look on the bots' desktop first, then on the human's.
  */
 
 import { spawn } from 'node:child_process';
+import { uiRunnerFor } from './winrunner.mjs';
 
 export const WINUI_ACTIONS = ['windows', 'controls', 'click', 'type', 'read'];
 
@@ -22,7 +30,8 @@ const SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 # Session 0 is where services run: no desktop, no windows to see.
-if ((Get-Process -Id $PID).SessionId -eq 0) { throw "NO_DESKTOP" }
+# (Not for the bots' own desktop, 1.5.63: that one is where their programs are, in any session.)
+if ((Get-Process -Id $PID).SessionId -eq 0 -and $env:DESK_WINUI_ANY_SESSION -ne '1') { throw "NO_DESKTOP" }
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:DESK_WINUI)) | ConvertFrom-Json
 $A = [System.Windows.Automation.AutomationElement]
@@ -117,6 +126,9 @@ $res | ConvertTo-Json -Depth 5 -Compress
 `;
 
 const ENCODED = Buffer.from(SCRIPT, 'utf16le').toString('base64');
+/** The script for the bots' desktop: in an environment variable, run by a short fixed command line. */
+export const SCRIPT_B64 = Buffer.from(SCRIPT, 'utf8').toString('base64');
+export const BOOT_ENCODED = Buffer.from('& ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:DESK_WINUI_SCRIPT))))', 'utf16le').toString('base64');
 
 const MESSAGES = {
   NO_WINDOW: (r) => `找不到标题里含「${r.window}」的窗口。先用 windows 列出现在打开的窗口。`,
@@ -131,21 +143,50 @@ const MESSAGES = {
  * Run one UI Automation request. -> parsed JSON result.
  * Throws an Error whose message is meant for the model (and the human).
  */
-export function runWinUi(request, { timeoutMs = 20000, signal, spawnImpl = spawn } = {}) {
+export async function runWinUi(request, { timeoutMs = 20000, signal, spawnImpl = spawn, bots = uiRunnerFor } = {}) {
   if (process.platform !== 'win32' && !spawnImpl.fake) {
-    return Promise.reject(new Error('只有 Windows 机器能用这个工具；Linux 上每个机器人有自己的屏幕。'));
+    throw new Error('只有 Windows 机器能用这个工具；Linux 上每个机器人有自己的屏幕。');
   }
   const req = { ...request };
-  if (!WINUI_ACTIONS.includes(req.action)) return Promise.reject(new Error(MESSAGES.BAD_ACTION(req)));
+  if (!WINUI_ACTIONS.includes(req.action)) throw new Error(MESSAGES.BAD_ACTION(req));
+  const encoded = Buffer.from(JSON.stringify(req), 'utf8').toString('base64');
+  const theirs = typeof bots === 'function'
+    ? bots({ DESK_WINUI: encoded, DESK_WINUI_SCRIPT: SCRIPT_B64, DESK_WINUI_ANY_SESSION: '1' }, BOOT_ENCODED) : null;
+  const opts = { timeoutMs, signal, spawnImpl };
+  if (!theirs) return once(req, encoded, null, opts);
+  if (req.action === 'windows') {
+    const [mine, botsOwn] = await Promise.allSettled([once(req, encoded, null, opts), once(req, encoded, theirs, opts)]);
+    const list = (r, desktop) => (r.status === 'fulfilled' ? [].concat(r.value?.windows || []).map((w) => ({ ...w, desktop })) : []);
+    const windows = [...list(botsOwn, 'bots'), ...list(mine, 'yours')];
+    if (mine.status === 'rejected' && botsOwn.status === 'rejected') throw botsOwn.reason;
+    return {
+      windows,
+      note: "desktop 'bots': programs your shell commands opened, on your own hidden desktop (the human does not see them); 'yours': the human's screen.",
+      ...(botsOwn.status === 'rejected' ? { botsDesktop: botsOwn.reason.message } : {}),
+    };
+  }
+  try {
+    return { ...(await once(req, encoded, theirs, opts)), desktop: 'bots' };
+  } catch (err) {
+    if (err.code !== 'NO_WINDOW') throw err;
+  }
+  return { ...(await once(req, encoded, null, opts)), desktop: 'yours' };
+}
+
+/** One request on one desktop: the human's (runner null, as the hub) or the bots' (through lamplit-run.exe). */
+function once(req, encoded, runner, { timeoutMs, signal, spawnImpl }) {
   // A hub running as a background service (session 0) sees no windows at all:
   // the script asks Windows for its own session and says NO_DESKTOP (an
   // environment variable such as SESSIONNAME is missing for perfectly normal
   // launches too, so it cannot tell).
   return new Promise((resolve, reject) => {
-    const child = spawnImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', ENCODED], {
-      env: { ...process.env, DESK_WINUI: Buffer.from(JSON.stringify(req), 'utf8').toString('base64') },
-      windowsHide: true,
-    });
+    const child = runner
+      ? spawnImpl(runner.exe, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+      : spawnImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', ENCODED], {
+        env: { ...process.env, DESK_WINUI: encoded },
+        windowsHide: true,
+      });
+    if (runner) { child.stdin?.on?.('error', () => {}); child.stdin?.end?.(runner.input); }
     let out = '';
     let err = '';
     const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } reject(new Error('桌面程序没有在 20 秒内响应。')); }, timeoutMs);
@@ -165,8 +206,11 @@ export function runWinUi(request, { timeoutMs = 20000, signal, spawnImpl = spawn
       if (err.includes('CLIXML')) {
         err = (err.match(/<S S="Error">([^<]*)<\/S>/g) || []).map((x) => x.replace(/<\/?S[^>]*>/g, '')).join('').replace(/_x000D__x000A_/g, '\n');
       }
+      // lamplit-run.exe's own words (the bots' desktop): nothing ran there.
+      const helper = /^LAMPLIT_RUNNER_(?:DESKTOP|START): (.*)$/m.exec(err);
+      if (runner && helper) { reject(Object.assign(new Error(`机器人自己的桌面现在用不了：${helper[1].trim().slice(0, 200)}`), { code: 'BOTS_DESKTOP' })); return; }
       const key = Object.keys(MESSAGES).find((k) => err.includes(k) || out.includes(k));
-      reject(new Error(key ? MESSAGES[key](req) : `操作桌面程序失败：${(err || out).trim().split('\n')[0].slice(0, 300)}`));
+      reject(Object.assign(new Error(key ? MESSAGES[key](req) : `操作桌面程序失败：${(err || out).trim().split('\n')[0].slice(0, 300)}`), { code: key || 'FAILED' }));
     });
   });
 }

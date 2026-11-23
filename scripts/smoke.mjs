@@ -256,6 +256,7 @@ async function main() {
     await stage('1.5.56: on a phone, closing settings goes back where it was opened from', async () => (await import('./smoke-nav1556.mjs')).navChecks({ check, readText }));
     await stage('1.5.58: a bot\'s screen on another machine, in 全部机器 (through the relay too)', async () => (await import('./smoke-1558.mjs')).remoteScreenChecks({ check }));
     await stage('1.5.61: security - the browser over a pipe (no debugging port), the hub\'s temp files in data, the bots\' own /tmp, checked root runs, the trust note', async () => { await (await import('./smoke-sec1561.mjs')).sec1561Checks({ check, skip }); await (await import('./smoke-secv1560b.mjs')).verifyChecks({ check, skip }); await (await import('./smoke-secv1561.mjs')).verifyChecks({ check, skip }); });
+    await stage('1.5.63: security - the bots\' Windows account on a desktop of its own, not the human\'s', async () => (await import('./smoke-runner1563.mjs')).runnerDesktopChecks({ check, skip, readText }));
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -6056,9 +6057,11 @@ async function scenarioWinRunner157() {
     && !W.runsAsRunner({ platform: 'win32', command: 'dir', unfenced: true }) && !W.runsAsRunner({ platform: 'linux', command: 'ls' }));
   check('W4 not set up: a step runs as the human', W.runnerFor('dir', {}) === null);
 
-  check('W5 helper: credentials through .NET (no profile loaded), a job that ends everything on close, released when the command ends on its own',
-    W.HELPER_SOURCE.includes('psi.Password = secret;') && W.HELPER_SOURCE.includes('psi.LoadUserProfile = false;') && W.HELPER_SOURCE.includes('KILL_ON_JOB_CLOSE = 0x2000')
-    && W.HELPER_SOURCE.includes('AssignProcessToJobObject(job, child.Handle);') && W.HELPER_SOURCE.includes('Limit(job, 0);') && W.HELPER_SOURCE.includes('psi.EnvironmentVariables.Clear();'));
+  // 1.5.63: CreateProcessWithLogonW called directly (a desktop of the bots' own, smoke-runner1563.mjs).
+  check('W5 helper: the account\'s password to CreateProcessWithLogonW (no profile loaded), a job that ends everything on close, released when the command ends on its own, only the environment given',
+    W.HELPER_SOURCE.includes('CreateProcessWithLogonW(user, ".", pass, 0,') && W.HELPER_SOURCE.includes('KILL_ON_JOB_CLOSE = 0x2000')
+    && W.HELPER_SOURCE.includes('AssignProcessToJobObject(job, pi.hProcess)') && W.HELPER_SOURCE.includes('Limit(job, 0);') && W.HELPER_SOURCE.includes('IntPtr block = EnvBlock(env);')
+    && W.HELPER_SOURCE.includes('CREATE_UNICODE_ENVIRONMENT'));
   check('W5 set up: Users only, never Administrators, hidden from the sign-in screen, its home closed to others; the password comes from a file, not the command line',
     W.SETUP_SCRIPT.includes("Add-LocalGroupMember -SID 'S-1-5-32-545'") && W.SETUP_SCRIPT.includes("Remove-LocalGroupMember -SID 'S-1-5-32-544'")
     && W.SETUP_SCRIPT.includes('SpecialAccounts\\UserList') && W.SETUP_SCRIPT.includes('/inheritance:r') && W.SETUP_SCRIPT.includes('Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0]'));

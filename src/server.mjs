@@ -2932,9 +2932,12 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
   // runs as the human and could read the key that lets a program decide for them.
   const sb = sandboxStatus(state.config.policy);
   if (sb.mode === 'windows') {
+    // 1.5.63 (F11): on a desktop of their own, not the human's; when that desktop cannot be made, nothing runs.
     items.push(sb.state === 'on'
-      ? checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令用单独的账户 lamplit-runner 来跑，碰不到你的个人文件夹和 Lamplit 的密钥。')
-      : checkupItem('isolation', '命令隔离', 'warn', '机器人跑命令时用的是你的账户。点一下，让它用一个单独的账户，更安全（要点一次管理员确认）。', { kind: 'runner', label: '设置单独账户' }));
+      ? checkupItem('isolation', '命令隔离', 'ok', '机器人执行的命令用单独的账户 lamplit-runner 来跑，在它自己的隐藏桌面上：碰不到你的个人文件夹和 Lamplit 的密钥，也看不到你的窗口、剪贴板和键盘。')
+      : sb.state === 'blocked'
+        ? checkupItem('isolation', '命令隔离', 'bad', `机器人的命令现在都不会运行：${sb.reason || '给机器人单独开的桌面建不起来'}。不会改用你的账户或你的桌面去跑。重启电脑通常就好了。`)
+        : checkupItem('isolation', '命令隔离', 'warn', '机器人跑命令时用的是你的账户。点一下，让它用一个单独的账户，更安全（要点一次管理员确认）。', { kind: 'runner', label: '设置单独账户' }));
   } else if (sb.state === 'on') {
     // Linux with the sandbox working (1.5.33): said as it is, in green.
     // 1.5.61 (F8): strict mode gives each bot a /tmp of its own; no screen is reachable from inside.

@@ -10,10 +10,21 @@
 //
 // lamplit-run.exe is compiled here from the C# below with the compiler that
 // comes with Windows (.NET Framework csc.exe). It starts the command with the
-// account's password (CreateProcessWithLogonW through .NET), passes the output
-// through, and puts the command in a job object: when the step is stopped or
-// times out and Lamplit ends lamplit-run.exe, everything the command started
-// ends with it.
+// account's password (CreateProcessWithLogonW), passes the output through, and
+// puts the command in a job object: when the step is stopped or times out and
+// Lamplit ends lamplit-run.exe, everything the command started ends with it.
+//
+// Where it runs (1.5.63, F11): not on the human's desktop. Until 1.5.62 Windows
+// put the account's programs on WinSta0\Default, next to the human's own, where
+// they could list the human's windows, send them keys and messages, read the
+// clipboard and set a keyboard hook. Now lamplit-run.exe starts the command on a
+// desktop of the bots' own ("lamplit-bots-<random>"), in the window station
+// Windows keeps for this logon session instead of the interactive WinSta0: its
+// own windows, hooks, clipboard and (blank) screen. Programs a bot opens there
+// are not on the human's screen (nor in the live view); desktop_ui reaches them
+// through the account (winui.mjs). If that desktop cannot be made, nothing runs:
+// 体检 says so (state 'blocked'), and no command falls back to the human's
+// desktop or account.
 //
 // What the account sees: Windows keeps every user's folder (C:\Users\<name>)
 // to its owner, so Lamplit's data (keys, pairing tokens, the vault) and the
@@ -35,6 +46,7 @@ import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { P, readJsonSync, writeJsonSyncAtomic } from './store.mjs';
 import { SUDO } from './boundary.mjs';
+import { childEnv } from './childenv.mjs';
 
 export const RUNNER_USER = 'lamplit-runner';
 const runnerFile = () => path.join(P.dataDir, 'runner.json');
@@ -45,24 +57,83 @@ export const RUNNER_HOME = path.win32.join(process.env.ProgramData || 'C:\\Progr
 // --- the helper ------------------------------------------------------------------
 
 export const HELPER_SOURCE = String.raw`using System;
-using System.Diagnostics;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
-using System.Security;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
+using Microsoft.Win32.SafeHandles;
 
-// lamplit-run.exe (Lamplit 1.5.7): run one command as another local account.
+// lamplit-run.exe (Lamplit 1.5.7; the bots' own desktop 1.5.63): run one command as another local account.
 // stdin, one base64 (UTF-8) value per line: user, password, working folder,
 // command, then NAME=value environment lines until an empty line.
+//
+// 1.5.63 (F11): the command no longer joins the human's window station and desktop
+// (WinSta0\Default). It starts on a desktop of the bots' own, in a window station
+// that is not the human's interactive one. A window station has its own clipboard,
+// atoms and screen; a desktop its own windows and hooks. So the account's programs
+// cannot list, message, hook or capture the human's windows, nor read their
+// clipboard. With lpDesktop set, CreateProcessWithLogonW adds no rights for the
+// account to the human's window station either. If the bots' desktop cannot be
+// made, nothing runs (LAMPLIT_RUNNER_DESKTOP), never on the human's desktop.
 static class LamplitRun {
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr a, string name);
   [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr job, int cls, IntPtr info, uint len);
-  [DllImport("kernel32.dll")] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
   [StructLayout(LayoutKind.Sequential)] struct Basic { public long a; public long b; public uint LimitFlags; public UIntPtr c; public UIntPtr d; public uint e; public UIntPtr f; public uint g; public uint h; }
   [StructLayout(LayoutKind.Sequential)] struct Io { public ulong a, b, c, d, e, f; }
   [StructLayout(LayoutKind.Sequential)] struct Extended { public Basic Basic; public Io Io; public UIntPtr p1, p2, p3, p4; }
   const uint KILL_ON_JOB_CLOSE = 0x2000;
+
+  [StructLayout(LayoutKind.Sequential)] struct SecAttr { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo {
+    public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+    public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+    public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct ProcInfo { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateWindowStation(string name, uint flags, uint access, ref SecAttr sa);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, ref SecAttr sa);
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetProcessWindowStation();
+  [DllImport("user32.dll", SetLastError = true)] static extern bool SetProcessWindowStation(IntPtr h);
+  [DllImport("user32.dll", SetLastError = true)] static extern bool CloseDesktop(IntPtr h);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder buf, int len, out int need);
+  [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(IntPtr h, int type, int what, out IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr sd);
+  [DllImport("advapi32.dll", EntryPoint = "GetSecurityInfo")] static extern uint GetSecurityInfoDacl(IntPtr h, int type, int what, IntPtr owner, IntPtr group, out IntPtr dacl, IntPtr sacl, out IntPtr sd);
+  [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(IntPtr h, int type, uint what, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+  [DllImport("advapi32.dll")] static extern int GetSecurityDescriptorLength(IntPtr sd);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, int rev, out IntPtr sd, out uint size);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr sd, out bool present, out IntPtr dacl, out bool defaulted);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SecAttr sa, uint size);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GetStdHandle(int which);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr h, uint code);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessWithLogonW(string user, string domain, string password, int logonFlags,
+    string app, StringBuilder cmd, int flags, IntPtr env, string cwd, ref StartupInfo si, out ProcInfo pi);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcess(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit,
+    int flags, IntPtr env, string cwd, ref StartupInfo si, out ProcInfo pi);
+
+  const int SE_WINDOW_OBJECT = 7, OWNER_INFO = 1, DACL_INFO = 4;
+  const uint PROTECTED_DACL = 0x80000000;
+  // The account's rights. Window station: everything but listing (WINSTA_ENUMDESKTOPS, 1) and making
+  // (WINSTA_CREATEDESKTOP, 8) desktops, so it can neither find nor take the bots' desktop's name;
+  // plus READ_CONTROL. The bots' desktop: everything (0x1FF) plus READ_CONTROL. Never WRITE_DAC or
+  // WRITE_OWNER: it cannot open either to anyone else.
+  const int RUNNER_WINSTA = 0x20376;
+  const string RUNNER_DESKTOP = "0x201FF";
+  const uint WINSTA_OPEN = 0x37F | 0x20000 | 0x40000; // all, READ_CONTROL, WRITE_DAC
+  const uint ALL_ACCESS = 0x10000000; // GENERIC_ALL
+  const int CREATE_SUSPENDED = 0x4, CREATE_UNICODE_ENVIRONMENT = 0x400, CREATE_NO_WINDOW = 0x08000000;
+  const int STARTF_USESTDHANDLES = 0x100;
+  const uint STATUS_DLL_INIT_FAILED = 0xC0000142;
 
   static string Next(TextReader r) {
     string s = r.ReadLine();
@@ -88,47 +159,236 @@ static class LamplitRun {
     e.Write(b, 0, b.Length);
     e.Flush();
   }
+  class Refused : Exception { public Refused(string m) : base(m) { } }
+  static string Win32(string what) { int e = Marshal.GetLastWin32Error(); return what + ": " + new System.ComponentModel.Win32Exception(e).Message + " (" + e + ")"; }
+  static string Win32(string what, uint e) { return what + ": " + new System.ComponentModel.Win32Exception((int)e).Message + " (" + e + ")"; }
 
-  static int Main() {
+  // --- the bots' window station and desktop ------------------------------------------
+
+  static SecurityIdentifier OwnerOf(IntPtr h) {
+    IntPtr owner, sd;
+    if (GetSecurityInfo(h, SE_WINDOW_OBJECT, OWNER_INFO, out owner, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out sd) != 0) return null;
+    try { return new SecurityIdentifier(owner); } finally { LocalFree(sd); }
+  }
+  static string NameOf(IntPtr h) {
+    StringBuilder b = new StringBuilder(256); int need;
+    return GetUserObjectInformation(h, 2, b, 512, out need) ? b.ToString() : "";
+  }
+  static SecAttr Attr(string sddl, out IntPtr sd) {
+    uint size;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out sd, out size)) throw new Refused(Win32("security descriptor"));
+    SecAttr sa = new SecAttr(); sa.nLength = Marshal.SizeOf(typeof(SecAttr)); sa.lpSecurityDescriptor = sd; sa.bInheritHandle = false;
+    return sa;
+  }
+  /** Our own desktop: exactly this access list. */
+  static void SetDacl(IntPtr h, string sddl) {
+    IntPtr sd;
+    Attr(sddl, out sd);
+    try {
+      bool present, defaulted; IntPtr dacl;
+      GetSecurityDescriptorDacl(sd, out present, out dacl, out defaulted);
+      uint r = SetSecurityInfo(h, SE_WINDOW_OBJECT, DACL_INFO | PROTECTED_DACL, IntPtr.Zero, IntPtr.Zero, dacl, IntPtr.Zero);
+      if (r != 0) throw new Refused(Win32("SetSecurityInfo", r));
+    } finally { LocalFree(sd); }
+  }
+  /** A window station that is not ours alone: one allow entry for the account, every entry already there kept. */
+  static void EnsureAce(IntPtr h, SecurityIdentifier who, int mask) {
+    IntPtr dacl, sd;
+    uint r = GetSecurityInfoDacl(h, SE_WINDOW_OBJECT, DACL_INFO, IntPtr.Zero, IntPtr.Zero, out dacl, IntPtr.Zero, out sd);
+    if (r != 0) throw new Refused(Win32("reading the window station's access list", r));
+    RawSecurityDescriptor raw;
+    try {
+      byte[] b = new byte[GetSecurityDescriptorLength(sd)];
+      Marshal.Copy(sd, b, 0, b.Length);
+      raw = new RawSecurityDescriptor(b, 0);
+    } finally { LocalFree(sd); }
+    RawAcl acl = raw.DiscretionaryAcl ?? new RawAcl(2, 1);
+    int at = 0;
+    for (int i = 0; i < acl.Count; i++) {
+      CommonAce a = acl[i] as CommonAce;
+      if (a == null) continue;
+      if (a.AceQualifier == AceQualifier.AccessDenied) at = i + 1;
+      if (a.AceQualifier == AceQualifier.AccessAllowed && a.SecurityIdentifier.Equals(who) && (a.AceFlags & AceFlags.InheritOnly) == 0 && (a.AccessMask & mask) == mask) return;
+    }
+    acl.InsertAce(at, new CommonAce(AceFlags.None, AceQualifier.AccessAllowed, mask, who, false, null));
+    byte[] bin = new byte[acl.BinaryLength];
+    acl.GetBinaryForm(bin, 0);
+    GCHandle pin = GCHandle.Alloc(bin, GCHandleType.Pinned);
+    try {
+      r = SetSecurityInfo(h, SE_WINDOW_OBJECT, DACL_INFO, IntPtr.Zero, IntPtr.Zero, pin.AddrOfPinnedObject(), IntPtr.Zero);
+      if (r != 0) throw new Refused(Win32("SetSecurityInfo", r));
+    } finally { pin.Free(); }
+  }
+
+  /** The bots' desktop's name, kept next to this program in Lamplit's data (the account cannot read it). */
+  static string NameFile() { return Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), "lamplit-run.desktop"); }
+  static string NewName() {
+    byte[] b = new byte[8];
+    new System.Security.Cryptography.RNGCryptoServiceProvider().GetBytes(b);
+    string n = "lamplit-bots-" + BitConverter.ToString(b).Replace("-", "").ToLowerInvariant();
+    File.WriteAllText(NameFile(), n);
+    return n;
+  }
+  static string CurrentName() {
+    try { string n = File.ReadAllText(NameFile()).Trim(); if (n.StartsWith("lamplit-bots-") && n.Length < 64) return n; } catch { }
+    return NewName();
+  }
+
+  /**
+   * The bots' window station and desktop -> "winsta\desktop"; the handles stay open until this
+   * program ends (then Windows keeps them while a program the account started is still on them).
+   *
+   * Window station: an ordinary account may not make one under a name of its choosing, so it is the
+   * one Windows keeps for this logon session (CreateWindowStation with no name: "Service-0x0-<id>$",
+   * the one Chromium-based programs put their sandboxed processes in). Never WinSta0, the human's
+   * interactive one: its clipboard, atoms and screen are not the human's. When it is new it gets a
+   * copy of the current window station's access list (as Chromium does); the account gets one entry
+   * of its own and nothing else there changes. Its owner is not checked: no one else can make a window
+   * station under that name, and a hub running as a service (an added machine) is in one Windows made.
+   *
+   * Desktop: Lamplit's own, under a random name kept in Lamplit's data; its access list the human,
+   * SYSTEM and the account. A desktop of that name that someone else made is never used: a new name
+   * is picked.
+   */
+  static string MakeDesktop(SecurityIdentifier runner, out IntPtr ws, out IntPtr desk) {
+    WindowsIdentity me = WindowsIdentity.GetCurrent();
+    SecurityIdentifier owner = me.Owner ?? me.User;
+    string deskSddl = "D:P(A;;GA;;;SY)(A;;GA;;;" + me.User.Value + ")" + (runner == null ? "" : "(A;;" + RUNNER_DESKTOP + ";;;" + runner.Value + ")");
+    IntPtr curDacl, curSd;
+    bool copied = GetSecurityInfoDacl(GetProcessWindowStation(), SE_WINDOW_OBJECT, DACL_INFO, IntPtr.Zero, IntPtr.Zero, out curDacl, IntPtr.Zero, out curSd) == 0;
+    SecAttr wsa = new SecAttr(); wsa.nLength = Marshal.SizeOf(typeof(SecAttr)); wsa.lpSecurityDescriptor = copied ? curSd : IntPtr.Zero;
+    // With the right to change its access list if we may; a window station Windows made for a service may not give that.
+    string err = null;
+    ws = IntPtr.Zero;
+    foreach (uint access in new uint[] { WINSTA_OPEN, 0x37F | 0x20000 }) {
+      ws = CreateWindowStation(null, 0, access, ref wsa);
+      if (ws != IntPtr.Zero) break;
+      err = Win32("CreateWindowStation");
+    }
+    if (copied) LocalFree(curSd);
+    if (ws == IntPtr.Zero) throw new Refused(err);
+    string wsName = NameOf(ws);
+    if (wsName.Length == 0 || string.Equals(wsName, "WinSta0", StringComparison.OrdinalIgnoreCase)) throw new Refused("Windows offered the human's own window station (" + wsName + ")");
+    if (runner != null) EnsureAce(ws, runner, RUNNER_WINSTA);
+    string name = CurrentName();
+    for (int attempt = 0; ; attempt++) {
+      IntPtr before = GetProcessWindowStation();
+      if (!SetProcessWindowStation(ws)) throw new Refused(Win32("SetProcessWindowStation"));
+      IntPtr sd;
+      SecAttr sa = Attr(deskSddl, out sd);
+      try {
+        desk = CreateDesktop(name, IntPtr.Zero, IntPtr.Zero, 0, ALL_ACCESS, ref sa);
+        err = desk == IntPtr.Zero ? Win32("CreateDesktop") : null;
+      } finally { SetProcessWindowStation(before); LocalFree(sd); }
+      if (desk == IntPtr.Zero) throw new Refused(err);
+      SecurityIdentifier d = OwnerOf(desk);
+      if (d != null && d.Equals(owner)) break;
+      CloseDesktop(desk);
+      if (attempt >= 2) throw new Refused("a desktop named like the bots' is held by someone else");
+      name = NewName();
+    }
+    SetDacl(desk, deskSddl);
+    return wsName + "\\" + name;
+  }
+
+  static SecurityIdentifier AccountSid(string user) {
+    try { return (SecurityIdentifier)new NTAccount(Environment.MachineName, user).Translate(typeof(SecurityIdentifier)); } catch { }
+    try { return (SecurityIdentifier)new NTAccount(user).Translate(typeof(SecurityIdentifier)); } catch { }
+    throw new Exception("there is no account named " + user);
+  }
+
+  static IntPtr EnvBlock(SortedDictionary<string, string> env) {
+    StringBuilder b = new StringBuilder();
+    foreach (KeyValuePair<string, string> kv in env) b.Append(kv.Key).Append('=').Append(kv.Value).Append('\0');
+    b.Append('\0');
+    return Marshal.StringToHGlobalUni(b.ToString());
+  }
+  /** A pipe whose one end the command gets (inheritable) and whose other end stays here. */
+  static void Pipe(out IntPtr ours, out IntPtr theirs, bool theyRead) {
+    SecAttr sa = new SecAttr(); sa.nLength = Marshal.SizeOf(typeof(SecAttr)); sa.bInheritHandle = true;
+    IntPtr r, w;
+    if (!CreatePipe(out r, out w, ref sa, 0)) throw new Exception(Win32("CreatePipe"));
+    ours = theyRead ? w : r;
+    theirs = theyRead ? r : w;
+    SetHandleInformation(ours, 1, 0);
+  }
+
+  static int Main(string[] args) {
+    // --as-me: the same launch on the bots' desktop, as the account running this program (Lamplit's
+    // own checks on a computer without a second account; never a bot's command).
+    bool asMe = Array.IndexOf(args, "--as-me") >= 0;
+    // --say-where: say which window station and desktop it ran on (Lamplit's check of the account).
+    bool sayWhere = Array.IndexOf(args, "--say-where") >= 0;
     TextReader input = new StreamReader(Console.OpenStandardInput(), Encoding.ASCII);
     string user = Next(input), pass = Next(input), cwd = Next(input), command = Next(input);
-    ProcessStartInfo psi = new ProcessStartInfo(Environment.ExpandEnvironmentVariables("%SystemRoot%\\System32\\cmd.exe"), "/d /s /c \"chcp 65001>nul & " + command + "\"");
-    psi.UserName = user;
-    psi.Domain = ".";
-    SecureString secret = new SecureString();
-    foreach (char ch in pass) secret.AppendChar(ch);
-    psi.Password = secret;
-    psi.UseShellExecute = false;
-    psi.CreateNoWindow = true;
-    psi.LoadUserProfile = false;
-    psi.WorkingDirectory = cwd;
-    psi.RedirectStandardInput = true;
-    psi.RedirectStandardOutput = true;
-    psi.RedirectStandardError = true;
-    psi.EnvironmentVariables.Clear();
+    SortedDictionary<string, string> env = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     string line;
     while ((line = input.ReadLine()) != null && line.Length > 0) {
       string kv = Encoding.UTF8.GetString(Convert.FromBase64String(line));
       int i = kv.IndexOf('=');
-      if (i > 0) psi.EnvironmentVariables[kv.Substring(0, i)] = kv.Substring(i + 1);
+      if (i > 0) env[kv.Substring(0, i)] = kv.Substring(i + 1);
     }
-    // Everything the command starts ends when this program is ended (stop, timeout).
+    // This program's own stdin/stdout/stderr are not the command's (only the pipes below are).
+    for (int s = -10; s >= -12; s--) SetHandleInformation(GetStdHandle(s), 1, 0);
+
+    SecurityIdentifier runner = null;
+    if (!asMe) {
+      try { runner = AccountSid(user); } catch (Exception e) { Say("LAMPLIT_RUNNER_START: " + e.Message); return 250; }
+    }
+    IntPtr ws, desk;
+    string where;
+    try { where = MakeDesktop(runner, out ws, out desk); }
+    catch (Exception e) { Say("LAMPLIT_RUNNER_DESKTOP: nothing ran - the bots' own Windows desktop could not be set up (" + e.Message + ")"); return 251; }
+    if (sayWhere) Say("LAMPLIT_RUNNER_ON " + where);
+
+    string cmdExe = Environment.ExpandEnvironmentVariables("%SystemRoot%\\System32\\cmd.exe");
+    StringBuilder cmdLine = new StringBuilder("\"" + cmdExe + "\" /d /s /c \"chcp 65001>nul & " + command + "\"");
+    IntPtr inR, inW, outR, outW, errR, errW;
+    Pipe(out inW, out inR, true);
+    Pipe(out outR, out outW, false);
+    Pipe(out errR, out errW, false);
+    StartupInfo si = new StartupInfo();
+    si.cb = Marshal.SizeOf(typeof(StartupInfo));
+    si.lpDesktop = where;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = inR; si.hStdOutput = outW; si.hStdError = errW;
+    IntPtr block = EnvBlock(env);
+    int flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+    ProcInfo pi;
+    bool ok = asMe
+      ? CreateProcess(cmdExe, cmdLine, IntPtr.Zero, IntPtr.Zero, true, flags, block, cwd, ref si, out pi)
+      : CreateProcessWithLogonW(user, ".", pass, 0, cmdExe, cmdLine, flags, block, cwd, ref si, out pi);
+    string startErr = ok ? null : Win32(asMe ? "CreateProcess" : "CreateProcessWithLogonW");
+    pass = null;
+    Marshal.FreeHGlobal(block);
+    CloseHandle(inR); CloseHandle(outW); CloseHandle(errW);
+    CloseHandle(inW); // the command reads nothing (as before)
+    if (!ok) { Say("LAMPLIT_RUNNER_START: " + startErr); CloseHandle(outR); CloseHandle(errR); return 250; }
+    // In the job before it runs a single instruction: everything it starts ends when this program is ended (stop, timeout).
     IntPtr job = CreateJobObject(IntPtr.Zero, null);
     Limit(job, KILL_ON_JOB_CLOSE);
-    Process child;
-    try { child = Process.Start(psi); }
-    catch (Exception e) { Say("LAMPLIT_RUNNER_START: " + e.Message); return 250; }
-    AssignProcessToJobObject(job, child.Handle);
-    child.StandardInput.Close();
-    Thread o = new Thread(() => Pump(child.StandardOutput.BaseStream, Console.OpenStandardOutput()));
-    Thread e2 = new Thread(() => Pump(child.StandardError.BaseStream, Console.OpenStandardError()));
+    if (!AssignProcessToJobObject(job, pi.hProcess)) { Say("LAMPLIT_RUNNER_START: " + Win32("AssignProcessToJobObject")); TerminateProcess(pi.hProcess, 250); return 250; }
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    FileStream so = new FileStream(new SafeFileHandle(outR, true), FileAccess.Read, 4096, false);
+    FileStream se = new FileStream(new SafeFileHandle(errR, true), FileAccess.Read, 4096, false);
+    Thread o = new Thread(() => Pump(so, Console.OpenStandardOutput()));
+    Thread e2 = new Thread(() => Pump(se, Console.OpenStandardError()));
+    o.IsBackground = true;
+    e2.IsBackground = true;
     o.Start();
     e2.Start();
-    child.WaitForExit();
+    WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
+    uint code;
+    GetExitCodeProcess(pi.hProcess, out code);
+    CloseHandle(pi.hProcess);
     // Ended on its own: a program it left running in the background keeps running.
     if (!o.Join(1500) || !e2.Join(500)) Say("LAMPLIT_RUNNER_LINGERING");
+    if (code == STATUS_DLL_INIT_FAILED) Say("LAMPLIT_RUNNER_DESKTOP: nothing ran - the command could not start on the bots' own Windows desktop (0xC0000142)");
     Limit(job, 0);
-    return child.ExitCode;
+    GC.KeepAlive(ws);
+    GC.KeepAlive(desk);
+    return (int)code;
   }
 }
 `;
@@ -397,30 +657,62 @@ export async function autoSetupOnHub(policy, { workspaceDir = P.workspaceDir, re
  * Run one command as the account -> {code, out} (the checks; the shell tool
  * goes through runnerFor + tools.mjs).
  */
-async function runAs(command, cwd) {
+async function runAs(command, cwd, args = []) {
   const runner = readRunner();
   const env = runnerEnv({ SystemRoot: process.env.SystemRoot, PATH: process.env.PATH, PATHEXT: process.env.PATHEXT, ComSpec: process.env.ComSpec }, { home: runner.home || RUNNER_HOME, tools: toolDirs() });
-  return run(helperExe(), [], { input: helperPayload({ user: runner.user, password: runner.password, cwd, command, env }) });
+  return run(helperExe(), args, { input: helperPayload({ user: runner.user, password: runner.password, cwd, command, env }) });
 }
 
-/** The check: as the account, Lamplit's data must not be readable and the workspace writable. */
+/**
+ * What the check's output says (1.5.63) -> {state, reason, where}. 'on' needs all of: the account
+ * ran it, Lamplit's data hidden from it, the workspace writable, and it ran on the bots' own
+ * desktop (lamplit-run.exe --say-where), never on WinSta0. 'blocked': the account is there but
+ * the bots' desktop could not be made, so nothing runs (no command falls back to the human).
+ */
+export function readCheck(out = '', user = RUNNER_USER) {
+  const text = String(out).replace(/\r/g, '');
+  const refused = (/^LAMPLIT_RUNNER_DESKTOP: (.*)$/m.exec(text) || [])[1];
+  if (refused) return { state: 'blocked', reason: `给机器人单独开的桌面建不起来，机器人的命令现在都不会运行（${refused.replace(/^nothing ran - /, '').trim().slice(0, 200)}）`, where: '' };
+  const where = ((/^LAMPLIT_RUNNER_ON (.+)$/m.exec(text) || [])[1] || '').trim();
+  const who = new RegExp(`\\\\${user}\\b`, 'i').test(text);
+  const ownDesktop = /^[^\\]+\\lamplit-bots-[0-9a-f]+$/i.test(where) && !/^winsta0\\/i.test(where);
+  if (who && ownDesktop && /DATA-HIDDEN/.test(text) && /WORKSPACE-OK/.test(text)) return { state: 'on', reason: '', where };
+  const said = text.replace(/^LAMPLIT_RUNNER_ON .*$/m, '').replace(/LAMPLIT_RUNNER_START:\s*/, '').trim().split('\n').pop().slice(0, 200);
+  return {
+    state: 'off',
+    where,
+    reason: !who ? `用这个账户启动不了命令（${said}）` : /DATA-VISIBLE/.test(text) ? '这个账户读得到 Lamplit 的数据'
+      : !/WORKSPACE-OK/.test(text) ? '这个账户写不了工作区' : `命令没有跑在机器人自己的桌面上（${where || '不知道在哪'}）`,
+  };
+}
+
+let checkedAt = 0;
+
+/** The check: as the account, Lamplit's data must not be readable, the workspace writable, and it runs on the bots' own desktop. */
 export async function checkRunner({ workspaceDir = P.workspaceDir, secret = P.securityFile } = {}) {
+  checkedAt = Date.now();
   if (process.platform !== 'win32') { status = { state: 'na', reason: '' }; return status; }
   if (!readRunner()) { status = { state: 'setup', reason: '' }; return status; }
   try {
     await ensureHelper();
     const probe = path.join(workspaceDir, `.lamplit-runner-probe-${process.pid}`);
-    const r = await runAs(`whoami & (type "${secret}" >nul 2>&1 && echo DATA-VISIBLE || echo DATA-HIDDEN) & (echo x>"${probe}" && del "${probe}" && echo WORKSPACE-OK)`, workspaceDir);
-    const who = new RegExp(`\\\\${RUNNER_USER}\\b`, 'i').test(r.out);
-    if (who && /DATA-HIDDEN/.test(r.out) && /WORKSPACE-OK/.test(r.out)) status = { state: 'on', reason: '' };
-    else {
-      const said = r.out.replace(/LAMPLIT_RUNNER_START:\s*/, '').trim().split('\n').pop().slice(0, 200);
-      status = { state: 'off', reason: !who ? `用这个账户启动不了命令（${said}）` : /DATA-VISIBLE/.test(r.out) ? '这个账户读得到 Lamplit 的数据' : '这个账户写不了工作区' };
-    }
+    const r = await runAs(`whoami & (type "${secret}" >nul 2>&1 && echo DATA-VISIBLE || echo DATA-HIDDEN) & (echo x>"${probe}" && del "${probe}" && echo WORKSPACE-OK)`, workspaceDir, ['--say-where']);
+    const { state, reason } = readCheck(r.out, readRunner()?.user || RUNNER_USER);
+    status = { state, reason };
   } catch (err) {
     status = { state: 'off', reason: err.message };
   }
   return status;
+}
+
+/**
+ * Commands go through the account when it is on - and when it is set up but its desktop could not
+ * be made ('blocked'): lamplit-run.exe then refuses each one, so nothing runs as the human or on
+ * their desktop. A blocked state is looked at again at most once a minute (it may have cleared).
+ */
+function throughAccount() {
+  if (status.state === 'blocked' && Date.now() - checkedAt > 60000) checkRunner().catch(() => {});
+  return status.state === 'on' || status.state === 'blocked';
 }
 
 export function runnerStatus() {
@@ -433,9 +725,25 @@ export function runsAsRunner({ platform = process.platform, command = '', unfenc
   return !SUDO.test(String(command));
 }
 
-/** For one shell step: {exe, input} to run, or null (runs as the human, as before). */
+/**
+ * desktop_ui on the bots' own desktop (1.5.63): {exe, input} that runs the UI Automation script
+ * there as the account, or null when commands do not go through the account. The script and the
+ * request travel in environment variables (extraEnv); the command line is fixed and short.
+ */
+export function uiRunnerFor(extraEnv = {}, bootEncoded = '') {
+  if (process.platform !== 'win32' || !/^[A-Za-z0-9+/=]+$/.test(bootEncoded) || !throughAccount()) return null;
+  const runner = readRunner();
+  if (!runner) return null;
+  const ps = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const env = runnerEnv({ ...childEnv(), ...extraEnv }, { home: runner.home || RUNNER_HOME, tools: toolDirs() });
+  const command = `"${ps}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${bootEncoded}`;
+  // Its own home as the folder: always there for it (the workspace need not be).
+  return { exe: helperExe(), input: helperPayload({ user: runner.user, password: runner.password, cwd: runner.home || RUNNER_HOME, command, env }) };
+}
+
+/** For one shell step: {exe, input} to run, or null (runs as the human: the account is not set up, or its check failed). */
 export function runnerFor(command, ctx = {}, baseEnv = {}) {
-  if (status.state !== 'on') return null;
+  if (!throughAccount()) return null;
   if (!runsAsRunner({ command, unfenced: Boolean(ctx.shellUnfenced) })) return null;
   const runner = readRunner();
   if (!runner) return null;
@@ -462,7 +770,7 @@ export function fencedMoveEnv(from, to) {
   return { SystemRoot: root, ComSpec: path.win32.join(root, 'System32', 'cmd.exe'), PATH: path.win32.join(root, 'System32'), LAMPLIT_FROM: from, LAMPLIT_TO: to };
 }
 export function fencedMover(workspaceDir = P.workspaceDir) {
-  if (process.platform !== 'win32' || status.state !== 'on') return null;
+  if (process.platform !== 'win32' || !throughAccount()) return null;
   const runner = readRunner();
   if (!runner) return null;
   return async (from, to) => {
@@ -482,7 +790,7 @@ export function fencedMover(workspaceDir = P.workspaceDir) {
  */
 export const FENCED_REMOVE = 'rmdir /s /q "%LAMPLIT_FROM%"';
 export function fencedRemover(workspaceDir = P.workspaceDir) {
-  if (process.platform !== 'win32' || status.state !== 'on') return null;
+  if (process.platform !== 'win32' || !throughAccount()) return null;
   const runner = readRunner();
   if (!runner) return null;
   return async (dir) => {
@@ -493,4 +801,5 @@ export function fencedRemover(workspaceDir = P.workspaceDir) {
   };
 }
 
-export const _test = { setStatus: (s) => { status = s; }, osHome: os.homedir };
+// setStatus also counts as a fresh check, so a test's 'blocked' never starts a real one.
+export const _test = { setStatus: (s) => { status = s; checkedAt = Date.now(); }, osHome: os.homedir };

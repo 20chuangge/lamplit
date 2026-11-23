@@ -1030,8 +1030,9 @@ function renderSandboxState(s) {
   if (setup) setup.hidden = !(s?.mode === 'windows' && (state === 'setup' || state === 'off'));
   if (s?.mode === 'windows') {
     clearTimeout(renderSandboxState.poll);
-    box.classList.toggle('warn-note', state === 'off' || state === 'setup');
-    if (state === 'on') box.textContent = '已开启：机器人执行的命令用单独的 Windows 账户 lamplit-runner 来跑，看不到你的用户文件夹（C:\\Users\\你），包括 Lamplit 自己的数据（密钥、配对凭据、保险箱）；工作区和开放的文件夹照常可用，Python、ffmpeg 这类装在你用户文件夹里的工具可以运行。其他磁盘（比如 D 盘）按 Windows 默认，所有账户都能读写。以管理员身份运行的命令、你批准越过边界的那一步，用你自己的账户。';
+    box.classList.toggle('warn-note', state === 'off' || state === 'setup' || state === 'blocked');
+    if (state === 'on') box.textContent = '已开启：机器人执行的命令用单独的 Windows 账户 lamplit-runner 来跑，看不到你的用户文件夹（C:\\Users\\你），包括 Lamplit 自己的数据（密钥、配对凭据、保险箱）；工作区和开放的文件夹照常可用，Python、ffmpeg 这类装在你用户文件夹里的工具可以运行。其他磁盘（比如 D 盘）按 Windows 默认，所有账户都能读写。命令跑在它自己的隐藏桌面上，看不到你的窗口、剪贴板和键盘；它打开的程序也不会出现在你的屏幕上。以管理员身份运行的命令、你批准越过边界的那一步，用你自己的账户。';
+    else if (state === 'blocked') box.textContent = `机器人的命令现在都不会运行：${s.reason || '给机器人单独开的桌面建不起来'}。不会改用你的账户或你的桌面去跑。重启电脑通常就好了。`;
     else if (state === 'setting-up') { box.textContent = '正在设置：在弹出的管理员确认里点「是」…'; renderSandboxState.poll = setTimeout(() => loadPolicy().catch(() => {}), 2500); }
     else if (state === 'unknown') { box.textContent = '正在检查单独账户…'; renderSandboxState.poll = setTimeout(() => loadPolicy().catch(() => {}), 3000); }
     else if (state === 'setup') box.textContent = `机器人跑命令时用的是你的账户。点「设置单独账户」，让它用一个单独的账户（lamplit-runner），更安全；会弹一次管理员确认。${s.reason ? `上次没成功：${s.reason}。` : ''}`;

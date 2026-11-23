@@ -58,6 +58,17 @@ jobs:
       - run: npm run check
       - run: npm run check:i18n
       - run: npm run smoke
+      # The bots' Windows account on a desktop of its own (1.5.63, F11), with a real second account:
+      # the stage makes a throwaway local user, runs a probe as it through lamplit-run.exe, checks it
+      # cannot reach the hub's windows, clipboard or desktop, and removes the user. Only here: a
+      # throwaway runner where the job is an administrator (never on someone's own computer).
+      - name: The bots' own desktop, with a throwaway account (Windows)
+        # Even when the smoke step above failed: this result is wanted on its own.
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        env:
+          LAMPLIT_CI_RUNNER_ACCOUNT: '1'
+          SMOKE_ONLY: '1\.5\.63: security - the bots'
+        run: npm run smoke
       - run: npm run smoke:selfupdate
       # 1.5.63: the sandbox and its own network as on a stock Ubuntu 24.04 that Lamplit set up:
       # AppArmor's userns restriction back on, with Lamplit's rule for /usr/bin/bwrap (what

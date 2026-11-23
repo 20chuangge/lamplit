@@ -257,6 +257,7 @@ async function main() {
     await stage('1.5.58: a bot\'s screen on another machine, in 全部机器 (through the relay too)', async () => (await import('./smoke-1558.mjs')).remoteScreenChecks({ check }));
     await stage('1.5.61: security - the browser over a pipe (no debugging port), the hub\'s temp files in data, the bots\' own /tmp, checked root runs, the trust note', async () => { await (await import('./smoke-sec1561.mjs')).sec1561Checks({ check, skip }); await (await import('./smoke-secv1560b.mjs')).verifyChecks({ check, skip }); await (await import('./smoke-secv1561.mjs')).verifyChecks({ check, skip }); });
     await stage('1.5.63: security - new names made through the held folder (F10), the strict sandbox\'s own network, bot screens view-only and wayvnc on a socket, very-low sends', async () => (await import('./smoke-sec1563.mjs')).sec1563Checks({ check, skip }));
+    await stage('1.5.63: security - the bots\' Windows account on a desktop of its own, not the human\'s', async () => (await import('./smoke-runner1563.mjs')).runnerDesktopChecks({ check, skip, readText }));
   } finally {
     await stopChild();
     // Leave the temp dir behind only when something failed, so it can be inspected.
@@ -275,7 +276,18 @@ async function main() {
     console.log('RESULT  smoke test passed');
     process.exitCode = 0;
   }
+  // 1.5.63: the results are in; something a check left open (a child's pipe, a listener, a timer)
+  // must not keep the run going until CI's timeout. Say what it was, then end with the result.
+  setTimeout(() => {
+    const open = (process._getActiveHandles?.() || []).map((h) => {
+      const name = h?.constructor?.name || typeof h;
+      return h?.spawnfile ? `${name} ${path.basename(h.spawnfile)} pid ${h.pid}` : h?.remotePort ? `${name} :${h.remotePort}` : name;
+    });
+    console.log(`(smoke: still open ${SMOKE_EXIT_GRACE_MS / 1000} s after the result, exiting anyway: ${open.join(', ') || 'nothing listed'})`);
+    process.exit(process.exitCode ?? 1);
+  }, SMOKE_EXIT_GRACE_MS).unref();
 }
+const SMOKE_EXIT_GRACE_MS = 15000;
 
 // ---------------------------------------------------------------------------
 // environment
@@ -6057,9 +6069,11 @@ async function scenarioWinRunner157() {
     && !W.runsAsRunner({ platform: 'win32', command: 'dir', unfenced: true }) && !W.runsAsRunner({ platform: 'linux', command: 'ls' }));
   check('W4 not set up: a step runs as the human', W.runnerFor('dir', {}) === null);
 
-  check('W5 helper: credentials through .NET (no profile loaded), a job that ends everything on close, released when the command ends on its own',
-    W.HELPER_SOURCE.includes('psi.Password = secret;') && W.HELPER_SOURCE.includes('psi.LoadUserProfile = false;') && W.HELPER_SOURCE.includes('KILL_ON_JOB_CLOSE = 0x2000')
-    && W.HELPER_SOURCE.includes('AssignProcessToJobObject(job, child.Handle);') && W.HELPER_SOURCE.includes('Limit(job, 0);') && W.HELPER_SOURCE.includes('psi.EnvironmentVariables.Clear();'));
+  // 1.5.63: CreateProcessWithLogonW called directly (a desktop of the bots' own, smoke-runner1563.mjs).
+  check('W5 helper: the account\'s password to CreateProcessWithLogonW (no profile loaded), a job that ends everything on close, released when the command ends on its own, only the environment given',
+    W.HELPER_SOURCE.includes('CreateProcessWithLogonW(user, ".", pass, 0,') && W.HELPER_SOURCE.includes('KILL_ON_JOB_CLOSE = 0x2000')
+    && W.HELPER_SOURCE.includes('AssignProcessToJobObject(job, pi.hProcess)') && W.HELPER_SOURCE.includes('Limit(job, 0);') && W.HELPER_SOURCE.includes('IntPtr block = EnvBlock(env);')
+    && W.HELPER_SOURCE.includes('CREATE_UNICODE_ENVIRONMENT'));
   check('W5 set up: Users only, never Administrators, hidden from the sign-in screen, its home closed to others; the password comes from a file, not the command line',
     W.SETUP_SCRIPT.includes("Add-LocalGroupMember -SID 'S-1-5-32-545'") && W.SETUP_SCRIPT.includes("Remove-LocalGroupMember -SID 'S-1-5-32-544'")
     && W.SETUP_SCRIPT.includes('SpecialAccounts\\UserList') && W.SETUP_SCRIPT.includes('/inheritance:r') && W.SETUP_SCRIPT.includes('Get-Content -Raw -Encoding UTF8 -LiteralPath $args[0]'));

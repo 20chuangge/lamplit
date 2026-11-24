@@ -135,6 +135,22 @@ public final class PhoneRoutesCheck {
         FakeNet publicOnly = new FakeNet().up(CLOUD_PUBLIC);
         out.put("publicNotUsed", q(PhoneRoutes.pick(CLOUD_OLD_TS, Arrays.asList(CLOUD_PUBLIC), publicOnly) + "|" + publicOnly.probed.size()));
 
+        // --- one hub per machine (1.5.67) ---------------------------------------------------
+        List<String> logins = Arrays.asList(PC_LAN, CLOUD_OLD_TS, CLOUD_RELAY);
+        Map<String, String> folded = new LinkedHashMap<>();
+        folded.put(CLOUD_OLD_TS, CLOUD_RELAY);
+        out.put("activeFolded", q(String.join(",", PhoneRoutes.active(logins, folded))));
+        out.put("activeTargetGone", q(String.join(",", PhoneRoutes.active(Arrays.asList(PC_LAN, CLOUD_OLD_TS), folded))));
+        Map<String, String> loop = new LinkedHashMap<>();
+        loop.put(CLOUD_OLD_TS, CLOUD_RELAY);
+        loop.put(CLOUD_RELAY, CLOUD_OLD_TS);
+        out.put("activeLoop", q(String.join(",", PhoneRoutes.active(logins, loop))));
+        Map<String, String> chain = new LinkedHashMap<>();
+        chain.put(PC_LAN, CLOUD_OLD_TS);
+        chain.put(CLOUD_OLD_TS, CLOUD_RELAY);
+        out.put("activeChain", q(String.join(",", PhoneRoutes.active(logins, chain))));
+        out.put("activeNone", q(String.join(",", PhoneRoutes.active(logins, new LinkedHashMap<>()))));
+
         StringBuilder json = new StringBuilder("{");
         for (Map.Entry<String, String> e : out.entrySet()) {
             if (json.length() > 1) json.append(',');

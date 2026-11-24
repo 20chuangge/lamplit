@@ -2742,6 +2742,8 @@ async function phoneView(state) {
   const configured = phoneConfig().adbPath || '';
   const found = findAdb({ configured });
   const out = { adb: { found: Boolean(found), path: found, configured }, devices: [], app: state.phoneLink.list().map((p) => ({ model: p.model, name: p.name })) };
+  // A phone with the Lamplit app is paired here (1.5.67: the PC's page says where 「让机器人用这部手机」 is).
+  out.phonePaired = out.app.length > 0 || state.devices.list().some((d) => d.kind === 'phone');
   if (!found && !out.app.length) return out;
   try {
     out.devices = (await state.phone.status()).devices.map((d) => ({ ...d, via: String(d.serial || '').startsWith('lamplit:') ? 'app' : 'adb' }));
@@ -2764,8 +2766,18 @@ function phoneDevice(req, state) {
 
 route('POST', /^\/api\/phone\/agent$/, async (req, _res, { body, state }) => {
   const device = phoneDevice(req, state);
-  state.phoneLink.register(device.id, { enabled: Boolean(body?.enabled), listed: body?.listed === true, model: String(body?.model || ''), name: device.name || '', sdk: body?.sdk, phoneId: String(body?.phoneId || ''), caps: Array.isArray(body?.caps) ? body.caps : [] });
+  state.phoneLink.register(device.id, { enabled: Boolean(body?.enabled), listed: body?.listed === true, updated: body?.updated === true, model: String(body?.model || ''), name: device.name || '', sdk: body?.sdk, phoneId: String(body?.phoneId || ''), caps: Array.isArray(body?.caps) ? body.caps : [] });
   return { ok: true };
+});
+
+// POST /api/phone/mine {hashes:[sha256 hex]} -> {mine:[bool]} (1.5.67): which of the phone's other
+// logins are this machine's. The phone held one at an address this machine no longer has and kept
+// trying it; now it learns that is this machine and uses the way that works. Only a paired phone may
+// ask, at most 20 at a time; a hash is not a login.
+route('POST', /^\/api\/phone\/mine$/, async (req, _res, { body, state }) => {
+  phoneDevice(req, state);
+  const hashes = Array.isArray(body?.hashes) ? body.hashes.slice(0, 20) : [];
+  return { mine: hashes.map((h) => Boolean(state.devices.ownsHash?.(h))) };
 });
 
 route('POST', /^\/api\/phone\/jobs\/(?<id>[\w-]+)$/, async (req, _res, { params, body, state }) => {
@@ -2986,8 +2998,12 @@ route('GET', /^\/api\/checkup$/, async (_req, _res, { state, query }) => {
   const phones = state.phoneLink.list();
   const week = Date.now() - 7 * 24 * 3600 * 1000;
   const pairedPhone = state.devices.list().some((d) => d.kind === 'phone' && Date.parse(d.lastSeenAt) > week);
+  // On in the phone's settings but not connected yet (1.5.67: after an update): not "turn it on".
+  const reconnecting = (state.phoneLink.off?.() || []).some((p) => p.listed);
   items.push(phones.length
     ? checkupItem('phone', '手机', 'ok', `已连 ${phones.length} 部：${phones.map((p) => p.model || p.name).filter(Boolean).join('、')}，机器人可以操作它。`)
+    : reconnecting
+      ? checkupItem('phone', '手机', 'info', '手机上「让机器人用这部手机」还开着，只是还没重新接上（Lamplit 刚更新或重启过）。在手机上打开一次 Lamplit 就好，开关不用动。')
     : pairedPhone
       ? checkupItem('phone', '手机', 'info', '手机已经配对，能在手机上用 Lamplit；要让机器人帮你操作手机，在手机 App 的「设置 → 机器 → 手机」里打开「让机器人用这部手机」。')
       : checkupItem('phone', '手机', 'info', '还没连手机（可选）：装上 Lamplit 手机 App，扫一下二维码，在外面也能用，机器人也能帮你操作手机。', { kind: 'settings', target: 'sec-pair', label: '连手机' }));

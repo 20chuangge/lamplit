@@ -66,6 +66,11 @@ export async function routeChecks({ check, skip }) {
       r.newTailnetWay === 'http://100.64.0.2:4390' && r.tailscaleOnNothingAnswers === OLD_TS, JSON.stringify(r));
     check('PR66-7 the order stays: the same Wi-Fi first, another Wi-Fi\'s LAN address skipped, a phone paired through the relay stays on it, a public http address is never a way (the login would go in the clear)',
       r.sameWifiWay === 'http://192.168.50.20:4390' && r.otherWifiLanSkipped === `${RELAY}|${RELAY}` && r.pairedAtRelay === `${RELAY}|0` && r.publicNotUsed === `${OLD_TS}|0`, JSON.stringify(r));
+    // 1.5.67: one hub per machine (PhoneRoutes.active).
+    const PC = 'http://192.168.50.10:4390';
+    check('PH67-0 one hub per machine: a dead login folded into its working hub is not watched on its own; back on its own when that hub loses its login; folds that loop or chain do not hide a hub that is not folded',
+      r.activeFolded === `${PC},${RELAY}` && r.activeTargetGone === `${PC},${OLD_TS}` && r.activeLoop === `${PC},${OLD_TS},${RELAY}`
+      && r.activeChain === `${PC},${RELAY}` && r.activeNone === `${PC},${OLD_TS},${RELAY}`, JSON.stringify(r));
   } finally {
     fs.rmSync(classes, { recursive: true, force: true });
   }
@@ -104,7 +109,7 @@ export async function hubMessageChecks({ check, readText }) {
     const twoWhy = PL.makePhoneExec({ adbPath: () => '', link: two }).whyGone();
     Date.now = realNow;
     check('PR66-10 the service disconnected by the system (still on in its settings): said as such - "the human did not turn it off", open Lamplit or switch it off and on; a stale second login of the same phone does not hide it',
-      /still switched on in its settings/.test(twoWhy) && /system has disconnected/.test(twoWhy) && /did not turn it off/.test(twoWhy) && !/not connected to this machine/.test(twoWhy), twoWhy);
+      /still switched on/.test(twoWhy) && /not connected yet/.test(twoWhy) && /nobody turned it off/.test(twoWhy) /* 1.5.67 wording */ && !/not connected to this machine/.test(twoWhy), twoWhy);
 
     const off = PL.createPhoneLink({ bus });
     off.register('dev-off', { enabled: false, listed: false, model: 'OPPO X' });
@@ -151,8 +156,8 @@ export async function appChecks({ check, readText }) {
     watch.includes('conn.setReadTimeout(RelayLinks.isRelayLocal(base) ? 6000 : 2500);') && watch.includes('body.put("listed", agentListed());')
     && hints.includes('static boolean isTailnetUrl(String url)'));
   check('PR66-18 PHONE_AGENT_OFF only when the service is not connected, and then worded by the system setting: "disconnected by the system, open Lamplit or switch it off and on" vs "turn it on"',
-    watch.includes('reply.put("code", "PHONE_AGENT_OFF");\n                    reply.put("message", agentOffMessage(agentListed()));')
-    && watch.includes('but the system has disconnected the service for now (the human did not turn it off)') && watch.includes('return "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)";')
+    watch.includes('reply.put("code", listed ? "PHONE_AGENT_RECONNECTING" : "PHONE_AGENT_OFF");') /* 1.5.67: its own code when on in the settings */
+    && watch.includes('nobody turned it off') && watch.includes('return "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)";')
     && watch.includes('return AgentKeeper.isOn(this);'));
   check('PR66-19 the relay closed the handshake (its machine had no tunnel yet, as 6 s after the PC restarted): tried again after 1 s and 2.5 s; another certificate or an unreachable relay is not retried',
     relay.includes('static final long[] RELAY_RETRY_MS = { 1000L, 2500L };') && relay.includes('outer = throughRelay(ssl, host, port, id);')

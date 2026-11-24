@@ -15,6 +15,9 @@ public class StartupReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         String action = intent == null ? "" : String.valueOf(intent.getAction());
         if (!Intent.ACTION_MY_PACKAGE_REPLACED.equals(action) && !Intent.ACTION_BOOT_COMPLETED.equals(action)) return;
+        // Updated (1.5.67): if the system does not connect 「让机器人用这部手机」 again by itself,
+        // the notice and the bots' message say it was the update, not the human.
+        if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) AgentKeeper.noteUpdated(context);
         AgentKeeper.ensure(context);
         if (!NightshiftWatcher.hasPairing(context)) return;
         try {

@@ -131,6 +131,25 @@ final class PhoneRoutes {
         return null;
     }
 
+    /**
+     * One hub per machine (1.5.67): of the hubs this phone holds a login for,
+     * the ones to keep a stream, a report and fleet sync for. A hub whose login
+     * a working hub said is its own (sameAs) is left out - only while that hub
+     * still has its login and is not itself folded into another (no chains,
+     * no loops: then both stay).
+     */
+    static List<String> active(List<String> all, java.util.Map<String, String> sameAs) {
+        List<String> out = new ArrayList<>();
+        if (all == null) return out;
+        for (String h : all) {
+            String to = sameAs == null ? null : sameAs.get(h);
+            boolean folded = to != null && !to.equals(h) && all.contains(to)
+                    && (sameAs.get(to) == null || sameAs.get(to).equals(to));
+            if (!folded) out.add(h);
+        }
+        return out;
+    }
+
     /** What the phone's network says about an address, and whether it answers. */
     interface Net {
         /** 127.0.0.1:14440-14499: this app's relay forwarder. */

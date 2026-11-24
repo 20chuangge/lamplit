@@ -3543,4 +3543,6 @@ window.DESK_I18N_EN = {
   "正在传 0/{0}…": "Sending 0/{0}…",
   "已传 {0}/{1}，交给对方…": "Sent {0}/{1}, handing it over…",
   "正在传 {0}/{1}…": "Sending {0}/{1}…",
+  "「让机器人用这部手机」在手机上的 Lamplit 里打开：设置 → 机器 → 手机": "Turn on \"Let bots use this phone\" in the Lamplit app on the phone: Settings → Machines → Phone",
+  "手机上「让机器人用这部手机」还开着，只是还没重新接上（Lamplit 刚更新或重启过）。在手机上打开一次 Lamplit 就好，开关不用动。": "\"Let bots use this phone\" is still on, but the phone has not reconnected yet (Lamplit was just updated or restarted). Open Lamplit on the phone once; no need to touch the switch.",
 };

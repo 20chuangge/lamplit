@@ -270,6 +270,10 @@ async function main() {
     await stage('1.5.66 phone relay: which machine, which way (PhoneRoutes.java on a desktop JDK)', async () => (await import('./smoke-phonerelay-1566.mjs')).routeChecks({ check, skip }));
     await stage('1.5.66 phone relay: what the bots are told when the phone is not connected', async () => (await import('./smoke-phonerelay-1566.mjs')).hubMessageChecks({ check, readText }));
     await stage('1.5.66 phone relay: the Android app (fleet sync, the way, the relay retry, the wording) and the app\'s list', async () => (await import('./smoke-phonerelay-1566.mjs')).appChecks({ check, readText }));
+    // 1.5.67: after 1.5.66 shipped (11-24) - one hub per machine, connected again after an update, the PC's hint.
+    await stage('1.5.67 phone: one hub per machine (which logins are this machine\'s)', async () => (await import('./smoke-phone-1567.mjs')).sameMachineChecks({ check, api, readText }));
+    await stage('1.5.67 phone: connected again after an update, and what the bots are told meanwhile', async () => (await import('./smoke-phone-1567.mjs')).reconnectChecks({ check, readText }));
+    await stage('1.5.67 phone: the PC\'s page says where the switch is', async () => (await import('./smoke-phone-1567.mjs')).pcHintChecks({ check, readText }));
     // 1.5.64: what the user's content group ran into on 11-23.
     await stage('1.5.64: another machine\'s group draws its members by name and face - task board, hand-off, sender', async () => (await import('./smoke-group-1564.mjs')).remoteGroupFaceChecks({ check, readText, api, rawFetch, startServerChild, stopProcess, seedHome }));
     await stage('1.5.64: messages sent in a row start one turn', async () => (await import('./smoke-group-1564.mjs')).burstChecks({ check, toolsMod, groupsMod, startServerChild, stopProcess, seedHome, rawFetch }));
@@ -4570,7 +4574,8 @@ async function scenarioMcp({ home, toolsMod }) {
       why.includes('is off on it') && why.includes('turn it on again') && whenOn === 0);
     check('K20 app: what the human wants is kept (on when connected; off on 停止 or when turned off while Lamplit runs); wanted but off, it adds only its own service back (with the permission granted from a computer) or posts a notice that opens the setting',
       svc.includes('AgentKeeper.setWanted(this, true);') && (svc.match(/AgentKeeper\.setWanted\(this, false\);/g) || []).length === 2
-      && keeper.includes('if (!wanted(c) || PhoneAgentService.instance != null || isOn(c))') && keeper.includes('Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, next)') && keeper.includes('showOffNotice(c);')
+      // 1.5.67: the one condition became three steps (connected / on but not connected: reconnect / not wanted).
+      && keeper.includes('if (PhoneAgentService.instance != null) {') && keeper.includes('if (isOn(c)) {') && keeper.includes('if (!wanted(c)) return;') && keeper.includes('Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, next)') && keeper.includes('showOffNotice(c);')
       && watch.includes('AgentKeeper.ensure(this);') && man.includes('android.permission.WRITE_SECURE_SETTINGS'));
     check('K20 app: after an update or a restart Lamplit starts by itself (connection and switch); event notices are capped at 8',
       start.includes('Intent.ACTION_MY_PACKAGE_REPLACED') && start.includes('AgentKeeper.ensure(context);') && man.includes('android.intent.action.MY_PACKAGE_REPLACED') && man.includes('android.intent.action.BOOT_COMPLETED')

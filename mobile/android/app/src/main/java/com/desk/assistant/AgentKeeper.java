@@ -46,7 +46,12 @@ final class AgentKeeper {
 
     static void setWanted(Context c, boolean on) {
         prefs(c).edit().putBoolean(WANT, on).apply();
-        if (on) hideOffNotice(c);
+        if (on) {
+            hideOffNotice(c);
+            // Connected (1.5.67): the "tap to reconnect" notice goes too.
+            hideReconnectNotice(c);
+            unboundSince = 0;
+        }
     }
 
     static boolean wanted(Context c) {
@@ -72,10 +77,20 @@ final class AgentKeeper {
     /** Wanted but off: turn it back on (with the permission) or ask the human to. */
     static void ensure(Context c) {
         try {
-            if (!wanted(c) || PhoneAgentService.instance != null || isOn(c)) {
-                if (isOn(c)) hideOffNotice(c);
+            if (PhoneAgentService.instance != null) {
+                unboundSince = 0;
+                hideOffNotice(c);
+                hideReconnectNotice(c);
                 return;
             }
+            if (isOn(c)) {
+                // On in the settings but not connected (1.5.67): see reconnect().
+                hideOffNotice(c);
+                reconnect(c);
+                return;
+            }
+            hideReconnectNotice(c);
+            if (!wanted(c)) return;
             if (canTurnOn(c)) {
                 String list = Settings.Secure.getString(c.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
                 String next = (list == null || list.isEmpty()) ? component(c) : list + ":" + component(c);
@@ -90,6 +105,101 @@ final class AgentKeeper {
             Log.w(TAG, "could not turn it back on: " + err.getClass().getSimpleName());
             showOffNotice(c);
         }
+    }
+
+    // ------------------------------------------------------------ on, but not connected (1.5.67)
+    /*
+     * Seen 11-24 on an OPPO: after Lamplit was updated (adb install -r) the
+     * service stayed on in the system settings, but the system did not connect
+     * it again until the human opened Lamplit. Meanwhile the bots heard "off".
+     * Now, after 15 s of that: with WRITE_SECURE_SETTINGS the service is taken
+     * out of the list and put back (the system connects it again) - once per
+     * gap; without it (or when that did not help) a notice asks the human to
+     * tap, which opens Lamplit and so connects it.
+     */
+    private static final int NOTICE_RECONNECT = 4104;
+    private static final String CHANNEL_RECONNECT = "phone-agent-reconnect";
+    private static final String REPLACED_AT = "replacedAt";
+    private static volatile long unboundSince = 0;
+    private static volatile long toggledFor = -1;
+
+    /** StartupReceiver: Lamplit was just updated (the notice says so). */
+    static void noteUpdated(Context c) {
+        prefs(c).edit().putLong(REPLACED_AT, System.currentTimeMillis()).apply();
+    }
+
+    private static boolean justUpdated(Context c) {
+        long at = prefs(c).getLong(REPLACED_AT, 0L);
+        return at > 0 && System.currentTimeMillis() - at < 30L * 60000L;
+    }
+
+    /** What the bots' message says the gap came from: an update, or a restart / the system. */
+    static boolean reconnectingAfterUpdate(Context c) {
+        return justUpdated(c);
+    }
+
+    private static void reconnect(Context c) {
+        long now = System.currentTimeMillis();
+        if (unboundSince == 0) {
+            unboundSince = now; // the system often connects it by itself within seconds
+            return;
+        }
+        if (now - unboundSince < 15000L) return;
+        if (toggledFor != unboundSince && canTurnOn(c)) {
+            toggledFor = unboundSince;
+            final Context app = c.getApplicationContext();
+            new Thread(() -> {
+                try {
+                    String mine = component(app);
+                    String list = Settings.Secure.getString(app.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                    StringBuilder without = new StringBuilder();
+                    if (list != null) for (String s : list.split(":")) {
+                        if (s.isEmpty() || s.equalsIgnoreCase(mine)) continue;
+                        if (without.length() > 0) without.append(':');
+                        without.append(s);
+                    }
+                    Settings.Secure.putString(app.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, without.toString());
+                    Thread.sleep(500);
+                    String back = without.length() == 0 ? mine : without + ":" + mine;
+                    Settings.Secure.putString(app.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, back);
+                    Settings.Secure.putString(app.getContentResolver(), Settings.Secure.ACCESSIBILITY_ENABLED, "1");
+                    Log.i(TAG, "让机器人用这部手机 was on but not connected: switched it off and on to connect it");
+                } catch (Exception err) {
+                    Log.w(TAG, "could not reconnect it: " + err.getClass().getSimpleName());
+                }
+            }, "agent-reconnect").start();
+            return;
+        }
+        showReconnectNotice(c);
+    }
+
+    private static void showReconnectNotice(Context c) {
+        NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel(CHANNEL_RECONNECT, "机器人重新接上手机", NotificationManager.IMPORTANCE_DEFAULT);
+            ch.setShowBadge(false);
+            nm.createNotificationChannel(ch);
+        }
+        Intent open = new Intent(c, MainActivity.class)
+                .setAction(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_LAUNCHER)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+        PendingIntent pi = PendingIntent.getActivity(c, 4105, open, flags);
+        Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? new Notification.Builder(c, CHANNEL_RECONNECT) : new Notification.Builder(c);
+        b.setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(justUpdated(c) ? "Lamplit 更新好了，点一下让机器人重新接上手机" : "点一下让机器人重新接上手机")
+                .setContentText("「让机器人用这部手机」还开着，只是系统还没把它接上。打开一次 Lamplit 就好。")
+                .setContentIntent(pi)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true);
+        nm.notify(NOTICE_RECONNECT, b.build());
+    }
+
+    private static void hideReconnectNotice(Context c) {
+        NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.cancel(NOTICE_RECONNECT);
     }
 
     private static void showOffNotice(Context c) {

@@ -74,7 +74,7 @@ export function createVideoJobs({ file, getKey, workspaceDir, onDone, onFail, po
     },
 
     /** -> the job (id, state 'running') */
-    async add({ botId, groupId = null, prompt, task, reportTo = null }) {
+    async add({ botId, groupId = null, prompt, task, reportTo = null, turnId = null }) {
       const job = {
         id: `vj_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         botId,
@@ -82,6 +82,8 @@ export function createVideoJobs({ file, getKey, workspaceDir, onDone, onFail, po
         ...(groupId ? { groupId } : {}),
         // Handed down from another bot: that one is told when it is done, too.
         ...(reportTo ? { reportTo } : {}),
+        // The turn that asked (1.5.67): its clips are reported together, once the last one is in.
+        ...(turnId ? { turnId } : {}),
         prompt: String(prompt || '').slice(0, 300),
         task,
         state: 'running',

@@ -23,6 +23,22 @@ const SYSTEM_PREFIXES = process.platform === 'win32'
   ? ['c:\\windows', 'c:\\program files', 'c:\\program files (x86)']
   : ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/proc', '/sys', '/dev', '/tmp', '/var/tmp', '/etc', '/run', '/var/log', '/snap', '/opt/node'];
 
+/**
+ * An installed program's place (1.5.67): a program file (.exe / .com, or a file with no extension in a bin folder),
+ * a bin folder, or an install folder (Program Files, AppData\Local\Programs). Not a document, a video, a folder of
+ * the human's. Used only for commands that do not write, move, delete or read out files (WRITES_FILES: `type x.exe`
+ * reads one, it does not run it).
+ */
+export function programPlace(p) {
+  const s = String(p || '').replace(/[\\/]+$/, '');
+  const base = path.basename(s);
+  if (/\.(exe|com)$/i.test(base)) return true;
+  if (/^bin$/i.test(base)) return true;
+  if (!path.extname(base) && /^bin$/i.test(path.basename(path.dirname(s)))) return true;
+  return /[\\/](program files( \(x86\))?|appdata[\\/]local[\\/]programs)([\\/]|$)/i.test(s);
+}
+const WRITES_FILES = /(^|[\s;&|(])(del|erase|rm|rmdir|rd|move|mv|copy|cp|xcopy|robocopy|ren|rename|mklink|Remove-Item|Move-Item|Copy-Item|Rename-Item|Set-Content|Add-Content|Out-File|New-Item|type|cat|more|findstr|certutil|Get-Content|gc|xxd|od|strings|base64|hexdump)(\.exe)?(\s|$)/i;
+
 // Real paths: a link in an opened folder does not open what it points to (SEC-18).
 const norm = (p) => {
   const n = realPathOf(p);
@@ -283,7 +299,9 @@ export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = 
   // A machine given to the bots and set to 放手 is theirs: no folder fence
   // (11-15, Ubuntu: every bot stopped on "没开放给机器人的位置"). sudo still
   // follows the machine's sudo setting; the danger list still asks.
-  const free = remote && autonomous;
+  // 1.5.67 (the human, 11-24: 「我给的是放手，他就不应该一直问我」): 放手 on the human's own computer too -
+  // unless 设置 → 边界 says places outside are never allowed (outside: deny), which still holds there.
+  const free = autonomous && (remote || policy.outside !== 'deny');
 
   const spec = FILE_TOOLS[name];
   if (spec && free) return null;
@@ -315,7 +333,11 @@ export function checkBoundary(name, args, { workspaceDir, policy = {}, remote = 
     const cwd = args?.cwd ? path.resolve(workspaceDir, String(args.cwd)) : null;
     const named = pathsInCommand(command, workspaceDir, commandBase(command, cwd || workspaceDir)).concat(cwd ? [cwd] : []);
     const programs = new Set(programsInCommand(command).concat(existenceChecksInCommand(command)).map((p) => norm(p)));
-    const away = named.filter((p) => !programs.has(norm(p)) && !placeOf(p, ctx).ok && !SYSTEM_PREFIXES.some((s) => inside(p, s)));
+    // An installed program named by its path - run, probed, passed to a script, or its bin folder (1.5.67; 11-24,
+    // TikTok: C:\ffmpeg\bin\ffmpeg.exe and …\AppData\Local\Programs\ffmpeg\bin\ffmpeg.exe were two cards) - is
+    // not the human's files, unless the command writes, moves or deletes there. Its file arguments still count.
+    const changesThere = WRITES_FILES.test(command) || />\s*"?[^\s"|&;]*\.(exe|com)\b/i.test(command);
+    const away = named.filter((p) => !programs.has(norm(p)) && !placeOf(p, ctx).ok && !SYSTEM_PREFIXES.some((s) => inside(p, s)) && (changesThere || !programPlace(p)));
     if (away.length) {
       return { decision: outside, code: 'FOLDER_NOT_OPEN', reason: `命令用到了没开放给机器人的位置：${away.slice(0, 3).join('、')}` };
     }

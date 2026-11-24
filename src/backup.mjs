@@ -101,6 +101,8 @@ const SKIPPED = new Set([
   'tightvnc.json', 'undo', 'video-jobs.json', 'wire.jsonl', 'backup.json', 'backup-key.json', 'restore-pending.json', '.restore', 'lamplit-update.json', '.update',
   // 1.5.60: which key files this computer's key covers (sealed with it), and the browser's own download folder.
   'sealing.json', 'browser-downloads',
+  // 1.5.67: which workspace files each bot made itself (ownfiles.mjs) - paths in this computer's workspace, kept two weeks.
+  'own-files.json',
   // 1.5.61: what Lamplit last wrote in the files that decide what it trusts (F9), its own temporary files and the bots' own /tmp (F8).
   'trust.json', 'trust-sealed.json', 'tmp', 'sandbox-tmp',
   // A bot screen's VNC password (made new each time someone watches); 1.5.63: wayvnc's socket there too.

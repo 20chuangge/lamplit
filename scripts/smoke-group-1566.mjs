@@ -251,8 +251,9 @@ export async function goOnChecks({ check, toolsMod, groupsMod }) {
     });
     const res = await r.rt.runTurn({ botId: 'g66pub', text: '把 6 条整理好', source: 'chat' });
     const retracted = r.ev.filter((e) => e.type === 'message.retract' && e.botId === 'g66pub').length;
-    check('G66-2b a turn that ends at step 4 of 80 saying 「到了上限……我接着做」 is told once that it has steps left and was not cut off; it goes on, and the turn ends with the real result',
-      res.status === 'success' && /这一回合才做了 4 步，没到 80 步的上限/.test(nudge) && retracted === 1 && /6 条都整理好了/.test(res.summary) && !res.notDone && res.steps < 80,
+    // 1.5.67: every bot has 150 steps a turn.
+    check('G66-2b a turn that ends at step 4 of 150 saying 「到了上限……我接着做」 is told once that it has steps left and was not cut off; it goes on, and the turn ends with the real result',
+      res.status === 'success' && /这一回合才做了 4 步，没到 150 步的上限/.test(nudge) && retracted === 1 && /6 条都整理好了/.test(res.summary) && !res.notDone && res.steps < 150,
       JSON.stringify({ status: res.status, steps: res.steps, summary: res.summary, nudge: nudge.slice(0, 60), retracted }));
     r.done();
   }
@@ -329,15 +330,15 @@ export async function goOnChecks({ check, toolsMod, groupsMod }) {
       script: ({ who, last, messages }) => {
         if (who !== 'pub') return say('好。');
         const t = tools(messages).length;
-        if (/这一回合还能再走 10 步（上限 80 步）/.test(last)) { told += 1; if (toldAt < 0) toldAt = t; }
-        return t >= 72 ? say('72 份都写好了。') : call('fs_write', { path: `g66/s-${t}.txt`, content: 'x' });
+        if (/这一回合还能再走 10 步（上限 150 步）/.test(last)) { told += 1; if (toldAt < 0) toldAt = t; }
+        return t >= 142 ? say('142 份都写好了。') : call('fs_write', { path: `g66/s-${t}.txt`, content: 'x' });
       },
     });
-    const res = await r.rt.runTurn({ botId: 'g66pub', text: '写 72 份', source: 'chat' });
+    const res = await r.rt.runTurn({ botId: 'g66pub', text: '写 142 份', source: 'chat' });
     const limit = A.continuationText({ n: 1, what: '任务板上交给你的「整理」' });
     const stopped = A.continuationText({ n: 1, what: '任务板上交给你的「整理」', why: 'stopped' });
-    check('G66-2f with 10 steps left it is told so, once (「还能再走 10 步（上限 80 步）……不要提前停下」); the go-on message says the steps were used up or it stopped early - never 「被打断了」 - and asks not to stop saying so',
-      res.status === 'success' && told === 1 && toldAt === 70
+    check('G66-2f with 10 steps left it is told so, once (「还能再走 10 步（上限 150 步）……不要提前停下」); the go-on message says the steps were used up or it stopped early - never 「被打断了」 - and asks not to stop saying so',
+      res.status === 'success' && told === 1 && toldAt === 140
       && !/被打断了。/.test(limit) && /上一轮的步数用完了/.test(limit) && /上一轮还没做完就停了/.test(stopped) && /不要中途停下来说「到了上限」「被打断了」「我接着做」/.test(limit),
       JSON.stringify({ status: res.status, told, toldAt, steps: res.steps }));
     r.done();

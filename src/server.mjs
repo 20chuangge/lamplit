@@ -606,42 +606,41 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   refs.getVision = () => visionModule.resolveVision(state.vision, { settings: state.settings, chatKey: state.apiKey, voice: state.voice });
   refs.getMedia = (kind) => mediaModule.resolveMedia(state.media, kind, { voice: state.voice });
 
-  // Videos finish in the background; the bot that asked gets a turn to show it.
-  const tellBot = async (job, text) => {
-    if (!job.botId) return;
+  // Videos finish in the background. 1.5.67 (11-24, TikTok: after its 15 s cut, four more turns, one per clip,
+  // each told 「告诉用户」): the bot hears - into its running turn, or one turn once every clip of that request is
+  // in and its work still waits on them, or nothing now when it has moved on (its next turn knows). Never 「告诉用户」 per clip.
+  const groupFor = async (job, botId) => {
+    if (!job.groupId) return null;
+    const g = await groups.getGroup(job.groupId).catch(() => null);
+    if (!g || !g.members.includes(botId)) return null;
     // A video asked for in a group is shown in that group, by the bot that made it.
-    let group = null;
-    if (job.groupId) {
-      const g = await groups.getGroup(job.groupId).catch(() => null);
-      if (g && g.members.includes(job.botId)) {
-        const byId = new Map((await listBots()).map((b) => [b.id, b]));
-        group = { id: g.id, name: g.name, coordinatorId: g.coordinatorId, members: g.members.filter((id) => byId.has(id)).map((id) => ({ id, name: byId.get(id).name, role: byId.get(id).role })) };
-      }
-    }
-    runtime.runTurn({ botId: job.botId, text, source: 'media', ...(group ? { group, groupRole: 'speaker', recordUser: false } : {}) })
-      .catch((err) => console.error('[video] could not report:', err.message));
+    const byId = new Map((await listBots()).map((b) => [b.id, b]));
+    return { id: g.id, name: g.name, coordinatorId: g.coordinatorId, members: g.members.filter((id) => byId.has(id)).map((id) => ({ id, name: byId.get(id).name, role: byId.get(id).role })) };
   };
-  // A video a teammate made for a task handed down from the bot the human is
-  // talking to: that bot hears about it too, so the human is not left waiting.
-  const tellUpstream = async (job, what) => {
-    if (!job.reportTo || job.reportTo === job.botId) return;
-    const maker = await getBot(job.botId).catch(() => null);
-    const up = await getBot(job.reportTo).catch(() => null);
-    if (!up) return;
-    await tellBot({ botId: up.id }, `[后台任务] 你交给团队的视频（由「${maker?.name || job.botId}」提交，内容：${job.prompt}）${what}`);
+  const jobLine = (j) => (j.state === 'done' ? `视频生成好了：${j.path}（内容：${j.prompt}）` : `视频没有生成成功：${j.error}（内容：${j.prompt}）`);
+  const jobEnded = async (job) => {
+    if (!job.botId) return;
+    // The file is the bot's own: it may clean it up without asking (1.5.67).
+    if (job.path) { try { runtime.ownFilesFor().note(job.botId, job.path); } catch { /* record only */ } }
+    const all = refs.videoJobs?.list?.() || [];
+    const same = job.turnId ? all.filter((j) => j.botId === job.botId && j.turnId === job.turnId) : [job];
+    const pending = same.filter((j) => j.state === 'running').length;
+    const batch = pending ? [job] : same.filter((j) => j.state !== 'running');
+    const line = batch.length > 1 ? `你之前提交的 ${batch.length} 个视频都有结果了：\n${batch.map((j) => `- ${jobLine(j)}`).join('\n')}` : `你之前提交的${jobLine(job)}`;
+    const how = await runtime.jobFinished({ botId: job.botId, createdAt: job.createdAt, pending, line: pending ? `你之前提交的${jobLine(job)}（同一批还有 ${pending} 个在生成）` : line, group: await groupFor(job, job.botId) }).catch(() => 'none');
+    // Made for a teammate's task: the bot the human talks to hears about it the same way.
+    if (job.reportTo && job.reportTo !== job.botId && !pending) {
+      const maker = await getBot(job.botId).catch(() => null);
+      await runtime.jobFinished({ botId: job.reportTo, createdAt: job.createdAt, line: `你交给团队的视频（由「${maker?.name || job.botId}」提交）：${batch.map(jobLine).join('；')}` }).catch(() => {});
+    }
+    await audit({ kind: 'video.reported', botId: job.botId, jobId: job.id, how }).catch(() => {});
   };
   refs.videoJobs = createVideoJobs({
     file: path.join(P.dataDir, 'video-jobs.json'),
     getKey: () => refs.getMedia('video')?.apiKey || '',
     workspaceDir,
-    onDone: async (job) => {
-      await tellBot(job, `[后台任务] 你之前提交的视频生成好了：${job.path}（内容：${job.prompt}）。告诉用户，并在回复里写出这个路径，视频会直接在聊天里播放。`);
-      await tellUpstream(job, `生成好了：${job.path}。告诉用户，并在回复里写出这个路径，视频会直接在聊天里播放。`);
-    },
-    onFail: async (job) => {
-      await tellBot(job, `[后台任务] 你之前提交的视频没有生成成功：${job.error}（内容：${job.prompt}）。告诉用户原因，问要不要重试。`);
-      await tellUpstream(job, `没有生成成功：${job.error}。告诉用户原因，问要不要重试。`);
-    },
+    onDone: jobEnded,
+    onFail: jobEnded,
   });
   await refs.videoJobs.load();
   state.videoJobs = refs.videoJobs;
@@ -4545,7 +4544,8 @@ function publicPolicy(policy) {
     // workspace); the dangerous-command list still asks.
     trustPrimary: Boolean(policy?.trustPrimary),
     // After a web page, an email or the phone screen, sending out asks (1.5.2).
-    readGuard: policy?.readGuard !== false,
+    // Off unless turned on (1.5.67): an unset value is off, on every machine.
+    readGuard: policy?.readGuard === true,
     // Are the bots' commands in a sandbox here (1.5.3)?
     sandbox: sandboxStatus(policy),
     platform: process.platform,

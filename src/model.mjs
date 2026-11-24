@@ -690,10 +690,10 @@ function mockPlan(text, botName) {
         { tool: 'task_step', args: { step: 1, status: 'done', note: `放好了 ${files.length} 个演示文件：${dir}` } },
         { tool: 'fs_list', args: { path: dir } },
         { tool: 'task_step', args: { step: 2, status: 'done', note: '图片 1 个、文档 2 个、安装包 1 个' } },
-        { say: '打算这样分：截图-1118.png → 图片；周报-11月.docx、发票-11月.pdf → 文档；Lamplit-Setup.exe → 安装包。移动文件要你同意，下面这张卡就是在问你（命令就是做这件事的一小段脚本）。', tool: 'shell', args: { command: move, purpose: '把 4 个文件分到 图片 / 文档 / 安装包 三个文件夹', timeoutMs: 15000 } },
+        { say: '打算这样分：截图-1118.png → 图片；周报-11月.docx、发票-11月.pdf → 文档；Lamplit-Setup.exe → 安装包。这几个是我刚放进去的演示文件，按「标准」就直接移了；审批设成「谨慎」时，这一步会先出一张卡问你。真用的时候整理的是你自己的文件，那就要先问你（1.5.67）。', tool: 'shell', args: { command: move, purpose: '把 4 个文件分到 图片 / 文档 / 安装包 三个文件夹', timeoutMs: 15000 } },
         // The checklist closes itself when its last step is done (a task_end here only got NO_TASK back).
         { tool: 'task_step', args: { step: 3, status: 'done', note: '移进了 图片 / 文档 / 安装包' } },
-        { tool: 'task_finish', args: { summary: `在工作区建了「${dir}」，放了 4 个演示文件，按类型分进 图片、文档、安装包。移动文件这一步先问了你：同意了就已经分好，拒绝了文件就原样不动。真用的时候，它整理的是你自己的下载文件夹，同样先给你看打算怎么动。${DEMO_END}` } },
+        { tool: 'task_finish', args: { summary: `在工作区建了「${dir}」，放了 4 个演示文件，按类型分进 图片、文档、安装包。演示文件是它自己刚放的，「标准」下直接移；「谨慎」下这一步会先问你。真用的时候，它整理的是你自己的下载文件夹，动你的文件之前会先问你。${DEMO_END}` } },
       ];
     }
 

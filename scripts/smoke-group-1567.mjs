@@ -763,3 +763,36 @@ export async function phoneSettingsHomeChecks({ check, readText }) {
     && home.includes("['sec-model', '模型', '它用哪个 AI 思考'],") && home.includes("['sec-run', '审批', '什么时候先问你'],")
     && nav.includes("text.appendChild(el('small', 'setnav-note', note));"));
 }
+
+// ---------------------------------------------------------------------------
+// G67-15: own-file paths in both forms on any machine (the 1.5.67 release CI on Linux: `del /Q tmp67\a.png` from a
+// model was not seen as the bot's own file there). The workspace's own form picks the rules; `\` and `/` both
+// separate. Checked with a POSIX and a Windows workspace by name, so it runs the same on every OS.
+// ---------------------------------------------------------------------------
+export async function pathFormChecks({ check }) {
+  const O = await import('../src/ownfiles.mjs');
+  const results = {};
+  for (const [form, ws, home, outside, data] of [
+    ['posix', '/home/u/ws', '/home/u', '/home/u/projects/old', '/home/u/.lamplit/data'],
+    ['windows', 'C:\\Users\\u\\ws', 'C:\\Users\\u', 'C:\\Users\\u\\projects\\old', 'C:\\Users\\u\\AppData\\Roaming\\Desk\\data'],
+  ]) {
+    const own = O.createOwnFiles({ workspaceDir: ws });
+    own.note('b', 'tmp67');
+    own.note('b', 'cut67.mp4');
+    const owns = (r) => own.owns('b', r);
+    const d = (p) => O.dangerousPlace(p, { workspaceDir: ws, dataDir: data, home });
+    const sep = form === 'windows' ? '\\' : '/';
+    results[form] = {
+      rel: [O.relIn(ws, 'tmp67\\a.png'), O.relIn(ws, 'tmp67/a.png'), O.relIn(ws, '..\\up'), O.relIn(ws, ws)],
+      own: ['del /Q tmp67\\a.png', 'del /Q tmp67\\*.wav && del /F /Q cut67.mp4', 'rmdir /S /Q tmp67', 'rm -rf tmp67/', 'Remove-Item -Recurse -Force tmp67'].map((c) => O.ownDeleteCommand(c, { workspaceDir: ws, owns }).ok),
+      notOwn: ['del /Q other.png', 'del /Q *.png', `rmdir /S /Q ${home}`, 'del /Q uploads\\a.png'].map((c) => O.ownDeleteCommand(c, { workspaceDir: ws, owns }).ok),
+      danger: [ws, home, `${home}${sep}Documents`, `${data}${sep}x.json`].map(d),
+      safe: [`${ws}${sep}tmp${sep}a.png`, `${outside}${sep}a.md`].map(d),
+      winOnPosix: form === 'posix' ? [O.relIn(ws, 'C:\\Windows\\x'), d('C:\\x'), O.ownDeleteCommand('del /Q C:\\x.txt', { workspaceDir: ws, owns: () => false, anywhere: (abs) => !d(abs) }).ok] : [null, true, false],
+    };
+  }
+  const ok = (r) => r.rel.join() === 'tmp67/a.png,tmp67/a.png,,' && r.own.every(Boolean) && !r.notOwn.some(Boolean) && r.danger.every(Boolean) && !r.safe.some(Boolean)
+    && r.winOnPosix[0] === null && r.winOnPosix[1] === true && r.winOnPosix[2] === false;
+  check('G67-15 own-file paths read `tmp67\\a.png` and `tmp67/a.png` alike on a Windows and on a Linux workspace: the bot\'s own temp files are its own, others\' and the human\'s are not, the dangerous places stay dangerous, and a C:\\ place named on a Linux machine is never taken as inside its workspace',
+    ok(results.posix) && ok(results.windows), JSON.stringify(results));
+}

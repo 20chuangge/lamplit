@@ -314,6 +314,7 @@ async function main() {
     await stage('1.5.67: bots are told which shell runs their commands; a bash command on Windows is caught before it runs', async () => (await import('./smoke-group-1567.mjs')).shellChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.67: the read guard is off unless the human turns it on', async () => (await import('./smoke-group-1567.mjs')).readGuardDefaultChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: the phone\'s settings home shows names only; the desktop is unchanged', async () => (await import('./smoke-group-1567.mjs')).phoneSettingsHomeChecks({ check, readText }));
+    await stage('1.5.67: own-file paths read `\\` and `/` alike on Windows and on Linux', async () => (await import('./smoke-group-1567.mjs')).pathFormChecks({ check }));
     // 1.5.65: the group-collaboration eval (scripts/eval-collab.mjs) proves its own detectors.
     await stage('1.5.65: the collaboration eval checks itself - mock sites, nine detectors proven on data, planted violations caught, six scenarios run', async () => (await import('./smoke-collab.mjs')).collabSelfChecks({ check }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });

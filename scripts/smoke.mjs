@@ -266,6 +266,10 @@ async function main() {
     await stage('1.5.65 phone album: the tool, its approval, another machine\'s phone, the bots\' guidance', async () => (await import('./smoke-album-1565.mjs')).albumToolChecks({ check, toolsMod, readText }));
     await stage('1.5.65 phone album: the hub\'s routes', async () => (await import('./smoke-album-1565.mjs')).albumRouteChecks({ check, api, readText }));
     await stage('1.5.65 phone album: the Android app and the page\'s receipt', async () => { const m = await import('./smoke-album-1565.mjs'); await m.albumAndroidChecks({ check, readText }); await m.albumPageChecks({ check, readText }); });
+    // 1.5.66: the phone reaches a machine through the relay when its paired address is dead (11-23).
+    await stage('1.5.66 phone relay: which machine, which way (PhoneRoutes.java on a desktop JDK)', async () => (await import('./smoke-phonerelay-1566.mjs')).routeChecks({ check, skip }));
+    await stage('1.5.66 phone relay: what the bots are told when the phone is not connected', async () => (await import('./smoke-phonerelay-1566.mjs')).hubMessageChecks({ check, readText }));
+    await stage('1.5.66 phone relay: the Android app (fleet sync, the way, the relay retry, the wording) and the app\'s list', async () => (await import('./smoke-phonerelay-1566.mjs')).appChecks({ check, readText }));
     // 1.5.64: what the user's content group ran into on 11-23.
     await stage('1.5.64: another machine\'s group draws its members by name and face - task board, hand-off, sender', async () => (await import('./smoke-group-1564.mjs')).remoteGroupFaceChecks({ check, readText, api, rawFetch, startServerChild, stopProcess, seedHome }));
     await stage('1.5.64: messages sent in a row start one turn', async () => (await import('./smoke-group-1564.mjs')).burstChecks({ check, toolsMod, groupsMod, startServerChild, stopProcess, seedHome, rawFetch }));
@@ -4607,8 +4611,9 @@ async function scenarioMcp({ home, toolsMod }) {
     Date.now = now;
     const plSrc = await readText('../src/phonelink.mjs');
     const phSrc = await readText('../src/phone.mjs');
-    check('P17 machine: a phone counts as there for 150 s after its last report (was 90); once gone, the bot is told how long ago and why (screen off, Lamplit asleep) and what the human should do',
-      stillThere && gone && stale.length === 1 && stale[0].model === 'OPPO X' && stale[0].minutes >= 3 && why.includes('has not reported for') && why.includes('screen is probably off')
+    // 1.5.66: said as "not connected to this machine right now (last seen N min ago)", not "screen off / asleep" (that sent the human to battery settings).
+    check('P17 machine: a phone counts as there for 150 s after its last report (was 90); once gone, the bot is told it is not connected to this machine, since when, and what the human should do',
+      stillThere && gone && stale.length === 1 && stale[0].model === 'OPPO X' && stale[0].minutes >= 3 && why.includes('not connected to this machine right now (last seen 3 min ago)') && why.includes('open Lamplit on the phone')
       && plSrc.includes('freshMs = 150000') && phSrc.includes("const gone = typeof exec.whyGone === 'function' ? exec.whyGone() : '';"));
     const J = '../mobile/android/app/src/main/';
     const watch = await readText(`${J}java/com/desk/assistant/NightshiftWatcher.java`);
@@ -9273,7 +9278,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         check('N1: a visible bot browser has no "unsupported command-line flag" bar; Wayland still gets its flags', brN.buildLaunchArgs({ port: 9, profileDir: 'x' }).includes('--test-type') && !brN.buildLaunchArgs({ port: 9, profileDir: 'x', headless: true }).includes('--test-type') && brN.buildLaunchArgs({ port: 9, profileDir: 'x', wayland: true }).includes('--ozone-platform=wayland'));
         check('N1: a phone settings page does not repeat its title under the top bar', pageN.includes('.settings-modal:not(.set-home) #settings-scroll > .dsec > .dsec-head:first-child { display: none; }'));
         check('N1: each machine learns the name it was given and uses it everywhere; the computer joins every list with a login of its own', srvN.includes("if (typeof body?.self?.name === 'string' && body.self.name.trim()) setSelfMachineName(body.self.name);") && srvN.includes('name: selfMachineName(),') && mainN.includes('const body = t.local ? { peers: others } : { peers: others, self: { name: t.name } };') && mainN.includes("deviceName: '其他机器（同步用）'") && mainN.includes('if (!t.local && self) others.unshift(self);'));
-        check('N1: the phone keeps one row per machine (either address), takes the hub name, drops stale rows, and opens by the other address when one is down', launcherN.includes('const matches = list.filter((h) => urls.includes(h.url) || (h.alt || []).some((u) => urls.includes(u)));') && launcherN.includes('if (machine.name) keep.name = machine.name;') && launcherN.includes("list = list.filter((h) => !(h.via === entry.url && !listed.has(h.url)") && launcherN.includes('bestAddress([entry.url, ...(entry.alt || [])])') && launcherN.includes('await rememberHub(entry.url);'));
+        check('N1: the phone keeps one row per machine (either address), takes the hub name, drops stale rows, and opens by the other address when one is down', launcherN.includes('let matches = list.filter((h) => urls.includes(h.url) || (h.alt || []).some((u) => urls.includes(u)));') /* 1.5.66: let - a name match may follow (sameNamedRow) */ && launcherN.includes('if (machine.name) keep.name = machine.name;') && launcherN.includes("list = list.filter((h) => !(h.via === entry.url && !listed.has(h.url)") && launcherN.includes('bestAddress([entry.url, ...(entry.alt || [])])') && launcherN.includes('await rememberHub(entry.url);'));
       }
       {
         // The phone's real merge, run on a list like the one a phone had: one
@@ -9560,11 +9565,14 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
         check('N29 network check: tailscale netcheck is read for the relay regions (ours is "lamplit")',
           nc.nearest === 'Hong Kong' && nc.regions.length === 2 && nc.regions[0].code === 'lamplit' && nc.regions[0].ms === 12);
         const javaSrc = await readText('../mobile/android/app/src/main/java/com/desk/assistant/NightshiftWatcher.java');
+        const routesSrc = await readText('../mobile/android/app/src/main/java/com/desk/assistant/PhoneRoutes.java');
         check('N29 phone: the background link reaches a machine on its LAN address when that answers (same Wi-Fi), else the paired one; a failure looks again',
-          javaSrc.includes('String url = via(hub) + "/api/stream";') && javaSrc.includes('postJson(via(hub) + "/api/phone/agent", token, body);')
-          && javaSrc.includes('postJson(via(hub) + "/api/phone/jobs/" + jobId, token, reply);') && javaSrc.includes('forgetRoute(hub);') && javaSrc.includes('isLanAddress(other) && NetHints.onSameLan(hostOf(other)) && answers(other)')
+          javaSrc.includes('String base = via(hub);') && javaSrc.includes('String url = base + "/api/stream";') && javaSrc.includes('postJson(via(hub) + "/api/phone/agent", token, body);')
+          && javaSrc.includes('postJson(via(hub) + "/api/phone/jobs/" + jobId, token, reply);') && javaSrc.includes('forgetRoute(hub);') && javaSrc.includes('PhoneRoutes.pick(hub, addressesOf(hub), net)')
+          // 1.5.66: the choice moved to PhoneRoutes.pick (unit-checked by smoke-phonerelay-1566.mjs).
+          && routesSrc.includes('net.isLan(o) && net.sameLan(o) && net.answers(o)')
           // 1.5.39: only routes this phone can use now (same Wi-Fi subnet, Tailscale on), else straight to the relay.
-          && javaSrc.includes('(NetHints.mayReach(hub) && answers(hub))'));
+          && routesSrc.includes('net.mayReach(d) && net.answers(d)'));
         const RM = await import('../src/remote.mjs');
         const map = RM.derpMapFor({ host: '203.0.113.9', port: 33445, stunPort: 3478, certName: 'sha256-raw:' + 'ab'.repeat(32) });
         check('N29 relay: only a public IPv4 can be the relay; the Tailscale policy text pins its self-signed certificate',

@@ -617,6 +617,11 @@ export function createPhone({ adb, exec = runAdb, workspaceDir, tmpDir = () => h
       out.push({ ...d, locked: w.locked, app: w.app, appName: appLabel(w.app) });
     }
     if (args.device) return { devices: out.filter((d) => d.serial === args.device || d.model === args.device) };
+    // No phone ready, though one was here before (1.5.66): say why, not just "no devices".
+    if (!out.some((d) => d.state === 'device')) {
+      const gone = typeof exec.whyGone === 'function' ? exec.whyGone().trim() : '';
+      if (gone) return { devices: out, note: gone };
+    }
     return { devices: out };
   }
 

@@ -78,7 +78,8 @@ public final class RelayLinks {
         return id.isEmpty() ? "" : DIRECT.debug(id);
     }
 
-    private static String idFor(Context context, String url) {
+    /** The computer id behind a forwarder URL; '' when it is not one. */
+    static String idFor(Context context, String url) {
         if (!isRelayLocal(url)) return "";
         try {
             JSONObject row = rowFor(context, new java.net.URL(url).getPort());
@@ -373,13 +374,7 @@ public final class RelayLinks {
                 }
             }
             if (outer == null) {
-                Socket plain = new Socket();
-                plain.connect(new InetSocketAddress(host, port), 10000);
-                plain.setTcpNoDelay(true);
-                outer = (SSLSocket) ssl.getSocketFactory().createSocket(plain, host, port, true);
-                setServerName(outer, id + SNI_SUFFIX);
-                outer.setSoTimeout(0);
-                outer.startHandshake();
+                outer = throughRelay(ssl, host, port, id);
                 // Through the relay: try going direct for the next connections (it waits between tries).
                 watchNetwork(context);
                 kickDirect(context, local, host, port, id);
@@ -397,6 +392,53 @@ public final class RelayLinks {
             Log.d(TAG, "relay connection failed: " + err.getClass().getSimpleName() + " " + err.getMessage());
             closeQuietly(inner);
             closeQuietly(outer);
+        }
+    }
+
+    /** Waits before the 2nd and 3rd try when the relay closed the handshake (1.5.66). */
+    static final long[] RELAY_RETRY_MS = { 1000L, 2500L };
+
+    /**
+     * Pinned TLS to computer `id` through the relay.
+     *
+     * The relay closes a connection at once when the computer has no tunnel to
+     * it right now - restarting, updating, asleep (relay.mjs route(): "a
+     * computer that registered here but is away"). The phone saw that as
+     * "SSLHandshakeException: connection closed" (11-23, 6 s after the PC's
+     * Lamplit restarted, before its tunnel was back). The computer reconnects
+     * by itself within seconds, so a closed handshake is tried again after a
+     * short wait; the watcher's own backoff covers longer gaps. A certificate
+     * that is not the paired computer's, or a relay that cannot be reached at
+     * all, is not tried again here.
+     */
+    private static SSLSocket throughRelay(SSLContext ssl, String host, int port, String id) throws Exception {
+        for (int attempt = 0; ; attempt += 1) {
+            Socket plain = new Socket();
+            SSLSocket outer = null;
+            try {
+                plain.connect(new InetSocketAddress(host, port), 10000);
+            } catch (Exception err) {
+                closeQuietly(plain);
+                throw err; // the relay itself is out of reach: no quick retry helps
+            }
+            try {
+                plain.setTcpNoDelay(true);
+                outer = (SSLSocket) ssl.getSocketFactory().createSocket(plain, host, port, true);
+                setServerName(outer, id + SNI_SUFFIX);
+                outer.setSoTimeout(15000); // a handshake that stalls is not left hanging
+                outer.startHandshake();
+                outer.setSoTimeout(0);
+                return outer;
+            } catch (Exception err) {
+                closeQuietly(outer);
+                closeQuietly(plain);
+                for (Throwable t = err; t != null; t = t.getCause()) {
+                    if (String.valueOf(t.getMessage()).contains("not the computer you paired with")) throw err;
+                }
+                if (attempt >= RELAY_RETRY_MS.length) throw err;
+                Log.i(TAG, "the relay has no link from that computer right now (" + err.getClass().getSimpleName() + "); trying again");
+                Thread.sleep(RELAY_RETRY_MS[attempt]);
+            }
         }
     }
 

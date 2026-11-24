@@ -354,6 +354,25 @@
   }
 
   /**
+   * The row of a machine none of whose addresses the row has any more (1.5.66:
+   * the cloud's Tailscale address changed; the phone kept the old one and never
+   * learned its relay). Matched by name, only when it is safe: one machine in
+   * the hub's list has that name, one row (not the hub's own) has it, and that
+   * row shares no address with another machine of the list.
+   */
+  function sameNamedRow(list, machine, machines, hubUrl) {
+    const key = (n) => String(n || '').trim().toLowerCase();
+    const want = key(machine.name);
+    if (!want || (machines || []).filter((m) => key(m?.name) === want).length !== 1) return [];
+    const named = list.filter((h) => key(h.name) === want && h.url !== hubUrl);
+    if (named.length !== 1) return [];
+    const strip = (u) => String(u || '').replace(/\/+$/, '');
+    const addrs = new Set([named[0].url, ...(named[0].alt || [])].map(strip));
+    const another = (machines || []).some((m) => m && m !== machine && [m.url, m.tailnetUrl].map(strip).some((u) => u && addrs.has(u)));
+    return another ? [] : named;
+  }
+
+  /**
    * Fold in the machines the hub knows about (its peers). The phone has only
    * paired with some of them; the rest still belong in this list, with the hub
    * that can hand out an entry ("via").
@@ -396,7 +415,8 @@
         }
         if (!urls.length) continue;
         urls.forEach((u) => listed.add(u));
-        const matches = list.filter((h) => urls.includes(h.url) || (h.alt || []).some((u) => urls.includes(u)));
+        let matches = list.filter((h) => urls.includes(h.url) || (h.alt || []).some((u) => urls.includes(u)));
+        if (!matches.length) matches = sameNamedRow(list, machine, data.machines, entry.url);
         if (!matches.length) {
           // A tailnet address works from anywhere; the LAN one may not be routable.
           list.push({ url: urls[0], alt: urls.slice(1), name: machine.name, via: entry.url, viaName: entry.name || hostLabel(entry.url) });

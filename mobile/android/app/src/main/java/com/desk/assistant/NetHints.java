@@ -49,6 +49,15 @@ final class NetHints {
         }
     }
 
+    /** Is `url` a Tailscale address (100.64/10 or *.ts.net)? */
+    static boolean isTailnetUrl(String url) {
+        try {
+            return isTailnetHost(new URL(url).getHost());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** Is Tailscale's VPN on on this phone (it holds a 100.64/10 address)? */
     static boolean tailscaleUp() {
         try {

@@ -305,6 +305,9 @@ async function renderPhoneBox() {
   if ($('phone-usb-note')) $('phone-usb-note').hidden = Boolean(window.NightshiftShell);
   if ($('phone-adb') && document.activeElement !== $('phone-adb')) $('phone-adb').value = data.adb?.configured || data.adb?.path || '';
   renderPhoneAgentRow();
+  // Not on the phone (no phone shell, so no switch here): say where the switch is, once a phone is paired (1.5.67).
+  const onPhone = Boolean(window.NightshiftShell && typeof window.NightshiftShell.phoneAgentEnabled === 'function');
+  if ($('phone-agent-hint')) $('phone-agent-hint').hidden = onPhone || !data.phonePaired;
   if (!(data.devices || []).length) {
     const how = '在手机上的 Lamplit 里打开「让机器人用这部手机」（不用数据线），或者用数据线连这台电脑、打开 USB 调试。';
     list.innerHTML = `<div class="machine-empty">${escapeHtml(data.error || (data.adb?.found ? `没有能用的手机。${how}` : `没有能用的手机。${how}${local ? '用数据线的话，这台电脑要装好 adb（Android platform-tools），或在下面填 adb.exe 的位置。' : ''}`))}</div>`;

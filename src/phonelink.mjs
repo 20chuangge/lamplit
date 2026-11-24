@@ -26,6 +26,17 @@ function fail(code, message) {
 export const PHONE_NOT_ANSWERING_MESSAGE = 'the phone did not answer in time: its connection to this machine probably dropped just now. The Lamplit app reconnects by itself (through the relay when this machine has one). Try again in a minute; if it keeps happening, ask the human to open Lamplit on the phone once. This is not about the phone\'s settings.';
 
 /**
+ * The phone's service is on in its settings but not connected yet (1.5.67): after an update the
+ * system connects it late (seen on an OPPO until Lamplit was opened). A bot still told the human
+ * 「让机器人用这部手机」"被关掉了"; so the words to pass on are given, and "off" is ruled out.
+ */
+export function reconnectingWords(model, updated) {
+  return `The phone ${model} is connected, but Lamplit's phone service is not connected yet${updated ? ' since Lamplit was updated on the phone' : ' (Lamplit was updated or restarted, or the system disconnected it)'}. `
+    + '「让机器人用这部手机」 is still switched on - nobody turned it off. Opening Lamplit on the phone once connects it again (the phone shows a notice for that). '
+    + 'Tell the human: 「Lamplit 刚更新或重启过，机器人还没重新接上手机。在手机上打开一次 Lamplit 就好，开关不用动。」 Do not say it was turned off (不要说「被关掉了」). Then try again.';
+}
+
+/**
  * Why no phone can be used from here, when one was here before (1.5.66):
  *   - not heard from for more than 150 s: the phone is not connected to this
  *     machine right now (last seen N min ago) - the app keeps retrying;
@@ -42,7 +53,7 @@ export function whyGone(link) {
   }
   const o = link.off?.() || [];
   if (!o.length) return '';
-  if (o[0].listed) return ` The phone ${o[0].model} is connected, and 「让机器人用这部手机」 is still switched on in its settings, but the system has disconnected Lamplit's service for now (the human did not turn it off). Ask the human to open Lamplit on the phone once - that reconnects it - or to switch 「让机器人用这部手机」 off and on again; then try again.`;
+  if (o[0].listed) return ` ${reconnectingWords(o[0].model, o[0].updated)}`;
   return ` The phone ${o[0].model} is connected but 「让机器人用这部手机」 is off on it (an update of Lamplit or a cleaner app turns it off). Tell the human to turn it on again in the phone's settings (Lamplit shows a notice that opens the right page).`;
 }
 
@@ -58,9 +69,10 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } 
   return {
     /** The app says whether this phone may be used (every 30 s and on connecting). caps: steps beyond the first ones (1.5.65: save_media). */
     // listed (1.5.66): off, but the system's accessibility list still has the service - the system disconnected it.
-    register(deviceId, { enabled = false, listed = false, model = '', name = '', sdk = 0, phoneId = '', caps = [] } = {}) {
+    // updated (1.5.67): not connected since Lamplit was updated on the phone.
+    register(deviceId, { enabled = false, listed = false, updated = false, model = '', name = '', sdk = 0, phoneId = '', caps = [] } = {}) {
       if (!deviceId) return;
-      phones.set(String(deviceId), { enabled: Boolean(enabled), listed: Boolean(listed), model: String(model || '').slice(0, 60), name: String(name || '').slice(0, 60), sdk: Number(sdk) || 0, phoneId: String(phoneId || '').slice(0, 64), caps: (Array.isArray(caps) ? caps : []).map(String).slice(0, 20), at: Date.now() });
+      phones.set(String(deviceId), { enabled: Boolean(enabled), listed: Boolean(listed), updated: Boolean(updated), model: String(model || '').slice(0, 60), name: String(name || '').slice(0, 60), sdk: Number(sdk) || 0, phoneId: String(phoneId || '').slice(0, 64), caps: (Array.isArray(caps) ? caps : []).map(String).slice(0, 20), at: Date.now() });
     },
 
     /** Can the app on this phone do this step (it said so in its last report)? */
@@ -126,7 +138,7 @@ export function createPhoneLink({ bus, jobTimeoutMs = 25000, freshMs = 150000 } 
     off() {
       const now = Date.now();
       const on = new Set([...phones.values()].filter((p) => p.enabled && now - p.at <= freshMs).map((p) => p.phoneId || p.model));
-      return [...phones.values()].filter((p) => !p.enabled && now - p.at <= freshMs && !on.has(p.phoneId || p.model)).map((p) => ({ model: p.model || p.name || '手机', listed: Boolean(p.listed) }));
+      return [...phones.values()].filter((p) => !p.enabled && now - p.at <= freshMs && !on.has(p.phoneId || p.model)).map((p) => ({ model: p.model || p.name || '手机', listed: Boolean(p.listed), updated: Boolean(p.updated) }));
     },
 
     /** Send one step to one phone and wait for its answer. */

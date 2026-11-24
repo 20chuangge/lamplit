@@ -145,7 +145,9 @@ public class NightshiftWatcher extends Service {
     private void supervise() {
         long lastSync = 0;
         while (running) {
-            java.util.List<String> hubs = hubsWithToken(prefs(this));
+            // One per machine (1.5.67): a login for an address the machine no longer has,
+            // found to be another login's machine, is only another address of that one.
+            java.util.List<String> hubs = activeHubs();
             // The relay forwarders live in this process: up again after Android restarted it.
             RelayLinks.startAll(this);
             // 「让机器人用这部手机」 turned off by an update or a cleaner: back on (1.5.20).
@@ -184,7 +186,7 @@ public class NightshiftWatcher extends Service {
         if (alive != null && alive.isAlive()) return;
         Thread t = new Thread(() -> {
             try {
-                while (running && hubsWithToken(prefs(this)).contains(hub)) {
+                while (running && activeHubs().contains(hub)) {
                     boolean ok = reportPhoneAgent(hub);
                     int miss = ok ? 0 : Math.min(misses.getOrDefault(hub, 0) + 1, 10);
                     misses.put(hub, miss);
@@ -257,7 +259,9 @@ public class NightshiftWatcher extends Service {
             }
             // Every machine this phone already holds a login for, by what it knows of it.
             java.util.List<PhoneRoutes.Known> paired = new java.util.ArrayList<>();
-            for (String other : hubsWithToken(prefs(this))) if (!other.equals(hub)) paired.add(knownOf(other));
+            for (String other : activeHubs()) if (!other.equals(hub)) paired.add(knownOf(other));
+            // A login of ours that does not answer may be this very machine's (1.5.67).
+            findSameMachine(hub, base, token);
             for (int i = 0; i < rows.size(); i += 1) {
                 JSONObject machine = rows.get(i);
                 PhoneRoutes.Machine m = fleet.get(i);
@@ -347,6 +351,79 @@ public class NightshiftWatcher extends Service {
         }
     }
 
+    /** The hub `hub`'s login was found to belong to (its machine's working entry), or null. */
+    private String sameAs(String hub) {
+        String to = str(learned(hub), "sameAs");
+        return to.isEmpty() || to.equals(hub) ? null : to;
+    }
+
+    /**
+     * The hubs the watcher keeps a stream, a report and fleet sync for: one per
+     * machine. A hub whose login belongs to another hub's machine (sameAs) is
+     * left out while that one still has its login and is not itself folded.
+     */
+    private java.util.List<String> activeHubs() {
+        java.util.List<String> all = hubsWithToken(prefs(this));
+        java.util.Map<String, String> folded = new java.util.HashMap<>();
+        for (String h : all) {
+            String to = sameAs(h);
+            if (to != null) folded.put(h, to);
+        }
+        return PhoneRoutes.active(all, folded);
+    }
+
+    private static String sha256Hex(String text) throws Exception {
+        byte[] d = java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8));
+        StringBuilder hex = new StringBuilder();
+        for (byte b : d) hex.append(String.format("%02x", b));
+        return hex.toString();
+    }
+
+    /**
+     * Seen 11-24: after 1.5.66 the phone held two logins for the cloud machine -
+     * one at its old Tailscale address (dead: Tailscale off, and the machine has
+     * another address now) and one through the relay (working). Nothing in the
+     * machine lists ties the old address to the machine, so the watcher kept
+     * timing out on it every minute. Now, from a hub that answers, the phone asks
+     * (POST /api/phone/mine) which of its logins for hubs that do not answer are
+     * that machine's - by their SHA-256, which the machine keeps instead of the
+     * login, so no login leaves the phone. Those become another address of the
+     * working hub. A machine before 1.5.67 does not know the question: nothing changes.
+     */
+    private void findSameMachine(String hub, String base, String token) {
+        try {
+            java.util.List<String> candidates = new java.util.ArrayList<>();
+            org.json.JSONArray hashes = new org.json.JSONArray();
+            for (String other : activeHubs()) {
+                if (other.equals(hub) || misses.getOrDefault(other, 0) < 2) continue;
+                String theirs = TokenBox.open(prefs(this).getString("desk.token:" + other, null));
+                if (theirs == null || theirs.isEmpty() || theirs.equals(token)) continue;
+                candidates.add(other);
+                hashes.put(sha256Hex(theirs));
+                if (candidates.size() >= 20) break;
+            }
+            if (candidates.isEmpty()) return;
+            JSONObject body = new JSONObject();
+            body.put("hashes", hashes);
+            org.json.JSONArray mine = postJson(base + "/api/phone/mine", token, body).optJSONArray("mine");
+            if (mine == null) return;
+            for (int i = 0; i < candidates.size() && i < mine.length(); i += 1) {
+                if (!mine.optBoolean(i, false)) continue;
+                String dead = candidates.get(i);
+                JSONObject row = learned(dead);
+                if (row == null) row = new JSONObject();
+                row.put("sameAs", hub);
+                row.put("at", System.currentTimeMillis());
+                getSharedPreferences(LEARNED, Context.MODE_PRIVATE).edit().putString("hub:" + dead, row.toString()).apply();
+                forgetRoute(hub);
+                forgetRoute(dead);
+                Log.i(TAG, dead + " is the same machine as " + hub + " (its login is that machine's): watched through " + hub + " only, " + dead + " kept as another address");
+            }
+        } catch (Exception err) {
+            Log.d(TAG, "could not ask " + hub + " about the other logins: " + err.getClass().getSimpleName());
+        }
+    }
+
     /** Learned addresses of `hub` still in use (none once refused). */
     private java.util.List<String> learnedAddresses(String hub) {
         java.util.List<String> out = new java.util.ArrayList<>();
@@ -372,6 +449,7 @@ public class NightshiftWatcher extends Service {
             row.put("addrs", addrs);
             row.put("at", System.currentTimeMillis());
             row.put("refused", false);
+            if (old != null && !str(old, "sameAs").isEmpty()) row.put("sameAs", str(old, "sameAs"));
             boolean changed = old == null || old.optBoolean("refused")
                     || !String.valueOf(old.optJSONArray("addrs")).equals(addrs.toString())
                     || !m.relayId.equals(str(old, "relayId"));
@@ -559,6 +637,10 @@ public class NightshiftWatcher extends Service {
         java.util.List<String> out = appAddresses(hub);
         // What fleet sync learned of the same machine (1.5.66): its addresses now, its relay.
         for (String u : learnedAddresses(hub)) if (!out.contains(u)) out.add(u);
+        // Its other logins' addresses (1.5.67): tried only when this phone can use them (Tailscale on).
+        for (String other : hubsWithToken(prefs(this))) {
+            if (!other.equals(hub) && hub.equals(sameAs(other)) && !out.contains(other)) out.add(other);
+        }
         return out;
     }
 
@@ -653,6 +735,11 @@ public class NightshiftWatcher extends Service {
             SharedPreferences p = prefs(this);
             String token = TokenBox.open(p.getString("desk.token:" + hub, null));
             if (token == null) return; // unpaired or revoked: the supervisor decides
+            // Found to be another hub's machine (1.5.67): that hub's stream is this machine's.
+            if (!activeHubs().contains(hub)) {
+                Log.i(TAG, "not watching " + hub + " on its own: it is " + sameAs(hub));
+                return;
+            }
             boolean established = false;
             try {
                 established = connectAndRead(hub, token);
@@ -742,6 +829,8 @@ public class NightshiftWatcher extends Service {
             // Off but still switched on in the system settings (1.5.66): the system
             // disconnected the service; the human did not turn it off.
             body.put("listed", agentListed());
+            // Not connected since an update (1.5.67): the machine's message says so.
+            body.put("updated", AgentKeeper.reconnectingAfterUpdate(this));
             body.put("model", (Build.MANUFACTURER + " " + Build.MODEL).trim());
             body.put("sdk", Build.VERSION.SDK_INT);
             // The same phone paired through two addresses is one phone (1.4.1).
@@ -771,10 +860,12 @@ public class NightshiftWatcher extends Service {
      * settings: the human turns it on. Still on in the settings: the system
      * disconnected it - opening Lamplit or switching it off and on reconnects it.
      */
-    static String agentOffMessage(boolean listed) {
+    static String agentOffMessage(boolean listed, boolean afterUpdate) {
         if (listed) {
-            return "Lamplit's 「让机器人用这部手机」 is still switched on in the phone's settings, but the system has disconnected the service for now (the human did not turn it off). "
-                    + "Ask the human to open Lamplit on the phone once - that reconnects it - or to switch 「让机器人用这部手机」 off and on again (设置 → 机器 → 手机). Then try again.";
+            // 1.5.67: after an update a bot still told the human it was "被关掉了". Say what it is, and give the words.
+            return "Lamplit's phone service is not connected yet" + (afterUpdate ? " since Lamplit was updated on the phone" : " (Lamplit was updated or restarted, or the system disconnected it)")
+                    + ". 「让机器人用这部手机」 is still switched on - nobody turned it off. Opening Lamplit on the phone once connects it again (the phone shows a notice for that). "
+                    + "Tell the human: 「Lamplit 刚更新或重启过，机器人还没重新接上手机。在手机上打开一次 Lamplit 就好，开关不用动。」 Do not say it was turned off (不要说「被关掉了」). Then try again.";
         }
         return "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)";
     }
@@ -820,8 +911,10 @@ public class NightshiftWatcher extends Service {
                     reply.put("ok", true);
                 } else if (agent == null) {
                     reply.put("ok", false);
-                    reply.put("code", "PHONE_AGENT_OFF");
-                    reply.put("message", agentOffMessage(agentListed()));
+                    // On in the settings but not connected yet (1.5.67): its own code, so no bot reads "off".
+                    boolean listed = agentListed();
+                    reply.put("code", listed ? "PHONE_AGENT_RECONNECTING" : "PHONE_AGENT_OFF");
+                    reply.put("message", agentOffMessage(listed, AgentKeeper.reconnectingAfterUpdate(this)));
                 } else {
                     JSONObject args = event.optJSONObject("args");
                     JSONObject result = agent.run(event.optString("action", ""), args == null ? new JSONObject() : args);

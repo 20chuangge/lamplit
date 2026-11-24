@@ -174,6 +174,17 @@ export function createDeviceStore({ items = [], persist = async () => {} } = {})
       return device ? publicDevice(device) : null;
     },
 
+    /**
+     * Is one of this machine's logins the one whose SHA-256 is `hash` (1.5.67)?
+     * The phone asks with the hash of a login it holds for a dead address, to
+     * learn that it is this same machine. A hash cannot be used as a login.
+     */
+    ownsHash(hash) {
+      const wanted = String(hash || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(wanted)) return false;
+      return devices.some((d) => d.tokenHash.length === wanted.length && safeDigestEqual(d.tokenHash, wanted));
+    },
+
     /** Record that a device is still around. Throttled; never throws. */
     touch(id) {
       const device = devices.find((d) => d.id === id);

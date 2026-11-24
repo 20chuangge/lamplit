@@ -82,8 +82,18 @@ export function commandBase(command, startDir) {
  */
 export function unixPathsIn(command) {
   const out = [];
-  for (const m of String(command || '').matchAll(/(?:^|[\s"'=(,])(\/[\w.~\u0080-￿-][^\s"'|&;<>,)]*)/gu)) out.push(m[1]);
+  for (const m of cmdSwitchesOff(command).matchAll(/(?:^|[\s"'=(,])(\/[\w.~\u0080-￿-][^\s"'|&;<>,)]*)/gu)) out.push(m[1]);
   return out;
+}
+
+// cmd.exe programs whose options are `/Q`, `/S`, `/F`, `/A:H` (1.5.67, the release CI on Linux: `del /Q tmp67\a.png`
+// asked 「没开放给机器人的位置：/Q」). After one of these, a slash and one letter is a switch, not a folder at the root.
+const CMD_SWITCH_PROGRAMS = /^["']?(del|erase|rd|rmdir|move|copy|xcopy|robocopy|ren|rename|dir|type|attrib|findstr)(\.exe)?$/i;
+function cmdSwitchesOff(command) {
+  return String(command || '').split(/(&&|\|\||[;&|\n])/).map((part) => {
+    const first = part.trim().split(/\s+/)[0] || '';
+    return CMD_SWITCH_PROGRAMS.test(first) ? part.replace(/(^|\s)\/[A-Za-z](:\S*)?(?=\s|$)/g, '$1') : part;
+  }).join('');
 }
 
 /** Paths a shell command names (absolute, ~, or climbing out with ..); `..` counts from `base`. */

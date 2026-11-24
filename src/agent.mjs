@@ -3717,13 +3717,18 @@ export class AgentRuntime {
     // At 放手 (on any machine, 1.5.67 - the human's agreed table) any path that is not a truly dangerous place
     // (a drive root, the workspace or above, the home folder and its top folders, system folders, Lamplit's data).
     const anywhere = machine.autonomous ? (abs) => !dangerousPlace(abs, { workspaceDir: this.config.workspaceDir, dataDir: P.dataDir }) : null;
-    const ownDel = name === 'shell' && !machine.careful && verdict.decision === DECISION.ASK && /danger denylist/.test(verdict.reason || '')
-      ? ownDeleteCommand(args?.command, { workspaceDir: this.config.workspaceDir, owns: ownsRel, anywhere }) : null;
+    // Not by the ask's reason text (the release CI on Linux, 1.5.67): whenever the danger list is what the delete or move
+    // hits and nothing left of the command does.
+    const shellCommand = name === 'shell' ? String(args?.command || '') : '';
     const denyAll = [...new Set([...machine.denyPatterns, ...(bot.policy?.denyPatterns || [])])];
-    if (ownDel?.ok && !matchedDenyPatterns(ownDel.rest, denyAll).length) {
+    const ownDel = shellCommand && !machine.careful && verdict.decision === DECISION.ASK
+      ? ownDeleteCommand(shellCommand, { workspaceDir: this.config.workspaceDir, owns: ownsRel, anywhere }) : null;
+    if (ownDel?.ok && matchedDenyPatterns(shellCommand, denyAll).length && !matchedDenyPatterns(ownDel.rest, denyAll).length) {
       verdict = classify(name, args, { baseRisk: riskInfo.risk, granted, autoApproveMedium: false, autoApproveAll: machine.autonomous, denyPatterns: [],
-        extraRiskReason: anywhere ? '放手：删的、挪的不在危险的位置' : '删的、挪的都是它自己这次做出来的文件' });
+        extraRiskReason: anywhere ? '放手：删的、挪的不在危险的位置' : '删的、挪的都是它自己这次做出来的文件', unattended: ctx.unattended });
     }
+    // Its own files in the workspace are never a place outside it: the boundary below is held against the rest of the command.
+    const ownOnly = shellCommand ? ownDeleteCommand(shellCommand, { workspaceDir: this.config.workspaceDir, owns: ownsRel }) : null;
     // Asks that "以后都允许" never turns off: the danger list, Lamplit's
     // secrets, coding assistants on the subscription, the human's "ask first"
     // rules and money for pictures (set below).
@@ -3773,7 +3778,7 @@ export class AgentRuntime {
     // so formatting a disk or deleting system folders keeps asking.
     const trusted = Boolean(this.config.policy?.trustPrimary) && Boolean(bot.primary || (this.config.primaryBotId && bot.id === this.config.primaryBotId));
     if (verdict.decision !== DECISION.DENY && !trusted) {
-      const fence = checkBoundary(name, args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {}, remote: machineMode() === 'remote', autonomous: machine.autonomous });
+      const fence = checkBoundary(name, ownOnly?.ok ? { ...args, command: ownOnly.rest } : args, { workspaceDir: this.config.workspaceDir, policy: this.config.policy || {}, remote: machineMode() === 'remote', autonomous: machine.autonomous });
       if (fence?.decision === 'deny') verdict = { ...verdict, decision: DECISION.DENY, risk: 'HIGH', reason: fence.reason, code: fence.code };
       else if (fence) {
         verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: fence.reason, code: fence.code };

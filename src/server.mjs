@@ -149,6 +149,7 @@ import { statInside, mkdirInside, readInside, writeInside } from './safefs.mjs';
 import { ATTACH_MAX_ITEMS, FOLDER_MAX_BYTES, FOLDER_MAX_FILES, checkRelPath, folderLines, isFolderUploadPath, isImageName, listFolderFiles, safeFolderName, sizeText, taken } from './folderupload.mjs';
 import { createUpdateChecker } from './updates.mjs';
 import { dropPwshModulePath } from './childenv.mjs';
+import { chatWindow } from './chatwindow.mjs';
 
 // Started from a PowerShell 7 window, every powershell.exe (5.1) the hub starts would fail to load
 // its own modules (1.5.63): PowerShell 7's PSModulePath goes, before anything is started.
@@ -3416,7 +3417,9 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
   if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${params.id}"`);
   const records = await readJsonl(sessionFile(bot.id));
   const limit = Math.min(Number(query.get('limit')) || 200, 1000);
-  const items = records.slice(-limit).map((record, index) => toMessageItem(record, index));
+  // `limit` lines of the conversation, with the steps between them (1.5.68): the last 200 records of a
+  // long task were all steps, and the chat opened empty.
+  const items = chatWindow(records, limit, { keepStep: drawnStep }).map((record, index) => toMessageItem(record, index));
   // compact=1: the chat with its steps hidden. Long tool output and arguments
   // only start there; the page asks for everything when steps are shown. On a
   // phone over a slow link the full list (392 KB for a long chat) took 4 s.
@@ -3426,6 +3429,13 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
   // 「这一轮改了 N 个文件 · 撤销」 is drawn from them, and it was missing by default.
   return query.get('compact') === '1' ? compactChat(items) : items;
 });
+
+/** A step record the chat draws even with steps hidden: kept when a long window drops old steps. */
+export function drawnStep(record, prev) {
+  return (prev?.kind === 'approval' && prev.toolName === record.name && prev.turnId === record.turnId)
+    || ACTION_CARD_TOOLS.has(record.name) || Boolean(record.output?.undo)
+    || (record.name === 'bot_message' && Boolean(record.output?.machine));
+}
 
 /** The chat with its steps hidden (compact=1): only the tool rows it draws, slim. */
 export function compactChat(items) {
@@ -4012,7 +4022,8 @@ route('GET', /^\/api\/groups\/(?<id>[^/]+)\/messages$/, async (_req, _res, { par
   const group = await groups.getGroup(params.id);
   if (!group) throw httpError(404, 'GROUP_NOT_FOUND', `no group with id "${params.id}"`);
   const limit = Math.min(Number(query.get('limit')) || 200, 1000);
-  const messages = await groups.readGroupMessages(group.id, { limit });
+  // Lines of the conversation, not records: a member's long task does not push them out (1.5.68).
+  const messages = chatWindow(await groups.readGroupMessages(group.id, { limit: 0 }), limit);
   // A member deleted since keeps its name in the history (1.5.41), not its id.
   const live = new Set((await listBots()).map((b) => b.id));
   const gone = await deletedBotNames();
@@ -5079,7 +5090,8 @@ async function initiativeTurn(state, { botId, text, source }) {
   const off = state.bus.subscribe((ev) => { if (ev.turnId === turnId && ev.type === 'message' && ev.final && ev.text) texts.push(String(ev.text)); });
   try {
     const result = await state.runtime.runTurn({ botId, text, source, turnId });
-    if (NO_CHANGE.test(texts.join('\n').trim())) state.attention.quiet(`bot:${botId}`);
+    // 1.5.68: 「没有变化」 is no longer a message in the chat - the turn's summary has it.
+    if (NO_CHANGE.test(texts.join('\n').trim() || String(result?.summary || '').trim())) state.attention.quiet(`bot:${botId}`);
     else if (texts.length && state.initiative.settings().notify) {
       const bot = await getBot(botId).catch(() => null);
       state.bus.emit({ type: 'initiative.say', botId, botName: bot?.name || '', text: texts.join(' ').slice(0, 200), kind: source, ts: nowIso() });

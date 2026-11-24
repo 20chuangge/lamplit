@@ -33,7 +33,7 @@ import {
   turnFile,
 } from './store.mjs';
 import { effectivePolicy, classify, DECISION, machineMode, mediumRunsUnasked, permissionKey, isRemembered, matchedDenyPatterns, NEW_MESSAGE_NOTE } from './approvals.mjs';
-import { createOwnFiles, dangerousPlace, ownDeleteCommand, pathsNamed, relIn } from './ownfiles.mjs';
+import { createOwnFiles, dangerousPlace, foldersNamed, ownDeleteCommand, pathsNamed, relIn } from './ownfiles.mjs';
 import { shellGuide } from './shellguide.mjs';
 import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 import { checkBoundary, DEVTOOLS, lookOnly } from './boundary.mjs';
@@ -55,7 +55,9 @@ const MAX_TOOL_OUTPUT = 12000;
  * short head with a note. The call records (what was done) stay intact.
  */
 const TRIM_NOTE = '…(earlier output trimmed; read the file or run it again if you need it)';
-const SCREEN_TOOLS = new Set(['browser_snapshot', 'browser_screenshot', 'image_view']);
+const SCREEN_TOOLS = new Set(['browser_snapshot', 'browser_screenshot', 'image_view', 'browser_click', 'browser_type', 'browser_press', 'browser_upload', 'browser_steps']);
+/** Page reads whose refs the next action needs: the latest of these stays whole. */
+const REF_TOOLS = new Set(['browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_upload', 'browser_steps']);
 /**
  * A long turn piles up tool output: only the latest results stay whole.
  *
@@ -75,7 +77,8 @@ export function trimOldToolOutputs(messages, { keep = 6, head = 600, batch = 5, 
     const c = calls.get(m.tool_call_id);
     if (!c) return false;
     if (SCREEN_TOOLS.has(c.name)) return true;
-    return (c.name === 'phone' || c.name === 'desktop_ui') && /"action"\s*:\s*"(look|read|tree|snapshot|screen)"/.test(String(c.arguments || ''));
+    // 1.5.68: a phone step returns the screen after it, a page action the page after it - each is a read too.
+    return (c.name === 'phone' || c.name === 'desktop_ui') && /"action"\s*:\s*"(look|read|tree|snapshot|screen|tap|type|key|swipe|open|steps)"/.test(String(c.arguments || ''));
   };
   const whole = (i) => {
     const c = String(messages[i].content || '');
@@ -91,7 +94,7 @@ export function trimOldToolOutputs(messages, { keep = 6, head = 600, batch = 5, 
   const nameOf = (i) => calls.get(messages[i].tool_call_id)?.name || '';
   const pageReads = screens.filter((i) => SCREEN_TOOLS.has(nameOf(i)));
   const looks = screens.filter((i) => !SCREEN_TOOLS.has(nameOf(i)));
-  const lastSnapshot = pageReads.filter((i) => nameOf(i) === 'browser_snapshot').pop();
+  const lastSnapshot = pageReads.filter((i) => REF_TOOLS.has(nameOf(i))).pop();
   for (const i of pageReads.slice(0, -1)) if (i !== lastSnapshot) stale.add(i);
   for (const i of looks.slice(0, Math.max(0, looks.length - keepScreens))) stale.add(i);
   const due = [...stale].filter(whole);
@@ -189,6 +192,7 @@ const TAKEOVER_RULES = [
   '- Do it the moment you hit the login page (a browser result with loginWall says so): call request_takeover then and wait. Never end your turn with a report that a site needs a login - the human would only learn it later. Several sites behind logins: one at a time, the next after they finish the first.',
   '- Only request_takeover puts the 接管屏幕 button in the chat: always call it, never just write "点下面的「接管屏幕」" yourself.',
   '- Never ask for passwords, verification codes or card numbers in chat, and never type a password with browser_type.',
+  '- Few steps (1.5.68): a click, a key, typing, an upload and every phone step return the page or screen afterwards - go on from that, never snapshot or look again right after. When you already know the next few actions on a page or screen, do them in ONE call (browser_steps; phone action "steps"). When opening a site or an app returns lastTime (the steps that got the job done there before), follow them instead of exploring; trust the page where it differs.',
   '- Never expose the desktop to the network (VNC/x11vnc/websockify on 0.0.0.0, port forwarding, remote-desktop software, VNC passwords). The app already gives the human secure access.',
   '- Purchases: you may research, compare and put things in the cart; the human confirms and pays during a takeover.',
   '- Approvals: describe them only from what actually happened (a tool result, an approval card). Never say a step was approved or that you asked when that did not happen.',
@@ -242,18 +246,35 @@ const LOOK_TOOLS = new Set(['fs_read', 'fs_list', 'memory_read', 'skill_list', '
  * of the last one (seen: a continued turn "corrected" its own publish away).
  */
 export function describeActions(receipts, max = 30) {
+  // Browser steps say which page, file and button (1.5.68); a step that went out (★) is kept for the whole
+  // chain, however long ago - 11-24 the publish on TikTok was older than the last 30 steps and was done again.
   const lines = [];
   for (const r of receipts || []) {
     if (!r || r.ok === false || LOOK_TOOLS.has(r.name)) continue;
     const a = r.args || {};
     if (r.name === 'http_fetch' && String(a.method || 'GET').toUpperCase() !== 'POST') continue;
-    const bits = ['path', 'url', 'command', 'action', 'name', 'text', 'ref', 'to', 'tool', 'id']
-      .filter((k) => a[k] !== undefined && a[k] !== null && a[k] !== '')
-      .map((k) => `${k}=${JSON.stringify(String(a[k]).slice(0, 80))}`);
-    lines.push(`${r.name}(${bits.join(', ')})`);
+    if (r.did === '') continue; // a browser step with nothing to tell (a page script that only reads)
+    let line = r.did;
+    if (!line) {
+      const bits = ['path', 'url', 'command', 'action', 'name', 'text', 'ref', 'to', 'tool', 'id']
+        .filter((k) => a[k] !== undefined && a[k] !== null && a[k] !== '')
+        .map((k) => `${k}=${JSON.stringify(String(a[k]).slice(0, 80))}`);
+      line = `${r.name}(${bits.join(', ')})`;
+    }
+    const out = r.out === true || (r.out === undefined && !/^browser_/.test(r.name) && SEND_TOOLS.test(r.name));
+    lines.push({ line: out ? `★ ${line}` : line, out });
   }
-  return lines.slice(-max);
+  const outs = lines.filter((l) => l.out).slice(-OUT_KEEP);
+  const rest = lines.filter((l) => !l.out).slice(-max);
+  const keep = new Set([...outs, ...rest]);
+  return lines.filter((l) => keep.has(l)).map((l) => l.line);
 }
+/** How many steps that went out are handed on, newest first (the whole chain's, in practice). */
+const OUT_KEEP = 40;
+/** Said above a list with ★ lines. */
+const OUT_NOTE = (actions) => (actions.some((l) => l.startsWith('★ '))
+  ? '\n带 ★ 的是已经往外做了的（上传、点了发布 / 预约发布 / 发送）。这一整串活里的都在这里，已经生效了，不要再做一遍；拿不准就先去那个网站的列表里看一眼。'
+  : '');
 
 /**
  * The teams already set up, for the primary bot (1.5.14): which group owns
@@ -294,7 +315,7 @@ export function phoneGrantFor(bot, app, kind, now = Date.now()) {
 export function continuationText({ n, what, actions = [], why = 'limit' }) {
   const before = why === 'stopped' ? '上一轮还没做完就停了（没到步数上限）' : '上一轮的步数用完了';
   return `（系统自动发起，用户没有发新消息；第 ${n} 次自动接着做）${what}，${before}，系统接着开了这一轮，步数重新算。先看清楚做到了哪一步（工作区的文件、你的笔记、刚才的结果），不要重做已经做完的事，也不用开场白：\n- 如果已经做完：用几句话告诉用户结果（做成了什么、在哪里、多少、有没有没做成的），不要再调用工具；\n- 如果还没做完：接着做，一直做到做完再给结果。不要中途停下来说「到了上限」「被打断了」「我接着做」：没到上限就不用停，真到了上限系统会自己再接着开。批量的活尽量用一次能处理很多的工具，少走步数。`
-    + (actions.length ? `\n\n上一轮实际做过的操作（系统记录，可信；这些都已经做了，算在你名下，不要否认，也不要重做）：\n- ${actions.join('\n- ')}` : '');
+    + (actions.length ? `\n\n上一轮实际做过的操作（系统记录，可信；这些都已经做了，算在你名下，不要否认，也不要重做）：${OUT_NOTE(actions)}\n- ${actions.join('\n- ')}` : '');
 }
 
 /**
@@ -428,7 +449,7 @@ export function resumeNote({ text = '', status = '', waitingFor = '', actions = 
   const why = waitingFor === 'takeover' ? '等用户接管屏幕' : waitingFor === 'login' ? '等用户填登录信息'
     : status === 'cancelled' ? '被用户停下' : status === 'timeout' ? '超时' : status === 'max_steps' ? '到了单轮步数上限' : status === 'budget' ? '到了今天的预算' : '出错';
   return `（系统）上一轮在做「${String(text).slice(0, 200)}」时停下了（${why}）。用户说继续，就是从断点接着做：先看一眼现在停在哪一步（看一次就够），然后接着做没做完的；不要从头再核对、重做已经做完的步骤。`
-    + (actions.length ? `\n上一轮已经做过的操作（系统记录，可信）：\n- ${actions.join('\n- ')}` : '');
+    + (actions.length ? `\n上一轮已经做过的操作（系统记录，可信）：${OUT_NOTE(actions)}\n- ${actions.join('\n- ')}` : '');
 }
 /** How long a stopped turn waits for 「继续」. */
 const RESUME_MS = 6 * 60 * 60 * 1000;
@@ -510,9 +531,20 @@ const TASK_MAX_CONTINUATIONS = 12;
 const TASK_OPEN = ['running', 'waiting', 'stalled'];
 /** A group's board that is not over: it runs, or a task of it waits for the human. */
 const BOARD_OPEN = ['running', 'waiting'];
+/**
+ * The human's go for publishing, said in the chat as the whole message (1.5.68): 「发」「发吧」「可以发」「可以排」…
+ * Narrow on purpose - 「发给我看看」「先别发」 are not it.
+ */
+export const GO_WORDS = /^(?:好的?[，,、 ]*|ok[，,、 ]*|行[，,、 ]*|可以[，,、 ]*)?(?:发|发吧|发了吧|发出去|发布吧?|可以发(?:了|布)?|可以发布了|就这样发|按这个发|就发这个|排吧|排上|可以排了?|定时发吧?)[。！!～~]*$/i;
+
+/** The whole reply of a look-back that found nothing worth telling. */
+export const NOTHING_NEW = /^[「"]?(没有变化|无变化|NO_CHANGE)[」"]?[。.!！]?$/i;
+
 /** Turns a direct chat goes on by itself at the step limit (no open checklist), per message from the human. */
 const LIMIT_CONTINUATIONS = 6;
 import { isRequestable, toolLabel, toolWords, toolsForText, abilitySummary } from './abilities.mjs';
+import { stepWords, alreadySent } from './carryover.mjs';
+import { createPlaybooks, buildPlaybooks, playbookNote, placeOf, appPlace } from './playbooks.mjs';
 
 /**
  * A task report that hands a request to a teammate by @mention instead of
@@ -968,7 +1000,9 @@ export class AgentRuntime {
     const later = (this.lastStarted?.get(botId) || 0) > Number(createdAt || 0) + 1000;
     const task = this.tasks?.get?.(botId);
     const open = task && ['running', 'waiting', 'stalled'].includes(task.status);
-    if (later && !open) {
+    // It asked the human something and waits for the answer (1.5.68): the result waits with it, for the turn their
+    // answer starts - no turn now that would tell them again.
+    if ((later && !open) || this.pendingFor?.(botId)) {
       this.jobNotes = this.jobNotes || new Map();
       this.jobNotes.set(botId, [...(this.jobNotes.get(botId) || []), line].slice(-20));
       await audit({ kind: 'job.noted', botId, line: String(line).slice(0, 300) }).catch(() => {});
@@ -978,6 +1012,23 @@ export class AgentRuntime {
     this.runTurn({ botId, text, source: 'media', ...(group ? { group, groupRole: 'speaker', recordUser: false } : {}) })
       .catch((err) => this.bus.emit({ type: 'error', botId, message: err.message }));
     return 'turn';
+  }
+
+  /** How jobs were done on a site or in an app, kept for the next time (1.5.68, playbooks.mjs). */
+  playbooksFor() {
+    if (!this.playbooks) this.playbooks = createPlaybooks({ file: path.join(P.dataDir, 'playbooks.json') });
+    return this.playbooks;
+  }
+
+  /** A piece of work ended well: the steps that sent something out are kept, per place. */
+  async keepPlaybooks(bot, receipts) {
+    const made = buildPlaybooks(receipts);
+    if (!made.length) return;
+    const pbs = this.playbooksFor();
+    for (const m of made) {
+      const kept = await pbs.keep({ ...m, botName: bot?.name || '' }).catch(() => false);
+      if (kept) audit({ kind: 'playbook.kept', botId: bot?.id, place: m.place, lines: m.lines.length, cost: m.cost }).catch(() => {});
+    }
   }
 
   /** What each bot made itself in the workspace (1.5.67, ownfiles.mjs). */
@@ -1928,6 +1979,12 @@ export class AgentRuntime {
     }
     // The human answered (or moved past) what this bot asked them: it is no longer pending.
     if (fromHuman) this.humanSpoke(bot.id);
+    // The human's own 「发」 in the chat (1.5.68; 11-24, 发布 on the cloud: told 「发」, then a card for tapping 小红书's
+    // 「发布」): publishing and sending this piece of work need no card for the rest of the chain. Paying, deleting
+    // and agreeing still ask every time; the chain ends with the work.
+    if (fromHuman && !groupContext && GO_WORDS.test(String(text || '').trim())) {
+      this.grantChain(turnChain, bot.id, { keys: ['go:publish', 'go:send'], label: `你在聊天里说了「${String(text).trim().slice(0, 20)}」` });
+    }
     // Not the human's turn while a question to them is open: it is told, and nothing that goes out is shown again.
     const pending = working && !fromHuman ? this.pendingFor(bot.id) : null;
     if (pending) hiddenNote = [hiddenNote, pendingNote(pending)].filter(Boolean).join('\n\n');
@@ -2115,6 +2172,8 @@ export class AgentRuntime {
       // One send-back per turn, shared by the final answer and a task_finish summary.
       const claimState = { nudged: false };
       ctx.receipts = receipts;
+      // The page the bot's browser is on, carried over a go-on: where the next browser step happens (1.5.68).
+      ctx.pageUrl = [...receipts].reverse().find((r) => r.page)?.page || '';
       ctx.claimState = claimState;
       // Answers that came back empty (seen live: all 4096 output tokens spent thinking).
       let emptyNudges = 0;
@@ -2278,10 +2337,14 @@ export class AgentRuntime {
         // The final answer says again what tell_human just told the human (1.5.67; 11-24, 06:35:28 「【需要你拍板】…」
         // then 06:35:31 the same in other words): the human gets ONE message - the question. Only in the human's own
         // chat: a group's turn and a hand-off still report their result to whoever waits for it.
-        const sameAsTold = direct && !response.toolCalls?.length && live.toldText && repeatsTold(response.content, live.toldText);
+        const toldAlready = direct && !response.toolCalls?.length && live.toldText && repeatsTold(response.content, live.toldText);
+        // A look-back or a watched folder that found nothing new (1.5.68; 11-24, 发布: 「没有变化」 as a message of its own
+        // in the chat): the turn's status has it, the chat does not.
+        const nothingNew = (source === 'followup' || source === 'watch') && !response.toolCalls?.length && NOTHING_NEW.test(String(response.content || '').trim());
+        const sameAsTold = toldAlready || nothingNew;
         if (sameAsTold) {
           this.bus.emit({ type: 'message.retract', ...baseEvent });
-          audit({ kind: 'reply.same_as_told', botId: bot.id, turnId }).catch(() => {});
+          audit({ kind: nothingNew ? 'reply.nothing_new' : 'reply.same_as_told', botId: bot.id, turnId }).catch(() => {});
         }
         const replyParts = !sameAsTold && !response.toolCalls?.length && !groupContext && !depth && !unattended && response.content ? splitReply(response.content) : [];
         if (sameAsTold) {
@@ -2362,13 +2425,27 @@ export class AgentRuntime {
           }
           toolsRun += 1;
           live.step = { name: call.name, args: call.arguments || call.args || {}, startedAt: Date.now() };
+          ctx.stepResult = undefined;
           const outcome = boardTools.includes(call.name)
             ? await this.boardToolCall({ call, ctx, bot, group: groupContext, messages, baseEvent, turnId, request: String(text) })
             : await this.executeToolCall({ call, ctx, bot, turnId, baseEvent, messages, next: response.toolCalls.slice(callIndex + 1) });
           live.step = null;
           { const m = messages[messages.length - 1]; live.last = m?.role === 'tool' ? String(m.content || '').slice(-400) : ''; }
           trail.push(outcome?.ok === false ? `${call.name}✗` : call.name);
-          receipts.push({ name: call.name, args: call.arguments || call.args || {}, ok: outcome?.ok !== false && !outcome?.error });
+          {
+            const receipt = { name: call.name, args: call.arguments || call.args || {}, ok: outcome?.ok !== false && !outcome?.error };
+            // A browser step in words - which page, file, button - and whether it went out (1.5.68): what a go-on is handed.
+            if ((/^browser_/.test(call.name) || call.name === 'phone') && ctx.stepResult !== undefined) {
+              const res = ctx.stepResult;
+              receipt.ok = receipt.ok && !(res && typeof res === 'object' && (res.ok === false || res.error));
+              const w = stepWords({ name: call.name, args: receipt.args, result: res, ok: receipt.ok, page: ctx.pageUrl });
+              // place: the site or the phone app the step happened in - what a kept way of doing it is filed under.
+              const place = call.name === 'phone' ? (w.place || '') : placeOf(ctx.pageUrl || w.page);
+              Object.assign(receipt, { did: w.did, out: w.out, page: w.page }, w.files ? { files: w.files } : {}, place ? { place } : {});
+              ctx.pageUrl = w.page;
+            }
+            receipts.push(receipt);
+          }
           if (trail.length > 12) trail.shift();
           // Only steps that ran count as repeats (1.5.58): a card the human refused, wrote past or let
           // expire did not run, and a person stands between it and the next try - it is not a loop.
@@ -2501,6 +2578,8 @@ export class AgentRuntime {
         this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
       }
 
+      // Ended well, nothing waiting on the human: how it was done is kept for the next time (1.5.68).
+      if (status === 'success' && !waitingFor && !live.waitingFor) this.keepPlaybooks(bot, receipts).catch(() => {});
       return { turnId, chainId: turnChain, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}),
         ...(status === 'max_steps' ? { receipts, continueGroup: groupGoesOn } : {}),
         // Stopped for the human's hands (1.5.64): a group's board waits for them instead of calling the task done.
@@ -2595,7 +2674,10 @@ export class AgentRuntime {
       // A row on a group's hand-off board follows the turn doing it; the board closes when its coordinator is done (1.5.65).
       await this.settleBoardRow(turnId, { status, waitFor, waitingText: live.waitingText || '', summary }).catch(() => {});
       if (coordinatorTurn && groupRole === 'coordinator') await this.closeAutoBoard(group.id).catch(() => {});
-      if (direct) this.afterTaskTurn(bot.id, status, waitingFor, { fromHuman: source !== 'task', toolsRun, redirectedAt }).catch(() => {});
+      // A question it asked the human (tell_human) parks its checklist too, and only the human's own message is the
+      // human answering - not a finished background job (1.5.68; 11-24, TikTok: 【需要你拍板】, then a job's turn and the
+      // checklist going on by itself told the human the same twice more, each with the video).
+      if (direct) this.afterTaskTurn(bot.id, status, waitingFor || (live.waitingFor === 'decision' ? 'decision' : null), { fromHuman: HUMAN_SOURCES.has(source), toolsRun, redirectedAt }).catch(() => {});
       // Cut off by the step limit with no open checklist: the next turn starts
       // by itself. The bot decides - finished: say the result; not: go on.
       if (autoContinue) {
@@ -3685,6 +3767,23 @@ export class AgentRuntime {
       return {};
     }
 
+    // The same file to the same site, after it was published there in this chain of work (1.5.68; 11-24 TikTok
+    // and YouTube each got the video twice, a go-on not knowing the round before had scheduled it): not run
+    // unless the bot says it means it.
+    if (name === 'browser_upload' && args.again !== true && ctx?.receipts) {
+      const files = (Array.isArray(args.paths) ? args.paths : [args.path]).filter(Boolean);
+      const said = alreadySent(ctx.receipts, files, ctx.pageUrl);
+      if (said) {
+        const result = { error: { code: 'ALREADY_SENT', message: said } };
+        ctx.stepResult = result;
+        this.pushToolResult(messages, call, result);
+        this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name, ok: false, result });
+        await this.record(bot.id, { kind: 'tool', name, args, ok: false, output: result, turnId });
+        audit({ kind: 'upload.already_sent', botId: bot.id, turnId, files }).catch(() => {});
+        return {};
+      }
+    }
+
     const granted = this.registry.isGranted(bot, name);
     let riskInfo = typeof tool.risk === 'function' ? tool.risk(args, ctx) : { risk: tool.risk };
     // Some arguments make a tool riskier than it says (a bot handing out shell, SEC-05).
@@ -3820,8 +3919,14 @@ export class AgentRuntime {
     }
     // A phone step the human let through for this bot and app (1.5.25): not paying, not expired.
     const grant = name === 'phone' && riskInfo.alwaysAsk ? phoneGrantFor(bot, riskInfo.app, riskInfo.phoneKind) : null;
+    // The human said 「发」 for this work in the chat (1.5.68): a publish or send tap on the phone is that answer.
+    const goKey = `go:${riskInfo.phoneKind}`;
+    const saidGo = name === 'phone' && riskInfo.alwaysAsk && ['publish', 'send'].includes(riskInfo.phoneKind) && this.chainCovers(ctx?.chainId, bot.id, [goKey])
+      ? this.chainGrants.get(ctx.chainId).keys.get(goKey) : '';
     if (grant && verdict.decision !== DECISION.DENY) {
       verdict = { ...verdict, decision: DECISION.AUTO, reason: `你说过「${bot.name}」在「${grant.app}」上${PHONE_KIND_LABEL[grant.kind]}不用问你${grant.until ? '（今天）' : ''}` };
+    } else if (saidGo && verdict.decision !== DECISION.DENY) {
+      verdict = { ...verdict, decision: DECISION.AUTO, reason: `${saidGo}：这件事的${PHONE_KIND_LABEL[riskInfo.phoneKind]}不再另外问你` };
     } else if (riskInfo.alwaysAsk && verdict.decision !== DECISION.DENY) {
       // A tool that knows this one step always needs the human (a phone tap that pays or posts).
       verdict = { ...verdict, decision: DECISION.ASK, risk: 'HIGH', reason: riskInfo.reason || verdict.reason }; sticky = true;
@@ -4194,13 +4299,15 @@ export class AgentRuntime {
     const ownSince = Date.now();
     const ownNamed = name === 'shell' ? pathsNamed(args?.command, this.config.workspaceDir)
       : name === 'fs_write' || name === 'fs_mkdir' ? [relIn(this.config.workspaceDir, args?.path)].filter(Boolean) : [];
-    const ownExisted = ownNamed.length ? own.before(ownNamed) : null;
+    // The folders a command works in (its cd, a name built in a loop): a file born there is its own too (1.5.68).
+    const ownFolders = name === 'shell' ? foldersNamed(args?.command, this.config.workspaceDir) : [];
+    const ownExisted = ownNamed.length ? own.before(ownNamed) : new Set();
     try {
       result = await tool.run(args, ctx);
       ok = result?.ok !== false && !result?.error;
       if (ok) {
         try {
-          if (ownNamed.length) own.after(bot.id, ownNamed, ownExisted, ownSince);
+          if (ownNamed.length || ownFolders.length) own.after(bot.id, ownNamed, ownExisted, ownSince, ownFolders);
           own.fromResult(bot.id, result, ownSince);
         } catch { /* keeping the record never fails a step */ }
       }
@@ -4236,6 +4343,19 @@ export class AgentRuntime {
     // Outside text is marked as material and remembered for the rest of the turn (1.5.2).
     const readFrom = readsOutside(name, args);
     if (ok && readFrom) ctx.readFrom = [...new Set([...(ctx.readFrom || []), readFrom])];
+    // A way of doing it kept from last time (1.5.68, playbooks.mjs): with the result of opening that site or app, once a turn.
+    if (ok && (name === 'browser_open' || name === 'phone') && result && typeof result === 'object') {
+      const place = name === 'browser_open' ? placeOf(result.url) : appPlace(result.screen?.app || (args?.action === 'open' ? result.app : ''));
+      ctx.playbooksShown = ctx.playbooksShown || new Set();
+      if (place && !ctx.playbooksShown.has(place)) {
+        const pbs = this.playbooksFor();
+        await pbs.load().catch(() => {});
+        const pb = pbs.get(place);
+        ctx.playbooksShown.add(place);
+        if (pb) result = { ...result, lastTime: playbookNote(pb) };
+      }
+    }
+    ctx.stepResult = result; // read by the loop: the step's receipt in words (1.5.68)
     this.pushToolResult(messages, call, ok && readFrom ? markRead(result, readFrom) : result);
     this.bus.emit({ type: 'tool.result', ...baseEvent, callId: call.id, name, args: truncateJson(args, 2000), ok, risk: verdict.risk, result });
     await this.record(bot.id, {

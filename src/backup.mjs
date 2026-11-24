@@ -103,6 +103,8 @@ const SKIPPED = new Set([
   'sealing.json', 'browser-downloads',
   // 1.5.67: which workspace files each bot made itself (ownfiles.mjs) - paths in this computer's workspace, kept two weeks.
   'own-files.json',
+  // 1.5.68: how jobs were done on a site or in an app (playbooks.mjs) - found again by doing the job once, kept 90 days.
+  'playbooks.json',
   // 1.5.61: what Lamplit last wrote in the files that decide what it trusts (F9), its own temporary files and the bots' own /tmp (F8).
   'trust.json', 'trust-sealed.json', 'tmp', 'sandbox-tmp',
   // A bot screen's VNC password (made new each time someone watches); 1.5.63: wayvnc's socket there too.

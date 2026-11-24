@@ -165,8 +165,9 @@ export async function costChecks({ check, readText, api, home, toolsMod }) {
     add(0, 'browser_snapshot'); add(1, 'browser_click', { ref: '@e1' }); add(2, 'browser_snapshot'); add(3, 'browser_snapshot');
     A.trimOldToolOutputs(msgs, { batch: 1 });
     const t = msgs.filter((m) => m.role === 'tool');
-    check('C50-S3 only the latest page read (snapshot, screenshot, picture) stays whole; phone looks still keep two',
-      /earlier output trimmed/.test(t[0].content) && /earlier output trimmed/.test(t[2].content) && t[3].content.length > 3000 && t[1].content.length > 3000);
+    // 1.5.68: a click returns the page after it, so it is a page read too - stale once the page was read again.
+    check('C50-S3 only the latest page read (snapshot, screenshot, picture, the page a click returns) stays whole; phone looks still keep two',
+      /earlier output trimmed/.test(t[0].content) && /earlier output trimmed/.test(t[1].content) && /earlier output trimmed/.test(t[2].content) && t[3].content.length > 3000);
     const toolsSrc = await readText('../src/tools.mjs');
     check('C50-S3 the screenshot tool says to read the page with browser_snapshot first, not screenshot + image_view + snapshot of the same state',
       toolsSrc.includes('Do not look at the same page state twice'));

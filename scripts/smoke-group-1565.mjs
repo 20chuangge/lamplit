@@ -971,7 +971,7 @@ export async function chainChecks({ check, toolsMod, groupsMod, readText }) {
       && live.includes("card.appendChild(el('div', 'approval-title', data.send?.text || cardTitle(data, info, many)));")
       && live.includes("...(chain ? { chain: true } : {})") && cards.includes('这一轮都允许：这一轮里再${scope.label}不再问你，这一轮做完就失效')
       && cards.includes('if (good && data.chainAllowed && data.chainScope) wrap.appendChild(chainRow(data.chainScope));')
-      && server.includes("edits, chain: body?.chain === true });") && server.includes("...(body?.chain === true ? { chain: true } : {})"));
+      && server.includes("edits, chain: body?.chain === true, always: body?.always === true });") && server.includes("...(body?.chain === true ? { chain: true } : {})"));
   }
 }
 

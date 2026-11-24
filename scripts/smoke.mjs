@@ -10148,7 +10148,7 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const srv = await readText('../src/server.mjs');
     check('approval: a decision from a paired device is audited as "device"',
       srv.includes("viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human'") &&
-      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits, chain: body?.chain === true })")); // 1.5.65: + chain
+      srv.includes("state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits, chain: body?.chain === true, always: body?.always === true })")); // 1.5.65: + chain; 1.5.66: + always
   }
   // Public port (G1): a tunnel socket that never counts as the local human.
   {

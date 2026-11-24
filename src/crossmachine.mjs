@@ -169,7 +169,9 @@ export async function askPeerBot(peers, peer, { botId, text, handoff, workspaceD
     if (!done) continue;
     const reply = mine.filter((m) => m.role === 'assistant').map((m) => m.text).join('\n\n').trim() || done.summary || '';
     const fetched = carry ? await bringFilesBack(peers, peer, reply, workspaceDir, { skip: sent.map((f) => f.to) }) : [];
-    return { status: done.status || 'success', turnId: started.turnId, reply, sent, fetched };
+    // Stopped for the human there (1.5.66): a question, a takeover - older machines say nothing of it.
+    const waiting = done.waitingFor ? { waitingFor: String(done.waitingFor), ...(done.waitingText ? { waitingText: String(done.waitingText).slice(0, 1000) } : {}) } : {};
+    return { status: done.status || 'success', turnId: started.turnId, reply, sent, fetched, ...waiting };
   }
   throw Object.assign(new Error(`「${peer.name}」上的机器人 30 分钟还没做完`), { code: 'PEER_TIMEOUT' });
 }

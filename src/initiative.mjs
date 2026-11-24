@@ -46,6 +46,14 @@ const MERGE_MS = 60 * 1000;
 const WATCH_EVERY_MS = 60 * 1000;
 const MAX_FOLLOWUPS = 50;
 const MAX_WATCHES = 20;
+// A bot waking itself (1.5.66: X 账号管家 ran 17 turns in 11 minutes - each turn wrote a file into the
+// folder it watched, and the next check woke it again): a watched folder wakes its bot at most every
+// 5 minutes, and a bot wakes itself (watch + follow-up) at most 6 times an hour; the rest waits.
+const WATCH_GAP_MS = 5 * 60 * 1000;
+const SELF_PER_HOUR = 6;
+const SELF_RULE = '这个文件夹里你自己写的文件不算新情况。人还没回你的时候，不要趁等待做新的活（不写新脚本、不改别的文件），只看有没有真正的新东西。';
+/** Tools whose path argument is a file the bot itself put there (it never wakes the bot). */
+const WRITE_TOOLS = new Set(['fs_write', 'fs_append', 'fs_mkdir', 'fs_copy', 'fs_move', 'fs_rename', 'file_fetch', 'browser_download', 'image_generate', 'page_save']);
 /** Kinds a bot other than the main assistant speaks for itself. */
 const OWN_KINDS = new Set(['routine_failed', 'follow_up', 'watch']);
 
@@ -152,16 +160,27 @@ export function createInitiative({ file, bus = null, now = () => Date.now(), pri
     await flush(who, { force: true });
   }
 
+  // When each bot last woke itself (in memory; a restart starts over, which only lets it wake sooner).
+  const selfRuns = new Map(); // botId -> [ms]
+  function maySelfRun(botId) {
+    const recent = (selfRuns.get(botId) || []).filter((t) => now() - t < 60 * 60 * 1000);
+    selfRuns.set(botId, recent);
+    return recent.length < SELF_PER_HOUR;
+  }
+  const noteSelfRun = (botId) => selfRuns.set(botId, [...(selfRuns.get(botId) || []), now()]);
+
   async function followUpTick() {
     const due = data.followUps.filter((f) => !f.done && f.at <= now());
     for (const f of due) {
+      if (botOn(f.botId) && runTurn && !maySelfRun(f.botId)) { f.at = now() + 10 * 60 * 1000; await save(); continue; } // later, not lost
       f.done = true;
       await save();
       if (!botOn(f.botId) || !runTurn) continue;
+      noteSelfRun(f.botId);
       await runTurn({
         botId: f.botId,
         source: 'followup',
-        text: `（你之前约好的回头看，系统按时叫你）${f.about}\n先去看一眼实际情况再说。如果没有值得告诉人的新情况，只回复「没有变化」四个字，别的都不要写。`,
+        text: `（你之前约好的回头看，系统按时叫你）${f.about}\n先去看一眼实际情况再说。人还没回你的时候，不要趁等待做新的活。如果没有值得告诉人的新情况，只回复「没有变化」四个字，别的都不要写。`,
       }).catch(() => {});
     }
     if (data.followUps.length > MAX_FOLLOWUPS) data.followUps = data.followUps.filter((f) => !f.done).slice(-MAX_FOLLOWUPS);
@@ -175,20 +194,50 @@ export function createInitiative({ file, bus = null, now = () => Date.now(), pri
       let names;
       try { names = await listDir(w.path); } catch { continue; }
       const fresh = names.filter((n) => !w.seen.includes(n));
+      if (!fresh.length) continue;
+      const wakes = botOn(w.botId) && runTurn;
+      // Too soon after the last time, or this bot woke itself enough this hour: the new files wait (still new next time).
+      if (wakes && (now() - (w.ranAt || 0) < WATCH_GAP_MS || !maySelfRun(w.botId))) continue;
       w.seen = [...new Set([...w.seen, ...names])].slice(-2000);
+      if (wakes) w.ranAt = now();
       await save();
-      if (!fresh.length || !botOn(w.botId) || !runTurn) continue;
+      if (!wakes) continue;
+      noteSelfRun(w.botId);
       await runTurn({
         botId: w.botId,
         source: 'watch',
-        text: `（你盯着的文件夹「${w.path}」里出现了新文件：${fresh.slice(0, 20).join('、')}${fresh.length > 20 ? ` 等 ${fresh.length} 个` : ''}）${w.about}\n如果没有值得告诉人的，只回复「没有变化」四个字。`,
+        text: `（你盯着的文件夹「${w.path}」里出现了新文件：${fresh.slice(0, 20).join('、')}${fresh.length > 20 ? ` 等 ${fresh.length} 个` : ''}）${w.about}\n${SELF_RULE}如果没有值得告诉人的，只回复「没有变化」四个字。`,
       }).catch(() => {});
     }
+  }
+
+  /** A file the bot itself put into a folder it watches is not news for it (1.5.66). */
+  function ownWrite(ev) {
+    if (!ev.ok || !ev.botId || !WRITE_TOOLS.has(ev.name)) return;
+    let args = ev.args;
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+    const paths = [args?.path, args?.to, args?.dest, args?.target, args?.saveAs, ev.result?.path, ev.result?.saved, ev.result?.file].filter((p) => typeof p === 'string' && p);
+    const norm = (p) => String(p).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '').toLowerCase();
+    let changed = false;
+    for (const w of data.watches) {
+      if (String(w.botId) !== String(ev.botId).split('@')[0]) continue;
+      const dir = norm(w.path);
+      for (const p of paths) {
+        const n = norm(p);
+        const cut = n.lastIndexOf('/');
+        const parent = cut < 0 ? '' : n.slice(0, cut);
+        if (parent !== dir && !parent.endsWith(`/${dir}`)) continue; // relative or under the workspace's full path
+        const name = String(p).replace(/\\/g, '/').split('/').pop();
+        if (name && !w.seen.includes(name)) { w.seen.push(name); changed = true; }
+      }
+    }
+    if (changed) void save();
   }
 
   // Events from the hub's bus that the layer turns into words itself.
   function onEvent(ev) {
     if (!ev || typeof ev !== 'object') return;
+    if (ev.type === 'tool.result' && data) ownWrite(ev);
     if (ev.type === 'peer.outbox' && ev.state === 'sent' && ev.machine) {
       push({ kind: 'outbox_sent', text: `之前排队等「${ev.machine}」的消息已经交过去了`, key: `outbox:${ev.machine}` });
     }

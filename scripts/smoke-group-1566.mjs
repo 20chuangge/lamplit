@@ -379,3 +379,56 @@ export async function alwaysNowChecks({ check, readText }) {
     /if \(offered && resolution\.decision === 'approved' && resolution\.approval\?\.alwaysAllowed && !isRemembered\(bot, offered\.key\)\) \{\s*bot\.policy = \{ \.\.\.\(bot\.policy \|\| \{\}\), allowed: \[\.\.\.\(bot\.policy\?\.allowed \|\| \[\]\), \{ \.\.\.offered, at: /.test(agent)
     && server.includes("chain: body?.chain === true, always: body?.always === true }"));
 }
+
+/**
+ * A bot that kept waking itself (1.5.66): X 账号管家 watched work\k8sgpt-lab, wrote its own scripts
+ * there while waiting for the human, and each new file woke it again - 17 turns in 11 minutes.
+ */
+export async function watchSelfChecks({ check }) {
+  const BS = String.fromCharCode(92); // Windows paths, as the bot gives them
+  const IN = await import('../src/initiative.mjs');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'g66-watch-'));
+  let clock = Date.parse('2026-11-24T04:30:00Z');
+  let files = ['01-env.sh'];
+  const turns = [];
+  const bus = { subs: [], subscribe(fn) { this.subs.push(fn); return () => {}; }, emit(e) { this.subs.forEach((fn) => fn(e)); } };
+  const layer = IN.createInitiative({ file: path.join(tmp, 'initiative.json'), bus, now: () => clock, primaryId: () => 'chief', say: async () => {}, runTurn: async (o) => { turns.push(o); return {}; }, waiting: async () => ({ cards: [], unread: [], queued: [] }), listDir: async () => files });
+  await layer.load();
+  await layer.addWatch({ botId: 'x', path: ['work', 'k8sgpt-lab'].join(BS), about: '日志一出现就读' });
+  await layer.tick();
+
+  // The bot writes its own script into the folder (relative path, forward slashes, and a full path).
+  bus.emit({ type: 'tool.result', botId: 'x', name: 'fs_write', ok: true, args: JSON.stringify({ path: 'work/k8sgpt-lab/03-diag.sh' }), result: {} });
+  bus.emit({ type: 'tool.result', botId: 'x', name: 'fs_write', ok: true, args: { path: ['D:', 'ai', 'Lamplit', 'work', 'k8sgpt-lab', '结果记录.md'].join(BS) }, result: {} });
+  bus.emit({ type: 'tool.result', botId: 'other', name: 'fs_write', ok: true, args: { path: 'work/k8sgpt-lab/from-other.md' }, result: {} });
+  files = ['01-env.sh', '03-diag.sh', '结果记录.md'];
+  clock += 61 * 1000;
+  await layer.tick();
+  const afterOwn = turns.length;
+  check('G66-4a a file the watching bot wrote itself into the folder does not wake it (relative or full path)', afterOwn === 0, JSON.stringify(turns.map((t) => t.text.slice(0, 60))));
+
+  files = [...files, 'log-01.txt', 'from-other.md'];
+  clock += 61 * 1000;
+  await layer.tick();
+  const t1 = turns.at(-1);
+  check('G66-4b a file the human (or another bot) put there still wakes it, naming only those files, and the turn is told its own files are not news and not to start new work while it waits for the human',
+    turns.length === 1 && /log-01\.txt/.test(t1.text) && /from-other\.md/.test(t1.text) && !/03-diag\.sh/.test(t1.text) && /你自己写的文件不算新情况/.test(t1.text) && /不要趁等待做新的活/.test(t1.text), JSON.stringify(t1));
+
+  files = [...files, 'log-02.txt'];
+  clock += 61 * 1000;
+  await layer.tick();
+  const soon = turns.length;
+  clock += 5 * 60 * 1000;
+  await layer.tick();
+  check('G66-4c a second new file within 5 minutes waits (is not lost): it wakes the bot once the 5 minutes are over',
+    soon === 1 && turns.length === 2 && /log-02\.txt/.test(turns.at(-1).text), JSON.stringify(turns.map((t) => t.text.slice(0, 50))));
+
+  // Woken often: at most 6 times an hour by itself; the 7th waits for the hour to pass.
+  for (let i = 0; i < 6; i += 1) { files = [...files, `more-${i}.txt`]; clock += 5 * 60 * 1000 + 1000; await layer.tick(); }
+  const inHour = turns.length;
+  clock += 40 * 60 * 1000;
+  await layer.tick();
+  check('G66-4d a bot wakes itself at most 6 times an hour; what came in the meantime wakes it later, not lost',
+    inHour <= 7 && turns.length === inHour + 1 && /more-5\.txt/.test(turns.at(-1).text), `${inHour} → ${turns.length}`);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}

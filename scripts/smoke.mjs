@@ -295,6 +295,7 @@ async function main() {
     await stage('1.5.66: a member waiting on its question keeps its board item waiting; the answer sends it back', async () => (await import('./smoke-group-1566.mjs')).waitingChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.66: 「到了上限，我接着做」 with steps to spare goes on; a plain result still finishes', async () => (await import('./smoke-group-1566.mjs')).goOnChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.66: 「以后都允许」 counts for the rest of the turn that asked, not only from the next turn', async () => (await import('./smoke-group-1566.mjs')).alwaysNowChecks({ check, readText }));
+    await stage('1.5.66: a bot is not woken by files it wrote itself, and wakes itself at most every 5 minutes, 6 times an hour', async () => (await import('./smoke-group-1566.mjs')).watchSelfChecks({ check }));
     // 1.5.65: the group-collaboration eval (scripts/eval-collab.mjs) proves its own detectors.
     await stage('1.5.65: the collaboration eval checks itself - mock sites, nine detectors proven on data, planted violations caught, six scenarios run', async () => (await import('./smoke-collab.mjs')).collabSelfChecks({ check }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });

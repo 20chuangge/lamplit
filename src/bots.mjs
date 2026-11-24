@@ -40,6 +40,9 @@ function localTimezone() {
   }
 }
 
+/** The step limit every bot had written into its own settings before 1.5.67: read as "not set". */
+export const OLD_DEFAULT_STEPS = 80;
+
 export const DEFAULT_ASSISTANT_CONFIG = {
   name: 'My Assistant',
   persona:
@@ -433,7 +436,9 @@ function normalizeBot(raw, index) {
     policy: {
       autoApproveMedium: policy.autoApproveMedium ?? false,
       denyPatterns: Array.isArray(policy.denyPatterns) ? policy.denyPatterns.map(String) : [],
-      maxSteps: Number(policy.maxSteps || 80),
+      // Only what the human set (1.5.67): unset - and the old default 80 every bot had written in - means the code's
+      // default for every bot (stepLimitFor: 150), so existing, new and other machines' bots all follow it.
+      ...(Number(policy.maxSteps) > 0 && Number(policy.maxSteps) !== OLD_DEFAULT_STEPS ? { maxSteps: Number(policy.maxSteps) } : {}),
       maxTurnMs: Number(policy.maxTurnMs || 30 * 60 * 1000),
       // "以后都允许": what the human allowed this bot for good ({key, label, at}).
       allowed: normalizeAllowed(policy.allowed),

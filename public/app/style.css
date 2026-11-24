@@ -3415,7 +3415,9 @@
     }
     .settings-modal.set-home .setnav svg { display: block; width: 20px; height: 20px; flex: none; color: var(--muted); }
     .settings-modal.set-home .setnav-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 0; }
-    .settings-modal.set-home .setnav-note { display: block; font-size: var(--t-sm); color: var(--muted); line-height: 1.35; }
+    /* 1.5.67 (the human, from the phone: no grey line under each row here): icon, title and chevron only.
+       Phone widths only; the line is still in the page for the desktop's settings home. */
+    .settings-modal.set-home .setnav-note { display: none; }
     /* each group is one rounded card with its title above it */
     .settings-modal.set-home .setnav-sec { gap: 0; margin: 0 0 20px; }
     .settings-modal.set-home .setnav-group { padding: 0 16px 8px; font-size: var(--t-sm); font-weight: 500; }

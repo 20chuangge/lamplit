@@ -108,7 +108,8 @@ export async function fixes1562Checks({ check, readText }) {
     && sec('sec-run').includes('<div class="remembered-all" id="remembered-all"></div>') && sec('sec-run').includes('>以后都允许的</div>')
     && bots.includes("for (const bot of (state.bots || []).filter((b) => !isRemoteId(b.id))) {") && bots.includes("group.appendChild(el('div', 'be-allowed-title', bot.name));")
     && bots.includes("renderRememberedAll(); // 设置 → 审批 shows the same") && apps.includes('renderRememberedAll(); // 「以后都允许的」')
-    && bots.includes("for (const item of allowed) box.appendChild(rememberedLine(bot, item.label || item.key, { key: item.key }, renderAllowed));"),
+    && // 1.5.67: a connected app's rule by its app and title (rememberedLabel), the rest by its saved label (smoke-group-1567 G67-3d).
+    bots.includes("for (const item of allowed) box.appendChild(rememberedLine(bot, rememberedLabel(item), { key: item.key }, renderAllowed));"),
     JSON.stringify(calls.map((c) => c[1].body.policy)));
 
   // --- 4. the settings home's cost: this machine's, and it opens 成本 at just that --------------------

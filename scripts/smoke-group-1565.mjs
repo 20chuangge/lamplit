@@ -843,20 +843,21 @@ export async function chainChecks({ check, toolsMod, groupsMod, readText }) {
   const { ApprovalQueue } = await import('../src/approvals.mjs');
 
   // a. The same kind of step, for the rest of the turn chain - not another bot, not a later turn.
+  // (1.5.67: installing software, which still asks at 标准 - a command in the workspace no longer does.)
   {
     let continued = false;
     const r = await chainRig({
       toolsMod, groupsMod,
-      answer: (req) => ({ decision: 'approved', chain: req.args?.command === 'mkdir a' }),
+      answer: (req) => ({ decision: 'approved', chain: req.args?.command === 'pip install pkg-a' }),
       script: ({ who, messages, all }) => {
-        if (who === 'copy') return steps([['shell', { command: 'mkdir z' }]])({ who, messages });
+        if (who === 'copy') return steps([['shell', { command: 'pip install pkg-z' }]])({ who, messages });
         if (who !== 'pub') return say('好。');
         const i = messages.filter((m) => m.role === 'tool').length;
-        if (/第 1 次自动接着做/.test(all)) { continued = true; return i === 0 ? call('shell', { command: 'mkdir c' }) : say('三个目录都建好了。'); }
-        if (/再建一个/.test(all)) return i === 0 ? call('shell', { command: 'mkdir d' }) : say('好了。');
-        // The first turn: two of the same kind, then busy work up to the step limit (80) - it goes on by itself.
-        if (i === 0) return call('shell', { command: 'mkdir a' });
-        if (i === 1) return call('shell', { command: 'mkdir b' });
+        if (/第 1 次自动接着做/.test(all)) { continued = true; return i === 0 ? call('shell', { command: 'pip install pkg-c' }) : say('三个目录都建好了。'); }
+        if (/再建一个/.test(all)) return i === 0 ? call('shell', { command: 'pip install pkg-d' }) : say('好了。');
+        // The first turn: two of the same kind, then busy work up to the step limit (150 since 1.5.67) - it goes on by itself.
+        if (i === 0) return call('shell', { command: 'pip install pkg-a' });
+        if (i === 1) return call('shell', { command: 'pip install pkg-b' });
         return call('fs_list', { path: `x${i}` });
       },
     });
@@ -869,8 +870,8 @@ export async function chainChecks({ check, toolsMod, groupsMod, readText }) {
     await r.rt.runTurn({ botId: 'g65pub', text: '再建一个', source: 'chat' });
     const later = r.cards.length;
     check('G65-9a 「这一轮都允许」 on a command card covers the same kind of step (same program, same risk) for the rest of the turn chain - also the turn that goes on by itself after the step limit - and nothing else: another bot asks, a later turn asks, and the chain\'s answer is gone when it ends',
-      first.status === 'max_steps' && continued && inFirst.length === 1 && inFirst[0] === 'mkdir a' && r.ran.includes('mkdir b') && r.ran.includes('mkdir c')
-      && offered?.keys?.length === 1 && /mkdir/.test(offered.label + offered.keys[0]) && otherBot === 2 && r.cards[1]?.args?.command === 'mkdir z' && later === 3 && r.cards[2]?.args?.command === 'mkdir d'
+      first.status === 'max_steps' && continued && inFirst.length === 1 && inFirst[0] === 'pip install pkg-a' && r.ran.includes('pip install pkg-b') && r.ran.includes('pip install pkg-c')
+      && offered?.keys?.length === 1 && /pip/.test(offered.label + offered.keys[0]) && otherBot === 2 && r.cards[1]?.args?.command === 'pip install pkg-z' && later === 3 && r.cards[2]?.args?.command === 'pip install pkg-d'
       && ![...(r.rt.chainGrants?.keys() || [])].includes(first.chainId),
       JSON.stringify({ status: first.status, continued, cards: r.cards.map((c) => c.args?.command), ran: r.ran, offered }));
     r.done();

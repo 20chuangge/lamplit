@@ -104,7 +104,7 @@ function renderAllowed(bot) {
   if (!allowed.length && !grants.length) return;
   box.appendChild(el('div', 'be-allowed-title', '已记住的权限（不再问你）'));
   for (const g of grants) box.appendChild(rememberedLine(bot, phoneGrantWords(g), { grant: g }, renderAllowed));
-  for (const item of allowed) box.appendChild(rememberedLine(bot, item.label || item.key, { key: item.key }, renderAllowed));
+  for (const item of allowed) box.appendChild(rememberedLine(bot, rememberedLabel(item), { key: item.key }, renderAllowed));
 }
 
 /**
@@ -124,7 +124,7 @@ function renderRememberedAll() {
     const group = el('div', 'be-allowed remembered-bot');
     group.appendChild(el('div', 'be-allowed-title', bot.name));
     for (const g of grants) group.appendChild(rememberedLine(bot, phoneGrantWords(g), { grant: g }, () => {}));
-    for (const item of allowed) group.appendChild(rememberedLine(bot, item.label || item.key, { key: item.key }, () => {}));
+    for (const item of allowed) group.appendChild(rememberedLine(bot, rememberedLabel(item), { key: item.key }, () => {}));
     box.appendChild(group);
   }
   if (!any) box.appendChild(el('div', 'row-note', '还没有。审批卡上点过「以后都允许」的，会列在这里。'));

@@ -903,7 +903,7 @@ function renderFolders(policy) {
   if ($('sudo-head')) $('sudo-head').textContent = win ? '管理员权限' : '管理员权限（sudo）';
   if ($('sudo-note')) $('sudo-note').textContent = win ? '以管理员身份运行之类的命令，默认每次都先问你。' : '用 sudo、以管理员身份运行之类的命令，默认每次都先问你。';
   if ($('trust-primary')) $('trust-primary').checked = Boolean(policy?.trustPrimary);
-  if ($('read-guard')) $('read-guard').checked = policy?.readGuard !== false;
+  if ($('read-guard')) $('read-guard').checked = policy?.readGuard === true; // off unless turned on (1.5.67)
   renderSandboxState(policy?.sandbox);
 }
 

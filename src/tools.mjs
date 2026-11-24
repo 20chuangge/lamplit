@@ -64,6 +64,7 @@ import { realPathOf } from './realpath.mjs';
 import { readInside, writeInside, mkdirInside } from './safefs.mjs';
 import { turnWriteAside, BOT_MADE } from './keepuploads.mjs';
 import fs from 'node:fs';
+import { shellGuide, bashOnWindows } from './shellguide.mjs';
 
 const MAX_SHELL_OUTPUT = 20000;
 const MAX_FILE_READ = 200000;
@@ -673,12 +674,13 @@ export function createRegistry(deps) {
           // Made for a teammate: the bot the human is talking to hears when it is ready, too.
           const origin = Array.isArray(ctx.chain) ? ctx.chain[0] : null;
           const reportTo = origin && !String(origin).includes('@') && origin !== ctx.bot?.id ? origin : null;
-          const job = await jobs.add({ botId: ctx.bot?.id, groupId: ctx.group?.id || null, prompt: args?.prompt, task, reportTo });
+          const job = await jobs.add({ botId: ctx.bot?.id, groupId: ctx.group?.id || null, prompt: args?.prompt, task, reportTo, turnId: ctx.turnId || null });
           return {
             submitted: true,
             job: job.id,
             model: task.model,
-            note: 'The video is being made in the background (usually 3-15 minutes, longer when the service is busy). Tell the human that now and end your turn; when it is ready you will get a new turn with the file path to show them.',
+            // 1.5.67: no announcement per clip - the finished clip reaches this turn if it still runs, or a new turn only when the work waits on it.
+            note: 'The video is being made in the background (usually 3-15 minutes, longer when the service is busy). Go on with the rest of the work meanwhile; if nothing else is left, end your turn with one short line. When it is ready you get its path: in this turn if it still runs, otherwise in a new turn if your work is still waiting on it.',
           };
         }
         const out = await generateVideo(service, { prompt: args?.prompt, size: args?.size, imageDataUrl }, { workspaceDir: ctx.workspaceDir, signal: ctx.signal });
@@ -826,7 +828,9 @@ export function createRegistry(deps) {
   add({
     name: 'shell',
     description:
-      'Run a shell command with the shared workspace as the working directory. Output is truncated. Commands matching the danger denylist always require human approval. Sending files or data out (an upload, a post to a website) asks the human each time: if sending out fails twice for the same goal, do not try other services one after another - stop and tell the human (tell_human) what failed and ask how to go on.',
+      'Run a shell command with the shared workspace as the working directory. Output is truncated. Commands matching the danger denylist always require human approval. Sending files or data out (an upload, a post to a website) asks the human each time: if sending out fails twice for the same goal, do not try other services one after another - stop and tell the human (tell_human) what failed and ask how to go on. '
+      // 1.5.67: which shell, plainly - on Windows a bash habit failed and was tried again, a step each.
+      + shellGuide(),
     // Base MEDIUM: auto-approved only when the bot's policy says so. approvals.mjs
     // promotes denylisted commands to HIGH.
     risk: RISK.MEDIUM,
@@ -844,6 +848,9 @@ export function createRegistry(deps) {
     async run(args, ctx) {
       const command = String(args?.command ?? '').trim();
       if (!command) throw toolError('SHELL_BAD_ARGS', 'shell needs a command');
+      // A bash command on Windows (1.5.67): said at once - what cmd.exe uses instead - instead of a run that fails.
+      const bashy = process.platform === 'win32' ? bashOnWindows(command) : '';
+      if (bashy) return { ok: false, error: { code: 'SHELL_IS_CMD', message: bashy }, command };
       const timeoutMs = Math.min(Math.max(Number(args?.timeoutMs) || 30000, 1000), 120000);
       let sandbox = null;
       try {

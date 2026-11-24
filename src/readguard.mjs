@@ -10,7 +10,7 @@
 //    (a trusted bot, a 放手 machine, 「以后都允许」): sendsOut says which.
 //    Looking, browsing and writing the bot's own files stay as they were.
 //
-// Settings → 审批 can turn (2) off (policy.readGuard === false).
+// Settings → 边界 turns (2) on (policy.readGuard === true); since 1.5.67 it is off unless turned on.
 
 import { lookOnly } from './boundary.mjs';
 

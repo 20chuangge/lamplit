@@ -422,7 +422,17 @@ function rememberWords(remember) {
     const folder = cardFileName(file[2]);
     return !folder || /^workspace$/i.test(folder) ? `在工作区里${verb}` : `在「${folder}」文件夹里${verb}`;
   }
+  // A connected app's tool (1.5.67): by the app and the tool's title - a rule saved before kept its raw name as label.
+  if (/^mcp__/.test(key)) {
+    const label = String(remember?.label || '');
+    return label && !/mcp__/.test(label) ? label : `用「${mcpToolHuman(key)?.label || '连接的应用'}」`;
+  }
   return String(remember?.label || key);
+}
+
+/** A remembered rule's own words, as saved - a connected app's tool by its app and title, not mcp__… (1.5.67). */
+function rememberedLabel(rule) {
+  return /^mcp__/.test(String(rule?.key || '')) ? rememberWords(rule) : String(rule?.label || rule?.key || '');
 }
 
 /** 「以后都允许」 said: one line, and 撤销 takes it back (the same as 机器人设置 → 已记住的权限). */

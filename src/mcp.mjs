@@ -240,6 +240,20 @@ export function toolLooksReadOnly(tool) {
   return words.some((w) => READ_WORDS.has(w)) && !words.some((w) => WRITE_WORDS.has(w));
 }
 
+/** A tool's own title (MCP gives `title`, or `annotations.title`), or '' when it has none. */
+export function mcpToolTitle(tool) {
+  return String(tool?.title || tool?.annotations?.title || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+
+/**
+ * A connected app's tool as people read it (1.5.67): 「Notion · 更新页面」 - the app's name and the tool's title,
+ * or its name made readable (notion-update-page -> notion update page). Cards showed `mcp__m2c4a5__notion-update-page`.
+ */
+export function mcpToolLabel({ server = '', tool = '', title = '' } = {}) {
+  const what = String(title || '').trim() || String(tool || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim() || '工具';
+  return `${String(server || '').trim() || '连接的应用'} · ${what}`;
+}
+
 /** mcp__<server>__<tool>, only [A-Za-z0-9_-], at most 64 characters. */
 export function mcpToolName(serverId, toolName) {
   const clean = (s) => String(s || '').replace(/[^A-Za-z0-9_-]/g, '_');
@@ -646,7 +660,7 @@ export function createMcpManager({
       ...(cfg.mailboxes ? { mailboxes: cfg.mailboxes } : {}),
       state: l?.state || (cfg.enabled === false ? 'off' : cfg.oauth && !cfg.secretRef ? 'needs_auth' : 'idle'),
       error: l?.error || (cfg.oauth && !cfg.secretRef ? '还没授权：点「连接」去那个应用的页面登录' : ''),
-      tools: (l?.tools || []).map((t) => ({ name: t.name, description: String(t.description || '').slice(0, 200), readOnly: toolLooksReadOnly(t) })),
+      tools: (l?.tools || []).map((t) => ({ name: t.name, ...(mcpToolTitle(t) ? { title: mcpToolTitle(t) } : {}), description: String(t.description || '').slice(0, 200), readOnly: toolLooksReadOnly(t) })),
       server: l?.client?.serverInfo || null,
     };
   };
@@ -712,7 +726,7 @@ export function createMcpManager({
         // "Always allow" or a read-only tool: LOW. Otherwise the agent asks.
         risk: () => ({ risk: readOnly || configs.find((c) => c.id === cfg.id)?.trust === 'always' ? 'LOW' : 'MEDIUM' }),
         parameters: cleanSchema(t.inputSchema),
-        mcp: { serverId: cfg.id, server: cfg.name, tool: t.name, readOnly, ...(t.annotations?.lamplitOutgoing && Array.isArray(t.annotations.lamplitOutgoing.fields) ? { outgoing: t.annotations.lamplitOutgoing } : {}) },
+        mcp: { serverId: cfg.id, server: cfg.name, tool: t.name, ...(mcpToolTitle(t) ? { title: mcpToolTitle(t) } : {}), readOnly, ...(t.annotations?.lamplitOutgoing && Array.isArray(t.annotations.lamplitOutgoing.fields) ? { outgoing: t.annotations.lamplitOutgoing } : {}) },
         async run(args, ctx) {
           const l = live.get(cfg.id);
           if (!l || l.state !== 'ready') {

@@ -24,13 +24,36 @@ const WIN = process.platform === 'win32';
 
 const slash = (p) => String(p || '').replace(/\\/g, '/');
 
+/**
+ * The path rules of a workspace, by its own form (1.5.67; the release CI on Linux: a model writes `tmp67\a.png` on a
+ * Linux hub too). A Windows workspace (C:\…, \\server\…) uses Windows rules; any other uses POSIX rules - with `\`
+ * read as a separator there as well. -> {P, win}
+ */
+const WIN_ABS = /^[A-Za-z]:[\\/]|^\\\\/;
+export function pathRules(workspaceDir) {
+  const win = WIN_ABS.test(String(workspaceDir || ''));
+  return { P: win ? path.win32 : path.posix, win };
+}
+
+/**
+ * A place a command or a step names, absolute in the workspace's own rules (`\` and `/` both separate), or null for
+ * one that cannot be there: a Windows place (C:\…) named on a POSIX workspace.
+ */
+export function placeIn(workspaceDir, p) {
+  if (!workspaceDir || p === undefined || p === null || p === '') return null;
+  const { P, win } = pathRules(workspaceDir);
+  const raw = String(p);
+  if (!win && WIN_ABS.test(raw)) return null;
+  return P.resolve(win ? workspaceDir : slash(workspaceDir), win ? raw : slash(raw));
+}
+
 /** A workspace-relative path ("tmp/a.png"), or null for the workspace itself or anything outside it. */
 export function relIn(workspaceDir, p) {
-  if (!workspaceDir || !p) return null;
-  const root = path.resolve(workspaceDir);
-  const abs = path.resolve(root, String(p));
-  const rel = path.relative(root, abs);
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  const abs = placeIn(workspaceDir, p);
+  if (!abs) return null;
+  const { P, win } = pathRules(workspaceDir);
+  const rel = P.relative(P.resolve(win ? workspaceDir : slash(workspaceDir)), abs);
+  if (!rel || rel.startsWith('..') || P.isAbsolute(rel)) return null;
   return slash(rel);
 }
 const keyOf = (rel) => (WIN ? rel.toLowerCase() : rel);
@@ -106,11 +129,14 @@ function anyDeleteCommand(text, workspaceDir, ok) {
     if (!DELETE.test(prog) && !MOVE.test(prog)) { rest.push(part); continue; }
     const targets = w.slice(1).filter((x) => !/^(\/[a-z]|--?[a-z][\w-]*)$/i.test(x)).flatMap((x) => (/^(remove|move|rename)-item$|^ri$|^mi$/i.test(prog) ? x.split(',') : [x])).filter(Boolean);
     if (!targets.length) return { ok: false, reason: 'no target' };
+    const { P } = pathRules(workspaceDir);
     for (const t of targets) {
-      const abs = path.resolve(workspaceDir, t.replace(/[\\/]+$/, ''));
+      // In the workspace's own rules, `\` and `/` alike; a Windows place on a POSIX workspace cannot be judged: it asks.
+      const abs = placeIn(workspaceDir, t.replace(/[\\/]+$/, ''));
+      if (!abs) return { ok: false, reason: `not a place here: ${t}` };
       const wild = /[*?]/.test(abs);
-      if (wild && /[*?]/.test(path.dirname(abs))) return { ok: false, reason: `wildcard in a folder name: ${t}` };
-      if (!ok(wild ? path.dirname(abs) : abs, { wildcard: wild })) return { ok: false, reason: `dangerous place: ${t}` };
+      if (wild && /[*?]/.test(P.dirname(abs))) return { ok: false, reason: `wildcard in a folder name: ${t}` };
+      if (!ok(wild ? P.dirname(abs) : abs, { wildcard: wild })) return { ok: false, reason: `dangerous place: ${t}` };
     }
     touched += 1;
   }
@@ -123,19 +149,22 @@ function anyDeleteCommand(text, workspaceDir, ok) {
  * Documents, Downloads…), the system's folders, Lamplit's own data. A wildcard's folder may not be any of these.
  */
 export function dangerousPlace(abs, { workspaceDir = '', dataDir = '', home = process.env.USERPROFILE || process.env.HOME || '' } = {}) {
-  const norm = (p) => (WIN ? path.resolve(p).toLowerCase() : path.resolve(p)).replace(/[\\/]+$/, '');
+  // The workspace's own path rules (1.5.67: Windows paths on Windows, POSIX on a Linux hub - `\` read as `/` there).
+  const { P, win } = workspaceDir ? pathRules(workspaceDir) : { P: path, win: WIN };
+  const norm = (p) => { const r = P.resolve(win ? String(p) : slash(p)).replace(/[\\/]+$/, ''); return win ? r.toLowerCase() : r; };
+  if (!win && WIN_ABS.test(String(abs))) return true; // a Windows place on a POSIX machine: not judged, so not let through
   const a = norm(abs);
-  const within = (p, root) => Boolean(root) && (p === root || p.startsWith(`${root}${path.sep}`));
-  if (path.parse(path.resolve(abs)).root.replace(/[\\/]+$/, '').toLowerCase() === a.toLowerCase() || a === '' || a === norm('/')) return true;
+  const within = (p, root) => Boolean(root) && (p === root || p.startsWith(`${root}${P.sep}`));
+  if (P.parse(norm(abs) || P.sep).root.replace(/[\\/]+$/, '').toLowerCase() === a.toLowerCase() || a === '') return true;
   const ws = workspaceDir ? norm(workspaceDir) : '';
   if (ws && within(ws, a)) return true; // the workspace itself, or above it
   if (home) {
     const h = norm(home);
     if (within(h, a)) return true; // the home folder, or above it
-    if (norm(path.dirname(a)) === h && !(ws && within(a, ws) && a !== ws)) return true; // Desktop, Documents, Downloads…
+    if (norm(P.dirname(a)) === h && !(ws && within(a, ws) && a !== ws)) return true; // Desktop, Documents, Downloads…
   }
   if (dataDir && within(a, norm(dataDir))) return true;
-  const system = WIN
+  const system = win
     ? [process.env.SystemRoot || 'C:\\Windows', process.env.ProgramFiles || 'C:\\Program Files', process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', process.env.ProgramData || 'C:\\ProgramData']
     : ['/etc', '/usr', '/bin', '/sbin', '/boot', '/lib', '/lib64', '/var', '/opt', '/System', '/Library', '/Applications', '/dev', '/proc', '/sys'];
   return system.some((s) => within(a, norm(s)));

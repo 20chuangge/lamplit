@@ -36,11 +36,27 @@ export async function sameMachineChecks({ check, api, readText }) {
   }
 
   // Over HTTP: a phone paired here asks about two of its logins.
-  const pairPhone = async () => (await api('/api/pair', {
-    method: 'POST',
-    body: { code: (await api('/api/pairing')).json.code, client: 'app' },
-    headers: { origin: 'https://localhost', 'user-agent': 'Dalvik/2.1.0 (Linux; U; Android 14; smoke)' },
-  })).json;
+  // Paired with a one-time link when this hub hands one out (no rate limit); else with the 8-digit
+  // code, which allows 5 tries a minute from loopback for the whole suite - on the Linux CI runner the
+  // stages before this one used them up and the second pairing got 429 (11-24). Then wait it out once.
+  const tries = [];
+  const pairOnce = async () => {
+    const link = await api('/api/pairing/link', { method: 'POST' });
+    const fromLink = link.json?.token || [link.json?.url, link.json?.qr].map((u) => { try { return new URL(u).searchParams.get('pair'); } catch { return ''; } }).find(Boolean) || '';
+    const body = fromLink ? { token: fromLink, client: 'app' } : { code: (await api('/api/pairing')).json?.code, client: 'app' };
+    const res = await api('/api/pair', { method: 'POST', body, headers: { origin: 'https://localhost', 'user-agent': 'Dalvik/2.1.0 (Linux; U; Android 14; smoke)' } });
+    tries.push(`${fromLink ? 'link' : 'code'}:${res.status}${res.json?.error?.code ? ` ${res.json.error.code}` : ''}`);
+    return res;
+  };
+  const pairPhone = async () => {
+    let res = await pairOnce();
+    if (res.status === 429) {
+      const wait = Math.min(65, Number(res.headers?.get?.('retry-after')) || 61);
+      await new Promise((r) => setTimeout(r, wait * 1000));
+      res = await pairOnce();
+    }
+    return res.json || {};
+  };
   const one = await pairPhone();
   const two = await pairPhone();
   try {
@@ -56,9 +72,10 @@ export async function sameMachineChecks({ check, api, readText }) {
       headers: { origin: 'https://localhost', authorization: `Bearer ${one.token}` },
     });
     check('PH67-2 POST /api/phone/mine: a paired phone learns which of its other logins are this machine\'s (yes, no, no); not a phone: refused; at most 20 at a time',
-      asked.status === 200 && JSON.stringify(asked.json?.mine) === '[true,false,false]'
+      Boolean(one.token) && Boolean(two.token)
+      && asked.status === 200 && JSON.stringify(asked.json?.mine) === '[true,false,false]'
       && notPhone.status === 403 && notPhone.json?.error?.code === 'NOT_A_PHONE'
-      && many.status === 200 && many.json?.mine?.length === 20, JSON.stringify({ asked: asked.json, notPhone: notPhone.status, many: many.json?.mine?.length }));
+      && many.status === 200 && many.json?.mine?.length === 20, JSON.stringify({ pairings: tries, asked: asked.json, notPhone: notPhone.status, many: many.json?.mine?.length }));
     const view = await api('/api/phone');
     check('PH67-3 /api/phone says a phone is paired here (the PC\'s page shows where the switch is)', view.json?.phonePaired === true, JSON.stringify(view.json));
   } finally {

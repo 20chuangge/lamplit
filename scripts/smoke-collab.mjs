@@ -6,8 +6,11 @@
 import { startMockSites, SITES } from '../eval/collab/mocksites.mjs';
 import { readCall } from '../eval/collab/fakemodel.mjs';
 import { runSelfCheck } from '../eval/collab/selfcheck.mjs';
-import { INVARIANTS } from '../eval/collab/invariants.mjs';
+import { INVARIANTS, checkNoExtraWork, checkNoContradiction } from '../eval/collab/invariants.mjs';
 import { SCENARIOS } from '../eval/collab/scenarios.mjs';
+import fs from 'node:fs';
+import { snapshot, diff, restore, leftovers } from '../eval/collab/workspace.mjs';
+import { runTimeline } from '../eval/collab/human.mjs';
 
 const rawFetch = (...a) => globalThis.fetch(...a);
 
@@ -125,6 +128,131 @@ export async function collabSelfChecks({ check }) {
     check('COLLAB-3 the fake model knows the bot (评测-发布 → 发布), a board task, its own steps, and the human\'s word pushed in mid-turn as a note (not a new task); the coordinator\'s one-look is a review',
       member.who === '发布' && member.kind === 'task' && member.step === 1 && member.notes.length === 1 && /乙站不发了/.test(member.notes[0]) && review.who === '主理人' && review.kind === 'review',
       JSON.stringify({ member: { who: member.who, kind: member.kind, step: member.step, notes: member.notes.length }, review: review.kind }));
+
+    // The chain of scenario 6: one page at a time, the next code only on the page before it.
+    const chain = mock.chain(5);
+    const startPage = await (await rawFetch(chain.start)).text();
+    const first = await (await rawFetch(`${mock.url}/chain/${chain.names[0]}`)).text();
+    const lastPage = await (await rawFetch(`${mock.url}/chain/${chain.names[4]}`)).text();
+    const guess = await rawFetch(`${mock.url}/chain/aaaaaaaa`);
+    const reads = mock.records().filter((r) => r.kind === 'chain');
+    check('COLLAB-8 scenario 6\'s chain: the start page names only the first page, each page only the next (random codes, new each run), the last says so, a guessed code is 404, every page read is recorded',
+      startPage.includes(chain.names[0]) && !startPage.includes(chain.names[1]) && first.includes(chain.names[1]) && !first.includes(chain.names[2]) && /最后一页/.test(lastPage)
+      && guess.status === 404 && reads.length === 2 && reads[0].i === 1 && new Set(chain.names).size === 5 && mock.chain(5).names[0] !== chain.names[0],
+      JSON.stringify({ reads: reads.map((r) => r.i), guess: guess.status }));
+    mock.reset();
+
+    // A hub the run is pointed at: its workspace is put back after a scenario, whatever tool changed it.
+    {
+      const os = await import('node:os');
+      const path = await import('node:path');
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-ws-'));
+      const ws = path.join(tmp, 'ws');
+      const W = (...x) => path.join(ws, ...x);
+      fs.mkdirSync(W('old'), { recursive: true });
+      fs.mkdirSync(W('uploads', 'd'), { recursive: true });
+      fs.writeFileSync(W('old', 'a.md'), '原来的 a');
+      fs.writeFileSync(W('old', 'b.md'), '原来的 b');
+      fs.writeFileSync(W('old', 'c.md'), '原来的 c');
+      fs.writeFileSync(W('uploads', 'd', '简历.md'), '评测用户');
+      const lefts = leftovers(ws, ['评测用户', '桂花拿铁']);
+      fs.writeFileSync(W('old', 'log.md'), '桂花拿铁 发过了');
+      const lefts2 = leftovers(ws, ['评测用户', '桂花拿铁']);
+      const snap = snapshot(ws, path.join(tmp, 'backup'));
+      fs.writeFileSync(W('old', 'a.md'), '评测改过');
+      fs.rmSync(W('old', 'b.md'));
+      fs.mkdirSync(W('eval', '丙站'), { recursive: true });
+      fs.writeFileSync(W('eval', '丙站', 'shot.png'), Buffer.alloc(10, 1));
+      fs.writeFileSync(W('old', 'c.md'), '别的机器人改的');
+      const d = diff(ws, snap);
+      const done = restore(ws, snap, d, { backupDir: path.join(tmp, 'backup'), owner: (x) => (x === 'old/c.md' ? 'other' : 'eval') });
+      check('COLLAB-9 a workspace not ours: an earlier run\'s file with the scenario\'s words is found (uploads aside); after the scenario a new file (a screenshot no bot named too) is removed and kept in the backup, a file written over and one removed are put back, what another bot did is left and said, the folders the run made are gone',
+        lefts.length === 0 && lefts2.length === 1 && lefts2[0].path === 'old/log.md'
+        && fs.readFileSync(W('old', 'a.md'), 'utf8') === '原来的 a' && fs.readFileSync(W('old', 'b.md'), 'utf8') === '原来的 b' && fs.readFileSync(W('old', 'c.md'), 'utf8') === '别的机器人改的'
+        && !fs.existsSync(W('eval')) && fs.existsSync(path.join(tmp, 'backup', 'removed', 'eval', '丙站', 'shot.png'))
+        && done.removed.length === 1 && done.restored.length === 1 && done.putBack.length === 1 && done.left.join() === 'old/c.md',
+        JSON.stringify({ lefts: lefts.length, lefts2, done }));
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+
+    // After the human's last word the hubs get time to take it up (11-23: the run ended 0.2 s after the answer).
+    {
+      const trace = { events: [], human: [] };
+      const t = Date.now();
+      await runTimeline({ run: { trace } }, { steps: [{ id: 'answer', at: 0, do: () => { trace.human.push({ at: Date.now(), step: 'answer' }); } }], done: () => true, timeoutMs: 5000, settleMs: 600 });
+      const waited = Date.now() - t;
+      const trace2 = { events: [], human: [] };
+      const t2 = Date.now();
+      await runTimeline({ run: { trace: trace2 } }, { steps: [{ id: 'answer', at: 0, do: () => { trace2.human.push({ at: Date.now(), step: 'answer' }); trace2.events.push({ type: 'turn.start', turnId: 'x', at: Date.now() }); setTimeout(() => trace2.events.push({ type: 'turn.end', turnId: 'x', at: Date.now() }), 1200); } }], done: () => true, timeoutMs: 5000, settleMs: 300 });
+      const waited2 = Date.now() - t2;
+      // The quiet rule too (11-24: a late answer after a long quiet, and the run took itself as over 1 s later).
+      const trace3 = { events: [], human: [] };
+      const t3 = Date.now();
+      const r3 = await runTimeline({ run: { trace: trace3 } }, { steps: [{ id: 'late', at: 0, delay: 500, do: () => { trace3.human.push({ at: Date.now(), step: 'late' }); } }], done: () => false, timeoutMs: 5000, quietMs: 100, settleMs: 600 });
+      const waited3 = Date.now() - t3;
+      check('COLLAB-10 a run whose work looks done still waits after the human\'s last word (settleMs), and for a turn that word started to end; so does a run that has been quiet a long time',
+        waited >= 600 && waited < 2000 && waited2 >= 1200 && waited2 < 3000 && r3.quiet && waited3 >= 1100 && waited3 < 2500, JSON.stringify({ waited, waited2, waited3 }));
+    }
+
+    // The report's name: the local day the run started, then -2, -3 (11-24: 「collab-1.5.65-2026-11-2」).
+    {
+      const os = await import('node:os');
+      const path = await import('node:path');
+      const { writeReport, localDay } = await import('../eval/collab/report.mjs');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-rep-'));
+      const run = { version: '0.0.0', at: new Date(2026, 10, 23, 23, 58).toISOString(), mode: 'real', model: '', app: '', plant: [], currency: 'CNY', results: [] };
+      const names = [writeReport(run, { dir }), writeReport(run, { dir })].map((w) => path.basename(w.md));
+      fs.rmSync(dir, { recursive: true, force: true });
+      check('COLLAB-12 a report is named by the local day its run started, a second one that day gets -2 after the whole date',
+        names[0] === 'collab-0.0.0-2026-11-23.md' && names[1] === 'collab-0.0.0-2026-11-23-2.md' && localDay(run.at) === '2026-11-23', JSON.stringify(names));
+    }
+
+    // The material and what counts (11-23 second real run): real media, deliverables are what reaches the
+    // human, and a question the script never answers is the script's gap.
+    {
+      const fx = (n) => fs.readFileSync(new URL(`../eval/collab/fixtures/${n}`, import.meta.url));
+      const jpg = fx('cover.jpg');
+      const mp4 = fx('clip.mp4');
+      const png = fx('ref.png');
+      const media = jpg[0] === 0xff && jpg[1] === 0xd8 && jpg.at(-2) === 0xff && jpg.at(-1) === 0xd9 && mp4.toString('latin1', 4, 8) === 'ftyp' && mp4.includes('avc1') && png.toString('latin1', 1, 4) === 'PNG'
+        && [jpg, mp4, png].every((b) => b.length > 2000 && b.length < 64 * 1024);
+      const base = { t0: 0, t1: 10, bots: [{ id: 'b1', name: '评测-文案' }], events: [], botChats: [], expect: { maxDeliverables: 1 },
+        files: [{ hub: 'A', path: '评测-协作/r/s/交付/标题.md', mtime: 5 }, { hub: 'A', path: '评测-协作/r/s/笔记/想法.md', mtime: 5 }, { hub: 'A', path: 'pages/预览.html', mtime: 5 }] };
+      const said = { ...base, groupMessages: [{ kind: 'assistant', from: 'b1', text: '标题在 交付/标题.md' }] };
+      const i8 = checkNoExtraWork(said);
+      const { SCENARIOS: all } = await import('../eval/collab/scenarios.mjs');
+      const s2 = all.find((x) => x.id === 's2-jobs');
+      const gapTrace = { t0: 0, t1: 10, bots: [{ id: 'b2', name: '评测-求职' }], posts: [], files: [], groupMessages: [], botChats: [], siteNames: {}, human: [{ at: 1, kind: 'group', text: '投吧' }],
+        events: [{ hub: 'A', at: 3, type: 'tool.call', name: 'tell_human', botId: 'b2', callId: 'c1', args: { text: '简历太薄，补这 4 条：工作经历、项目……', blocking: false } }] };
+      const gap = s2.extra(gapTrace)[0];
+      const answered = s2.extra({ ...gapTrace, human: [...gapTrace.human, { at: 5, kind: 'group', text: '没有更多了' }] })[0];
+      check('COLLAB-11 the media are real and small (a JPEG cover, an MP4 clip, a PNG); I8 counts what a bot names to the human and the pages it published, not its own notes; work stopped on a question the script never answers is a gap in the script (➖), answered and still not done is a fail',
+        media && i8.ok === false && /2 个文件/.test(i8.note) && gap.skipped === true && /剧本缺口/.test(gap.note) && answered.ok === false && !answered.skipped,
+        JSON.stringify({ media, i8: i8.note, gap: gap.note, answered: answered.ok }));
+    }
+
+    // I7 judges what the coordinator asks for, sentence by sentence (11-24 real run: after 「乙站这次不发了」 it
+    // handed out 甲站 then 丙站 and repeated the skip; 「…再发。乙站…跳过」 was read across the full stop).
+    {
+      const C = 'c1';
+      const P = 'p1';
+      const base = (said) => ({
+        t0: 0, t1: 100, coordinator: { hub: 'A', id: C }, bots: [{ id: C, name: '评测-主理人' }, { id: P, name: '评测-发布' }],
+        expect: { directWords: [{ step: 'skip-b', item: '乙站' }] },
+        human: [{ at: 5, kind: 'group', text: '把这个文件夹里的视频发到甲站、乙站、丙站。' }, { at: 10, kind: 'direct', step: 'skip-b', botId: P, text: '乙站这次不发了，跳过乙站。' }],
+        groupMessages: [{ hub: 'A', at: 50, kind: 'handoff', from: C, text: said }],
+        events: [{ hub: 'A', at: 50, type: 'tool.call', name: 'bot_message', botId: C, callId: 'x1', args: { botId: P, text: said } }],
+      });
+      const other = checkNoContradiction(base('人的决定：甲站视频标记选「无需标记」。请按此发布甲站（文案照 uploads/x/文案.md）。甲站发布完成后接着发丙站，丙站同样先把草稿给人看、等他说发再发。乙站按你之前说的这次跳过，不用发。记录写在 交付/乙站-发布记录.md。'));
+      const plain = checkNoContradiction(base('甲站发完接着发丙站。'));
+      // The board item's title is the human's own request, repeated in a summary: not asking again.
+      const title = checkNoContradiction(base('2. 发到甲站、乙站、丙站（评测-发布，完成）：甲站、丙站发好了。'));
+      const against = checkNoContradiction(base('甲站跳过，乙站稍后重试。'));
+      const claim = checkNoContradiction(base('三个站都发好了，乙站已经发出去了。'));
+      check('COLLAB-13 I7: after the human told a member to skip one item, the coordinator handing out the other items (repeating the skip, naming a file about it, quoting the human\'s own request) is no violation; asking for the skipped one again, or saying it went out, is',
+        other.ok && plain.ok && title.ok && !against.ok && !claim.ok && /稍后重试/.test(against.evidence[0]?.text || ''),
+        JSON.stringify({ other: other.evidence.map((e) => e.text), plain: plain.ok, against: against.ok, claim: claim.ok }));
+    }
 
     // The self-check proper: proofs, plants, clean runs.
     const sc = await runSelfCheck({ mock });

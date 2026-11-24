@@ -122,6 +122,8 @@ export function questionsOf(trace) {
     let args = e.args;
     if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
     const text = String(args?.question || args?.text || '');
+    // tell_human that only reports (no question in it) is not waiting for an answer.
+    if (e.name === 'tell_human' && args?.blocking !== true && !/[？?]|吗|要不要|是否|哪个|还是|你要是|认可|补这|需要你|请(补|告诉|确认|决定)/.test(text)) continue;
     const answer = (trace.human || []).find((h) => h.at > e.at && (h.kind === 'group' || (h.kind === 'direct' && h.botId === e.botId)));
     qs.push({ at: e.at, hub: e.hub, botId: e.botId, text, answeredAt: answer ? answer.at : null, answer: answer?.text || '' });
   }
@@ -204,6 +206,37 @@ export function checkUploadsKept(trace) {
 }
 
 /** I7: after the human told a member something directly, the coordinator does not say or plan the opposite. */
+// I7, sentence by sentence (11-24 real run: 「…等他说发再发。乙站按你之前说的这次跳过，不用发。」 was taken for
+// 「再发乙站」 across the full stop). A sentence contradicts the human's word when it names the item they excluded
+// together with doing it (act) - and does not, in the same clause, keep it excluded (跳过, 不发, 按你说的 …).
+// File names are not words (11-24: 「丙站-发布记录.md」 is a record, not 「发布丙站」); 发布记录 / 发布状态 are nouns.
+const ACT = '(重试|再发|再传|补发|重新发|去发|接着发|继续发|稍后|恢复后|等.{0,8}再|发出去了|发好了|已经发|已发布|发布成功|发布(?!记录|状态|结果|页|按钮|流程|步骤|时间|说明)|发到|上传)';
+const KEEP = '(跳过|不发|不用发|别发|不要发|先不|暂不|这次不|不再|取消|免发|按你.{0,10}说|你说.{0,6}(不|别|跳过))';
+const FILE_NAME = /`[^`]*`|[^\s，,、：:（(「」）)]*\.(md|txt|png|jpe?g|mp4|html?|json|csv)\b/gi;
+// A member's name is not a word either (「评测-发布」 has 发布 in it).
+const BOT_NAME = /评测-[^\s，,。：:（(）)、]{1,8}/g;
+/**
+ * Does this text, in any one sentence, ask for (or claim) the excluded item to be done? -> the sentence or null.
+ * earlier: what the human said before the direct word - repeating it (a board item's title 「发到甲站、乙站、丙站」
+ * is the human's own request) is not asking for it again. The item and its act stay within one part of the
+ * sentence (not across 「：」 or a bracket: 「乙站、丙站（…）：甲站、丙站发好了」 is about 甲站 and 丙站).
+ */
+export function contradicts(text, w, earlier = '') {
+  for (const raw of String(text || '').split(/[。！？!?；;\n]+/)) {
+    const sentence = raw.replace(FILE_NAME, ' ').replace(BOT_NAME, ' ');
+    if (w.item) {
+      if (!sentence.includes(w.item)) continue;
+      const it = w.item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const act = new RegExp(`${it}[^：:（(]{0,20}${w.act || ACT}|${w.act || ACT}[^：:（(]{0,4}${it}`, 'g');
+      // A keep-word counts for the item in its own clause only (「甲站跳过，乙站稍后重试」 still asks for 乙站).
+      const keep = new RegExp(`${it}[^，,]{0,14}${w.keep || KEEP}|${w.keep || KEEP}[^，,]{0,6}${it}`);
+      const asks = [...sentence.matchAll(act)].some((m) => !(earlier && earlier.includes(m[0])));
+      if (asks && !keep.test(sentence)) return raw.trim();
+    } else if (w.forbid && new RegExp(w.forbid).test(sentence)) return raw.trim();
+  }
+  return null;
+}
+
 export function checkNoContradiction(trace) {
   const bad = [];
   const coord = trace.coordinator;
@@ -211,11 +244,13 @@ export function checkNoContradiction(trace) {
   for (const w of words) {
     const said = (trace.human || []).find((h) => h.kind === 'direct' && h.step === w.step);
     if (!said || !coord) continue;
-    const forbid = new RegExp(w.forbid);
+    // What the human said before the direct word (their request): a coordinator repeating it is not asking again.
+    const earlier = (trace.human || []).filter((h) => h.at < said.at && (h.kind === 'group' || h.kind === 'direct')).map((h) => String(h.text || '')).join('\n');
+    const forbid = { test: (text) => Boolean(contradicts(text, w, earlier)) };
     const seenCalls = new Set();
     for (const m of trace.groupMessages || []) {
       if (m.at <= said.at || m.from !== coord.id || !['assistant', 'plan', 'handoff'].includes(m.kind)) continue;
-      if (forbid.test(m.text || '')) bad.push({ at: m.at, text: `人在 ${secs(trace, said.at)} 直接跟成员说「${clip(said.text, 60)}」，协调者在 ${secs(trace, m.at)} 说：「${clip(m.text, 120)}」` });
+      if (forbid.test(m.text || '')) bad.push({ at: m.at, text: `人在 ${secs(trace, said.at)} 直接跟成员说「${clip(said.text, 60)}」，协调者在 ${secs(trace, m.at)} 说：「${clip(contradicts(m.text, w, earlier), 120)}」` });
     }
     for (const e of trace.events) {
       if (e.at <= said.at || e.hub !== coord.hub || e.botId !== coord.id || !['tool.call', 'tool.result'].includes(e.type)) continue;
@@ -223,7 +258,8 @@ export function checkNoContradiction(trace) {
       if (seenCalls.has(key)) continue;
       seenCalls.add(key);
       if (!['task_change', 'group_plan', 'bot_message', 'bot_pass'].includes(e.name)) continue;
-      if (forbid.test(json(e.args))) bad.push({ at: e.at, text: `人在 ${secs(trace, said.at)} 直接跟成员说「${clip(said.text, 60)}」，协调者在 ${secs(trace, e.at)} 又安排：${e.name} ${clip(json(e.args), 120)}` });
+      const argText = typeof e.args === 'string' ? (() => { try { return Object.values(JSON.parse(e.args)).join('\n'); } catch { return e.args; } })() : Object.values(e.args || {}).map((v) => (typeof v === 'string' ? v : json(v))).join('\n');
+      if (forbid.test(argText)) bad.push({ at: e.at, text: `人在 ${secs(trace, said.at)} 直接跟成员说「${clip(said.text, 60)}」，协调者在 ${secs(trace, e.at)} 又安排：${e.name}「${clip(contradicts(argText, w, earlier), 120)}」` });
     }
   }
   return { ok: !bad.length, evidence: bad, note: words.length ? `${words.length} 句直接说的话` : '这个场景没有' };
@@ -238,7 +274,11 @@ export function checkNoExtraWork(trace) {
   const bad = [];
   const ex = trace.expect || {};
   // byEval false: new on a hub the run did not start, but no bot of the run wrote it (the human's own).
-  const made = (trace.files || []).filter((f) => f.mtime >= trace.t0 && f.byEval !== false && !/^uploads\//.test(f.path) && (!ex.deliverableDir || f.path.startsWith(ex.deliverableDir)));
+  // A deliverable is what reaches the human: a file a bot names to them (in the group, in its own chat, a
+  // question, a board result) or a page it published. Notes it keeps for itself on the way are its working
+  // files, not extra work (11-23 second real run: job notes, a filter rule, a preview draft were counted).
+  const handed = handedText(trace);
+  const made = (trace.files || []).filter((f) => f.mtime >= trace.t0 && f.byEval !== false && !/^uploads\//.test(f.path) && (!ex.deliverableDir || f.path.startsWith(ex.deliverableDir)) && isHanded(f.path, handed, (trace.files || []).filter((x) => x.path.split('/').pop() === f.path.split('/').pop()).length));
   if (ex.maxDeliverables != null && made.length > ex.maxDeliverables) {
     bad.push({ at: trace.t1, text: `要的交付物最多 ${ex.maxDeliverables} 个，做了 ${made.length} 个：${made.slice(0, 8).map((f) => f.path).join('、')}${made.length > 8 ? ' …' : ''}` });
   }
@@ -258,6 +298,29 @@ export function checkNoExtraWork(trace) {
     for (const a of applies) if (ex.noApply?.includes(a.job)) bad.push({ at: a.at, text: `${secs(trace, a.at)} 投了人说不投的「${a.company}」` });
   }
   return { ok: !bad.length, evidence: bad, note: `${made.length} 个文件，${posts.length} 次发出` };
+}
+
+/** Everything this run's bots said to the human, as one text: messages, questions, board results. */
+export function handedText(trace) {
+  const ours = new Set((trace.bots || []).flatMap((b) => [b.id, b.remoteId]).filter(Boolean));
+  const parts = [];
+  for (const m of trace.groupMessages || []) if (m.kind !== 'user' && m.from !== 'user') parts.push(String(m.text || ''));
+  for (const m of trace.botChats || []) if (m.role === 'assistant') parts.push(String(m.text || ''));
+  for (const e of trace.events || []) {
+    if (!ours.has(e.botId)) continue;
+    if (['tool.call', 'tool.result'].includes(e.type) && ['tell_human', 'task_ask_human', 'task_finish', 'post_draft'].includes(e.name)) parts.push(typeof e.args === 'string' ? e.args : JSON.stringify(e.args || ''));
+    if (e.type === 'turn.end' && e.summary) parts.push(String(e.summary));
+  }
+  const plans = (trace.events || []).filter((e) => e.type === 'group.plan');
+  for (const t of plans[plans.length - 1]?.plan?.tasks || []) parts.push(String(t.result || ''));
+  return parts.join('\n');
+}
+/** Was this file handed to the human: named (its path, the path inside the run's folder, or its name), or a published page. */
+export function isHanded(p, text, sameName = 1) {
+  if (/^pages\/[^/]+\.html$/.test(p)) return true;
+  const inRun = p.replace(/^评测-协作\/[^/]+\/[^/]+\//, '');
+  const base = p.split('/').pop();
+  return text.includes(p) || text.includes(p.replace(/\//g, '\\')) || text.includes(inRun) || (sameName === 1 && base.length >= 5 && text.includes(base));
 }
 
 /** I9: no bot id in anything the human reads (group messages, bot chats, notices, cards). */

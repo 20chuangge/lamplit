@@ -118,8 +118,22 @@ export function carriedNote(sent) {
   return `\n\n（随这条消息带过来的文件，已经放在你这台机器的工作区里：\n${sent.map((f) => `- ${f.from} → ${f.to}`).join('\n')}\n上文写的是对方机器上的路径，请用箭头后面的路径。）`;
 }
 
-/** Fetch the files the reply names from the peer into from-machines/<machine>/<day>/. -> [{from, to}] */
-export async function bringFilesBack(peers, peer, reply, workspaceDir, { skip = [], max = 6 } = {}) {
+/**
+ * Did the request ask for files back (1.5.67)? 「把稿子发我」「拿回来」「send me the file」, or a file_fetch. Then a file
+ * the answer names comes back even when it was made before this turn.
+ */
+const ASKS_FOR_FILES = /(发|传|给|拿|取|拷|复制|带|送)(一?份|一下|过来|回来)?(给)?(我|过来|回来|到这|这边|这台)|把[^。！？\n]{0,40}(文件|稿|图|视频|表|报告|截图|文档)[^。！？\n]{0,10}(发|传|给|拿|取|拷|带)|\b(send|share|give|bring|copy)\b[^.!?\n]{0,30}\b(me|over|here|back)\b|file_fetch/i;
+export function asksForFiles(text) {
+  return ASKS_FOR_FILES.test(String(text || ''));
+}
+
+/**
+ * Fetch the files the reply names from the peer into from-machines/<machine>/<day>/. -> [{from, to}]
+ * `since` (1.5.67; the peer's own clock, its turn's start): only files changed in that turn come back - not one the
+ * member names as context (11-24: an introduction named 口播稿.md and bank.md, and both were copied). A peer that
+ * says nothing of times (older) keeps the old way. `asked`: paths the request named or asked for come back anyway.
+ */
+export async function bringFilesBack(peers, peer, reply, workspaceDir, { skip = [], max = 6, since = null, asked = [] } = {}) {
   const fetched = [];
   if (!workspaceDir) return fetched;
   const day = new Date().toISOString().slice(0, 10);
@@ -128,6 +142,11 @@ export async function bringFilesBack(peers, peer, reply, workspaceDir, { skip = 
     if (fetched.length >= max) break;
     // Pages are opened from that machine by the chat; what was just sent over is already here.
     if (skip.includes(rel) || /^pages\/[^/]+\.html$/.test(rel) || rel.startsWith('from-machines/')) continue;
+    if (since != null && asked !== true && !asked.includes(rel)) {
+      const st = await peers.json(peer, 'GET', `/api/workspace/stat?path=${encodeURIComponent(rel)}`, { timeoutMs: 15000 }).catch(() => null);
+      // Changed before this turn began (a little slack for the clock's grain): named as context, stays there.
+      if (st?.exists && Number.isFinite(st.mtimeMs) && st.mtimeMs < since - 2000) continue;
+    }
     try {
       const res = await peers.call(peer, 'GET', `/api/workspace/file?path=${encodeURIComponent(rel)}`, { timeoutMs: 120000 });
       if (!res.ok) continue;
@@ -150,30 +169,40 @@ export function fetchedNote(fetched, machine) {
 
 /**
  * Run one turn of a bot on another machine and wait for its answer.
- * Files the text names go along; files the answer names come back.
+ * Files the text names go along; files the answer names come back - those it made or changed in this turn, or that
+ * the request named or asked for (1.5.67). `bring: false`: nothing comes back (a group's introductions).
+ * `askedText`: what was asked, when `text` carries more (a group's recent talk). `interrupted` (1.5.67): the
+ * connection dropped while it worked and the turn did not finish there (that machine restarted, or stayed away).
  */
-export async function askPeerBot(peers, peer, { botId, text, handoff, workspaceDir = '', signal = null, carry = true, timeoutMs = 30 * 60 * 1000, pollMs = 3000 } = {}) {
+export async function askPeerBot(peers, peer, { botId, text, handoff, workspaceDir = '', signal = null, carry = true, bring = carry, askedText = text, timeoutMs = 30 * 60 * 1000, pollMs = 3000 } = {}) {
   const sent = carry ? await carryFilesOut(peers, peer, text, workspaceDir) : [];
   const started = await peers.json(peer, 'POST', `/api/bots/${encodeURIComponent(botId)}/message`, {
     body: { text: String(text || '') + carriedNote(sent), ...(handoff ? { handoff } : {}) },
     timeoutMs: 20000,
   });
   const deadline = Date.now() + timeoutMs;
+  let lost = false;
   while (Date.now() < deadline) {
     if (signal?.aborted) throw Object.assign(new Error('cancelled'), { code: 'CANCELLED' });
     await new Promise((r) => setTimeout(r, pollMs));
     let msgs;
-    try { msgs = await peers.json(peer, 'GET', `/api/bots/${encodeURIComponent(botId)}/messages?limit=60`, { timeoutMs: 15000, signal }); } catch { continue; }
+    try { msgs = await peers.json(peer, 'GET', `/api/bots/${encodeURIComponent(botId)}/messages?limit=60`, { timeoutMs: 15000, signal }); } catch { lost = true; continue; }
     const mine = (msgs.messages || msgs || []).filter((m) => m.turnId === started.turnId);
     const done = mine.find((m) => m.role === 'status');
     if (!done) continue;
     const reply = mine.filter((m) => m.role === 'assistant').map((m) => m.text).join('\n\n').trim() || done.summary || '';
-    const fetched = carry ? await bringFilesBack(peers, peer, reply, workspaceDir, { skip: sent.map((f) => f.to) }) : [];
+    const since = Date.parse(done.startedAt || '');
+    // Cut off there by a restart while out of reach (it says so; an older machine only marks the turn
+    // needs_attention): nothing finished, nothing comes back.
+    const interrupted = done.recovered === true || (lost && done.status === 'needs_attention');
+    const fetched = bring && !interrupted ? await bringFilesBack(peers, peer, reply, workspaceDir, {
+      skip: sent.map((f) => f.to), since: Number.isFinite(since) ? since : null, asked: asksForFiles(askedText) ? true : pathsIn(askedText),
+    }) : [];
     // Stopped for the human there (1.5.66): a question, a takeover - older machines say nothing of it.
     const waiting = done.waitingFor ? { waitingFor: String(done.waitingFor), ...(done.waitingText ? { waitingText: String(done.waitingText).slice(0, 1000) } : {}) } : {};
-    return { status: done.status || 'success', turnId: started.turnId, reply, sent, fetched, ...waiting };
+    return { status: done.status || 'success', turnId: started.turnId, reply, sent, fetched, ...waiting, ...(interrupted ? { interrupted: true } : {}) };
   }
-  throw Object.assign(new Error(`「${peer.name}」上的机器人 30 分钟还没做完`), { code: 'PEER_TIMEOUT' });
+  throw Object.assign(new Error(`「${peer.name}」上的机器人 30 分钟还没做完`), { code: 'PEER_TIMEOUT', ...(lost ? { lost: true } : {}) });
 }
 
 /** A group member (or Feishu target) on another machine, from "name@machine", "id@machine" or a bare name. */

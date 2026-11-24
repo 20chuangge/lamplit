@@ -312,6 +312,18 @@ export function saysNotDone(text) {
   return (SAYS_LIMIT.test(t) || SAYS_CUT.test(t)) && !SAYS_DONE.test(t);
 }
 
+/**
+ * The human's answer to 「…断开了，要我让它重做吗？」 (1.5.67): 'yes', 'no', or '' (not a plain answer - it goes to
+ * the group as usual). Only a short reply counts; 「不要」「先别」 are no before anything that looks like yes.
+ */
+export function redoAnswer(text) {
+  const t = String(text || '').trim().replace(/[。.!！~～\s]+$/, '');
+  if (!t || t.length > 20 || /[?？]$|要不要|吗$|是不是/.test(t)) return '';
+  if (/^(不用|不要|别|算了|不必|不需要|先不|先别|跳过|放弃|no\b|nope|don'?t|skip)|不用重做|别重做|不要重做/i.test(t)) return 'no';
+  if (/^(好|好的|行|可以|要|重做|重来|再做|做吧|继续|接着|嗯|是|对|没问题|ok|yes|yep|sure|redo|go ahead)/i.test(t)) return 'yes';
+  return '';
+}
+
 /** Steps left when the turn is told how many it still has (1.5.66). */
 const STEPS_LEFT_NOTE = 10;
 
@@ -417,6 +429,7 @@ function peersLine(peers, canHandOff) {
 }
 
 import { askPeerBot, fetchedNote, filesForMove, sendFilesKeepingPaths } from './crossmachine.mjs';
+import { mcpToolLabel } from './mcp.mjs';
 import { friendlyHostname } from './peers.mjs';
 import { adbInShell } from './phone.mjs';
 import { makePlan, savePlan, loadPlan, readyTasks, skipBlocked, planText, resolveMember, listPlans, makeTask, updateStep, openSteps, doneSteps, taskText } from './plans.mjs';
@@ -3158,6 +3171,9 @@ export class AgentRuntime {
     // Cut off by a restart while it was being done (readBoards): the owner is told, once.
     const cutOff = Boolean(task.interrupted);
     delete task.interrupted;
+    // Cut off from its machine last time, and the human said to do it again (1.5.67): told so, once.
+    const redo = task.cut && task.redo ? task.cut : null;
+    if (redo) { delete task.cut; delete task.redo; task.question = ''; task.answer = ''; task.result = ''; }
     task.status = 'doing';
     task.startedAt = nowIso();
     await this.boardChanged(plan);
@@ -3172,6 +3188,7 @@ export class AgentRuntime {
       task.handoffFrom ? `这项是「${names.get(task.handoffFrom) || task.handoffFrom}」交给你的：${task.handoffNote || ''}` : '',
       task.question ? `你之前问过用户：${task.question}\n用户的回答：${task.answer || '（没有回答）'}` : '',
       cutOff ? '这项做到一半时应用重启了，被打断过，已经写好的文件都还在。先看看做到哪一步了，再接着做；已经做完的部分不要重做一遍。' : '',
+      redo ? `这项上次做到一半时，群所在的机器和「${redo.machine}」的连接断了，没做完。用户让你重做：先看看已经写好的文件，做到哪一步了再接着做；已经做完的部分不要重做一遍。` : '',
       // Said in the group after the board started (1.5.64): a task that starts later works with it.
       plan.updates?.length ? `任务板开始以后，用户在群里又说了（以这些为准）：\n${plan.updates.map((u) => `- ${String(u.text).slice(0, 800)}`).join('\n')}` : '',
       task.notes?.length ? `协调者后来对这一项的补充（以这些为准）：\n${task.notes.map((n) => `- ${n}`).join('\n')}` : '',
@@ -3221,6 +3238,20 @@ export class AgentRuntime {
       // The coordinator stopped it while it ran (1.5.64, task_change): not needed any more; the board goes on.
       task.status = 'skipped';
       task.result = `协调者停掉了这一项：${task.dropped || '不再需要'}`;
+    } else if (res?.interrupted) {
+      // The connection to its machine dropped while it worked (1.5.67, the eval's S3-a; the human's decision on
+      // 11-24): not redone by itself - 「被打断」, and the coordinator asks the human whether to do it again.
+      const machine = owner?.remote?.machine || '那台机器';
+      const who = names.get(task.owner) || owner?.name || task.owner;
+      task.status = 'waiting_human';
+      task.cut = { machine, at: nowIso() };
+      task.question = `「${who}」在做的时候和「${machine}」断开了，要我让它重做吗？`;
+      task.answer = '';
+      task.result = `被打断：「${who}」在做这一项的时候，和「${machine}」的连接断了，没做完。`;
+      const ask = `「${who}」在做「${task.title}」的时候和「${machine}」断开了，要我让它重做吗？（回「重做」或「不用了」）`;
+      await this.recordGroupMessage(group.id, { kind: 'assistant', from: plan.coordinatorId, text: ask });
+      this.bus.emit({ type: 'human.notice', botId: plan.coordinatorId, botName: group.name, groupId: group.id, text: ask, ts: nowIso() });
+      try { if (typeof this.pushOut === 'function') await this.pushOut(`【${group.name}·需要你拍板】\n${ask}`); } catch { /* Feishu not connected: the group and the phone have it */ }
     } else if (res?.board?.handoff && ((task.handoffs || 0) >= handoffLimit || backTo)) {
       task.status = 'failed';
       task.result = backTo
@@ -3290,6 +3321,8 @@ export class AgentRuntime {
     // A hand-off board (1.5.65) has no runner of its own: the coordinator reads the answer and hands the work on again.
     const waiting = plan && !plan.auto && ['waiting', 'running'].includes(plan.status) && plan.tasks.find((t) => t.status === 'waiting_human');
     if (!waiting) return false;
+    // 「…断开了，要我让它重做吗？」 (1.5.67): only a plain yes or no answers it; anything else goes to the group as usual.
+    if (waiting.cut && !redoAnswer(text)) return false;
     await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text) });
     await this.answerTask(group, plan, waiting, text);
     return true;
@@ -3329,6 +3362,22 @@ export class AgentRuntime {
   /** A waiting item takes the human's answer: its owner goes back to it, the board goes on. */
   async answerTask(group, plan, waiting, text) {
     waiting.answer = String(text).slice(0, 2000);
+    // Cut off from its machine (1.5.67): yes - its owner does it again, told so; no - it is skipped, the board goes on.
+    if (waiting.cut) {
+      if (redoAnswer(text) === 'no') {
+        waiting.status = 'skipped';
+        waiting.result = `你说不用重做（做的时候和「${waiting.cut.machine}」断开了）。`;
+        delete waiting.cut;
+      } else {
+        waiting.redo = true;
+        waiting.status = 'todo';
+      }
+      await this.boardChanged(plan);
+      const wakeUp = this.planWakers?.get(plan.id);
+      if (plan.status === 'running' && wakeUp) wakeUp();
+      else this.runPlan(group, plan).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+      return;
+    }
     // Their answer closes what the member asked (1.5.65; the collaboration eval: after 「扫好了」 in the group
     // every post_draft of 发布 was refused as still waiting). A member on another machine is told with the task.
     const ownerHere = (group.members || []).find((m) => m.id === waiting.owner);
@@ -3375,15 +3424,23 @@ export class AgentRuntime {
         text: prompt,
         handoff: { depth: 1, chain: [`group:${group.id}`, member.remote.botId], budgetLeft: 4, from: { bot: `群「${group.name}」`, machine: this.machineName?.() || '' }, ...(kickoff ? { kickoff: true } : {}), ...(answered ? { answered: true } : {}) },
         workspaceDir: this.config.workspaceDir,
+        // Files its answer names come back only as the result of work (1.5.67; 11-24: an introduction named
+        // 口播稿.md and bank.md, and both were copied here) - never for a group's introductions; what was asked is `text`.
+        askedText: String(text || ''),
+        ...(kickoff ? { bring: false } : {}),
       });
       status = r.status === 'success' ? 'success' : (r.status || 'failed');
       summary = r.reply || '';
+      // The connection to that machine dropped while it worked and the turn did not finish (1.5.67, the eval's S3-a).
+      if (r.interrupted) stoppedFor = { interrupted: true };
       // It asked the human there, or waits for their hands (1.5.66): the board item waits for them here too.
       if (['decision', 'takeover', 'login'].includes(r.waitingFor)) stoppedFor = { waitingFor: r.waitingFor, ...(r.waitingText ? { waitingText: r.waitingText } : {}) };
       await this.recordGroupMessage(group.id, { kind: 'assistant', from: member.id, text: (r.reply || '（没有回答）') + fetchedNote(r.fetched, member.remote.machine), turnId: id });
     } catch (err) {
       status = 'failed';
       summary = err.message;
+      // Out of reach from some point on and never back with an answer (1.5.67): cut off, not failed at the work.
+      if (err.lost) stoppedFor = { interrupted: true };
       await this.recordGroupMessage(group.id, { kind: 'assistant', from: member.id, text: `（没能联系上「${member.remote.machine}」上的${member.name}：${err.message}）`, turnId: id });
     }
     this.bus.emit({ type: 'turn.end', ...base, status, summary, steps: 0, startedAt, endedAt: nowIso() });
@@ -3608,12 +3665,14 @@ export class AgentRuntime {
     if (tool.mcp && verdict.decision === DECISION.AUTO) {
       const t = this.registry.mcpTrust?.(name);
       if (t && t.trust !== 'always' && !t.readOnly) {
-        verdict = { ...verdict, decision: DECISION.ASK, reason: `用「${t.server}」的 ${t.tool}（连接应用，设成「始终允许」后就不再问）` };
+        verdict = { ...verdict, decision: DECISION.ASK, reason: `用「${mcpToolLabel({ server: t.server, tool: t.tool, title: tool.mcp?.title })}」（连接应用，设成「始终允许」后就不再问）` };
       }
     }
 
     // "以后都允许": the human said yes to this kind of step for this bot for good.
     const remember = sticky ? null : permissionKey(name, args, { workspaceDir: this.config.workspaceDir, phoneApp: riskInfo.app });
+    // A connected app's tool by its app and title, not mcp__m2c4a5__notion-update-page (1.5.67); the key stays the tool's name.
+    if (remember && tool.mcp) remember.label = `用「${mcpToolLabel(tool.mcp)}」`;
     // A program that runs any code, with the bots' commands not isolated: the card says what that means.
     // Not in the demo: nothing real runs there (1.5.54, walkthrough 2.2).
     if (remember?.runsCode && this.model?.provider !== 'mock' && sandboxStatus(this.config.policy).state !== 'on') remember.warn = '机器人跑命令时用的是你的账户：选「以后都允许」后，它用这个程序跑的脚本也能读到你个人文件夹里的东西。到 设置 → 体检 → 命令隔离，让它用一个单独的账户，更安全。';

@@ -329,13 +329,16 @@ const s3 = {
     // The other machine goes away while a member there works, and comes back.
     { id: 'peer-down', on: (e) => e.hub === 'B' && e.type === 'turn.start' && !e.kickoff && !e.aside, orAt: 30000, delay: 400, do: (h) => h.stopHub('B', { step: 'peer-down' }) },
     { id: 'peer-up', after: 'peer-down', afterDelay: 5000, do: (h) => h.startHub('B', { step: 'peer-up' }) },
+    // 1.5.67 (the human's decision on 11-24): the item cut off is 被打断 and the coordinator asks whether to redo it;
+    // nothing is redone until the human says so. The human here says yes.
+    { id: 'redo', optional: true, on: (e) => e.type === 'group.plan' && (e.plan?.tasks || []).some((t) => t.cut && t.status === 'waiting_human'), delay: 1000, do: (h) => h.group('重做。', { step: 'redo' }) },
   ],
   policy: carefulHuman,
   done: (h) => boardFinished(h) && stepsRan(h, 'peer-up'),
   extra: (trace) => {
     const made = (trace.files || []).filter((f) => f.hub === 'B' && /^交付\/(选题|脚本)\.md$/.test(f.path));
     const down = trace.human.find((x) => x.step === 'peer-down');
-    return [{ id: 'S3-a', title: '另一台掉线又回来以后，那边的活接着做完了', ok: made.length === 2, evidence: made.length === 2 ? [] : [{ at: trace.t1, from: down?.at, text: `另一台上只有 ${made.length} 个交付物（要 2 个）：掉线打断的那一项没有接着做` }] }];
+    return [{ id: 'S3-a', title: '另一台掉线又回来以后，那边的活接着做完了（被打断的那一项问过人、人说重做以后）', ok: made.length === 2, evidence: made.length === 2 ? [] : [{ at: trace.t1, from: down?.at, text: `另一台上只有 ${made.length} 个交付物（要 2 个）：掉线打断的那一项没有接着做` }] }];
   },
   brain: (env) => async (ctx) => {
     const c = commonTurns(ctx);

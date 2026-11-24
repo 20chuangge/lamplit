@@ -587,7 +587,8 @@ function fillPlanCard(card, plan, view = null) {
     text.appendChild(el('b', '', `${i + 1}. ${t.title}`));
     if (!solo) text.appendChild(el('small', '', `${who?.name || t.owner}${t.needs?.length ? ` · 等第 ${t.needs.map((n) => n.slice(1)).join('、')} 项` : ''}`));
     sum.appendChild(text);
-    sum.appendChild(el('span', 'plan-chip', (PLAN_STATUS[t.status] || PLAN_STATUS.todo)[0]));
+    // Cut off from the machine it was done on (1.5.67): 被打断, waiting for the human's 重做 / 不用了.
+    sum.appendChild(el('span', 'plan-chip', t.cut && t.status === 'waiting_human' ? '被打断' : (PLAN_STATUS[t.status] || PLAN_STATUS.todo)[0]));
     row.appendChild(sum);
     const body = el('div', 'plan-task-body');
     if (t.brief) body.appendChild(el('div', '', t.brief));

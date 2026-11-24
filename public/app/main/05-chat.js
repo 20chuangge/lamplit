@@ -1669,15 +1669,15 @@ const TOOL_TEXT = {
   mcp_call: { label: '用连接的应用', title: '想用连接应用里的一个工具', impact: '和直接调用那个工具一样，该问你的照样会问。' },
 };
 
-/** A connected app's tool (mcp__<server>__<tool>): its app's name and the tool's own name. */
+/** A connected app's tool (mcp__<server>__<tool>) as people read it (1.5.67): 「Notion · 更新页面」 (its title, or its name made readable), not mcp__m2c4a5__notion-update-page. */
+function mcpToolHuman(name) {
+  const m = String(name || '').match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/); if (!m) return null;
+  let servers = []; try { servers = mcpUi.servers || []; } catch { /* before the settings code ran */ }
+  const server = servers.find((x) => x.id === m[1]), app = server?.name || '连接的应用', what = String((server?.tools || []).find((t) => t.name === m[2])?.title || '').trim() || m[2].replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return { app, what, label: `${app} · ${what}` };
+}
 function mcpToolText(name) {
-  const m = String(name || '').match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);
-  if (!m) return null;
-  let servers = [];
-  try { servers = mcpUi.servers || []; } catch { /* before the settings code ran */ }
-  const server = servers.find((x) => x.id === m[1]);
-  const app = server?.name || '连接的应用';
-  return { label: `「${app}」${m[2]}`, title: `想用「${app}」的 ${m[2]}`, impact: '连接应用里的工具；在「设置 → 连接应用」里设成「始终允许」后就不再问你。' };
+  const h = mcpToolHuman(name); return h ? { label: `「${h.label}」`, title: `想用「${h.app}」：${h.what}`, impact: '连接应用里的工具；在「设置 → 连接应用」里设成「始终允许」后就不再问你。' } : null;
 }
 
 function toolNameLabel(name) {

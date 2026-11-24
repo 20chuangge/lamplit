@@ -3656,7 +3656,8 @@ async function folderFileUpload(req, state, bytes) {
 route('GET', /^\/api\/workspace\/stat$/, async (_req, _res, { state, query }) => {
   const abs = workspaceFile(state, query.get('path'));
   const st = await fsp.stat(abs).catch(() => null);
-  return st && st.isFile() ? { exists: true, size: st.size } : { exists: false };
+  // mtimeMs (1.5.67): a machine that asked one of this machine's bots for work brings back only what that turn made.
+  return st && st.isFile() ? { exists: true, size: st.size, mtimeMs: Math.round(st.mtimeMs) } : { exists: false };
 });
 
 /**
@@ -6645,6 +6646,8 @@ export function toMessageItem(record, index) {
       };
     case 'turn':
       return { ...base, role: 'status', status: record.status, summary: record.summary, steps: record.steps,
+        // 1.5.67: when it began (what it made is what changed since), and a turn cut off by a restart says so.
+        ...(record.startedAt ? { startedAt: record.startedAt } : {}), ...(record.recovered ? { recovered: true } : {}),
         // 1.5.66: stopped for the human (a question, a takeover): the machine that handed it over keeps its board item waiting.
         ...(record.waitingFor ? { waitingFor: record.waitingFor, ...(record.waitingText ? { waitingText: record.waitingText } : {}) } : {}) };
     case 'plan':

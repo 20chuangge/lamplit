@@ -291,6 +291,9 @@ async function main() {
     await stage('1.5.65: every way the human answers closes the open question, once', async () => (await import('./smoke-group-1565.mjs')).answerChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.65: 「这一轮都允许」, sends approved by where they go, stopping after two failed sends', async () => (await import('./smoke-group-1565.mjs')).chainChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.65: what the first real-model collaboration run found - board items one by one, a direct word mid-board, one card for one post, no send before an answer', async () => (await import('./smoke-group-1565.mjs')).realEvalChecks({ check, toolsMod, groupsMod }));
+    // 1.5.66: what the real-model collaboration eval on 1.5.65 found (eval notes, section 十一).
+    await stage('1.5.66: a member waiting on its question keeps its board item waiting; the answer sends it back', async () => (await import('./smoke-group-1566.mjs')).waitingChecks({ check, toolsMod, groupsMod, readText }));
+    await stage('1.5.66: 「到了上限，我接着做」 with steps to spare goes on; a plain result still finishes', async () => (await import('./smoke-group-1566.mjs')).goOnChecks({ check, toolsMod, groupsMod }));
     // 1.5.65: the group-collaboration eval (scripts/eval-collab.mjs) proves its own detectors.
     await stage('1.5.65: the collaboration eval checks itself - mock sites, nine detectors proven on data, planted violations caught, six scenarios run', async () => (await import('./smoke-collab.mjs')).collabSelfChecks({ check }));
     await stage('1.5.54: security - checked file reads, sends that ask, sealed secrets, the screen port', async () => { const m = await import('./smoke-sec1554.mjs'); await m.m7Checks({ check, base, rawFetch, workspace: process.env.ASSIST_WORKSPACE_DIR || path.join(home, 'workspace') });
@@ -4184,7 +4187,9 @@ async function scenarioMcp({ home, toolsMod }) {
       && !ask(`python3 -c "import json;print(json.load(open('/opt/desk-hub/data/routines.json')))"`)
       && ask(`python3 -c "import sys; sys.path.insert(0,'/opt/desk-hub/src'); import vault"`) && ask(`node -e "import('/opt/desk-hub/src/mail.mjs')"`));
     check('M30b a task on the group board cut off by the step limit goes on by itself (up to the limit), told what it already did',
-      /for \(let n = 1; res\?\.status === 'max_steps' && res\.continueGroup && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
+      // 1.5.66: also a turn that ended saying it will go on (smoke-group-1566 G66-2c), on the same cap.
+      ag.includes("const goesOn = (r, n) => (r?.status === 'max_steps' && r.continueGroup) ||")
+      && /for \(let n = 1; goesOn\(res, n\) && plan\.status !== 'stopped'; n \+= 1\)/.test(ag)
       && ag.includes("text: continuationText({ n, what: `任务板上交给你的「${task.title}」`"));
   }
   // 1.5.27: a bot's own command on this computer cannot decide approvals or change rules, keys or pairing.
@@ -9712,7 +9717,8 @@ async function scenarioMachinesAndPolicy({ approvals, toolsMod }) {
     const agentSrc = await readText('../src/agent.mjs');
     check('M21 empty answer: no words and no tool call (the output limit spent thinking) is sent back to try again, at most twice; a task that ends with nothing is "没做成", not done',
       agentSrc.includes("if (!response.toolCalls?.length && !String(response.content || '').trim() && emptyNudges < 2") && agentSrc.includes("response.finishReason === 'length'")
-      && agentSrc.includes("task.status = res?.status === 'success' && !empty ? 'done' : 'failed';"));
+      // 1.5.66: nor one that still says it is not done after every go-on (smoke-group-1566 G66-2e).
+      && agentSrc.includes("task.status = res?.status === 'success' && !empty && !res.notDone ? 'done' : 'failed';"));
     check('M21 stalls: the turn that only wrote the plan does not count as "not moving"; only turns it took on by itself do',
       agentSrc.includes('plan.stalls = done > (plan.lastDone || 0) || !plan.continuations ? 0 : (plan.stalls || 0) + 1;'));
     const pageM21 = await readText('../public/index.html');

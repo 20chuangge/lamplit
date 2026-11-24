@@ -409,6 +409,9 @@ export function createFeishu(o) {
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`;
     // Busy with an earlier message: answer now, and pass this one to that work.
     // Also a teammate's hand-off or a routine: no second turn on the same browser (1.2.165).
+    // Its item on a group's task board waits on the human (1.5.66): this is the answer; the item goes on there.
+    const toBoard = await o.runtime.answerInChat?.(id, full, { turnId, source: 'feishu' })?.catch?.(() => null);
+    if (toBoard) { await sendText(to, label ? `${label}\n${toBoard.text}` : toBoard.text).catch(() => {}); return; }
     const busy = o.runtime.busyTurn?.(id, { any: true });
     // Said to a member with work on a group's task board (1.5.65): the row keeps it and the coordinator hears it.
     o.runtime.noteDirectWord?.(id, full, { turnId: busy ? null : turnId })?.catch?.(() => {});

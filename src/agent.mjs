@@ -284,11 +284,36 @@ export function phoneGrantFor(bot, app, kind, now = Date.now()) {
   return (bot?.policy?.phoneGrants || []).find((g) => g.kind === kind && names.includes(String(g.app).toLowerCase()) && (!g.until || Date.parse(g.until) > now)) || null;
 }
 
-/** The message that starts a turn again after the step limit. */
-export function continuationText({ n, what, actions = [] }) {
-  return `（系统自动发起，用户没有发新消息；第 ${n} 次自动接着做）${what}，上一轮做到单轮步数上限被打断了。先看清楚做到了哪一步（工作区的文件、你的笔记、刚才的结果），不要重做已经做完的事，也不用开场白：\n- 如果已经做完：用几句话告诉用户结果（做成了什么、在哪里、多少、有没有没做成的），不要再调用工具；\n- 如果还没做完：接着做，做完再给结果。批量的活尽量用一次能处理很多的工具，少走步数。`
+/**
+ * The message that starts a turn again: after the step limit, or (1.5.66) after a turn that ended
+ * saying it was not done and would go on (`why: 'stopped'`). 1.5.65 eval s6: told 「上一轮做到单轮步数上限
+ * 被打断了」, the next turn stopped at 123 of 150 steps saying the very same about itself.
+ */
+export function continuationText({ n, what, actions = [], why = 'limit' }) {
+  const before = why === 'stopped' ? '上一轮还没做完就停了（没到步数上限）' : '上一轮的步数用完了';
+  return `（系统自动发起，用户没有发新消息；第 ${n} 次自动接着做）${what}，${before}，系统接着开了这一轮，步数重新算。先看清楚做到了哪一步（工作区的文件、你的笔记、刚才的结果），不要重做已经做完的事，也不用开场白：\n- 如果已经做完：用几句话告诉用户结果（做成了什么、在哪里、多少、有没有没做成的），不要再调用工具；\n- 如果还没做完：接着做，一直做到做完再给结果。不要中途停下来说「到了上限」「被打断了」「我接着做」：没到上限就不用停，真到了上限系统会自己再接着开。批量的活尽量用一次能处理很多的工具，少走步数。`
     + (actions.length ? `\n\n上一轮实际做过的操作（系统记录，可信；这些都已经做了，算在你名下，不要否认，也不要重做）：\n- ${actions.join('\n- ')}` : '');
 }
+
+/**
+ * A final answer that says the work is not done and will go on (1.5.66; eval s6: 「这一轮又遇到单轮步数上限，
+ * 做到第 131 条就被打断，我继续往下做」 at 123 of 150 steps). Kept narrow: a plain 「做完了，结果是…」 - also one
+ * that mentions an earlier cut-off - and an offer (「需要的话我可以接着做」) are not it.
+ */
+const SAYS_LIMIT = /步数(的)?(上限|限制)|单轮(的)?上限|轮次上限|step limit|max(imum)?[ _-]?steps|ran out of steps/i;
+const SAYS_CUT = /被(系统)?(打断|中断|截断)|\b(got|was|been) (cut off|interrupted)\b/i;
+const SAYS_GO_ON = /(我|下面|接下来|下一轮|下一回合|稍后|马上|这就)[^。！？\n]{0,10}(继续|接着)(往下)?(做|处理|整理|翻|抓|跑|发|写|采集|爬|读|看)(?![完好])|(继续|接着)往下(?!(做|处理|整理|翻)?[完好])|未完待续|\b(I'?ll|I will|will|going to) (continue|keep going|carry on|resume|pick (it |this )?up)\b|\bto be continued\b/i;
+const SAYS_OFFER = /(需要|要不要|如果|如需|是否|可以|想让我|要我|你说)[^。！？\n]{0,8}(继续|接着)|\b(if you('d)? (like|want)|want me to|shall I|should I|let me know)\b/i;
+const SAYS_DONE = /(全部|都已?|已经?全部?)(做|整理|处理|翻|抓|发|写|跑)?(完|好)了?|已(经)?(全部)?完成|做完了|整理完了|\ball (done|finished|complete)\b|\b(finished|completed) (all|everything)\b/i;
+export function saysNotDone(text) {
+  const t = String(text || '');
+  if (!t.trim()) return false;
+  if (SAYS_GO_ON.test(t) && !SAYS_OFFER.test(t)) return true;
+  return (SAYS_LIMIT.test(t) || SAYS_CUT.test(t)) && !SAYS_DONE.test(t);
+}
+
+/** Steps left when the turn is told how many it still has (1.5.66). */
+const STEPS_LEFT_NOTE = 10;
 
 /**
  * 1.5.50 (S1): the 发布 bot wrote d12_type_body.py, body2, body3, body4, tags,
@@ -842,7 +867,12 @@ export class AgentRuntime {
 
   /** The human spoke to the bot: whatever it asked them is answered (or moved past). */
   humanSpoke(botId) {
-    return Boolean(botId && this.pendingHuman?.delete(botId));
+    if (!botId) return false;
+    // A turn of it still at work that asked (1.5.66): answered, it no longer ends as waiting for them.
+    for (const info of this.active?.values?.() || []) {
+      if (info?.botId === botId && info.waitingFor === 'decision') { info.waitingFor = null; info.waitingText = ''; }
+    }
+    return Boolean(this.pendingHuman?.delete(botId));
   }
 
   /**
@@ -1949,6 +1979,9 @@ export class AgentRuntime {
       ctx.claimState = claimState;
       // Answers that came back empty (seen live: all 4096 output tokens spent thinking).
       let emptyNudges = 0;
+      // 「到了上限，我接着做」 with steps to spare (1.5.66, s6): told once to go on; the steps left, said once near the end.
+      let goOnNudged = false;
+      let stepsNoted = false;
       // Exact repeats of the same call (name + arguments) mean it is stuck.
       const recentCalls = [];
       let stuck = null;
@@ -2081,6 +2114,16 @@ export class AgentRuntime {
           if (problems.length) {
             response.content = `${response.content}\n\n⚠ 核对：这些说法在这一轮的操作记录里找不到依据——${problems.join('；')}。`;
             audit({ kind: 'claims.unverified', botId: bot.id, turnId, problems }).catch(() => {});
+          }
+          // It stops saying it hit the limit / was cut off / will go on, with steps to spare (1.5.66; eval s6:
+          // 123 of 150 steps, 「又遇到单轮步数上限……我继续往下做」, and the board item was marked done). Once a turn.
+          if (!goOnNudged && trail.length && !live.waitingFor && steps < maxSteps - 2 && saysNotDone(response.content)) {
+            goOnNudged = true;
+            this.bus.emit({ type: 'message.retract', ...baseEvent });
+            messages.push({ role: 'assistant', content: response.content || '' });
+            messages.push({ role: 'user', content: `（系统）这一回合才做了 ${steps + 1} 步，没到 ${maxSteps} 步的上限，也没有被打断，还可以接着做。没做完就现在接着做，做完再给结果；已经做完了，就只说结果，不要说到了上限、被打断或要接着做。` });
+            audit({ kind: 'turn.go_on_nudged', botId: bot.id, turnId, steps: steps + 1, maxSteps }).catch(() => {});
+            continue;
           }
         }
 
@@ -2247,6 +2290,11 @@ export class AgentRuntime {
           this.bus.emit({ type: 'message', ...baseEvent, text: note, final: true, system: true });
           break;
         }
+        // How many steps are left, said once near the end (1.5.66): it never has to guess it is at the limit.
+        if (!stepsNoted && maxSteps > STEPS_LEFT_NOTE * 3 && maxSteps - steps === STEPS_LEFT_NOTE) {
+          stepsNoted = true;
+          messages.push({ role: 'user', content: `（系统）这一回合还能再走 ${STEPS_LEFT_NOTE} 步（上限 ${maxSteps} 步）。没做完就照常往下做，不要提前停下或提前收尾；把做到哪一步记在工作区的文件里。真到了上限，系统多半会自动接着开下一回合，你做过的操作都会带过去。` });
+        }
       }
 
       if (!finished && !stuck && status === 'success' && steps >= maxSteps) {
@@ -2297,7 +2345,11 @@ export class AgentRuntime {
       return { turnId, chainId: turnChain, status, summary: summary || statusText(status), steps, ...(boardOutcome ? { board: boardOutcome } : {}),
         ...(status === 'max_steps' ? { receipts, continueGroup: groupGoesOn } : {}),
         // Stopped for the human's hands (1.5.64): a group's board waits for them instead of calling the task done.
-        ...(waitingFor === 'takeover' || waitingFor === 'login' ? { waitingFor } : {}) };
+        // Also for their answer to a blocking tell_human (1.5.66; eval s1: 发布 asked about the video mark, its item
+        // was marked done and the answer went to a new coordinator turn) - unless they answered while it ran.
+        ...((waitingFor || live.waitingFor) ? { waitingFor: waitingFor || live.waitingFor, ...(live.waitingText ? { waitingText: live.waitingText } : {}) } : {}),
+        // Ended saying it is not done and will go on, though under the step limit (1.5.66, s6): a board goes on with it.
+        ...(status === 'success' && !waitingFor && !live.waitingFor && trail.length && saysNotDone(summary) ? { receipts, notDone: true } : {}) };
     } catch (err) {
       status = 'failed';
       summary = `Turn failed: ${err.message}`;
@@ -2342,6 +2394,8 @@ export class AgentRuntime {
         endedAt,
         steps,
         source,
+        // What it stopped for (1.5.66): a group on another machine reads it to keep its board item waiting.
+        ...((waitingFor || live.waitingFor) ? { waitingFor: waitingFor || live.waitingFor, ...(live.waitingText ? { waitingText: String(live.waitingText).slice(0, 1000) } : {}) } : {}),
       });
       if (coordinatorTurn) {
         // A group turn must never be silent: if the coordinator did not speak in
@@ -3143,13 +3197,16 @@ export class AgentRuntime {
         .catch((err) => ({ status: 'failed', summary: err.message }));
       // Cut off by the step limit: the owner goes on, told what it already did,
       // as a group member does (11-17: "我接着做" on the board, then 没做成).
-      for (let n = 1; res?.status === 'max_steps' && res.continueGroup && plan.status !== 'stopped'; n += 1) {
+      // Also a turn that ended saying it is not done and will go on, under the limit (1.5.66, s6: 131 of 160
+      // pages, marked done): it goes on the same way, counted toward the same cap.
+      const goesOn = (r, n) => (r?.status === 'max_steps' && r.continueGroup) || (r?.status === 'success' && r.notDone && n <= LIMIT_CONTINUATIONS);
+      for (let n = 1; goesOn(res, n) && plan.status !== 'stopped'; n += 1) {
         if (task.dropped != null) break; // stopped by the coordinator (1.5.64)
         task.turnId = uid('turn');
         res = await this.runTurn({
           botId: owner.id,
           turnId: task.turnId,
-          text: continuationText({ n, what: `任务板上交给你的「${task.title}」`, actions: describeActions(res.receipts) }),
+          text: continuationText({ n, what: `任务板上交给你的「${task.title}」`, actions: describeActions(res.receipts), why: res.status === 'success' ? 'stopped' : 'limit' }),
           source: 'group', group, groupRole: 'task', recordUser: false, priorReceipts: res.receipts || [], groupContinuation: n, chainId: res.chainId,
         }).catch((err) => ({ status: 'failed', summary: err.message }));
       }
@@ -3201,10 +3258,14 @@ export class AgentRuntime {
     } else if (res?.waitingFor) {
       // A login only the human can pass (1.5.64): the card is up in the group, the task waits for
       // them like a question - their next word there (「好了」) sends its owner back to it.
+      // A blocking tell_human too (1.5.66, s1): the question is what it asked; the answer - in the group or in
+      // the member's own chat (answerInChat) - sends its owner back to the item.
       task.status = 'waiting_human';
-      task.question = String(res.summary || '').replace(/^等你/, '需要你') || '需要你接管屏幕登录';
+      task.question = res.waitingFor === 'decision'
+        ? String(res.waitingText || res.summary || '需要你拍板').slice(0, 1000)
+        : String(res.summary || '').replace(/^等你/, '需要你') || '需要你接管屏幕登录';
       task.answer = '';
-      task.takeover = res.waitingFor;
+      if (res.waitingFor === 'takeover' || res.waitingFor === 'login') task.takeover = res.waitingFor;
     } else if (res?.status === 'cancelled') {
       task.status = 'stopped';
       plan.status = 'stopped';
@@ -3212,8 +3273,11 @@ export class AgentRuntime {
     } else {
       // A turn that ended with nothing to show did not do the task.
       const empty = !String(res?.summary || '').trim() || String(res?.summary).trim() === '(no answer)';
-      task.status = res?.status === 'success' && !empty ? 'done' : 'failed';
-      task.result = empty ? '没有给出任何结果（回答是空的）。' : String(res?.summary || '').slice(0, 4000);
+      // Still 「没做完，我接着做」 after every go-on it had (1.5.66): not done - the coordinator sees it as it is.
+      task.status = res?.status === 'success' && !empty && !res.notDone ? 'done' : 'failed';
+      task.result = empty ? '没有给出任何结果（回答是空的）。'
+        : res?.notDone ? `自动接着做到次数用完，还是没做完，最后说：${String(res.summary || '').slice(0, 3900)}`
+        : String(res?.summary || '').slice(0, 4000);
     }
     await this.boardChanged(plan);
   }
@@ -3227,6 +3291,43 @@ export class AgentRuntime {
     const waiting = plan && !plan.auto && ['waiting', 'running'].includes(plan.status) && plan.tasks.find((t) => t.status === 'waiting_human');
     if (!waiting) return false;
     await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: String(text) });
+    await this.answerTask(group, plan, waiting, text);
+    return true;
+  }
+
+  /**
+   * The human answers, in a member's own chat (the page or Feishu), what its item on a group's task board
+   * waits on (1.5.66): the item takes the answer and its owner goes back to it on the board - the work stays
+   * on the board, no second turn beside it. -> {text, group, title} (said back in the chat), or null.
+   */
+  async answerInChat(botId, text, { turnId = null, source = 'chat' } = {}) {
+    const said = String(text || '').trim();
+    if (!said || !this.groups || typeof this.groupForRun !== 'function') return null;
+    await this.readBoards?.().catch(() => {});
+    for (const plan of this.plans?.values() || []) {
+      if (plan.auto || !['waiting', 'running'].includes(plan.status)) continue;
+      const row = plan.tasks.find((t) => t.owner === botId && t.status === 'waiting_human');
+      if (!row) continue;
+      const group = (await this.groupForRun(plan.groupId).catch(() => null))?.group;
+      if (!group || !(group.members || []).some((m) => m.id === botId && !m.remote)) continue;
+      const bot = await this.bots.getBot(botId).catch(() => null);
+      const id = turnId || uid('turn');
+      const answer = `好，这是任务板上「${row.title}」在等你回答的事。我带着你的回答回到群「${group.name}」里接着做，进度在群里看。`;
+      const ev = { botId, botName: bot?.name || botId, turnId: id, source, depth: 0, parentTurnId: null, unattended: false, aside: true };
+      await this.record(botId, { kind: 'user', text: said, turnId: id, source });
+      this.bus.emit({ type: 'turn.start', ...ev, text: said });
+      this.bus.emit({ type: 'message', ...ev, text: answer, final: true });
+      await this.record(botId, { kind: 'assistant', text: answer, turnId: id, source, final: true });
+      this.bus.emit({ type: 'turn.end', ...ev, status: 'success', summary: answer, steps: 0 });
+      await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: `（在「${bot?.name || botId}」的单聊里回答）${said}` });
+      await this.answerTask(group, plan, row, said);
+      return { text: answer, group, title: row.title, turnId: id };
+    }
+    return null;
+  }
+
+  /** A waiting item takes the human's answer: its owner goes back to it, the board goes on. */
+  async answerTask(group, plan, waiting, text) {
     waiting.answer = String(text).slice(0, 2000);
     // Their answer closes what the member asked (1.5.65; the collaboration eval: after 「扫好了」 in the group
     // every post_draft of 发布 was refused as still waiting). A member on another machine is told with the task.
@@ -3238,7 +3339,6 @@ export class AgentRuntime {
     const wake = this.planWakers?.get(plan.id);
     if (plan.status === 'running' && wake) wake();
     else this.runPlan(group, plan).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
-    return true;
   }
 
   /**
@@ -3255,6 +3355,7 @@ export class AgentRuntime {
     let status = 'success';
     let summary = '';
     let remoteKey = null;
+    let stoppedFor = {};
     try {
       const peers = this.getPeers();
       const peer = peers?.find(member.remote.machine);
@@ -3277,6 +3378,8 @@ export class AgentRuntime {
       });
       status = r.status === 'success' ? 'success' : (r.status || 'failed');
       summary = r.reply || '';
+      // It asked the human there, or waits for their hands (1.5.66): the board item waits for them here too.
+      if (['decision', 'takeover', 'login'].includes(r.waitingFor)) stoppedFor = { waitingFor: r.waitingFor, ...(r.waitingText ? { waitingText: r.waitingText } : {}) };
       await this.recordGroupMessage(group.id, { kind: 'assistant', from: member.id, text: (r.reply || '（没有回答）') + fetchedNote(r.fetched, member.remote.machine), turnId: id });
     } catch (err) {
       status = 'failed';
@@ -3290,7 +3393,7 @@ export class AgentRuntime {
     for (const said of waiting) {
       this.runGroupMessage({ group, text: said, recordUser: false }).catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
     }
-    return { turnId: id, status, summary };
+    return { turnId: id, status, summary, ...stoppedFor };
   }
 
   /** Kick off a just-created group by id (resolves member names; skipped in demo mode). */

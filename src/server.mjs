@@ -3480,6 +3480,11 @@ route('POST', /^\/api\/bots\/(?<id>[^/]+)\/message$/, async (_req, res, { params
   // Also when the work is a teammate's hand-off or a routine (1.2.165).
   // A group on another machine passes on the human's answer to what this bot asked (1.5.65): the question closes.
   if (h?.answered === true) state.runtime.humanSpoke?.(bot.id);
+  // Its item on a group's task board waits on the human (1.5.66): this is the answer; the item goes on there.
+  if (!h && body?.voiceCall !== true) {
+    const toBoard = await state.runtime.answerInChat?.(bot.id, text, { turnId, source: 'chat' }).catch(() => null);
+    if (toBoard) return { turnId: toBoard.turnId, botId: bot.id, board: true };
+  }
   const busyNow = !h && state.runtime.busyTurn?.(bot.id, { any: true });
   // Said to a member that has work on a group's task board (1.5.65): the row keeps it and the coordinator hears it.
   if (!h) state.runtime.noteDirectWord?.(bot.id, text, { turnId: busyNow ? null : turnId }).catch(() => {});
@@ -6639,7 +6644,9 @@ export function toMessageItem(record, index) {
         ...(record.chainAllowed ? { chainAllowed: true } : {}),
       };
     case 'turn':
-      return { ...base, role: 'status', status: record.status, summary: record.summary, steps: record.steps };
+      return { ...base, role: 'status', status: record.status, summary: record.summary, steps: record.steps,
+        // 1.5.66: stopped for the human (a question, a takeover): the machine that handed it over keeps its board item waiting.
+        ...(record.waitingFor ? { waitingFor: record.waitingFor, ...(record.waitingText ? { waitingText: record.waitingText } : {}) } : {}) };
     case 'plan':
       return { ...base, role: 'plan', planId: record.planId, text: record.text || '' };
     default:

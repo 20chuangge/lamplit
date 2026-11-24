@@ -341,7 +341,8 @@ async function workRig({ toolsMod, groupsMod, steps, level = '' }) {
   }
   return { ...r, seen, ran };
 }
-const asked = (r) => r.cards.map((c) => `${c.toolName}: ${String(c.args?.command || c.args?.path || c.args?.url || '').slice(0, 60)}`);
+// With the reason each card gave, so a failing run (the release CI on Linux) shows why it asked.
+const asked = (r) => r.cards.map((c) => `${c.toolName}: ${String(c.args?.command || c.args?.path || c.args?.url || '').slice(0, 60)} -> ${String(c.reason || '').slice(0, 120)}`);
 
 export async function ownWorkChecks({ check, toolsMod, groupsMod, readText }) {
   // 1. Its own temp files: made in this work, deleted with del /Q, rmdir /S, rm -rf - no card.
@@ -419,7 +420,9 @@ export async function ownWorkChecks({ check, toolsMod, groupsMod, readText }) {
   const agent = await readText('../src/agent.mjs');
   check('G67-4d only the bot\'s own, by name: its files and what is in a folder it made - never another bot\'s, the workspace itself or above, uploads, a pipe or a variable; the danger list still holds for the rest of a command, and the human\'s rules, the boundary, keys and sends are decided after',
     verdicts.mine && !verdicts.notMine && !verdicts.otherBot && !verdicts.root && !verdicts.up && verdicts.uploads === false && !verdicts.pipe && !verdicts.vars
-    && agent.includes('if (ownDel?.ok && !matchedDenyPatterns(ownDel.rest, denyAll).length) {') && agent.indexOf('const why = ownWork(') < agent.indexOf('// The human\'s one-sentence rules, matched by meaning.')
+    && agent.includes('if (ownDel?.ok && matchedDenyPatterns(shellCommand, denyAll).length && !matchedDenyPatterns(ownDel.rest, denyAll).length) {')
+    // Not by the ask's reason text (the release CI on Linux); the boundary is held against what is left of the command.
+    && !/const ownDel = [^\n]*danger denylist/.test(agent) && agent.includes('checkBoundary(name, ownOnly?.ok ? { ...args, command: ownOnly.rest } : args,') && agent.indexOf('const why = ownWork(') < agent.indexOf('// The human\'s one-sentence rules, matched by meaning.')
     && typeof A.ownWork === 'function' && A.ownWork('shell', { command: 'git push origin main' }) === '' && A.ownWork('image_generate', {}, { generate: 'ask' }) === '',
     JSON.stringify(verdicts));
 }
@@ -510,7 +513,7 @@ export async function levelChecks({ check, toolsMod, groupsMod, readText }) {
       }
       if (setup) { await setup(r.ws); await sleep(300); }
       await r.rt.runTurn({ botId: 'g67pub', text: '做吧', source: 'chat' });
-      out[word] = { cards: r.cards.length, chain: r.cards.map((c) => c.chainScope?.keys?.[0] || '').filter(Boolean) };
+      out[word] = { cards: r.cards.length, chain: r.cards.map((c) => c.chainScope?.keys?.[0] || '').filter(Boolean), ...(r.cards.length ? { asked: asked(r) } : {}) };
       r.done();
     }
     return out;
@@ -795,4 +798,13 @@ export async function pathFormChecks({ check }) {
     && r.winOnPosix[0] === null && r.winOnPosix[1] === true && r.winOnPosix[2] === false;
   check('G67-15 own-file paths read `tmp67\\a.png` and `tmp67/a.png` alike on a Windows and on a Linux workspace: the bot\'s own temp files are its own, others\' and the human\'s are not, the dangerous places stay dangerous, and a C:\\ place named on a Linux machine is never taken as inside its workspace',
     ok(results.posix) && ok(results.windows), JSON.stringify(results));
+
+  // The boundary on a Linux hub reads absolute paths in a command: cmd's switches (/Q, /S, /F, /A:H) are not folders at the root.
+  const B = await import('../src/boundary.mjs');
+  const paths = Object.fromEntries(['del /Q tmp67\\a.png', 'del /Q tmp67\\*.wav && del /F /Q cut67.mp4', 'rmdir /S /Q tmp67', 'dir /A:H /B', 'move /Y a.png b.png',
+    'del /Q /home/u/x.txt', 'copy /Y a.txt /etc/x', 'rm -rf /Q', 'ls /opt && del /Q a.png'].map((c) => [c, B.unixPathsIn(c)]));
+  const none = ['del /Q tmp67\\a.png', 'del /Q tmp67\\*.wav && del /F /Q cut67.mp4', 'rmdir /S /Q tmp67', 'dir /A:H /B', 'move /Y a.png b.png'];
+  check('G67-15b on a Linux machine cmd\'s switches (del /Q, rmdir /S /Q, dir /A:H, move /Y) are not places at the root; a real path after them still is, and /Q after a Linux program (rm -rf /Q) is a path',
+    none.every((c) => paths[c].length === 0) && paths['del /Q /home/u/x.txt'].join() === '/home/u/x.txt' && paths['copy /Y a.txt /etc/x'].join() === '/etc/x'
+    && paths['rm -rf /Q'].join() === '/Q' && paths['ls /opt && del /Q a.png'].join() === '/opt', JSON.stringify(paths));
 }

@@ -3515,6 +3515,8 @@ window.DESK_I18N_EN = {
   "{0}名下没有定时任务（「{1}」上一共 {2} 条，勾选「全部」查看）。": "{0} has no routines ({2} on “{1}” in all; tick All to see them).",
   // 1.5.64: folder upload
   "选文件": "Choose files",
+  "图片、文档，可以一次选多个": "Images or documents, several at once",
+  "整个文件夹，里面的层级不变": "A whole folder, layout kept",
   "选文件夹": "Choose a folder",
   "一条消息最多 {0} 个附件": "At most {0} attachments per message",
   "这个文件夹里没有能传的文件": "Nothing in this folder can be uploaded",

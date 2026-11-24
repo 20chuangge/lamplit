@@ -3233,7 +3233,17 @@
   /* @mention picker --------------------------------------------------- */
   .composer { position: relative; }
   /* 1.5.64: 📎 → 选文件 / 选文件夹; a folder waiting as a chip, what it leaves out, its card in a message */
-  .attach-menu { left: 0; right: auto; bottom: calc(100% + 6px); top: auto; }
+  /* 1.5.66: opens right above the 📎 (placeAttachMenu sets left/bottom), an icon and a line saying what each one takes */
+  .attach-menu { left: 0; right: auto; bottom: calc(100% + 6px); top: auto; width: 248px; padding: 6px; border-radius: 14px; transform-origin: bottom left; animation: attach-menu-in 120ms var(--ease); }
+  .attach-menu button { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 7px 10px 7px 8px; border-radius: 10px; white-space: normal; }
+  .attach-menu .am-ico { flex: none; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; background: var(--tint-2); color: var(--muted); }
+  .attach-menu button:hover .am-ico, .attach-menu button:focus-visible .am-ico { background: var(--tint-3); color: var(--text); }
+  .attach-menu .am-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .attach-menu .am-title { font-size: var(--t-sm); font-weight: 600; color: var(--text); }
+  .attach-menu .am-sub { font-size: var(--t-xs); color: var(--dim); line-height: 1.35; }
+  .attach-btn[aria-expanded="true"] { background: var(--panel-2); color: var(--text); }
+  @keyframes attach-menu-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .attach-menu { animation: none; } }
   .att-chip-folder { max-width: 320px; }
   .att-note { flex-basis: 100%; font-size: var(--t-xs); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .att-folder { display: flex; flex-direction: column; gap: 4px; max-width: 320px; border-radius: 10px; background: var(--tint-2); }

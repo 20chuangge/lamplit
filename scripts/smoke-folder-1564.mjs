@@ -349,7 +349,8 @@ export async function folderPageChecks({ check, readText }) {
   const live = await readText('../public/app/main/06-live.js');
   const wiring = await readText('../public/app/main/12-wiring.js');
   check('FOLD-5a 📎 on a computer opens 「选文件」 / 「选文件夹」 (a webkitdirectory input); on a phone it opens the file picker as before (no folder picking in the Android app or a phone browser)',
-    /<input type="file" id="attach-folder-input" webkitdirectory multiple hidden \/>/.test(html) && html.includes('id="attach-pick-files">选文件</button>') && html.includes('id="attach-pick-folder">选文件夹</button>')
+    /<input type="file" id="attach-folder-input" webkitdirectory multiple hidden \/>/.test(html) && /id="attach-pick-files">[\s\S]*?<span class="am-title">选文件<\/span>[\s\S]*?<\/button>/.test(html) && /id="attach-pick-folder">[\s\S]*?<span class="am-title">选文件夹<\/span>[\s\S]*?<\/button>/.test(html)
+    && /function placeAttachMenu\(menu\)/.test(part) && part.includes('if (!menu.hidden) placeAttachMenu(menu);')
     && wiring.includes("$('attach-btn').addEventListener('click', onAttachClick);") && /if \(!menu \|\| !canPickFolder\(\)\) \{ \$\('attach-input'\)\.click\(\); return; \}/.test(part)
     && /window\.Capacitor \|\| \/Android\|iPhone\|iPad\|Mobile\/i/.test(part));
 

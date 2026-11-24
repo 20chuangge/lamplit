@@ -302,4 +302,17 @@ function onAttachClick(event) {
   if (!menu || !canPickFolder()) { $('attach-input').click(); return; }
   event.stopPropagation();
   toggleMenu(menu, $('attach-btn'));
+  if (!menu.hidden) placeAttachMenu(menu);
+}
+
+/** 1.5.66: the menu sits right above the 📎, not at the composer's left edge (far away on a wide window). */
+function placeAttachMenu(menu) {
+  const btn = $('attach-btn');
+  const host = menu.offsetParent || menu.parentElement;
+  if (!btn || !host) return;
+  const b = btn.getBoundingClientRect();
+  const h = host.getBoundingClientRect();
+  const left = Math.max(8, Math.min(b.left - h.left - 4, h.width - menu.offsetWidth - 8));
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.bottom = `${Math.round(h.bottom - b.top + 8)}px`;
 }

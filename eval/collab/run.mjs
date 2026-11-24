@@ -324,6 +324,12 @@ export async function runScenario(sc, { mode = 'fake', plant = new Set(), mock, 
       for (const b of trace.bots.filter((x) => x.hub === 'B')) {
         await hubs.B.deleteBot(b.id).catch((err) => trace.errors.push(`清理：另一台上的「${b.name}」没删掉（${err.message}）`));
       }
+      // What stays there: this run's folder on that machine (nothing is deleted there through the first one).
+      // Said plainly, with what the members wrote in it, so the human can remove it by hand.
+      if (folder && !hubs.B.testHub) {
+        const inIt = [...new Set((trace.peerMade || []).filter((x) => x.how !== 'copy' && x.path.startsWith(`${folder}/`)).map((x) => x.path))];
+        trace.notes.push(`要人自己删：另一台「${hubs.B.machine}」上留着这次的文件夹，评测删不了（经第一台删不了那台的文件）。位置：那台的工作区下的 ${folder}/${inIt.length ? `，里面有 ${listLine(inIt)}` : ''}。不要了就在那台上把这个文件夹删掉。`);
+      }
     }
     // Clean up: the group, the bots (not kept for the activity log), the run's folder on an attached hub.
     if (attached) {

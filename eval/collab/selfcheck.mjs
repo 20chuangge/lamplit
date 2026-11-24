@@ -60,7 +60,7 @@ export function cleanTrace() {
     uploadsAfter: { 'uploads/2026-11-23/素材/1.mp4': 'aaaa' },
     files: [{ hub: 'A', path: '交付/标题.md', size: 10, mtime: at(1000) }],
     restarts: [],
-    expect: { sites: ['a'], perSite: 1, maxDeliverables: 1, deliverableDir: '交付/', directWords: [{ step: 'skip', forbid: '乙站.{0,20}(重试|再发|补发|稍后)' }] },
+    expect: { sites: ['a'], perSite: 1, maxDeliverables: 1, deliverableDir: '交付/', directWords: [{ step: 'skip', item: '乙站' }] },
   };
 }
 

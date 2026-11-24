@@ -6,7 +6,7 @@
 import { startMockSites, SITES } from '../eval/collab/mocksites.mjs';
 import { readCall } from '../eval/collab/fakemodel.mjs';
 import { runSelfCheck } from '../eval/collab/selfcheck.mjs';
-import { INVARIANTS, checkNoExtraWork } from '../eval/collab/invariants.mjs';
+import { INVARIANTS, checkNoExtraWork, checkNoContradiction } from '../eval/collab/invariants.mjs';
 import { SCENARIOS } from '../eval/collab/scenarios.mjs';
 import fs from 'node:fs';
 import { snapshot, diff, restore, leftovers } from '../eval/collab/workspace.mjs';
@@ -229,6 +229,29 @@ export async function collabSelfChecks({ check }) {
       check('COLLAB-11 the media are real and small (a JPEG cover, an MP4 clip, a PNG); I8 counts what a bot names to the human and the pages it published, not its own notes; work stopped on a question the script never answers is a gap in the script (➖), answered and still not done is a fail',
         media && i8.ok === false && /2 个文件/.test(i8.note) && gap.skipped === true && /剧本缺口/.test(gap.note) && answered.ok === false && !answered.skipped,
         JSON.stringify({ media, i8: i8.note, gap: gap.note, answered: answered.ok }));
+    }
+
+    // I7 judges what the coordinator asks for, sentence by sentence (11-24 real run: after 「乙站这次不发了」 it
+    // handed out 甲站 then 丙站 and repeated the skip; 「…再发。乙站…跳过」 was read across the full stop).
+    {
+      const C = 'c1';
+      const P = 'p1';
+      const base = (said) => ({
+        t0: 0, t1: 100, coordinator: { hub: 'A', id: C }, bots: [{ id: C, name: '评测-主理人' }, { id: P, name: '评测-发布' }],
+        expect: { directWords: [{ step: 'skip-b', item: '乙站' }] },
+        human: [{ at: 5, kind: 'group', text: '把这个文件夹里的视频发到甲站、乙站、丙站。' }, { at: 10, kind: 'direct', step: 'skip-b', botId: P, text: '乙站这次不发了，跳过乙站。' }],
+        groupMessages: [{ hub: 'A', at: 50, kind: 'handoff', from: C, text: said }],
+        events: [{ hub: 'A', at: 50, type: 'tool.call', name: 'bot_message', botId: C, callId: 'x1', args: { botId: P, text: said } }],
+      });
+      const other = checkNoContradiction(base('人的决定：甲站视频标记选「无需标记」。请按此发布甲站（文案照 uploads/x/文案.md）。甲站发布完成后接着发丙站，丙站同样先把草稿给人看、等他说发再发。乙站按你之前说的这次跳过，不用发。记录写在 交付/乙站-发布记录.md。'));
+      const plain = checkNoContradiction(base('甲站发完接着发丙站。'));
+      // The board item's title is the human's own request, repeated in a summary: not asking again.
+      const title = checkNoContradiction(base('2. 发到甲站、乙站、丙站（评测-发布，完成）：甲站、丙站发好了。'));
+      const against = checkNoContradiction(base('甲站跳过，乙站稍后重试。'));
+      const claim = checkNoContradiction(base('三个站都发好了，乙站已经发出去了。'));
+      check('COLLAB-13 I7: after the human told a member to skip one item, the coordinator handing out the other items (repeating the skip, naming a file about it, quoting the human\'s own request) is no violation; asking for the skipped one again, or saying it went out, is',
+        other.ok && plain.ok && title.ok && !against.ok && !claim.ok && /稍后重试/.test(against.evidence[0]?.text || ''),
+        JSON.stringify({ other: other.evidence.map((e) => e.text), plain: plain.ok, against: against.ok, claim: claim.ok }));
     }
 
     // The self-check proper: proofs, plants, clean runs.

@@ -343,3 +343,39 @@ export async function goOnChecks({ check, toolsMod, groupsMod }) {
     r.done();
   }
 }
+
+/**
+ * 「以后都允许」 seen by the turn that is waiting (1.5.66): the human allowed a connected app's step
+ * for good on the first card, yet the same turn's next two edits asked again (3 cards for 3 Notion
+ * edits), because the server saved the rule after the turn already held its copy of the bot.
+ */
+export async function alwaysNowChecks({ check, readText }) {
+  const A = await import('../src/approvals.mjs');
+  const q = new A.ApprovalQueue({ timeoutMs: 60000 });
+  const remember = { key: 'mcp__m1__notion-update-page', label: 'mcp__m1__notion-update-page' };
+  const ask = (rem) => {
+    const waiting = q.request({ turnId: 't66', botId: 'b66', toolName: 'mcp__m1__notion-update-page', args: { page_id: 'p' }, risk: 'MEDIUM', reason: 'test', remember: rem });
+    return { waiting, id: [...q.records.keys()].at(-1) };
+  };
+  const a = ask(remember);
+  q.decide(a.id, 'approve', '', 'human', { always: true });
+  const ra = await a.waiting;
+  const b = ask(remember);
+  q.decide(b.id, 'approve', '', 'human');
+  const rb = await b.waiting;
+  const c = ask(null);
+  q.decide(c.id, 'approve', '', 'human', { always: true });
+  const rc = await c.waiting;
+  const d = ask(remember);
+  q.decide(d.id, 'deny', '', 'human', { always: true });
+  const rd = await d.waiting;
+  check('G66-3a 「以后都允许」 on a card that offered it reaches the waiting turn with the answer (alwaysAllowed); 「允许这一次」, a card without the offer, or 不要 do not',
+    ra.approval?.alwaysAllowed === true && !rb.approval?.alwaysAllowed && !rc.approval?.alwaysAllowed && !rd.approval?.alwaysAllowed,
+    JSON.stringify([ra.approval?.alwaysAllowed, rb.approval?.alwaysAllowed, rc.approval?.alwaysAllowed, rd.approval?.alwaysAllowed]));
+
+  const agent = await readText('../src/agent.mjs');
+  const server = await readText('../src/server.mjs');
+  check('G66-3b the turn adds the rule to its own copy of the bot at once (the same key the server saves), so its next step of the same kind runs unasked; the page passes 「以后都允许」 to the queue',
+    /if \(offered && resolution\.decision === 'approved' && resolution\.approval\?\.alwaysAllowed && !isRemembered\(bot, offered\.key\)\) \{\s*bot\.policy = \{ \.\.\.\(bot\.policy \|\| \{\}\), allowed: \[\.\.\.\(bot\.policy\?\.allowed \|\| \[\]\), \{ \.\.\.offered, at: /.test(agent)
+    && server.includes("chain: body?.chain === true, always: body?.always === true }"));
+}

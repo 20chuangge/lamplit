@@ -3811,6 +3811,11 @@ export class AgentRuntime {
       });
 
       const resolution = await pending;
+      // 「以后都允许」 (1.5.66): the server saves the rule after this turn already holds its copy of the bot,
+      // so the turn's next step of the same kind asked again (3 cards for 3 Notion edits). Seen here at once.
+      if (offered && resolution.decision === 'approved' && resolution.approval?.alwaysAllowed && !isRemembered(bot, offered.key)) {
+        bot.policy = { ...(bot.policy || {}), allowed: [...(bot.policy?.allowed || []), { ...offered, at: new Date().toISOString() }] };
+      }
       // 「这一轮都允许」: the same kind of step (or destination) runs unasked for the rest of this chain (1.5.65).
       const chainAllowed = Boolean(chainOffer && resolution.decision === 'approved' && resolution.approval?.chainAllowed);
       if (chainAllowed) this.grantChain(ctx.chainId, bot.id, chainOffer);

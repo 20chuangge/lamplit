@@ -5722,7 +5722,7 @@ route('POST', /^\/api\/approvals\/(?<id>[^/]+)$/, async (req, _res, { params, bo
   const viaMachine = body?.via?.machine && isHubCall(req, state.security) ? String(body.via.machine).trim().slice(0, 60) : '';
   const by = viaMachine ? 'peer' : req.auth?.deviceId ? 'device' : 'human';
   const edits = body?.edits && typeof body.edits === 'object' && !Array.isArray(body.edits) ? body.edits : null;
-  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits, chain: body?.chain === true });
+  const record = state.approvals.decide(params.id, decision, body?.note || '', by, { decidedOn: viaMachine, edits, chain: body?.chain === true, always: body?.always === true });
   if (!record) throw httpError(404, 'APPROVAL_NOT_FOUND', '这张卡已经不在了（可能已经处理过，或者那台机器重启过）');
   // A draft the human made too long (1.5.45): said so, the card stays open.
   if (record.editError) throw httpError(400, 'DRAFT_INVALID', record.error);

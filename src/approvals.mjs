@@ -524,7 +524,7 @@ export class ApprovalQueue {
    * late, but we do NOT resume the finished run. Re-running the routine is the
    * explicit way to continue; see README "what this replica does NOT do".
    */
-  decide(id, decision, note = '', by = 'human', { decidedOn = '', edits = null, chain = false } = {}) {
+  decide(id, decision, note = '', by = 'human', { decidedOn = '', edits = null, chain = false, always = false } = {}) {
     const record = this.records.get(id);
     if (!record) return null;
     // Answered already (another device, another machine, or a second click):
@@ -577,6 +577,8 @@ export class ApprovalQueue {
 
     // 「这一轮都允许」 (1.5.65): only on a card that offered it, only with a yes, only while its turn waits.
     if (chain === true && normalized === 'approved' && record.chainScope && record.status === 'pending') record.chainAllowed = true;
+    // 「以后都允许」 (1.5.66): the turn that is waiting learns it at once, so its next step of the same kind does not ask again.
+    if (always === true && normalized === 'approved' && record.remember && record.status === 'pending') record.alwaysAllowed = true;
     this.settle(id, normalized, note, by);
     return this.records.get(id);
   }

@@ -310,6 +310,11 @@ async function main() {
     await stage('1.5.67: the three levels, cell by cell - the table the human agreed to', async () => (await import('./smoke-group-1567.mjs')).levelChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: two live cases - a read after 「以后都允许」 at 放手, an installed program by its path', async () => (await import('./smoke-group-1567.mjs')).liveCaseChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: 150 steps for every bot; going on after the limit is not said in the chat', async () => (await import('./smoke-group-1567.mjs')).stepLimitChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.68: a round that goes on by itself knows what the rounds before it sent out, and does not upload it again', async () => (await import('./smoke-carry-1568.mjs')).carryChecks({ check, toolsMod, readText }));
+    await stage('1.5.68: a 「发」 from the human in the chat is the answer for publishing that work on the phone', async () => (await import('./smoke-carry-1568.mjs')).goChecks({ check, toolsMod }));
+    await stage('1.5.68: its own temp files deleted unasked after a cd; a finished job waits with an open question; a played video fits the window', async () => (await import('./smoke-carry-1568.mjs')).ownAndQuietChecks({ check, readText }));
+    await stage('1.5.68: a chat opens with its conversation, however many steps the last task took', async () => (await import('./smoke-chat-1568.mjs')).chatWindowChecks({ check, api, readText }));
+    await stage('1.5.68: fewer steps - the screen comes back with the step, several steps in one call, the way it was done is kept', async () => (await import('./smoke-steps-1568.mjs')).fewerStepsChecks({ check, toolsMod, readText }));
     await stage('1.5.67: one rule for every bot - existing, new, on another machine', async () => (await import('./smoke-group-1567.mjs')).allBotsChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: bots are told which shell runs their commands; a bash command on Windows is caught before it runs', async () => (await import('./smoke-group-1567.mjs')).shellChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.67: the read guard is off unless the human turns it on', async () => (await import('./smoke-group-1567.mjs')).readGuardDefaultChecks({ check, toolsMod, groupsMod, readText }));
@@ -5342,7 +5347,7 @@ async function scenarioMcpCatalog({ home, toolsMod }) {
         && (process.platform !== 'win32' || cc('已保存到 /home/ubuntu/out.md').length === 0)
         && cc('如实更正：「tests-claim/two.md 已写好」和「已发送给张三」：两件都没做，也不成立。two.md 不存在。').length === 0 && cc('你说「帮我把这个写好存起来」，我已保存到 tests/fake.md。').length === 1);
       check('M17 claim checking: an answer that does not match the turn\'s receipts is taken back once to be corrected; if it still does not, it carries a visible note',
-        agentSrcT.includes('const problems = checkClaims(String(response.content), receipts,') && agentSrcT.includes('（系统核对）你的回答和这一轮的实际操作对不上') && agentSrcT.includes('⚠ 核对：这些说法在这一轮的操作记录里找不到依据') && agentSrcT.includes('receipts.push({ name: call.name,'));
+        agentSrcT.includes('const problems = checkClaims(String(response.content), receipts,') && agentSrcT.includes('（系统核对）你的回答和这一轮的实际操作对不上') && agentSrcT.includes('⚠ 核对：这些说法在这一轮的操作记录里找不到依据') && agentSrcT.includes('const receipt = { name: call.name,'));
     }
     check('M6 tool limit: mcp_find_tools finds a hidden tool with its parameters', found.tools[0]?.name === 'mcp__mbig__tool-77' && found.tools[0].parameters?.type === 'object');
     const agentSrc = await readText('../src/agent.mjs');

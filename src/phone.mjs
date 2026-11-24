@@ -59,6 +59,17 @@ export const PHONE_KIND_LABEL = { send: '发消息', publish: '发布', agree: '
 
 export const SENSITIVE_TAP = /支付|付款|转账|买单|购买|下单|提交订单|充值|发布|发送|发表|评论|回复|删除|清空|卸载|注销|退出登录|授权|同意|接受|允许|\b(pay|buy|purchase|send|post|publish|delete|remove|uninstall|confirm payment|agree|accept|allow)\b/i;
 
+/**
+ * The words of what a tap presses, without a card's counters and state (1.5.68): 「评论 0」「赞 3」「1.2万 收藏」
+ * 「回复 5」「已发布」「发布于 11-24」 describe a post, they are not a button. A bare 「评论」「发布」 stays.
+ */
+export function tapWords(words) {
+  return String(words || '')
+    .replace(/(?:评论|回复)\s*[:：]?\s*[\d.,]+\s*(?:万|w|k|\+)?/gi, ' ')
+    .replace(/[\d.,]+\s*(?:万|w|k|\+)?\s*(?:条|个|次)?\s*(?:评论|回复)/gi, ' ')
+    .replace(/(?:已|未|待)(?:发布|发表|发送|删除|同意|回复)|(?:发布|发表|回复|评论)(?:于|时间|成功|失败)/g, ' ');
+}
+
 /** A box for searching: pressing enter there looks things up, it sends nothing. */
 const SEARCH_BOX = /search|搜索|查找|搜一搜|query/i;
 /** What the × in an input box is called. */
@@ -742,5 +753,9 @@ export function createPhone({ adb, exec = runAdb, workspaceDir, tmpDir = () => h
   };
 }
 
-export const PHONE_ACTIONS = ['status', 'look', 'tap', 'swipe', 'type', 'key', 'open', 'apps', 'save_to_album'];
+export const PHONE_ACTIONS = ['status', 'look', 'tap', 'swipe', 'type', 'key', 'open', 'apps', 'save_to_album', 'steps'];
 export const PHONE_LOOK_ACTIONS = new Set(['status', 'look', 'apps']);
+/** Steps that change the screen: their result carries the screen afterwards (1.5.68). */
+export const PHONE_ACT_ACTIONS = new Set(['tap', 'swipe', 'type', 'key', 'open']);
+/** How many steps one `steps` call may hold. */
+export const PHONE_STEPS_MAX = 12;

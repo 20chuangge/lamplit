@@ -367,7 +367,7 @@ export async function ownWorkChecks({ check, toolsMod, groupsMod, readText }) {
       ['a move of a file there before', (ws) => fs.writeFileSync(path.join(ws, '旧稿3.md'), 'x'), 'move 旧稿3.md old\\旧稿3.md'],
       ['outside the workspace', () => {}, `rmdir /S /Q ${path.join(os.tmpdir(), 'g67-outside')}`],
       ['a wildcard at the top of the workspace', () => {}, 'del /Q *.png'],
-      ['after cd', () => {}, 'cd tmp67 && del /Q *.png'],
+      ['after a cd out of the workspace', () => {}, 'cd .. && del /Q *.png'],
     ];
     const got = [];
     for (const [what, setup, command] of cases) {
@@ -378,7 +378,7 @@ export async function ownWorkChecks({ check, toolsMod, groupsMod, readText }) {
       got.push([what, r.cards.length, r.ran.length]);
       r.done();
     }
-    check('G67-4b deleting or moving what the human uploaded or what was there before the work, anything outside the workspace, a wildcard that could reach other files, or after a cd still asks every time',
+    check('G67-4b deleting or moving what the human uploaded or what was there before the work, anything outside the workspace, a wildcard that could reach other files, or after a cd out of the workspace still asks every time',
       got.every(([, cards, ran]) => cards === 1 && ran === 1), JSON.stringify(got));
   }
 

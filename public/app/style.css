@@ -2893,7 +2893,8 @@
   .att-video-stage { position: relative; border-radius: 12px; overflow: hidden; background: var(--media-bg); min-height: 120px; aspect-ratio: 16 / 9; }
   .att-video-stage video { height: 100%; object-fit: contain; border-radius: 0; }
   .att-video.playing .att-video-stage { aspect-ratio: auto; }
-  .att-video.playing .att-video-stage video { height: auto; }
+  .att-video.playing .att-video-stage video { height: auto; max-height: min(70vh, 640px); object-fit: contain; }
+  /* 1.5.68: a vertical (9:16) video played at the card's 520 px width stood about 920 px tall, more than the window. */
   .att-video-play { position: absolute; inset: 0; margin: auto; width: 60px; height: 60px; border-radius: 50%; border: 0; display: grid; place-items: center; padding-left: 4px;
     background: var(--media-overlay); color: var(--media-text); cursor: pointer; box-shadow: 0 2px 12px var(--shade-2); }
   .att-video-play:hover { background: var(--media-overlay-2); }

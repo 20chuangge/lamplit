@@ -41,7 +41,7 @@ import { listVault, revealVault } from './vault.mjs';
 import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
 import { planAdjust, botPatchOf } from './adjust.mjs';
 import { runWinUi, WINUI_ACTIONS } from './winui.mjs';
-import { createPhone, findAdb, appLabel, PHONE_ACTIONS, PHONE_LOOK_ACTIONS, SENSITIVE_TAP, phoneStepKind, PHONE_KIND_LABEL, albumFiles, ALBUM_MAX_FILES, ALBUM_MAX_BYTES, ALBUM_APP_VERSION } from './phone.mjs';
+import { createPhone, findAdb, appLabel, PHONE_ACTIONS, PHONE_LOOK_ACTIONS, PHONE_ACT_ACTIONS, PHONE_STEPS_MAX, tapWords, SENSITIVE_TAP, phoneStepKind, PHONE_KIND_LABEL, albumFiles, ALBUM_MAX_FILES, ALBUM_MAX_BYTES, ALBUM_APP_VERSION } from './phone.mjs';
 import { CLI_AGENTS, CLI_AGENT_IDS, newTaskDir, runCliAgent } from './cliagents.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -976,12 +976,27 @@ export function createRegistry(deps) {
       'type (text into the box with the cursor, or the box given by target; Chinese works; submit=true presses enter), key (back, home, enter, recent, delete, search), open (an app by its everyday name like 小红书 or its package), apps (installed apps), ' +
       `save_to_album (paths = workspace files, in order: pictures and videos become the newest in the phone's gallery, first file first, so 「从相册选择」 shows them at the top; other files go to Downloads; up to ${ALBUM_MAX_FILES} files / ${ALBUM_MAX_BYTES / (1024 * 1024)} MB; machine = the machine the phone is connected to, when it is not this one). ` +
       'Whenever files must get onto the phone (to post them from an app there), use save_to_album - never put them on a public file host or a download link. ' +
-      'Work in small steps: look, do one thing, look again. Looking never asks the human; tapping, typing and opening apps ask unless they allowed it for that app; anything that pays, sends, publishes or deletes asks every time. ' +
+      'Every tap, type, key, swipe and open returns the screen afterwards (screen: the same list a look gives) - go on from it, do not call look again; use look only for the first screen or after waiting. ' +
+      'Several things on one screen (ticking 9 pictures, filling boxes) go in ONE call: action "steps" with a steps list. Looking never asks the human; tapping, typing and opening apps ask unless they allowed it for that app; anything that pays, sends, publishes or deletes asks every time. ' +
       'If the phone is locked, ask the human to unlock it - never try yourself. Never type passwords or payment codes: the human does that.',
     risk: (args) => (PHONE_LOOK_ACTIONS.has(String(args?.action || '')) ? { risk: RISK.LOW } : { risk: RISK.MEDIUM }),
     // What the tap would press, known before the approval: paying, sending,
     // publishing or deleting always asks; "以后都允许" is kept per app.
     async escalate(args, ctx) {
+      // Several steps in one call (1.5.68): judged step by step; one that pays, sends, publishes or deletes makes
+      // the whole call that kind of step (it asks, or runs on the human's 「发」, exactly as alone).
+      if (String(args?.action || '') === 'steps') {
+        const steps = (Array.isArray(args?.steps) ? args.steps : []).slice(0, PHONE_STEPS_MAX);
+        const each = [];
+        for (const s of steps) {
+          if (!s || typeof s !== 'object' || !['tap', 'type', 'key', 'swipe'].includes(String(s.action || ''))) continue;
+          each.push(await this.escalate({ ...s, device: args.device }, ctx));
+        }
+        const hard = each.find((e) => e?.alwaysAsk);
+        if (hard) return hard;
+        const app = each.find((e) => e?.app)?.app || null;
+        return { risk: RISK.MEDIUM, app, reason: `在手机${app ? `的「${app.label}」` : ''}上连着做 ${each.length} 步：${each.map((e) => String(e?.reason || '').replace(/^在手机(的「[^」]*」)?上/, '')).slice(0, 6).join('、')}${each.length > 6 ? ' …' : ''}` };
+      }
       const action = String(args?.action || '');
       if (PHONE_LOOK_ACTIONS.has(action)) return null;
       // The human's own files onto their own phone (1.5.65): a phone step like opening an app, not a send.
@@ -999,7 +1014,9 @@ export function createRegistry(deps) {
         sends = !box.search;
       }
       const app = seen.app ? { pkg: seen.app, label: appLabel(seen.app) } : null;
-      const words = [seen.label, args?.what, sends ? '发送' : ''].filter(Boolean).join(' ');
+      // A card's counters and state (「评论 0」「赞 3」「已发布」) are not a button's words (1.5.68; 11-24: opening a note
+      // to read its numbers asked as if it were a comment about to be sent, and stopped the 20:05 check).
+      const words = tapWords([seen.label, args?.what, sends ? '发送' : ''].filter(Boolean).join(' '));
       if ((action === 'tap' || action === 'type') && SENSITIVE_TAP.test(words) && !(action === 'tap' && seen.clearsBox)) {
         return { risk: RISK.HIGH, alwaysAsk: true, app, phoneKind: phoneStepKind(words), reason: `在手机${app ? `的「${app.label}」` : ''}上${action === 'type' ? '输入并提交' : `点「${String(seen.label || args?.what || '').slice(0, 30)}」`}：可能付款、发送、发布或删除，每次都先问你` };
       }
@@ -1011,6 +1028,7 @@ export function createRegistry(deps) {
       type: 'object',
       properties: {
         action: { type: 'string', enum: PHONE_ACTIONS },
+        steps: { type: 'array', maxItems: PHONE_STEPS_MAX, items: { type: 'object' }, description: `steps: up to ${PHONE_STEPS_MAX} tap / type / key / swipe steps done one after another on the screen you last saw, each written like a single call ({action:"tap", index: 12}, {action:"tap", x: 642, y: 449, what: "第2张勾选圈"}, …). For things on ONE screen: ticking several pictures, filling a few boxes. It stops at the first step that fails; the result carries the screen afterwards.` },
         device: { type: 'string', description: 'Which phone (serial or model) when more than one is connected.' },
         target: { type: 'string', description: 'tap/type: the words shown on the button or box (text, description or id from look).' },
         index: { type: 'integer', description: 'tap/type: the element number i from the last look.' },
@@ -1033,7 +1051,31 @@ export function createRegistry(deps) {
       const action = String(args?.action || '');
       try {
         if (action === 'save_to_album') return await saveToPhoneAlbum(args || {}, ctx);
-        return await phoneOf(ctx).act(action, { ...args });
+        const phone = phoneOf(ctx);
+        // The screen after the step comes back with it (1.5.68; 11-24: 98 of 发布's 260 phone steps were a look right
+        // after a tap). A look that fails is left out; the step itself still counts.
+        const screenAfter = async (out) => {
+          await new Promise((r) => setTimeout(r, deps.phoneSettleMs ?? 700));
+          try { return { ...out, screen: await phone.act('look', { device: args.device }), note: 'screen = the phone after this step (same as a look): go on from it, do not look again.' }; } catch { return out; }
+        };
+        if (action === 'steps') {
+          const steps = (Array.isArray(args.steps) ? args.steps : []).slice(0, PHONE_STEPS_MAX);
+          if (!steps.length) throw toolError('BAD_ARGS', 'steps needs a list of tap / type / key / swipe steps');
+          const done = [];
+          let failed = null;
+          for (const [i, s] of steps.entries()) {
+            const a = String(s?.action || '');
+            if (!['tap', 'type', 'key', 'swipe'].includes(a)) { failed = { step: i + 1, error: `"${a}" cannot be a step here: tap, type, key or swipe` }; break; }
+            try {
+              const r = await phone.act(a, { ...s, device: args.device });
+              done.push({ step: i + 1, action: a, ...(r?.tapped ? { tapped: r.tapped } : {}) });
+            } catch (err) { failed = { step: i + 1, error: err.message }; break; }
+            if (i < steps.length - 1) await new Promise((r) => setTimeout(r, deps.phoneStepGapMs ?? 350));
+          }
+          return screenAfter({ done: done.length, of: steps.length, steps: done, ...(failed ? { stoppedAt: failed } : {}) });
+        }
+        const out = await phone.act(action, { ...args });
+        return PHONE_ACT_ACTIONS.has(action) ? screenAfter(out) : out;
       } catch (err) {
         throw toolError(err.code || 'PHONE_FAILED', err.message);
       }
@@ -1164,6 +1206,21 @@ export function createRegistry(deps) {
   // that uses one of its refs hit the same page inside a single turn.
 
   const browserManager = (ctx) => getBrowserManager(ctx?.bot?.id || '');
+  /**
+   * The page after an action comes back with it (1.5.68; 11-24: 92 of TikTok运营's 412 browser steps were a
+   * snapshot or screenshot right after a click or a key). Same content as browser_snapshot, text capped shorter.
+   */
+  const BROWSER_STEPS_MAX = 12;
+  const withPage = async (mgr, out) => {
+    if (!out || out.ok === false || out.error) return out;
+    try {
+      const snap = await mgr.snapshot();
+      if (!snap?.ok) return out;
+      const text = String(snap.text || '');
+      return withLoginWall({ ...out, page: { title: snap.title, url: snap.url, text: text.slice(0, 4000), ...(text.length > 4000 || snap.textTruncated ? { textTruncated: true } : {}), elements: snap.elements },
+        note: 'page = the page after this action (same as browser_snapshot, refs included): go on from it, do not snapshot again.' });
+    } catch { return out; }
+  };
 
   add({
     name: 'browser_open',
@@ -1192,7 +1249,7 @@ export function createRegistry(deps) {
     name: 'browser_snapshot',
     description:
       'Read the page the browser is on: visible text (script/style stripped, capped at 8000 chars) plus every interactive element with a stable ref. ' +
-      'Each element looks like {ref:"@e3", tag, role, name, visible}. Always snapshot before clicking or typing; refs from an older page state fail with STALE_REF, so take a new snapshot after the page changes.',
+      'Each element looks like {ref:"@e3", tag, role, name, visible}. browser_click, browser_type, browser_press, browser_upload and browser_steps return the page afterwards (page: this same content, fresh refs), so snapshot only for the first read of a page or after waiting; refs from an older page state fail with STALE_REF.',
     risk: RISK.LOW,
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     run: async (_args, ctx) => withLoginWall(await browserManager(ctx).snapshot()),
@@ -1212,7 +1269,7 @@ export function createRegistry(deps) {
       },
       additionalProperties: false,
     },
-    run: (args, ctx) => browserManager(ctx).click(args),
+    run: async (args, ctx) => withPage(browserManager(ctx), await browserManager(ctx).click(args)),
   });
 
   add({
@@ -1234,7 +1291,7 @@ export function createRegistry(deps) {
       required: ['text'],
       additionalProperties: false,
     },
-    run: (args, ctx) => browserManager(ctx).type(args),
+    run: async (args, ctx) => withPage(browserManager(ctx), await browserManager(ctx).type(args)),
   });
 
   add({
@@ -1252,7 +1309,53 @@ export function createRegistry(deps) {
       required: ['keys'],
       additionalProperties: false,
     },
-    run: (args, ctx) => browserManager(ctx).press(args),
+    run: async (args, ctx) => withPage(browserManager(ctx), await browserManager(ctx).press(args)),
+  });
+
+  add({
+    name: 'browser_steps',
+    description:
+      'Several page actions in ONE call, done one after another: click, type and press, each written like the arguments of its own tool with "do" added ' +
+      '({do:"type", ref:"@e4", text:"标题"}, {do:"type", ref:"@e7", text:"正文"}, {do:"press", keys:"Tab"}, {do:"click", ref:"@e9"}). ' +
+      'Use it whenever you already know the next few actions from the page you have - filling a form, ticking options, typing then picking a suggestion. ' +
+      'It stops at the first action that fails (a ref gone stale because the page changed) and returns what was done plus the page as it is now. Up to ' + BROWSER_STEPS_MAX + ' actions. MEDIUM risk, like a click.',
+    risk: RISK.MEDIUM,
+    parameters: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          maxItems: BROWSER_STEPS_MAX,
+          items: {
+            type: 'object',
+            properties: {
+              do: { type: 'string', enum: ['click', 'type', 'press'] },
+              ref: { type: 'string' }, selector: { type: 'string' }, text: { type: 'string' }, append: { type: 'boolean' }, submit: { type: 'boolean' },
+              keys: { type: 'string' }, times: { type: 'integer' },
+            },
+            required: ['do'],
+          },
+        },
+      },
+      required: ['steps'],
+      additionalProperties: false,
+    },
+    async run(args, ctx) {
+      const steps = (Array.isArray(args?.steps) ? args.steps : []).slice(0, BROWSER_STEPS_MAX);
+      if (!steps.length) throw toolError('BAD_ARGS', 'browser_steps needs "steps": a list of click / type / press actions');
+      const mgr = browserManager(ctx);
+      const done = [];
+      let stoppedAt = null;
+      for (const [i, s] of steps.entries()) {
+        const kind = String(s?.do || '');
+        const { do: _do, ...rest } = s || {};
+        const r = kind === 'click' ? await mgr.click(rest) : kind === 'type' ? await mgr.type(rest) : kind === 'press' ? await mgr.press(rest)
+          : { ok: false, error: { code: 'BAD_ARGS', message: `"${kind}" cannot be a step: click, type or press` } };
+        if (!r || r.ok === false || r.error) { stoppedAt = { step: i + 1, do: kind, error: r?.error || { message: 'failed' } }; break; }
+        done.push({ step: i + 1, do: kind, ...(r.clicked ? { clicked: r.clicked } : {}), ...(r.typed ? { typed: r.typed, value: r.value } : {}), ...(r.pressed ? { pressed: r.pressed } : {}), ...(r.url ? { url: r.url } : {}) });
+      }
+      return withPage(mgr, { ok: !stoppedAt || done.length > 0, done: done.length, of: steps.length, steps: done, ...(stoppedAt ? { stoppedAt } : {}), ...(done.length ? { url: done[done.length - 1].url } : {}) });
+    },
   });
 
   add({
@@ -1301,6 +1404,7 @@ export function createRegistry(deps) {
       type: 'object',
       properties: {
         paths: { type: 'array', items: { type: 'string' }, description: 'Workspace paths of the files, in order (up to 20).' },
+        again: { type: 'boolean', description: 'true only to upload a file once more to a site where this same work already uploaded and published it (the call without it says so, ALREADY_SENT).' },
         selector: { type: 'string', description: 'CSS selector of the file box, when the page has more than one (optional: the boxes are listed for you).' },
         index: { type: 'integer', description: 'Which file box (0 = first) among those matching, as a list from browser_upload numbers them.' },
       },
@@ -1317,7 +1421,7 @@ export function createRegistry(deps) {
         try { if (!(await fsp.stat(r.abs)).isFile()) throw new Error('not a file'); } catch { throw toolError('NOT_FOUND', `${p}: no such file in the workspace`); }
         abs.push(r.abs);
       }
-      return browserManager(ctx).upload(args, abs);
+      return withPage(browserManager(ctx), await browserManager(ctx).upload(args, abs));
     },
   });
 

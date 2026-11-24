@@ -70,41 +70,106 @@ const MOVE = /^(move|mv|move-item|mi|ren|rename|rename-item)$/i;
 const CHANGES_DIR = /(^|\s)(cd|chdir|pushd|popd|set-location|sl)(\s|$)/i;
 
 /**
+ * The parts of a command line, run one after another: `&&`, `||`, `;`, a new line, and cmd's single `&`
+ * (1.5.68; 11-24, TikTok: `del /Q … 2>nul & dir /B …` was read as one delete with `&` and `dir` as files).
+ * `2>&1` and `&>` are redirections, not a new part.
+ */
+export function commandParts(text) {
+  return String(text || '').split(/&&|\|\||;|\r?\n|(?<![>&|])&(?![&>])/);
+}
+
+/** The words of one part, without redirections (`2>nul`, `> out.txt`, `2>&1`, `< in.txt`): those are not its paths. */
+function partWords(part) {
+  const w = words(part);
+  const out = [];
+  for (let i = 0; i < w.length; i += 1) {
+    const x = w[i];
+    if (/^(\d|&)?>>?&\d$/.test(x)) continue; // 2>&1
+    if (/^(\d|&)?>>?$|^<$/.test(x)) { i += 1; continue; } // `> out.txt`: the target is the next word
+    if (/^(\d|&)?>>?\S|^<\S/.test(x)) continue; // 2>nul, >out.txt
+    out.push(x);
+  }
+  return out;
+}
+
+/** The folder a part changes to (cd, cd /d, pushd, Set-Location): '' when it is not one, null when it cannot be told. */
+function cdTarget(w) {
+  const prog = String(w[0] || '').toLowerCase();
+  if (prog === 'popd') return null;
+  if (!/^(cd|chdir|pushd|set-location|sl)$/.test(prog)) return '';
+  const args = w.slice(1).filter((x) => !/^\/d$/i.test(x) && !/^-(path|literalpath)$/i.test(x));
+  return args.length === 1 ? args[0] : null;
+}
+
+/**
+ * A command's parts with the folder each one runs in (1.5.68: `cd tiktok\drafts && del /Q a.png` deletes
+ * tiktok/drafts/a.png, not a.png at the top). -> [{part, w, cd?, at(p) -> absolute place or null}] or {bad: reason}.
+ * A cd out of the workspace, or one that cannot be told, stops it.
+ */
+function walkParts(text, workspaceDir) {
+  const { P, win } = pathRules(workspaceDir);
+  const root = P.resolve(win ? workspaceDir : slash(workspaceDir));
+  let cwd = root;
+  const at = (from) => (p) => {
+    const raw = String(p ?? '');
+    if (!raw || (!win && WIN_ABS.test(raw))) return null;
+    return P.resolve(from, win ? raw : slash(raw));
+  };
+  const out = [];
+  for (const part of commandParts(text)) {
+    const w = partWords(part);
+    if (!w.length) continue;
+    const cd = cdTarget(w);
+    if (cd === null) return { bad: 'changes folder' };
+    if (cd) {
+      const to = at(cwd)(cd);
+      if (!to || (to !== root && !relIn(workspaceDir, to))) return { bad: 'changes folder out of the workspace' };
+      cwd = to;
+      out.push({ part, w, cd: true, at: at(cwd) });
+      continue;
+    }
+    if (CHANGES_DIR.test(part)) return { bad: 'changes folder' };
+    out.push({ part, w, at: at(cwd) });
+  }
+  return out;
+}
+
+/**
  * A command whose deletes and moves touch only files this bot made (1.5.67). -> {ok, rest, reason}
  *   ok: there is at least one delete/move and every path in them is the bot's own;
  *   rest: the command without those parts (the danger list is held against what is left).
- * Not ok - it asks as before - when a part changes folder first (cd), pipes, uses a variable or a path
- * outside the workspace, or a wildcard whose folder the bot did not make.
+ * Not ok - it asks as before - when it pipes, uses a variable, changes to a folder outside the workspace, names a
+ * path outside the workspace, or a wildcard whose folder the bot did not make. A `cd` inside the workspace is
+ * followed (1.5.68).
  */
 export function ownDeleteCommand(command, { workspaceDir = '', owns = () => false, anywhere = null } = {}) {
   const text = String(command || '');
   if (!text.trim() || !workspaceDir) return { ok: false, reason: 'empty' };
   if (/(^|[^|])\|([^|]|$)/.test(text) || /`|\$\(|%[A-Za-z_]+%|(^|[\s"'])~/.test(text)) return { ok: false, reason: 'pipe or variable' };
+  const walked = walkParts(text, workspaceDir);
+  if (walked.bad) return { ok: false, reason: walked.bad };
   // 放手 (1.5.67): any path that is not a dangerous place (dangerousPlace) - the human's files too, as the level says.
-  if (anywhere) return anyDeleteCommand(text, workspaceDir, anywhere);
-  const parts = text.split(/&&|\|\||;|\r?\n/);
+  if (anywhere) return anyDeleteCommand(walked, workspaceDir, anywhere);
   const rest = [];
   let touched = 0;
-  for (const part of parts) {
-    const w = words(part);
-    if (!w.length) continue;
-    if (CHANGES_DIR.test(part)) return { ok: false, reason: 'changes folder' };
+  for (const { part, w, at, cd } of walked) {
     const prog = w[0].replace(/\.exe$/i, '');
     const del = DELETE.test(prog);
     const move = MOVE.test(prog);
-    if (!del && !move) { rest.push(part); continue; }
+    if (cd || (!del && !move)) { rest.push(part); continue; }
     const targets = w.slice(1).filter((x) => !/^(\/[a-z]|--?[a-z][\w-]*)$/i.test(x)).flatMap((x) => (/^(remove|move|rename)-item$|^ri$|^mi$/i.test(prog) ? x.split(',') : [x])).filter(Boolean);
     if (!targets.length) return { ok: false, reason: 'no target' };
+    const relOf = (t) => { const abs = at(t.replace(/[\\/]+$/, '')); return abs ? relIn(workspaceDir, abs) : null; };
     // A move's last word is where it goes: inside the workspace, and not over something that is not its own.
     const sources = move && targets.length > 1 ? targets.slice(0, -1) : targets;
     if (move && targets.length > 1) {
-      const to = relIn(workspaceDir, targets[targets.length - 1]);
+      const to = relOf(targets[targets.length - 1]);
       if (!to || to.startsWith('uploads/')) return { ok: false, reason: 'moves out' };
       if (fs.existsSync(path.resolve(workspaceDir, to)) && !fs.statSync(path.resolve(workspaceDir, to)).isDirectory() && !owns(to)) return { ok: false, reason: 'over a file not its own' };
     }
     for (const t of sources) {
       if (/[$%`]/.test(t)) return { ok: false, reason: 'variable' };
-      const rel = relIn(workspaceDir, t.replace(/[\\/]+$/, ''));
+      const rel = relOf(t);
       if (!rel || rel.startsWith('uploads/') || rel === 'uploads') return { ok: false, reason: `not its own: ${t}` };
       if (/[*?]/.test(rel)) {
         // A wildcard only inside a folder the bot made itself: it cannot reach anything else.
@@ -118,21 +183,18 @@ export function ownDeleteCommand(command, { workspaceDir = '', owns = () => fals
 }
 
 /** The deletes and moves of a command at 放手: every path (and a wildcard's folder) must be allowed by `ok(abs)`. */
-function anyDeleteCommand(text, workspaceDir, ok) {
+function anyDeleteCommand(walked, workspaceDir, ok) {
   const rest = [];
   let touched = 0;
-  for (const part of text.split(/&&|\|\||;|\r?\n/)) {
-    const w = words(part);
-    if (!w.length) continue;
-    if (CHANGES_DIR.test(part)) return { ok: false, reason: 'changes folder' };
+  const { P } = pathRules(workspaceDir);
+  for (const { part, w, at, cd } of walked) {
     const prog = w[0].replace(/\.exe$/i, '');
-    if (!DELETE.test(prog) && !MOVE.test(prog)) { rest.push(part); continue; }
+    if (cd || (!DELETE.test(prog) && !MOVE.test(prog))) { rest.push(part); continue; }
     const targets = w.slice(1).filter((x) => !/^(\/[a-z]|--?[a-z][\w-]*)$/i.test(x)).flatMap((x) => (/^(remove|move|rename)-item$|^ri$|^mi$/i.test(prog) ? x.split(',') : [x])).filter(Boolean);
     if (!targets.length) return { ok: false, reason: 'no target' };
-    const { P } = pathRules(workspaceDir);
     for (const t of targets) {
       // In the workspace's own rules, `\` and `/` alike; a Windows place on a POSIX workspace cannot be judged: it asks.
-      const abs = placeIn(workspaceDir, t.replace(/[\\/]+$/, ''));
+      const abs = at(t.replace(/[\\/]+$/, ''));
       if (!abs) return { ok: false, reason: `not a place here: ${t}` };
       const wild = /[*?]/.test(abs);
       if (wild && /[*?]/.test(P.dirname(abs))) return { ok: false, reason: `wildcard in a folder name: ${t}` };
@@ -170,15 +232,43 @@ export function dangerousPlace(abs, { workspaceDir = '', dataDir = '', home = pr
   return system.some((s) => within(a, norm(s)));
 }
 
-/** Workspace paths a command names (to see afterwards which of them it brought into being). */
+/** Workspace paths a command names (to see afterwards which of them it brought into being), after any cd (1.5.68). */
 export function pathsNamed(command, workspaceDir) {
   const out = new Set();
-  for (const w of words(command)) {
-    if (!w || /^(\/[a-z]|-)/i.test(w) || /[*?$%`<>|]/.test(w) || !/[\\/.]/.test(w)) continue;
-    const rel = relIn(workspaceDir, w.replace(/^[^=]+=(?=\S)/, ''));
-    if (rel && !rel.startsWith('uploads/')) out.add(rel);
+  const walked = workspaceDir ? walkParts(command, workspaceDir) : { bad: 'no workspace' };
+  const list = walked.bad ? [{ w: words(command), at: (p) => placeIn(workspaceDir, p) }] : walked;
+  for (const { w, at, cd } of list) {
+    if (cd) continue; // the folder it goes to is not a file it makes
+    for (const x of w) {
+      if (!x || /^(\/[a-z]|-)/i.test(x) || /[*?$%`<>|]/.test(x) || !/[\\/.]/.test(x)) continue;
+      const abs = at(x.replace(/^[^=]+=(?=\S)/, ''));
+      const rel = abs ? relIn(workspaceDir, abs) : null;
+      if (rel && !rel.startsWith('uploads/')) out.add(rel);
+    }
   }
   return [...out].slice(0, 40);
+}
+
+/**
+ * Folders a command works in (1.5.68): where it cd's to, and the folder of a name it builds - `tiktok\drafts\kz_%f.png`
+ * in a `for` loop (11-24: that strip was not counted as the bot's own, and deleting it asked). A file born there
+ * during the step is the bot's.
+ */
+export function foldersNamed(command, workspaceDir) {
+  const out = new Set();
+  const walked = workspaceDir ? walkParts(command, workspaceDir) : { bad: 'no workspace' };
+  if (walked.bad) return [];
+  for (const { w, at, cd } of walked) {
+    if (cd) { const rel = relIn(workspaceDir, at('.')); if (rel && !rel.startsWith('uploads')) out.add(rel); continue; }
+    for (const x of w) {
+      const m = /^(.*)[\\/][^\\/]*[%*?$][^\\/]*$/.exec(x || '');
+      if (!m || /[%*?$`]/.test(m[1])) continue;
+      const abs = at(m[1]);
+      const rel = abs ? relIn(workspaceDir, abs) : null;
+      if (rel && !rel.startsWith('uploads')) out.add(rel);
+    }
+  }
+  return [...out].slice(0, 10);
 }
 
 export function createOwnFiles({ file = null, workspaceDir = '' } = {}) {
@@ -235,9 +325,9 @@ export function createOwnFiles({ file = null, workspaceDir = '' } = {}) {
      * After a step: what it named and brought into being is the bot's; so is a file it made (creation time
      * after `since`) in a folder it names, or in the workspace's top folder - one level, a few hundred entries.
      */
-    after(botId, rels, existed, since) {
+    after(botId, rels, existed, since, folders = []) {
       for (const r of rels) if (!existed.has(r) && fs.existsSync(path.resolve(workspaceDir, r))) api.note(botId, r);
-      const dirs = new Set(['']);
+      const dirs = new Set(['', ...folders]);
       for (const r of rels) {
         const abs = path.resolve(workspaceDir, r);
         const st = fs.statSync(abs, { throwIfNoEntry: false });

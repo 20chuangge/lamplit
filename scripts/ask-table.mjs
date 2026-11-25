@@ -22,6 +22,8 @@ export const ROWS = [
   { what: '手机：点「发布笔记」，你没说过发', call: ['phone', { action: 'tap', target: '发布笔记' }], ask: { careful: true, standard: true, auto: true } },
   { what: '手机：点「发布笔记」，你说过「发」', call: ['phone', { action: 'tap', target: '发布笔记' }], said: '发', ask: { careful: false, standard: false, auto: false } },
   { what: '手机：点「发送」，你说过「必须发出去」', call: ['phone', { action: 'tap', target: '发送' }], said: '必须发出去', ask: { careful: false, standard: false, auto: false } },
+  { what: '给你看要发的草稿，你没说过发', call: ['post_draft', { channel: '小红书', title: '标题', body: '正文' }], ask: { careful: true, standard: true, auto: true } },
+  { what: '手机：点「发布笔记」，你刚在草稿卡上点了允许', call: ['phone', { action: 'tap', target: '发布笔记' }], before: ['post_draft', { channel: '小红书', title: '标题', body: '正文' }], ask: { careful: false, standard: false, auto: false } },
   { what: '手机：点「立即支付」，你说过「发」', call: ['phone', { action: 'tap', target: '立即支付' }], said: '发', ask: { careful: true, standard: true, auto: true } },
   { what: '手机：点「删除」，你说过「发」', call: ['phone', { action: 'tap', target: '删除' }], said: '发', ask: { careful: true, standard: true, auto: true } },
   { what: '手机：点「同意并继续」', call: ['phone', { action: 'tap', target: '同意并继续' }], ask: { careful: true, standard: true, auto: true } },
@@ -40,13 +42,15 @@ export async function runTable({ toolsMod }) {
     for (const row of ROWS) {
       const line = { what: row.what };
       for (const [level] of LEVELS) {
-        const bot = { id: 'pub', name: '发布', role: '发布', persona: 'p', tools: ['fs_read', 'fs_write', 'shell', 'phone'], skills: [], policy: {} };
+        const bot = { id: 'pub', name: '发布', role: '发布', persona: 'p', tools: ['fs_read', 'fs_write', 'shell', 'phone', 'post_draft'], skills: [], policy: {} };
         const cards = [];
         let ran = 0;
         let step = 0;
         const model = { provider: 'fake', model: 'fake', complete: async () => {
           step += 1;
-          return step === 1 ? { content: '', toolCalls: [{ id: 'c1', name: row.call[0], arguments: row.call[1] }] } : { content: '好。', toolCalls: [] };
+          // A step before the one the row is about (the draft the human said yes to): its card is not the row's.
+          const calls = row.before ? [row.before, row.call] : [row.call];
+          return step <= calls.length ? { content: '', toolCalls: [{ id: `c${step}`, name: calls[step - 1][0], arguments: calls[step - 1][1] }] } : { content: '好。', toolCalls: [] };
         } };
         let rtRef = null;
         const registry = toolsMod.createRegistry({ workspaceDir: ws, config: {}, getRuntime: () => rtRef });
@@ -84,7 +88,7 @@ export async function runTable({ toolsMod }) {
         if (row.said) rt.noteHumanGo(row.said, ['pub']);
         if (row.draft) rt.phoneDraft = { botId: 'art', botName: '美术', chainId: 'other', place: '小红书', at: Date.now(), what: '写到一半' };
         const res = await rt.runTurn({ botId: 'pub', text: '做这一步', source: 'bot', fromBotId: 'lead' }).catch((e) => ({ status: `error ${e.message}` }));
-        line[level] = cards.length > 0 ? true : (ran > 0 || P.PHONE_LOOK_ACTIONS.has(String(row.call[1]?.action)) || row.call[0] === 'fs_read' ? false : `no run (${res?.status})`);
+        line[level] = cards.length > (row.before ? 1 : 0) ? true : (ran > 0 || P.PHONE_LOOK_ACTIONS.has(String(row.call[1]?.action)) || row.call[0] === 'fs_read' ? false : `no run (${res?.status})`);
       }
       out.push(line);
     }

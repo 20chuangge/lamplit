@@ -4417,6 +4417,10 @@ export class AgentRuntime {
       // 「这一轮都允许」: the same kind of step (or destination) runs unasked for the rest of this chain (1.5.65).
       const chainAllowed = Boolean(chainOffer && resolution.decision === 'approved' && resolution.approval?.chainAllowed);
       if (chainAllowed) this.grantChain(ctx.chainId, bot.id, chainOffer);
+      // The human looked at the draft and said yes (1.5.73): that is their 「发」 for this piece of work - the taps
+      // that publish or send it on the phone do not ask again. 11-25: one note asked three times, the draft and
+      // then 「定时发布」 and 「发布」 on the phone.
+      if (name === 'post_draft' && resolution.decision === 'approved') this.grantChain(ctx.chainId, bot.id, { keys: ['go:publish', 'go:send'], label: '你看过草稿并点了允许' });
       // The human's edits to the draft (1.5.45): what goes out is what they left in the boxes.
       const edits = draft && resolution.decision === 'approved' ? resolution.approval?.edits : null;
       if (edits) {

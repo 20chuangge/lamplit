@@ -3430,6 +3430,24 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
   return query.get('compact') === '1' ? compactChat(items) : items;
 });
 
+/** The members of a group with a turn in progress, one line each (a turn at work before a chat-only one). */
+export function groupWorking(active, memberIds, names = new Map(), now = Date.now()) {
+  const by = new Map();
+  for (const info of (active?.values?.() || [])) {
+    if (!memberIds.has(info.botId)) continue;
+    const old = by.get(info.botId);
+    if (old && (old.working || !info.working)) continue;
+    by.set(info.botId, info);
+  }
+  return [...by.values()].map((info) => ({
+    botId: info.botId,
+    name: names.get(info.botId) || info.botId,
+    tool: info.step?.name || '', // the page says it in words (its TOOL_TEXT)
+    steps: Number(info.steps) || 0,
+    since: Math.max(0, Math.round((now - (info.startedAt || now)) / 1000)),
+  }));
+}
+
 /** A step record the chat draws even with steps hidden: kept when a long window drops old steps. */
 export function drawnStep(record, prev) {
   return (prev?.kind === 'approval' && prev.toolName === record.name && prev.turnId === record.turnId)
@@ -4016,6 +4034,17 @@ route('POST', /^\/api\/groups$/, async (_req, _res, { body, state }) => {
   // Members introduce themselves (job, progress, next step) right away.
   state.runtime.kickoffGroup(group.id).catch((err) => console.error('[group] kickoff failed:', err.message));
   return { group: await publicGroup(group, bots) };
+});
+
+//   GET /api/groups/:id/working -> {working: [{botId, name, tool, steps, since}]}   (1.5.69)
+// Which members are at work right now, wherever the turn runs: a hand-off is done in the member's own chat,
+// so the group's stream never heard of it and the group looked idle until the result came (11-25).
+route('GET', /^\/api\/groups\/(?<id>[^/]+)\/working$/, async (_req, _res, { params, state }) => {
+  const group = await groups.getGroup(params.id);
+  if (!group) throw httpError(404, 'GROUP_NOT_FOUND', `no group with id "${params.id}"`);
+  const ids = new Set((group.members || []).map((m) => (typeof m === 'string' ? m : m?.id)).filter(Boolean));
+  const names = new Map((await listBots()).map((b) => [b.id, b.name]));
+  return { working: groupWorking(state.runtime.active, ids, names) };
 });
 
 route('GET', /^\/api\/groups\/(?<id>[^/]+)\/messages$/, async (_req, _res, { params, query }) => {
@@ -5517,6 +5546,12 @@ route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/messages$
   const limit = Math.min(Number(query.get('limit')) || 200, 1000);
   try {
     return await passOn(state, peer, 'GET', `/api/groups/${encodeURIComponent(groupId)}/messages?limit=${limit}`, { timeoutMs: 20000 });
+  } catch (err) { throw peerFailure(err, peer); }
+});
+route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/working$/, async (req, _res, { params, state }) => {
+  const { peer, groupId } = remoteGroupTarget(req, state, params);
+  try {
+    return await passOn(state, peer, 'GET', `/api/groups/${encodeURIComponent(groupId)}/working`, { timeoutMs: 8000 });
   } catch (err) { throw peerFailure(err, peer); }
 });
 route('POST', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/message$/, async (req, _res, { params, body, state }) => {

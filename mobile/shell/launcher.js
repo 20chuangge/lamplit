@@ -922,7 +922,14 @@
     dom.bootingUrl.textContent = '';
     // The same fast route choice as a tap (1.5.39); not there: the list says why.
     const opened = await enterMachine(entry, null, { view: 'all', quiet: true }).catch(() => false);
-    return Boolean(opened);
+    if (opened) return true;
+    // Home is off (1.5.69; 11-25: the PC shut down and 「全部机器」 was gone - only one machine at a time could be
+    // opened): any machine that answers shows 全部机器, with the ones that are off listed as off. Home stays home.
+    for (const other of (await readHubs()).filter((h) => h.url !== entry.url)) {
+      dom.bootingText.textContent = `「${entry.name || hostLabel(entry.url)}」没开，正在打开「${other.name || hostLabel(other.url)}」…`;
+      if (await enterMachine(other, null, { view: 'all', quiet: true }).catch(() => false)) return true;
+    }
+    return false;
   }
 
   /**

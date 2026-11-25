@@ -322,6 +322,7 @@ async function openGroup(id) {
   connectStream();
   connectRemoteStream();
   markSeen();
+  watchGroupWorking();
 }
 
 function openBotDm(id) {

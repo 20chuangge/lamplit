@@ -301,7 +301,23 @@ function patchMachine(url, patch) {
  * the machine itself). The pairing cookie is copied to that address so the
  * human never pairs twice. Returns the base URL, or '' when neither answers.
  */
+/**
+ * The way that worked for a machine last time (1.5.69). 11-25: this computer reaches the cloud server only
+ * through the relay, yet every call first waited 3.5 s on its public address and 3.5 s on its Tailscale
+ * address - 226 times in one day, and the cloud "kept not connecting". Now the way that worked is used
+ * first for 5 minutes; the direct ways are tried again after that (and at once when the kept way fails).
+ */
+const ROUTE_KEEP_MS = 5 * 60 * 1000;
+const lastRoute = new Map(); // url -> { base, at }
+function keepRoute(url, base) { if (base) lastRoute.set(url, { base, at: Date.now() }); else lastRoute.delete(url); return base; }
+
 async function reachMachine(url) {
+  const kept = lastRoute.get(url);
+  if (kept && kept.base !== url && Date.now() - kept.at < ROUTE_KEEP_MS && await probeHub(kept.base)) return kept.base;
+  return keepRoute(url, await findRoute(url));
+}
+
+async function findRoute(url) {
   // DESK_FORCE_TAILNET=1 acts as if the LAN were unreachable (testing away-from-home at home).
   if (process.env.DESK_FORCE_TAILNET !== '1' && await probeHub(url)) return url;
   const alt = readMachines().find((m) => m.url === url)?.tailnetUrl;

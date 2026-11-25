@@ -315,6 +315,7 @@ async function main() {
     await stage('1.5.68: its own temp files deleted unasked after a cd; a finished job waits with an open question; a played video fits the window', async () => (await import('./smoke-carry-1568.mjs')).ownAndQuietChecks({ check, readText }));
     await stage('1.5.68: a chat opens with its conversation, however many steps the last task took', async () => (await import('./smoke-chat-1568.mjs')).chatWindowChecks({ check, api, readText }));
     await stage('1.5.68: fewer steps - the screen comes back with the step, several steps in one call, the way it was done is kept', async () => (await import('./smoke-steps-1568.mjs')).fewerStepsChecks({ check, toolsMod, readText }));
+    await stage('1.5.69: the phone switch stays on, a go said in a group counts, the kept route, who is at work in a group', async () => (await import('./smoke-fix-1569.mjs')).fix1569Checks({ check, toolsMod, readText }));
     await stage('1.5.67: one rule for every bot - existing, new, on another machine', async () => (await import('./smoke-group-1567.mjs')).allBotsChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: bots are told which shell runs their commands; a bash command on Windows is caught before it runs', async () => (await import('./smoke-group-1567.mjs')).shellChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.67: the read guard is off unless the human turns it on', async () => (await import('./smoke-group-1567.mjs')).readGuardDefaultChecks({ check, toolsMod, groupsMod, readText }));

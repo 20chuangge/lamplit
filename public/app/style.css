@@ -3497,6 +3497,13 @@
 .row.handoff .bubble { opacity: .9; border-style: dashed; }
 
 /* 需要你拍板 on top of the chat (1.2.165) */
+/* 1.5.69: who is at work in the group on screen - avatar, name, the step it is on */
+.group-working { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 16px 0; }
+.group-working[hidden] { display: none; }
+.group-working-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 10px 3px 4px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); color: var(--dim); font: inherit; font-size: var(--t-xs); cursor: pointer; }
+.group-working-chip b { color: var(--text); font-weight: 600; }
+.group-working-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-working-chip:hover { border-color: var(--accent-line); }
 .decision-strip { display: flex; gap: 10px; align-items: baseline; margin: 8px 16px 0; padding: 9px 14px; border-radius: 12px; border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--text); text-align: left; font: inherit; font-size: var(--t-sm); cursor: pointer; }
 .decision-strip[hidden] { display: none; }
 .decision-strip b { flex: none; color: var(--accent); }

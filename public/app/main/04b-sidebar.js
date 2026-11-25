@@ -125,3 +125,40 @@ function openChatApprovals() {
   if (isRemoteId(id)) return { local: [], remote: away.filter((i) => idOf(i) === id) };
   return { local: here.filter((a) => a.botId === id), remote: [] };
 }
+
+/* ---------------------------------------------------------------------
+   who is at work in the group on screen (1.5.69)
+   A member does a hand-off in its own chat: the group showed nothing until the result came. A strip above
+   the box names every member at work, with its avatar and the step it is on; a tap opens its chat. Asked
+   every 4 s while the group is open - the same for a group on another machine - and when someone finishes,
+   the group's messages are read again at once (they used to lag behind).
+   --------------------------------------------------------------------- */
+function watchGroupWorking() {
+  clearInterval(state.groupWorkingTimer);
+  const tick = async () => {
+    const box = $('group-working');
+    const gid = state.groupId;
+    if (!isGroupMode() || !gid) { clearInterval(state.groupWorkingTimer); if (box) box.hidden = true; state.groupWorkingIds = ''; return; }
+    if (document.visibilityState !== 'visible') return;
+    let list = [];
+    try { list = (await api(isRemoteId(gid) ? remoteGroupApi(gid, '/working') : `/api/groups/${encodeURIComponent(gid)}/working`)).working || []; } catch { return; }
+    if (state.groupId !== gid) return;
+    const ids = list.map((w) => w.botId).sort().join();
+    // Someone finished since the last look: what they said is in the group now.
+    if (state.groupWorkingIds && state.groupWorkingIds !== ids && !state.liveTurn?.bubble) loadGroupMessages().catch?.(() => {});
+    state.groupWorkingIds = ids;
+    box.hidden = !list.length;
+    box.replaceChildren(...list.map((w) => {
+      const member = groupMemberById(w.botId) || { id: w.botId, name: w.name };
+      const chip = el('button', 'group-working-chip');
+      chip.type = 'button';
+      chip.title = '打开它的对话';
+      const doing = w.tool ? `正在${toolNameLabel(w.tool)}` : '正在想';
+      chip.append(avatarNode(member, 22), el('b', '', member.name || w.name), el('span', '', w.steps ? `${doing} · 第 ${w.steps} 步` : doing));
+      chip.addEventListener('click', () => openBotDm(member.id));
+      return chip;
+    }));
+  };
+  state.groupWorkingTimer = setInterval(tick, 4000);
+  tick();
+}

@@ -79,10 +79,27 @@ public class PhoneAgentService extends AccessibilityService {
     public boolean onUnbind(Intent intent) {
         instance = null;
         hideNotice();
-        // Told while Lamplit runs: the human turned it off in the system settings.
-        // (An update or a stop kills Lamplit first, so this is not called then.)
-        AgentKeeper.setWanted(this, false);
+        // Who turned it off (1.5.69)? 11-25 on an OPPO: four times in ten minutes the system took the service out
+        // of the enabled list while 小红书 was in front - Lamplit was running, so it was told here, took that for the
+        // human's wish and never turned it back on. Only with the system's settings in front is it the human's own
+        // hand; anything else (a cleaner, the system saving power) is not, and it comes back by itself.
+        final Context app = getApplicationContext();
+        if (isSettingsApp(frontPackage)) {
+            AgentKeeper.setWanted(this, false);
+        } else if (AgentKeeper.wanted(this)) {
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> AgentKeeper.ensure(app), 2500);
+        }
         return super.onUnbind(intent);
+    }
+
+    /** The app whose window was in front last (from the window events this service is sent). */
+    static volatile String frontPackage = "";
+
+    /** The system's settings (any maker's): where a human turns an accessibility service off. */
+    static boolean isSettingsApp(String pkg) {
+        if (pkg == null) return false;
+        String p = pkg.toLowerCase(java.util.Locale.ROOT);
+        return p.equals("com.android.settings") || p.endsWith(".settings") || p.contains("accessibility") && !p.equals("com.desk.assistant");
     }
 
     @Override
@@ -94,7 +111,13 @@ public class PhoneAgentService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // Nothing to watch: the service only acts when a machine sends a step.
+        // Nothing to watch but which app is in front (1.5.69: who turned the service off, see onUnbind);
+        // the service only acts when a machine sends a step.
+        if (event != null && event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && event.getPackageName() != null) {
+            String pkg = event.getPackageName().toString();
+            // The notification shade and the keyboard are not the app in front.
+            if (!pkg.equals("com.android.systemui") && !pkg.contains("inputmethod")) frontPackage = pkg;
+        }
     }
 
     @Override

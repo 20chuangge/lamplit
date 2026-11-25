@@ -537,6 +537,10 @@ const BOARD_OPEN = ['running', 'waiting'];
  */
 export const GO_WORDS = /^(?:好的?[，,、 ]*|ok[，,、 ]*|行[，,、 ]*|可以[，,、 ]*)?(?:发|发吧|发了吧|发出去|发布吧?|可以发(?:了|布)?|可以发布了|就这样发|按这个发|就发这个|排吧|排上|可以排了?|定时发吧?)[。！!～~]*$/i;
 
+/** The human takes a 「发」 back. */
+export const STOP_GO_WORDS = /别发|不发|先不发|不要发|暂停|取消|等一下|等等|停下|停一下|先停/;
+const HUMAN_GO_MS = 2 * 60 * 60 * 1000;
+
 /** The whole reply of a look-back that found nothing worth telling. */
 export const NOTHING_NEW = /^[「"]?(没有变化|无变化|NO_CHANGE)[」"]?[。.!！]?$/i;
 
@@ -1067,6 +1071,34 @@ export class AgentRuntime {
     for (const k of offer.keys) g.keys.set(String(k), String(offer.label || k));
   }
 
+  /**
+   * The human's 「发」 for the bots it reaches (1.5.69): kept two hours, taken back by 「先别发」「等一下」「取消」.
+   * A message that is neither changes nothing (「继续」「已经好了」 while the phone was being fixed).
+   */
+  noteHumanGo(text, botIds = []) {
+    const t = String(text || '').trim();
+    this.humanGo = this.humanGo || new Map();
+    if (GO_WORDS.test(t)) for (const id of botIds) this.humanGo.set(id, { at: Date.now(), text: t.slice(0, 20) });
+    else if (STOP_GO_WORDS.test(t)) for (const id of botIds) this.humanGo.delete(id);
+  }
+
+  humanGoFor(botId, now = Date.now()) {
+    const g = this.humanGo?.get(botId);
+    if (g && now - g.at > HUMAN_GO_MS) { this.humanGo.delete(botId); return null; }
+    return g || null;
+  }
+
+  /** The local bots that share a group with this one. */
+  async groupMates(botId) {
+    const list = this.groups?.listGroups ? await this.groups.listGroups() : [];
+    const out = new Set();
+    for (const g of list || []) {
+      const ids = (g.members || []).map((m) => (typeof m === 'string' ? m : m?.id)).filter(Boolean);
+      if (ids.includes(botId)) for (const id of ids) if (id !== botId && !String(id).includes('@')) out.add(id);
+    }
+    return [...out];
+  }
+
   /** Does this chain's answer cover every key of this step (a send to two hosts needs both)? */
   chainCovers(chainId, botId, keys = []) {
     const g = chainId ? this.chainGrants?.get(chainId) : null;
@@ -1288,6 +1320,8 @@ export class AgentRuntime {
     // The human spoke in the group: a question a member left open is answered here or moved past (1.5.65).
     // Once per message, before it is held a moment (the held call comes back here with held: true).
     if (fromHuman && !wasHeld) for (const m of group.members || []) if (!m.remote) this.humanSpoke?.(m.id);
+    // 「发」 said in the group counts for its members (1.5.69), 「先别发」 takes it back.
+    if (fromHuman && !wasHeld) this.noteHumanGo(text, (group.members || []).filter((m) => !m.remote).map((m) => m.id || m));
     // The board runs (1.5.64; 11-23: cover 5 went to 发布, 画师 kept making it for 10 minutes):
     // the coordinator hears it and may stop or redirect a step - not whichever member is busy.
     const plan = this.groups ? await this.groupPlan(group.id).catch(() => null) : null;
@@ -1984,6 +2018,17 @@ export class AgentRuntime {
     // and agreeing still ask every time; the chain ends with the work.
     if (fromHuman && !groupContext && GO_WORDS.test(String(text || '').trim())) {
       this.grantChain(turnChain, bot.id, { keys: ['go:publish', 'go:send'], label: `你在聊天里说了「${String(text).trim().slice(0, 20)}」` });
+    }
+    // Said to one member, the work is often another member's (1.5.69; 11-25: 「发」 went to the coordinator, who
+    // passed it on as 「老板已回『发』」 - and 发布's tap on 「发布」 asked again): it counts for the bots that share a
+    // group with this one. Only the human's own words - what a bot passes on never does.
+    if (fromHuman && !groupContext) {
+      const mates = await this.groupMates(bot.id).catch(() => []);
+      this.noteHumanGo(text, [bot.id, ...mates]);
+    }
+    if (!fromHuman || groupContext) {
+      const go = this.humanGoFor(bot.id);
+      if (go) this.grantChain(turnChain, bot.id, { keys: ['go:publish', 'go:send'], label: `你说了「${go.text}」` });
     }
     // Not the human's turn while a question to them is open: it is told, and nothing that goes out is shown again.
     const pending = working && !fromHuman ? this.pendingFor(bot.id) : null;

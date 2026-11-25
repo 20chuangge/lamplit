@@ -508,7 +508,7 @@ function findElsewhere(path) {
   if (!elsewhere.has(path)) {
     elsewhere.set(path, api(`/api/peers/locate?path=${encodeURIComponent(path)}`).then((r) => {
       if (r.title) elsewhereTitles.set(path, r.title);
-      return r.machine || null;
+      if (!r.machine) setTimeout(() => elsewhere.delete(path), 20000); return r.machine || null; // not there yet (1.5.69: a page named before it was made): asked again later
     }).catch(() => null));
   }
   return elsewhere.get(path);
@@ -535,7 +535,7 @@ function attachmentNode(file) {
         if (hit) { name.textContent = hit.title; return; }
         // Made on another machine (a briefing names it): open it from there.
         findElsewhere(file.path).then((machine) => {
-          if (!machine) { card.querySelector('.att-size').textContent = '页面 · 哪台机器上都找不到'; return; }
+          if (!machine) { card.querySelector('.att-size').textContent = '页面 · 现在还找不到，可能还没生成'; return; }
           card.querySelector('.att-size').textContent = `页面 · 在「${machine}」上 · 点开查看`;
           card.dataset.machine = machine;
           if (elsewhereTitles.get(file.path)) name.textContent = elsewhereTitles.get(file.path);

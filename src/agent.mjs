@@ -535,7 +535,8 @@ const BOARD_OPEN = ['running', 'waiting'];
  * The human's go for publishing, said in the chat as the whole message (1.5.68): 「发」「发吧」「可以发」「可以排」…
  * Narrow on purpose - 「发给我看看」「先别发」 are not it.
  */
-export const GO_WORDS = /^(?:好的?[，,、 ]*|ok[，,、 ]*|行[，,、 ]*|可以[，,、 ]*)?(?:发|发吧|发了吧|发出去|发布吧?|可以发(?:了|布)?|可以发布了|就这样发|按这个发|就发这个|排吧|排上|可以排了?|定时发吧?)[。！!～~]*$/i;
+// 1.5.70 (11-25: 「必须发出去」 was not it, and the taps asked again): a word of urgency in front counts too.
+export const GO_WORDS = /^(?:(?:好的?|ok|行|可以|那就?|现在|直接|马上|立刻|必须|赶紧|赶快|快点?|就|继续|接着)[，,、 ]*){0,2}(?:发|发吧|发了吧|发出去吧?|发掉|发布吧?|发布出去|可以发(?:了|布)?|可以发布了|就这样发|按这个发|就发这个|排吧|排上|可以排了?|定时发吧?|提交吧?|提交定时)[。！!～~]*$/i;
 
 /** The human takes a 「发」 back. */
 export const STOP_GO_WORDS = /别发|不发|先不发|不要发|暂停|取消|等一下|等等|停下|停一下|先停/;
@@ -1077,15 +1078,35 @@ export class AgentRuntime {
    */
   noteHumanGo(text, botIds = []) {
     const t = String(text || '').trim();
-    this.humanGo = this.humanGo || new Map();
+    this.loadHumanGo();
     if (GO_WORDS.test(t)) for (const id of botIds) this.humanGo.set(id, { at: Date.now(), text: t.slice(0, 20) });
     else if (STOP_GO_WORDS.test(t)) for (const id of botIds) this.humanGo.delete(id);
+    else return;
+    this.saveHumanGo();
   }
 
   humanGoFor(botId, now = Date.now()) {
-    const g = this.humanGo?.get(botId);
+    this.loadHumanGo();
+    const g = this.humanGo.get(botId);
     if (g && now - g.at > HUMAN_GO_MS) { this.humanGo.delete(botId); return null; }
     return g || null;
+  }
+
+  /**
+   * Kept in a file (1.5.70): 11-25 the human said 「发」 three times, Lamplit updated itself and started again,
+   * and the next tap on 「发布」 asked as if nothing had been said. Only who and when - not in the backup.
+   */
+  loadHumanGo() {
+    if (this.humanGo) return;
+    this.humanGo = new Map();
+    try {
+      const saved = JSON.parse(fsSync.readFileSync(this.humanGoFile || path.join(P.dataDir, 'human-go.json'), 'utf8'));
+      for (const [id, g] of Object.entries(saved || {})) if (Number(g?.at) && Date.now() - g.at < HUMAN_GO_MS) this.humanGo.set(id, { at: Number(g.at), text: String(g.text || '').slice(0, 20) });
+    } catch { /* none yet */ }
+  }
+
+  saveHumanGo() {
+    try { fsSync.writeFileSync(this.humanGoFile || path.join(P.dataDir, 'human-go.json'), JSON.stringify(Object.fromEntries(this.humanGo))); } catch { /* the next 「发」 writes it */ }
   }
 
   /** The local bots that share a group with this one. */

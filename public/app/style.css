@@ -3498,7 +3498,9 @@
 
 /* 需要你拍板 on top of the chat (1.2.165) */
 /* 1.5.69: who is at work in the group on screen - avatar, name, the step it is on */
-.group-working { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 16px 0; }
+/* As wide as the box under it, whatever the window (1.5.70: it sat at the left edge of a wide window). */
+.group-working { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; max-width: calc(760px + 48px); margin: 6px auto 0; padding: 0 24px; box-sizing: border-box; }
+@media (max-width: 860px) { .group-working { padding: 0 12px; } }
 .group-working[hidden] { display: none; }
 .group-working-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 10px 3px 4px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); color: var(--dim); font: inherit; font-size: var(--t-xs); cursor: pointer; }
 .group-working-chip b { color: var(--text); font-weight: 600; }

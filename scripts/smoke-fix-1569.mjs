@@ -91,7 +91,7 @@ export async function fix1569Checks({ check, toolsMod, readText }) {
   // --- 3. the way that worked last time --------------------------------------------------------------
   const desk = await readText('../desktop/main.mjs');
   check('ROUTE69-1 the desktop app uses the way to a machine that worked last time for 5 minutes (checked that it still answers) before trying the direct addresses again',
-    desk.includes('if (kept && kept.base !== url && Date.now() - kept.at < ROUTE_KEEP_MS && await probeHub(kept.base)) return kept.base;')
+    desk.includes('if (kept && kept.base !== url && await probeHub(kept.base)) {')
     && desk.includes('return keepRoute(url, await findRoute(url));') && desk.includes('const ROUTE_KEEP_MS = 5 * 60 * 1000;'));
 
   // --- 4. who is at work in a group -----------------------------------------------------------------
@@ -108,8 +108,8 @@ export async function fix1569Checks({ check, toolsMod, readText }) {
   check('WORK69-1 a group\'s members at work, wherever the turn runs (a hand-off in the member\'s own chat too): name, the step in words, how many steps; one line per member, others left out',
     list.length === 2 && list[0].name === '美术' && list[0].steps === 12 && list[0].tool === 'image_view' && list[0].since >= 59 && list[1].botId === 'pub' && list[1].steps === 5 && list[1].tool === '',
     JSON.stringify(list));
-  check('WORK69-2 the group on screen shows them above the box (avatar, name, step; a tap opens the member\'s chat), asked every 4 s, also for a group on another machine; when someone finishes the messages are read again at once',
-    page.includes('<div class="group-working" id="group-working" hidden></div>') && side.includes("remoteGroupApi(gid, '/working')") && side.includes('state.groupWorkingTimer = setInterval(tick, 4000);')
+  check('WORK69-2 the group on screen shows them above the box (avatar, name, step; a tap opens the member\'s chat), asked every few seconds, also for a group on another machine; when someone finishes the messages are read again at once',
+    page.includes('<div class="group-working" id="group-working" hidden></div>') && side.includes("remoteGroupApi(gid, '/working')") && side.includes('state.groupWorkingTimer = setInterval(tick, 3000);')
     && side.includes("if (state.groupWorkingIds && state.groupWorkingIds !== ids && !state.liveTurn?.bubble) loadGroupMessages()") && side.includes('chip.addEventListener(\'click\', () => openBotDm(member.id));')
     && (await readText('../public/app/main/03-groups.js')).includes('  watchGroupWorking();') && srv.includes('\\/groups\\/(?<gid>[^/]+)\\/working$/'));
 

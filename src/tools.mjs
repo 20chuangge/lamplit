@@ -1017,7 +1017,9 @@ export function createRegistry(deps) {
       // A card's counters and state (「评论 0」「赞 3」「已发布」) are not a button's words (1.5.68; 11-24: opening a note
       // to read its numbers asked as if it were a comment about to be sent, and stopped the 20:05 check).
       const words = tapWords([seen.label, args?.what, sends ? '发送' : ''].filter(Boolean).join(' '));
-      if ((action === 'tap' || action === 'type') && SENSITIVE_TAP.test(words) && !(action === 'tap' && seen.clearsBox)) {
+      // 「发布」 in the bottom bar only opens the page to write on (1.5.70): an ordinary tap.
+      const opens = action === 'tap' && seen.entry && phoneStepKind(words) === 'publish';
+      if ((action === 'tap' || action === 'type') && SENSITIVE_TAP.test(words) && !(action === 'tap' && seen.clearsBox) && !opens) {
         return { risk: RISK.HIGH, alwaysAsk: true, app, phoneKind: phoneStepKind(words), reason: `在手机${app ? `的「${app.label}」` : ''}上${action === 'type' ? '输入并提交' : `点「${String(seen.label || args?.what || '').slice(0, 30)}」`}：可能付款、发送、发布或删除，每次都先问你` };
       }
       const what = action === 'tap' ? `点「${String(seen.label || `${args?.x},${args?.y}`).slice(0, 30)}」` : action === 'type' ? `输入「${String(args?.text || '').slice(0, 30)}」`

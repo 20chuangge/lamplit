@@ -896,6 +896,26 @@ public class NightshiftWatcher extends Service {
         });
     }
 
+    /**
+     * The phone's service for a step (1.5.70). Seen 11-25 on an OPPO: the system's own screen-reading service
+     * rewrote the list of enabled services now and then, ours fell out and was put back 2.5 s later - and a
+     * step that came in between was answered "off", so the bot gave up a note it had half filled in (8 times
+     * that day). While the human still wants it on: put it back now and wait for it (up to 12 s; the machine
+     * waits 25 s for a step) before saying anything.
+     */
+    private PhoneAgentService waitForAgent() {
+        PhoneAgentService agent = PhoneAgentService.instance;
+        if (agent != null || !AgentKeeper.wanted(this)) return agent;
+        long until = android.os.SystemClock.elapsedRealtime() + 12000;
+        long nextEnsure = 0;
+        while (PhoneAgentService.instance == null && android.os.SystemClock.elapsedRealtime() < until) {
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (now >= nextEnsure) { AgentKeeper.ensure(this); nextEnsure = now + 1500; }
+            try { Thread.sleep(250); } catch (InterruptedException e) { break; }
+        }
+        return PhoneAgentService.instance;
+    }
+
     /** Do one step a machine sent and give it the answer (POST /api/phone/jobs/:id). */
     private void runPhoneJob(String hub, JSONObject event) {
         final String jobId = event.optString("jobId", "");
@@ -903,7 +923,7 @@ public class NightshiftWatcher extends Service {
         Thread t = new Thread(() -> {
             JSONObject reply = new JSONObject();
             try {
-                PhoneAgentService agent = PhoneAgentService.instance;
+                PhoneAgentService agent = "save_media".equals(event.optString("action", "")) ? PhoneAgentService.instance : waitForAgent();
                 if ("save_media".equals(event.optString("action", ""))) {
                     // Files into the album (1.5.65): fetched from this machine only, over its paired connection.
                     JSONObject args = event.optJSONObject("args");

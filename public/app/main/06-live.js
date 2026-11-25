@@ -519,6 +519,8 @@ function typingBotId() {
 }
 
 function showTyping(botId, label = '正在处理…') {
+  // A group says who is at work in one place, the strip above the box (1.5.70).
+  if (isGroupMode()) { messagesEl.querySelector('.typing-row')?.remove(); groupTyping(botId, label); return; }
   let row = messagesEl.querySelector('.typing-row');
   if (!row) {
     row = el('div', 'typing-row');
@@ -555,6 +557,7 @@ function keepTypingLast() {
 function hideTyping() {
   const row = messagesEl.querySelector('.typing-row');
   if (row) row.remove();
+  if (state.groupLive) groupTyping(null, '');
 }
 
 function appendLiveChip(chip) {
@@ -1099,27 +1102,32 @@ async function refreshPendingApprovals() {
   for (const approval of state.approvals) {
     if (approval.botId && approval.botId !== state.botId) continue;
     const parked = approval.status === 'awaiting_human';
-    const data = {
-      approvalId: approval.id,
-      tool: approval.toolName,
-      risk: approval.risk,
-      reason: approval.reason,
-      args: safeParse(approval.args),
-      // After a reload the card is rebuilt from here: keep 「以后都允许」 (1.5.33).
-      ...(approval.remember?.key ? { remember: approval.remember } : {}),
-      // And what a card for look-only commands covers (1.5.40).
-      ...(approval.batch ? { batch: approval.batch } : {}),
-      ...(approval.lookTurn ? { lookTurn: true } : {}),
-      ...(approval.look ? { look: true } : {}),
-      ...cardExtras(approval),
-      ...(parked ? { decision: 'needs_approval', live: true } : {}),
-    };
+    const data = approvalCardData(approval);
     const existing = messagesEl.querySelector(`[data-approval="${CSS.escape(approval.id)}"]`);
     // The transcript drew a routine's card before the list arrived: give it its buttons.
     if (existing && parked && !existing.classList.contains('parked-open')) { existing.replaceWith(buildApprovalCard(data)); continue; }
     if (existing) continue;
     appendApprovalCard(data);
   }
+}
+
+/** What a waiting card shows, from the list of approvals (the bot's own chat, and its group since 1.5.70). */
+function approvalCardData(approval) {
+  return {
+    approvalId: approval.id,
+    tool: approval.toolName,
+    risk: approval.risk,
+    reason: approval.reason,
+    args: safeParse(approval.args),
+    // After a reload the card is rebuilt from here: keep 「以后都允许」 (1.5.33).
+    ...(approval.remember?.key ? { remember: approval.remember } : {}),
+    // And what a card for look-only commands covers (1.5.40).
+    ...(approval.batch ? { batch: approval.batch } : {}),
+    ...(approval.lookTurn ? { lookTurn: true } : {}),
+    ...(approval.look ? { look: true } : {}),
+    ...cardExtras(approval),
+    ...(approval.status === 'awaiting_human' ? { decision: 'needs_approval', live: true } : {}),
+  };
 }
 
 /**

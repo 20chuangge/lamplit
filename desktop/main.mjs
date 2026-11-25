@@ -311,9 +311,18 @@ const ROUTE_KEEP_MS = 5 * 60 * 1000;
 const lastRoute = new Map(); // url -> { base, at }
 function keepRoute(url, base) { if (base) lastRoute.set(url, { base, at: Date.now() }); else lastRoute.delete(url); return base; }
 
+const routeLooking = new Set();
 async function reachMachine(url) {
   const kept = lastRoute.get(url);
-  if (kept && kept.base !== url && Date.now() - kept.at < ROUTE_KEEP_MS && await probeHub(kept.base)) return kept.base;
+  if (kept && kept.base !== url && await probeHub(kept.base)) {
+    // Older than 5 minutes: the direct addresses are tried again - behind the scenes (1.5.70). 11-25: every
+    // five minutes the 7 s of that try showed the other machine as 离线 in the list.
+    if (Date.now() - kept.at >= ROUTE_KEEP_MS && !routeLooking.has(url)) {
+      routeLooking.add(url);
+      findRoute(url).then((base) => { if (base) keepRoute(url, base); }).catch(() => {}).finally(() => routeLooking.delete(url));
+    }
+    return kept.base;
+  }
   return keepRoute(url, await findRoute(url));
 }
 

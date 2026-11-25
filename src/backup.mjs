@@ -105,6 +105,8 @@ const SKIPPED = new Set([
   'own-files.json',
   // 1.5.68: how jobs were done on a site or in an app (playbooks.mjs) - found again by doing the job once, kept 90 days.
   'playbooks.json',
+  // 1.5.70: which bots the human's 「发」 covers right now (two hours) - a moment's state of this machine.
+  'human-go.json',
   // 1.5.61: what Lamplit last wrote in the files that decide what it trusts (F9), its own temporary files and the bots' own /tmp (F8).
   'trust.json', 'trust-sealed.json', 'tmp', 'sandbox-tmp',
   // A bot screen's VNC password (made new each time someone watches); 1.5.63: wayvnc's socket there too.

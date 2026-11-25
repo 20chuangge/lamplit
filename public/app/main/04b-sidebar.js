@@ -127,38 +127,89 @@ function openChatApprovals() {
 }
 
 /* ---------------------------------------------------------------------
-   who is at work in the group on screen (1.5.69)
+   who is at work in the group on screen (1.5.69, one place for it since 1.5.70)
    A member does a hand-off in its own chat: the group showed nothing until the result came. A strip above
-   the box names every member at work, with its avatar and the step it is on; a tap opens its chat. Asked
-   every 4 s while the group is open - the same for a group on another machine - and when someone finishes,
-   the group's messages are read again at once (they used to lag behind).
+   the box names every member at work, with its avatar and the step it is on; a tap opens its chat.
+   1.5.70 (11-25): it is the only place that says who works - the line 「正在转交给同事…」 under the messages
+   said the same thing a second time, so in a group that line goes into the strip. It is drawn at once from
+   what was known the last time the group was open (leaving and coming back showed nothing for seconds),
+   asked every 3 s, and the members' cards that wait for the human are drawn in the group itself.
    --------------------------------------------------------------------- */
+function drawGroupWorking() {
+  const box = $('group-working');
+  if (!box) return;
+  const gid = state.groupId;
+  if (!gid) { box.hidden = true; return; }
+  const list = [...((state.groupWorkingSeen || {})[gid] || [])];
+  // The turn this page follows (the group's own stream): known before the next ask.
+  const live = state.groupLive?.gid === gid ? state.groupLive : null;
+  if (live?.botId) {
+    const row = list.find((w) => w.botId === live.botId || `${w.botId}`.split('@')[0] === `${live.botId}`.split('@')[0]);
+    if (row) { if (!row.tool) row.label = live.label; } else list.push({ botId: live.botId, label: live.label });
+  }
+  box.hidden = !list.length;
+  box.replaceChildren(...list.map((w) => {
+    const member = groupFace(w.botId, w.name) || { id: w.botId, name: w.name };
+    const chip = el('button', 'group-working-chip');
+    chip.type = 'button';
+    chip.title = '打开它的对话';
+    const doing = w.tool ? `正在${toolNameLabel(w.tool)}` : (w.label || '正在想');
+    chip.append(avatarNode(member, 22), el('b', '', member.name || w.name || ''), el('span', '', w.steps ? `${doing} · 第 ${w.steps} 步` : doing));
+    chip.addEventListener('click', () => openBotDm(member.id));
+    return chip;
+  }));
+}
+
+/** In a group the line 「正在…」 lives in the strip: who (the bot at work) and what. */
+function groupTyping(botId, label) {
+  state.groupLive = label ? { gid: state.groupId, botId, label: String(label).replace(/…$/, '') } : null;
+  drawGroupWorking();
+}
+
+/** The cards of this group's members that wait for the human, in the group (not only in each member's own chat). */
+async function drawGroupCards(gid) {
+  const ids = new Set((groupById(gid)?.members || []).map((m) => String(m?.id || m).split('@')[0]));
+  const far = remoteOf(gid);
+  if (far) {
+    for (const item of state.inbox?.items || []) {
+      if (item.machine !== far.machine || !ids.has(item.botId) || !item.toolName) continue;
+      if (messagesEl.querySelector(`[data-approval="${CSS.escape(item.id)}"]`)) continue;
+      appendApprovalCard(inboxCardData(item), groupFace(item.botId, item.botName));
+    }
+    return;
+  }
+  let list;
+  try { list = await api('/api/approvals?status=pending'); } catch { return; }
+  if (state.groupId !== gid) return;
+  state.approvals = list;
+  for (const approval of list) {
+    if (!ids.has(approval.botId) || messagesEl.querySelector(`[data-approval="${CSS.escape(approval.id)}"]`)) continue;
+    appendApprovalCard(approvalCardData(approval), groupFace(approval.botId));
+  }
+}
+
 function watchGroupWorking() {
   clearInterval(state.groupWorkingTimer);
+  drawGroupWorking(); // what was known when this group was last open, until the answer comes
   const tick = async () => {
-    const box = $('group-working');
     const gid = state.groupId;
-    if (!isGroupMode() || !gid) { clearInterval(state.groupWorkingTimer); if (box) box.hidden = true; state.groupWorkingIds = ''; return; }
+    if (!isGroupMode() || !gid) { clearInterval(state.groupWorkingTimer); state.groupLive = null; state.groupWorkingIds = ''; drawGroupWorking(); return; }
     if (document.visibilityState !== 'visible') return;
-    let list = [];
-    try { list = (await api(isRemoteId(gid) ? remoteGroupApi(gid, '/working') : `/api/groups/${encodeURIComponent(gid)}/working`)).working || []; } catch { return; }
+    let list = null;
+    try { list = (await api(isRemoteId(gid) ? remoteGroupApi(gid, '/working') : `/api/groups/${encodeURIComponent(gid)}/working`)).working || []; } catch { /* keep what is shown */ }
     if (state.groupId !== gid) return;
-    const ids = list.map((w) => w.botId).sort().join();
-    // Someone finished since the last look: what they said is in the group now.
-    if (state.groupWorkingIds && state.groupWorkingIds !== ids && !state.liveTurn?.bubble) loadGroupMessages().catch?.(() => {});
-    state.groupWorkingIds = ids;
-    box.hidden = !list.length;
-    box.replaceChildren(...list.map((w) => {
-      const member = groupMemberById(w.botId) || { id: w.botId, name: w.name };
-      const chip = el('button', 'group-working-chip');
-      chip.type = 'button';
-      chip.title = '打开它的对话';
-      const doing = w.tool ? `正在${toolNameLabel(w.tool)}` : '正在想';
-      chip.append(avatarNode(member, 22), el('b', '', member.name || w.name), el('span', '', w.steps ? `${doing} · 第 ${w.steps} 步` : doing));
-      chip.addEventListener('click', () => openBotDm(member.id));
-      return chip;
-    }));
+    if (list) {
+      const ids = list.map((w) => w.botId).sort().join();
+      // Someone finished since the last look: what they said is in the group now.
+      if (state.groupWorkingIds && state.groupWorkingIds !== ids && !state.liveTurn?.bubble) loadGroupMessages().catch?.(() => {});
+      state.groupWorkingIds = ids;
+      state.groupWorkingSeen = { ...(state.groupWorkingSeen || {}), [gid]: list };
+      drawGroupWorking();
+      // While someone works, a card of theirs may be waiting on another machine: ask for it now, not at the next round.
+      if (list.length && isRemoteId(gid)) await refreshInbox({ notify: false }).catch?.(() => {});
+    }
+    if (state.groupId === gid) drawGroupCards(gid).catch?.(() => {});
   };
-  state.groupWorkingTimer = setInterval(tick, 4000);
+  state.groupWorkingTimer = setInterval(tick, 3000);
   tick();
 }

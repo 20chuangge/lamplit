@@ -352,6 +352,27 @@ export function albumSummary(items, result = {}, via = '') {
 
 // ---- the phone --------------------------------------------------------------
 
+/**
+ * 「发布」 in an app's bottom bar (1.5.70): it opens the page where a post is written, it publishes nothing.
+ * 11-25: 小红书's own 「发布」 tab asked four times in ninety seconds, before a single picture was chosen.
+ * A bar is the bottom row of the screen with three or more other things in it; with a box to write in on
+ * the screen it is not that (the page being written has its 「发布」 at the bottom too).
+ */
+export function opensAComposer(node, nodes) {
+  if (!Array.isArray(node.bounds) || nodes.some((n) => n.editable)) return false;
+  const [l, t, r, b] = node.bounds;
+  const bottom = Math.max(0, ...nodes.map((n) => n.bounds?.[3] || 0));
+  if (!bottom || t < bottom * 0.86) return false;
+  const others = new Set();
+  for (const n of nodes) {
+    if (n === node || !Array.isArray(n.bounds) || !(n.clickable || n.text || n.desc)) continue;
+    if (n.bounds[1] >= b || n.bounds[3] <= t) continue; // not in this row
+    if (n.bounds[0] < r && n.bounds[2] > l) continue; // on top of it (its own label)
+    others.add(Math.round((n.bounds[0] + n.bounds[2]) / 2 / 40));
+  }
+  return others.size >= 3;
+}
+
 export function createPhone({ adb, exec = runAdb, workspaceDir, tmpDir = () => hubTmp('album') }) {
   const lastUi = new Map(); // serial -> {at, app, nodes}
   let lastSerial = '';
@@ -642,7 +663,7 @@ export function createPhone({ adb, exec = runAdb, workspaceDir, tmpDir = () => h
     const ui = serial ? lastUi.get(serial) : null;
     const node = serial ? findNode(serial, args) : null;
     const label = node ? (node.text || node.desc || node.id) : String(args.target || args.what || '');
-    return { label, app: ui?.app || '', clearsBox: Boolean(node && ui && clearsABox(node, ui.nodes)) };
+    return { label, app: ui?.app || '', clearsBox: Boolean(node && ui && clearsABox(node, ui.nodes)), entry: Boolean(node && ui && opensAComposer(node, ui.nodes)) };
   }
 
   /**

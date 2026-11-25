@@ -318,11 +318,11 @@ async function openGroup(id) {
   followScreen();
   if (state.tab === 'activity') renderRoutines();
   renderDecisionStrip();
+  watchGroupWorking(); // before the messages: who is at work shows at once (1.5.70)
   await loadGroupMessages();
   connectStream();
   connectRemoteStream();
   markSeen();
-  watchGroupWorking();
 }
 
 function openBotDm(id) {

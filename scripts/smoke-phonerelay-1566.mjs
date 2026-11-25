@@ -157,7 +157,7 @@ export async function appChecks({ check, readText }) {
     && hints.includes('static boolean isTailnetUrl(String url)'));
   check('PR66-18 PHONE_AGENT_OFF only when the service is not connected, and then worded by the system setting: "disconnected by the system, open Lamplit or switch it off and on" vs "turn it on"',
     watch.includes('reply.put("code", listed ? "PHONE_AGENT_RECONNECTING" : "PHONE_AGENT_OFF");') /* 1.5.67: its own code when on in the settings */
-    && watch.includes('nobody turned it off') && watch.includes('return "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)";')
+    && watch.includes('nobody turned it off') && watch.includes('return "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机). "')
     && watch.includes('return AgentKeeper.isOn(this);'));
   check('PR66-19 the relay closed the handshake (its machine had no tunnel yet, as 6 s after the PC restarted): tried again after 1 s and 2.5 s; another certificate or an unreachable relay is not retried',
     relay.includes('static final long[] RELAY_RETRY_MS = { 1000L, 2500L };') && relay.includes('outer = throughRelay(ssl, host, port, id);')

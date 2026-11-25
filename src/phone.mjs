@@ -70,6 +70,9 @@ export function tapWords(words) {
     .replace(/(?:已|未|待)(?:发布|发表|发送|删除|同意|回复)|(?:发布|发表|回复|评论)(?:于|时间|成功|失败)/g, ' ');
 }
 
+/** Words on a button that throw away what was written (1.5.71): leaving an editor without saving. */
+export const DISCARD_WORDS = /退出|放弃|不保存|不保留|丢弃|舍弃|清空|\b(discard|don't save|leave)\b/i;
+
 /** A box for searching: pressing enter there looks things up, it sends nothing. */
 const SEARCH_BOX = /search|搜索|查找|搜一搜|query/i;
 /** What the × in an input box is called. */

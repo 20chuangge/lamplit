@@ -39,6 +39,7 @@ import { judgeRules, applyRules, RULE_EXEMPT } from './rules.mjs';
 import { checkBoundary, DEVTOOLS, lookOnly } from './boundary.mjs';
 import { sandboxStatus } from './sandbox.mjs';
 import { PHONE_KIND_LABEL, PHONE_FILES_RULE, NO_PUBLIC_HOST_RULE } from './phone.mjs';
+import { DISCARD_WORDS } from './phone.mjs';
 import { readsOutside, markRead, sendsOut } from './readguard.mjs';
 import { draftFor, applyEdits, fieldValue as getField, outgoingAsk, rememberMayCover, sendDestination } from './drafts.mjs';
 import { historyStart } from './groups.mjs';
@@ -55,6 +56,21 @@ const MAX_TOOL_OUTPUT = 12000;
  * short head with a note. The call records (what was done) stay intact.
  */
 const TRIM_NOTE = '…(earlier output trimmed; read the file or run it again if you need it)';
+/** What a step on a screen left behind, as a short mark: other words on the screen = another mark (numbers that only count time left out). */
+export function screenMark(name, result) {
+  if (!(name === 'phone' || /^browser_/.test(String(name || ''))) || result === undefined || result === null) return '';
+  let s = '';
+  try { s = JSON.stringify(result); } catch { return ''; }
+  s = s.replace(/\d{6,}/g, '');
+  let h = 0;
+  for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return `${s.length}:${h}`;
+}
+
+const PHONE_DRAFT_MS = 3 * 60 * 60 * 1000;
+/** Turns nobody asked for just now: a routine, a check that came back, a rule, a nudge. */
+const ALONE_SOURCES = new Set(['routine', 'check', 'rule', 'nudge', 'system']);
+
 const SCREEN_TOOLS = new Set(['browser_snapshot', 'browser_screenshot', 'image_view', 'browser_click', 'browser_type', 'browser_press', 'browser_upload', 'browser_steps']);
 /** Page reads whose refs the next action needs: the latest of these stays whole. */
 const REF_TOOLS = new Set(['browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_upload', 'browser_steps']);
@@ -196,6 +212,7 @@ const TAKEOVER_RULES = [
   '- Never expose the desktop to the network (VNC/x11vnc/websockify on 0.0.0.0, port forwarding, remote-desktop software, VNC passwords). The app already gives the human secure access.',
   '- Purchases: you may research, compare and put things in the cart; the human confirms and pays during a takeover.',
   '- Approvals: describe them only from what actually happened (a tool result, an approval card). Never say a step was approved or that you asked when that did not happen.',
+  '- Why something failed (1.5.71): say only what a tool result or a file says. If the result gives no cause, say 「原因还不知道」 - a cause you worked out yourself is a guess: say it as 「我猜是…，没验证」, never as a fact, never tell the human to change a setting of their phone or computer because of it, and never save it with memory_write. Passing on what a teammate said: keep their 「可能」 a 「可能」, do not make it sound checked, and say who said it.',
   '',
 ];
 
@@ -1107,6 +1124,36 @@ export class AgentRuntime {
 
   saveHumanGo() {
     try { fsSync.writeFileSync(this.humanGoFile || path.join(P.dataDir, 'human-go.json'), JSON.stringify(Object.fromEntries(this.humanGo))); } catch { /* the next 「发」 writes it */ }
+  }
+
+  /**
+   * What a bot left half written in an app on the phone (1.5.71). 11-25: a note was filled in - nine pictures,
+   * title, text checked letter by letter - the turn stopped, and five seconds later the 20:05 routine found the
+   * phone on that page, pressed back and tapped 「退出」. Text typed into an app is remembered (who, which app,
+   * when) until it goes out, is saved as a draft or thrown away with the human's yes; three hours at most.
+   */
+  notePhoneDraft({ bot, chainId, args, out, place }) {
+    const steps = args?.action === 'steps' && Array.isArray(args.steps) ? args.steps : [args || {}];
+    const words = steps.map((s) => `${s?.target || ''} ${s?.what || ''}`).join(' ');
+    const typed = steps.filter((s) => s?.action === 'type' && !s?.submit && String(s?.text || '').length >= 8).map((s) => String(s.text));
+    const cur = this.phoneDraft;
+    if (cur && (Date.now() - cur.at > PHONE_DRAFT_MS)) this.phoneDraft = null;
+    if (out || /存草稿|保存草稿|save draft/i.test(words) || (this.phoneDraft && DISCARD_WORDS.test(words))) { this.phoneDraft = null; return; }
+    if (typed.length) this.phoneDraft = { botId: bot.id, botName: bot.name || bot.id, chainId, place: place || this.phoneDraft?.place || '', at: Date.now(), what: typed[typed.length - 1].slice(0, 16) };
+    else if (this.phoneDraft && this.phoneDraft.botId === bot.id && this.phoneDraft.chainId === chainId) this.phoneDraft.at = Date.now();
+  }
+
+  /**
+   * The half-written thing this turn must not throw away: another bot's, or its own when nobody is there
+   * (a routine, a check that came back). The bot's own turn with the human goes on with it freely.
+   */
+  phoneDraftFor(ctx) {
+    const d = this.phoneDraft;
+    if (!d) return null;
+    if (Date.now() - d.at > PHONE_DRAFT_MS) { this.phoneDraft = null; return null; }
+    if (ctx?.chainId && ctx.chainId === d.chainId) return null;
+    if (ctx?.bot?.id === d.botId && !ctx?.unattended && !ALONE_SOURCES.has(ctx?.source)) return null;
+    return { ...d, minutes: Math.max(1, Math.round((Date.now() - d.at) / 60000)) };
   }
 
   /** The local bots that share a group with this one. */
@@ -2225,6 +2272,7 @@ export class AgentRuntime {
         // A question to the human is still open and the human did not start this turn (1.5.65): nothing goes out.
         decisionPending: pending,
         chainId: turnChain,
+        source, // who started this turn (1.5.71: a routine does not tidy away what the bot left half written)
         emit: (event) => this.bus.emit({ ...baseEvent, ...event }),
       };
 
@@ -2508,6 +2556,7 @@ export class AgentRuntime {
               // place: the site or the phone app the step happened in - what a kept way of doing it is filed under.
               const place = call.name === 'phone' ? (w.place || '') : placeOf(ctx.pageUrl || w.page);
               Object.assign(receipt, { did: w.did, out: w.out, page: w.page }, w.files ? { files: w.files } : {}, place ? { place } : {});
+              if (call.name === 'phone' && receipt.ok) this.notePhoneDraft({ bot, chainId: turnChain, args: receipt.args, out: w.out, place });
               ctx.pageUrl = w.page;
             }
             receipts.push(receipt);
@@ -2516,7 +2565,10 @@ export class AgentRuntime {
           // Only steps that ran count as repeats (1.5.58): a card the human refused, wrote past or let
           // expire did not run, and a person stands between it and the next try - it is not a loop.
           if (!outcome?.notRun) {
-            recentCalls.push(`${call.name} ${JSON.stringify(call.args ?? call.arguments ?? '')}`);
+            // 1.5.71: on a screen the same step is a repeat only when the screen after it is the same too.
+            // 11-25: three taps on the same spot, each removing the topic that had moved up into it, were
+            // taken for a loop and stopped a note at step 54, a few steps from the end.
+            recentCalls.push(`${call.name} ${JSON.stringify(call.args ?? call.arguments ?? '')} ${screenMark(call.name, ctx.stepResult)}`);
             if (recentCalls.length > 3) recentCalls.shift();
             if (!stuck && recentCalls.length === 3 && recentCalls.every((c) => c === recentCalls[0])) stuck = call.name;
           }

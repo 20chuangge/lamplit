@@ -867,7 +867,9 @@ public class NightshiftWatcher extends Service {
                     + ". 「让机器人用这部手机」 is still switched on - nobody turned it off. Opening Lamplit on the phone once connects it again (the phone shows a notice for that). "
                     + "Tell the human: 「Lamplit 刚更新或重启过，机器人还没重新接上手机。在手机上打开一次 Lamplit 就好，开关不用动。」 Do not say it was turned off (不要说「被关掉了」). Then try again.";
         }
-        return "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机)";
+        // 1.5.71: says what is known and what is not - 11-25 a bot told the human it was "省电优化杀后台", its own guess.
+        return "「让机器人用这部手机」 is off on the phone: ask the human to turn it on in Lamplit (设置 → 机器 → 手机). "
+                + "Why it is off is not known from here (the human may have switched it off): do not name a cause and do not ask the human to change battery or cleaner settings.";
     }
 
     /** This phone's own id for the machines (made once, kept in the app's storage). */

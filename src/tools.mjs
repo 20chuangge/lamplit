@@ -41,7 +41,7 @@ import { listVault, revealVault } from './vault.mjs';
 import { askPeerBot, resolveRemoteMember, isRemoteMember } from './crossmachine.mjs';
 import { planAdjust, botPatchOf } from './adjust.mjs';
 import { runWinUi, WINUI_ACTIONS } from './winui.mjs';
-import { createPhone, findAdb, appLabel, PHONE_ACTIONS, PHONE_LOOK_ACTIONS, PHONE_ACT_ACTIONS, PHONE_STEPS_MAX, tapWords, SENSITIVE_TAP, phoneStepKind, PHONE_KIND_LABEL, albumFiles, ALBUM_MAX_FILES, ALBUM_MAX_BYTES, ALBUM_APP_VERSION } from './phone.mjs';
+import { createPhone, findAdb, appLabel, PHONE_ACTIONS, PHONE_LOOK_ACTIONS, PHONE_ACT_ACTIONS, PHONE_STEPS_MAX, tapWords, SENSITIVE_TAP, DISCARD_WORDS, phoneStepKind, PHONE_KIND_LABEL, albumFiles, ALBUM_MAX_FILES, ALBUM_MAX_BYTES, ALBUM_APP_VERSION } from './phone.mjs';
 import { CLI_AGENTS, CLI_AGENT_IDS, newTaskDir, runCliAgent } from './cliagents.mjs';
 
 const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
@@ -1017,6 +1017,11 @@ export function createRegistry(deps) {
       // A card's counters and state (「评论 0」「赞 3」「已发布」) are not a button's words (1.5.68; 11-24: opening a note
       // to read its numbers asked as if it were a comment about to be sent, and stopped the 20:05 check).
       const words = tapWords([seen.label, args?.what, sends ? '发送' : ''].filter(Boolean).join(' '));
+      // Something half written by another piece of work is on this phone (1.5.71): leaving it without saving asks first.
+      const draft = action === 'tap' ? deps.getRuntime?.()?.phoneDraftFor?.(ctx) : null;
+      if (draft && DISCARD_WORDS.test(tapWords([seen.label, args?.what, args?.target].filter(Boolean).join(' ')))) {
+        return { risk: RISK.HIGH, alwaysAsk: true, app, phoneKind: 'delete', reason: `在手机${app ? `的「${app.label}」` : ''}上点「${String(seen.label || args?.what || args?.target || '').slice(0, 30)}」：会丢掉「${draft.botName}」${draft.minutes} 分钟前在这里填到一半的内容（${draft.what}…），先问你` };
+      }
       // 「发布」 in the bottom bar only opens the page to write on (1.5.70): an ordinary tap.
       const opens = action === 'tap' && seen.entry && phoneStepKind(words) === 'publish';
       if ((action === 'tap' || action === 'type') && SENSITIVE_TAP.test(words) && !(action === 'tap' && seen.clearsBox) && !opens) {
@@ -1056,7 +1061,14 @@ export function createRegistry(deps) {
         const phone = phoneOf(ctx);
         // The screen after the step comes back with it (1.5.68; 11-24: 98 of 发布's 260 phone steps were a look right
         // after a tap). A look that fails is left out; the step itself still counts.
-        const screenAfter = async (out) => {
+        // Someone else's half-written work is on this phone (1.5.71): said with every result, so the bot does not
+        // tidy it away to get to its own job.
+        const draft = deps.getRuntime?.()?.phoneDraftFor?.(ctx);
+        const told = (out) => (draft && out && typeof out === 'object' && !Array.isArray(out)
+          ? { ...out, unfinished: `「${draft.botName}」 left something half written in ${draft.place || 'an app'} on this phone ${draft.minutes} min ago (「${draft.what}…」). Do not go back out of it or discard it. If your job needs that app: tap 存草稿 first when it is offered, else do the part of your job that does not need the app and tell the human the rest waits.` }
+          : out);
+        const screenAfter = async (res) => {
+          const out = told(res);
           await new Promise((r) => setTimeout(r, deps.phoneSettleMs ?? 700));
           try { return { ...out, screen: await phone.act('look', { device: args.device }), note: 'screen = the phone after this step (same as a look): go on from it, do not look again.' }; } catch { return out; }
         };
@@ -1077,7 +1089,7 @@ export function createRegistry(deps) {
           return screenAfter({ done: done.length, of: steps.length, steps: done, ...(failed ? { stoppedAt: failed } : {}) });
         }
         const out = await phone.act(action, { ...args });
-        return PHONE_ACT_ACTIONS.has(action) ? screenAfter(out) : out;
+        return PHONE_ACT_ACTIONS.has(action) ? screenAfter(out) : told(out);
       } catch (err) {
         throw toolError(err.code || 'PHONE_FAILED', err.message);
       }
@@ -1495,7 +1507,7 @@ export function createRegistry(deps) {
   add({
     name: 'memory_write',
     description:
-      'Append one durable fact to memory. scope="bot" (default) writes to this bot only; scope="shared" writes a fact every bot may use.',
+      'Append one durable fact to memory. scope="bot" (default) writes to this bot only; scope="shared" writes a fact every bot may use. Only what a tool result, a file or the human said - never the cause you guessed for a failure (every bot would read it as checked).',
     risk: RISK.LOW,
     parameters: {
       type: 'object',

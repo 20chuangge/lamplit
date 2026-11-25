@@ -1064,7 +1064,11 @@ export function createRegistry(deps) {
         // Someone else's half-written work is on this phone (1.5.71): said with every result, so the bot does not
         // tidy it away to get to its own job.
         const draft = deps.getRuntime?.()?.phoneDraftFor?.(ctx);
-        const told = (out) => (draft && out && typeof out === 'object' && !Array.isArray(out)
+        // Its own, from an earlier try (1.5.72): said when it first looks, so it goes on instead of starting over.
+        const own = !draft && (PHONE_LOOK_ACTIONS.has(action) || action === 'open') ? deps.getRuntime?.()?.phoneOwnDraft?.(ctx) : null;
+        const told = (out) => (own && out && typeof out === 'object' && !Array.isArray(out)
+          ? { ...out, yours: `You left something half written in ${own.place || 'an app'} on this phone ${own.minutes} min ago (「${own.what}…」). It is most likely still there: look at what stands on the screen and go on from that. Do not leave the editor to start over, and do not type again what is already in it - check only the part you had not finished.` }
+          : draft && out && typeof out === 'object' && !Array.isArray(out)
           ? { ...out, unfinished: `「${draft.botName}」 left something half written in ${draft.place || 'an app'} on this phone ${draft.minutes} min ago (「${draft.what}…」). Do not go back out of it or discard it. If your job needs that app: tap 存草稿 first when it is offered, else do the part of your job that does not need the app and tell the human the rest waits.` }
           : out);
         const screenAfter = async (res) => {
@@ -1514,14 +1518,17 @@ export function createRegistry(deps) {
       properties: {
         text: { type: 'string', description: 'The fact to remember. One sentence, plain language.' },
         scope: { type: 'string', enum: ['bot', 'shared'], description: 'Default "bot".' },
+        replaces: { type: 'string', description: 'Only when an older entry turned out wrong: 6 or more characters copied from it. Every entry of this scope containing them is removed, then the new fact is written.' },
       },
       required: ['text'],
       additionalProperties: false,
     },
     async run(args, ctx) {
       const scope = args?.scope === 'shared' ? 'shared' : ctx.bot.id;
+      // A wrong entry is taken out, not only written over (1.5.72).
+      const removed = args?.replaces && typeof ctx.memory.forgetMemory === 'function' ? await ctx.memory.forgetMemory(scope, String(args.replaces)) : null;
       const saved = await ctx.memory.appendMemory(scope, String(args?.text ?? ''));
-      return { saved: true, scope: scope === 'shared' ? 'shared' : 'bot', entry: saved };
+      return { saved: true, scope: scope === 'shared' ? 'shared' : 'bot', entry: saved, ...(removed ? { removed } : {}) };
     },
   });
 
@@ -2073,6 +2080,21 @@ export function createRegistry(deps) {
       await runtime.mirrorHandoff?.({ fromId: ctx.bot.id, toId: target.id, text: args?.text, group: ctx.group });
       // The coordinator gives a member work: it shows on the group's task board, and the human hears who does what (1.5.65).
       const board = await runtime.boardHandoff?.({ ctx, target, text: String(args?.text || '') }).catch(() => null);
+      // The coordinator's own group turn gives a member work and lets go (1.5.72): the member reports in the
+      // group under its own name, the coordinator is free meanwhile and is woken when there is a next step.
+      // 11-25: 主理人 sat 「正在转交给同事」 for as long as 发布 worked, and retold every result in its own words.
+      if (board?.turnId && ctx.group && ctx.groupTurn && ctx.group.coordinatorId === ctx.bot.id && typeof runtime.letGo === 'function') {
+        // Woken because this member just reported: the same step does not go back to it (a weak model would loop).
+        if (runtime.justReported?.(ctx, target)) {
+          return { botId: target.id, botName: target.name, status: 'not_given', reply: '', note: `${target.name} has just reported on exactly this - do not hand it the same step again. A different next step goes to whoever should do it; with nothing next, answer 「收到」.` };
+        }
+        if (runtime.botBusy?.(target.id)) ctx.progress?.(`等${target.name}忙完手上的事…`);
+        runtime.letGo({ ctx, target, text: String(args?.text || ''), turnId: board.turnId, chain, budget });
+        return {
+          botId: target.id, botName: target.name, status: 'given', turnId: board.turnId, reply: '',
+          note: `${target.name} has it now and will report in the group itself, under its own name. You do not wait and you do not get its reply here: you are woken when it is done and there may be a next step. Finish your turn now and write nothing more - the human already got one line saying who does what.`,
+        };
+      }
       // One thing at a time: a busy colleague finishes first (the chat says whom we wait for).
       if (runtime.botBusy?.(target.id)) ctx.progress?.(`等${target.name}忙完手上的事…`);
       const off = runtime.noteWaiting?.(ctx.bot.id, target.id) || (() => {});

@@ -777,12 +777,18 @@ export function humanPartOf(text) {
   return parts.length ? `中间${parts.join('，')}。` : '中间要你定的事会在这里问你。';
 }
 
+/** How the coordinator's wake-up begins: who reported. */
+const wakeHead = (name) => `「${name}」做完了交给它的那一步`;
+
+/** What the coordinator is told when a member reported (1.5.72); its 「收到」 to this is not shown. */
+export const WAKE_MARK = '有下一步就直接交给该做的人；要老板定的事就问老板。没有下一步，只回两个字「收到」——不要复述它的话。';
+
 /** The coordinator's one line to the human when it gives work out (1.5.65): who does what next, and the human's part. */
 export function handoffReply(rows) {
   const list = rows.filter(Boolean);
   if (!list.length) return '';
   const who = list.map((r) => `「${r.name}」${r.title}`).join('；');
-  return `好，交给${who}。进度在任务板上，做完我在群里告诉你。${humanPartOf(list.map((r) => r.text).join('\n'))}`;
+  return `好，交给${who}。进度在任务板上，做完它自己在群里说。${humanPartOf(list.map((r) => r.text).join('\n'))}`;
 }
 const groupToolSchemas = (names) => names.map((n) => ({ type: 'function', function: { name: GROUP_TOOLS[n].name, description: GROUP_TOOLS[n].description, parameters: GROUP_TOOLS[n].parameters } }));
 
@@ -1156,6 +1162,18 @@ export class AgentRuntime {
     return { ...d, minutes: Math.max(1, Math.round((Date.now() - d.at) / 60000)) };
   }
 
+  /**
+   * Its own half-written work from an earlier piece of work (1.5.72): the turn goes on from where that stands.
+   * 11-25: every new try began by reading the files again, checking every picture and often leaving the
+   * editor to build the note from nothing - thirteen times.
+   */
+  phoneOwnDraft(ctx) {
+    const d = this.phoneDraft;
+    if (!d || Date.now() - d.at > PHONE_DRAFT_MS) return null;
+    if (ctx?.bot?.id !== d.botId || (ctx?.chainId && ctx.chainId === d.chainId) || this.phoneDraftFor(ctx)) return null;
+    return { ...d, minutes: Math.max(1, Math.round((Date.now() - d.at) / 60000)) };
+  }
+
   /** The local bots that share a group with this one. */
   async groupMates(botId) {
     const list = this.groups?.listGroups ? await this.groups.listGroups() : [];
@@ -1390,12 +1408,18 @@ export class AgentRuntime {
     if (fromHuman && !wasHeld) for (const m of group.members || []) if (!m.remote) this.humanSpoke?.(m.id);
     // 「发」 said in the group counts for its members (1.5.69), 「先别发」 takes it back.
     if (fromHuman && !wasHeld) this.noteHumanGo(text, (group.members || []).filter((m) => !m.remote).map((m) => m.id || m));
+    if (fromHuman) this.wakeRuns?.delete(group.id);
     // The board runs (1.5.64; 11-23: cover 5 went to 发布, 画师 kept making it for 10 minutes):
     // the coordinator hears it and may stop or redirect a step - not whichever member is busy.
     const plan = this.groups ? await this.groupPlan(group.id).catch(() => null) : null;
     const open = plan?.status === 'running' && plan.tasks?.some((t) => t.status === 'todo' || t.status === 'doing');
     const mentioned = mentionedMembers(text, group.members || []);
     const busy = this.busyGroupTurn(group.id);
+    // One member is at the only open work and nobody was named: the words go to it as said (1.5.72).
+    if (fromHuman && !mentioned.length) {
+      const sole = this.soleWorker(plan, group);
+      if (sole) return this.wordToMember({ group, plan, ...sole, text, turnId, parts });
+    }
     if (open && fromHuman && !mentioned.some((m) => !m.remote && !this.isWorking(m.id))) return this.planInput({ group, plan, text, turnId, parts });
     if (!busy) {
       // Nothing runs yet: a few seconds while more messages keep coming, then one turn (1.5.64).
@@ -2758,7 +2782,13 @@ export class AgentRuntime {
         // the group with group_post, its final answer becomes the group message
         // (checked against the transcript so it is never posted twice).
         // Not when it only goes on by itself after the step limit (1.5.67): that is no news for the group.
-        if (status !== 'cancelled' && summary && !quietLimit) {
+        // 1.5.72: nothing to add is not said - 「收到」 after a member reported with no next step, and the few
+        // words after giving work out (the human already got the line saying who does what).
+        const flat = String(summary || '').trim();
+        const nothingToAdd = (String(text || '').includes(WAKE_MARK) && /^[「"]?收到[」"]?[。.！!]?$/.test(flat))
+          || (this.gaveAway?.has(turnId) && flat.length <= 160 && !/[?？]/.test(flat));
+        this.gaveAway?.delete(turnId);
+        if (status !== 'cancelled' && summary && !quietLimit && !nothingToAdd) {
           const spoke = await this.groups.hasAssistantMessage(group.id, turnId, bot.id).catch(() => false);
           if (!spoke) {
             await this.recordGroupMessage(group.id, { kind: 'assistant', from: bot.id, text: stripOwnTag(summary, bot.name), turnId });
@@ -2796,6 +2826,12 @@ export class AgentRuntime {
       // human answering - not a finished background job (1.5.68; 11-24, TikTok: 【需要你拍板】, then a job's turn and the
       // checklist going on by itself told the human the same twice more, each with the video).
       if (direct) this.afterTaskTurn(bot.id, status, waitingFor || (live.waitingFor === 'decision' ? 'decision' : null), { fromHuman: HUMAN_SOURCES.has(source), toolsRun, redirectedAt }).catch(() => {});
+      // Work given by a group's coordinator that went on by itself after the step limit ends here (1.5.72): the group hears it now.
+      const owed = source === 'task' && !autoContinue ? this.owedReports?.get(bot.id) : null;
+      if (owed) {
+        this.owedReports.delete(bot.id);
+        this.memberReported({ ...owed, result: { turnId, status, summary, waitingFor: waitingFor || live.waitingFor || null } }).catch(() => {});
+      }
       // Cut off by the step limit with no open checklist: the next turn starts
       // by itself. The bot decides - finished: say the result; not: go on.
       if (autoContinue) {
@@ -3370,6 +3406,95 @@ export class AgentRuntime {
       }
     }
     return { turnId, planId: plan.id };
+  }
+
+  /**
+   * Given and let go (1.5.72): the member's turn runs by itself; what it says at the end goes into the group
+   * under its own name, in full, and only then does the coordinator hear of it (memberReported).
+   */
+  letGo({ ctx, target, text, turnId, chain, budget }) {
+    const group = ctx.group;
+    const lead = ctx.bot;
+    this.gaveAway = this.gaveAway || new Set();
+    this.gaveAway.add(ctx.turnId);
+    Promise.resolve()
+      .then(() => this.runTurn({
+        botId: target.id, text, source: 'bot', depth: (ctx.depth || 0) + 1, chain: [...chain, target.id], handoffBudget: budget,
+        unattended: ctx.unattended, fromBotId: lead.id, turnId, group, groupRole: 'member',
+      }))
+      .then((result) => this.memberReported({ group, lead, member: target, result }))
+      .catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+  }
+
+  /**
+   * A member finished the work the coordinator gave it (or stopped on a question for the human): its own
+   * words are the group's message. Finished: the coordinator is woken once to give out a next step - it
+   * does not retell; with nothing next it answers 「收到」, which is not shown.
+   */
+  async memberReported({ group, lead, member, result }) {
+    const said = String(result?.summary || '').trim();
+    const waiting = result?.status === 'needs_approval' || Boolean(result?.waitingFor);
+    // It already spoke in the group itself during that turn (group_post): its words are there, not twice.
+    const spoke = result?.turnId ? await this.groups?.hasAssistantMessage?.(group.id, result.turnId, member.id).catch(() => false) : false;
+    if (said && said !== '(no answer)' && result?.status !== 'cancelled' && !spoke) {
+      await this.recordGroupMessage(group.id, { kind: 'assistant', from: member.id, text: said.length > 6000 ? `${said.slice(0, 6000)}…` : said, turnId: result?.turnId });
+    }
+    if (waiting || result?.status === 'cancelled') return;
+    // Cut off by the step limit, it goes on by itself: the coordinator hears when that turn ends.
+    if (result?.status === 'max_steps' || result?.notDone) { (this.owedReports = this.owedReports || new Map()).set(member.id, { group, lead, member }); return; }
+    // Not for ever (a model that keeps handing the same thing round): eight in a row without a word from the human.
+    this.wakeRuns = this.wakeRuns || new Map();
+    const n = (this.wakeRuns.get(group.id) || 0) + 1;
+    this.wakeRuns.set(group.id, n);
+    if (n > 8) return;
+    // What the human told the member directly meanwhile: the coordinator plans the next step with it.
+    const row = (this.plans?.get(group.id)?.tasks || []).filter((t) => t.owner === member.id && t.said?.length).pop();
+    const direct = row ? `\n\n老板在这期间直接对「${member.name}」说过：${row.said.map((s) => `「${s.text}」`).join('、')}（以老板的话为准，下一步不要和它冲突）。` : '';
+    const prompt = `${wakeHead(member.name)}，它的原话已经以它自己的名字发在群里，老板看得到：\n\n${said.slice(0, 3000) || '（它没有说结果）'}${direct}\n\n${WAKE_MARK}`;
+    const fail = (err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message });
+    if (this.busyGroupTurn(group.id)) this.routeGroupMessage({ group, text: prompt }).catch(fail);
+    else this.runGroupMessage({ group, text: prompt, recordUser: false }).catch(fail);
+  }
+
+  /** This coordinator turn was started by this member's report. */
+  justReported(ctx, target) {
+    const task = String(this.active.get(ctx?.turnId)?.task || '');
+    return task.startsWith(wakeHead(target?.name));
+  }
+
+  /** The one member at the only open piece of work on a hand-off board, its coordinator not at work: the human's words are for it. */
+  soleWorker(plan, group) {
+    if (!plan?.auto || !BOARD_OPEN.includes(plan.status)) return null;
+    if (plan.leadTurn && this.active.has(plan.leadTurn)) return null;
+    const rows = (plan.tasks || []).filter((t) => ['todo', 'doing', 'waiting_human'].includes(t.status));
+    if (rows.length !== 1) return null;
+    const member = (group?.members || []).find((m) => m.id === rows[0].owner);
+    return member && !member.remote ? { row: rows[0], member } : null;
+  }
+
+  /**
+   * The human wrote in the group, named nobody, and one member is at the work (1.5.72): the words reach that
+   * member as they were said - into its running turn, or as its next turn - not through the coordinator.
+   * 11-25: 「继续」「必须发出去」 came out of the relay as 「最多试 2 次，一断就停手」.
+   */
+  async wordToMember({ group, plan, row, member, text, turnId: given = null, parts = null }) {
+    const turnId = given || uid('turn');
+    const said = parts ? parts.join('\n') : String(text);
+    await this.recordGroupMessage(group.id, { kind: 'user', from: 'user', text: said, turnId, to: member.id });
+    const running = [...this.active.entries()].find(([, i]) => i.botId === member.id && !i.remote && Array.isArray(i.inbox));
+    if (running) {
+      running[1].inbox.push(said);
+      row.said = [...(row.said || []), { ts: nowIso(), text: said.slice(0, 600) }].slice(-6);
+      await this.boardChanged(plan);
+      return { turnId, toMember: member.id, aside: true };
+    }
+    await this.noteDirectWord(member.id, said, { turnId }).catch(() => {});
+    const lead = await this.bots.getBot(group.coordinatorId).catch(() => null);
+    Promise.resolve()
+      .then(() => this.runTurn({ botId: member.id, text: said, source: 'chat', turnId }))
+      .then((result) => (lead ? this.memberReported({ group, lead, member, result }) : null))
+      .catch((err) => this.bus.emit({ type: 'error', groupId: group.id, message: err.message }));
+    return { turnId, toMember: member.id };
   }
 
   /** A turn for a hand-off board row starts: the row is 进行中. */

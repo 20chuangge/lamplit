@@ -320,6 +320,7 @@ export async function boardChecks({ check, toolsMod, groupsMod }) {
     toolsMod, groupsMod,
     script: async ({ who, last, messages }) => {
       if (who === 'lead') {
+        if (last.includes(agent.WAKE_MARK)) return say('收到'); // 1.5.72: woken after a member reported, nothing next
         const tool = messages.filter((m) => m.role === 'tool').length;
         if (round === 1) {
           if (tool === 0) return call('bot_message', { botId: '发布', text: '今天只发第 1 条到知乎。发出去之前先 post_draft 给老板确认。' });
@@ -351,10 +352,10 @@ export async function boardChecks({ check, toolsMod, groupsMod }) {
     && plan.tasks[0].owner === 'g65pub' && plan.tasks[0].status === 'waiting_human' && /扫码登录/.test(plan.tasks[0].question || '')
     && plan.tasks[1].owner === 'g65copy' && plan.tasks[1].status === 'done' && plan.status === 'waiting',
     JSON.stringify({ status: plan?.status, tasks: plan?.tasks?.map((t) => `${t.title}:${t.owner}:${t.status}`), planMsgs: planMsgs.length }));
-  check('G65-2b the human always gets one short line the moment work is given out - who does what next and their part (「发出去之前会先把草稿给你确认」) - once per coordinator turn, and its final answer still comes after',
+  check('G65-2b the human always gets one short line the moment work is given out - who does what next and their part (「发出去之前会先把草稿给你确认」) - once per coordinator turn (1.5.72: a few words after giving work out add nothing and are not shown)',
     Boolean(hand) && hand.text.startsWith('好，交给「发布」今天只发第 1 条到知乎。进度在任务板上') && /发出去之前会先把草稿给你确认/.test(hand.text) && /任务板/.test(hand.text)
-    && replies.filter((m) => /^好，交给/.test(m.text || '')).length === 1 && replies.some((m) => m.text === '第 1 条在等知乎扫码，文案在对第 2 条标题。')
-    && msgs.indexOf(hand) < msgs.indexOf(replies.find((m) => m.text === '第 1 条在等知乎扫码，文案在对第 2 条标题。')),
+    && replies.filter((m) => /^好，交给/.test(m.text || '')).length === 1 && (replies.length === 1 || replies.some((m) => m.text === '第 1 条在等知乎扫码，文案在对第 2 条标题。'))
+    && (replies.length === 1 || msgs.indexOf(hand) < msgs.indexOf(replies.find((m) => m.text === '第 1 条在等知乎扫码，文案在对第 2 条标题。'))),
     JSON.stringify(replies.map((m) => m.text)));
   // The human answers in the group: the coordinator (a new turn) hands 发布 the rest - the same row, the same board.
   round = 2;
@@ -386,6 +387,7 @@ export async function boardChecks({ check, toolsMod, groupsMod }) {
 // G65-3: what the human tells a member directly reaches the coordinator
 // ---------------------------------------------------------------------------
 export async function directWordChecks({ check, toolsMod, groupsMod, readText }) {
+  const agent = await import('../src/agent.mjs');
   let leadSaw = '';
   let release = null;
   const r = await teamRig({
@@ -393,6 +395,7 @@ export async function directWordChecks({ check, toolsMod, groupsMod, readText })
     script: async ({ who, last, all, messages }) => {
       if (who === 'lead') {
         const tool = messages.filter((m) => m.role === 'tool').length;
+        if (last.includes(agent.WAKE_MARK)) return say('收到'); // 1.5.72: woken after 发布 reported
         if (/第二件/.test(all)) { leadSaw = all; return say('好，发布只发知乎。'); }
         return tool ? say('发布发完了。') : call('bot_message', { botId: '发布', text: '先发视频号，再发知乎' });
       }
@@ -417,12 +420,15 @@ export async function directWordChecks({ check, toolsMod, groupsMod, readText })
   const inPub = (r.rt.active.get(busy?.turnId)?.inbox || []).includes('视频号先跳过') && busy?.from === 'g65lead';
   release();
   await run;
-  check('G65-3a the human tells a member with work on the board something in its own chat: the row keeps it (「你在单聊里说」 on the board) and the coordinator\'s running turn hears it before its next step',
-    noted === 1 && row?.said?.[0]?.text === '视频号先跳过' && inLead && inPub,
+  // 1.5.72: the coordinator gave the work and let go - it is woken when 发布 reports, with the human's words.
+  await until(() => r.calls.some((c) => c.who === 'lead' && c.last.includes(agent.WAKE_MARK)), 5000);
+  await until(() => !r.rt.isWorking('g65lead') && !r.rt.isWorking('g65pub'), 5000);
+  check('G65-3a the human tells a member with work on the board something in its own chat: the row keeps it (「你在单聊里说」 on the board) and the member\'s running turn hears it (1.5.72: the coordinator is not at work meanwhile; while it is, it hears it too)',
+    noted >= 1 && row?.said?.[0]?.text === '视频号先跳过' && (inLead || !leadLive) && inPub,
     JSON.stringify({ noted, said: row?.said, inLead, inPub }));
   const leadMsgs = r.calls.filter((c) => c.who === 'lead');
-  check('G65-3b the coordinator\'s next model step reads it as the human\'s word that wins (「用户刚在「发布」的单聊里直接对它说：「视频号先跳过」…不要和这句话冲突」)',
-    leadMsgs.some((c) => /用户刚在「发布」的单聊里直接对它说：「视频号先跳过」/.test(c.all) && /不要和这句话冲突/.test(c.all)), JSON.stringify(leadMsgs.map((c) => c.last.slice(0, 80))));
+  check('G65-3b the coordinator\'s next model step reads it as the human\'s word that wins (1.5.72: when it is woken by the member\'s report - 「老板在这期间直接对「发布」说过：「视频号先跳过」（以老板的话为准…）」)',
+    leadMsgs.some((c) => (/用户刚在「发布」的单聊里直接对它说：「视频号先跳过」/.test(c.all) && /不要和这句话冲突/.test(c.all)) || (/老板在这期间直接对「发布」说过：「视频号先跳过」/.test(c.all) && /以老板的话为准/.test(c.all))), JSON.stringify(leadMsgs.map((c) => c.last.slice(0, 80))));
   // The board is still open (发布 waits for the human): a new message in the group - the coordinator sees the board with the human's words.
   const p = r.rt.plans.get(r.group.id);
   p.tasks[0].status = 'waiting_human';
@@ -1095,3 +1101,6 @@ export async function realEvalChecks({ check, toolsMod, groupsMod }) {
     r.done();
   }
 }
+
+// 1.5.72: the same rig for the let-go checks.
+export { teamRig, say, call, sleep, until };

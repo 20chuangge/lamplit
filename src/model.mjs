@@ -855,6 +855,8 @@ function mockGroupPlan(group, botName, text) {
   // A Chinese request gets Chinese back (1.5.32: the group demo answered in English).
   const zh = /[\u4e00-\u9fff]/.test(String(text || ''));
   const say = (cn, en) => (zh ? cn : en);
+  // Demo mode: woken after a member reported, there is no next step (1.5.72).
+  if (group.role === 'coordinator' && /只回两个字「收到」/.test(String(text))) return [{ tool: 'task_finish', args: { summary: '收到' } }];
   if (group.role === 'coordinator' && group.others.length) {
     return [
       {

@@ -318,6 +318,8 @@ async function main() {
     await stage('1.5.69: the phone switch stays on, a go said in a group counts, the kept route, who is at work in a group', async () => (await import('./smoke-fix-1569.mjs')).fix1569Checks({ check, toolsMod, readText }));
     await stage('1.5.70: the phone waits for its service, a go with urgency and across a restart, the bottom-bar 发布, cards and one strip in a group', async () => (await import('./smoke-fix-1570.mjs')).fix1570Checks({ check, readText }));
     await stage('1.5.71: a repeat needs the same screen, half-written work on the phone is kept, causes are facts', async () => (await import('./smoke-fix-1571.mjs')).fix1571Checks({ check, toolsMod, readText }));
+    await stage('1.5.72: a group works together - give and let go, the member reports itself, what the human says reaches the member at work', async () => (await import('./smoke-group-1572.mjs')).letGoChecks({ check, toolsMod, groupsMod }));
+    await stage('1.5.72: one table of when a step asks, going on from half-written work, a wrong memory entry taken out', async () => (await import('./smoke-fix-1572.mjs')).fix1572Checks({ check, toolsMod, readText }));
     await stage('1.5.67: one rule for every bot - existing, new, on another machine', async () => (await import('./smoke-group-1567.mjs')).allBotsChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: bots are told which shell runs their commands; a bash command on Windows is caught before it runs', async () => (await import('./smoke-group-1567.mjs')).shellChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.67: the read guard is off unless the human turns it on', async () => (await import('./smoke-group-1567.mjs')).readGuardDefaultChecks({ check, toolsMod, groupsMod, readText }));
@@ -1482,12 +1484,13 @@ async function scenarioGroups({ botsMod, groupsMod, toolsMod }) {
   );
   check(
     'the teammate speaking is streamed to the group',
-    stream.events.some((event) => event.type === 'group.message' && event.message?.from === 'researcher'),
+    // 1.5.72: let go, the teammate may speak after the coordinator's turn (and this listener) ended - then the transcript has it.
+    stream.events.some((event) => event.type === 'group.message' && event.message?.from === 'researcher') || items.some((m) => m.kind === 'assistant' && m.from === 'researcher'),
     JSON.stringify(stream.events.filter((e) => e.type === 'group.message').map((e) => e.message?.from)),
   );
   check(
-    'the transcript ends with a status row for the turn',
-    items.at(-1)?.kind === 'status' && items.at(-1)?.status === 'success',
+    'the transcript has a status row for the turn (1.5.72: the teammate, let go, may speak after it)',
+    items.some((m) => m.kind === 'status' && m.status === 'success'),
     JSON.stringify(items.at(-1)),
   );
   check('every transcript row has an id and an ISO timestamp', items.every((m) => typeof m.id === 'string' && !Number.isNaN(Date.parse(m.ts))));

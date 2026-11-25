@@ -109,6 +109,29 @@ export async function appendMemory(botId, text, { title } = {}) {
   return { botId, text: clean, ts: nowIso() };
 }
 
+/**
+ * Take entries out (1.5.72): every one-liner of this file whose text contains `words` (6 characters or more).
+ * 11-25: a guessed cause was saved as a shared fact, and the only way to undo it was to append a correction
+ * under it. -> the texts removed
+ */
+export async function forgetMemory(botId, words) {
+  const needle = String(words || '').trim();
+  if (needle.length < 6) throw new Error('replaces needs at least 6 characters of the entry to remove');
+  const file = memoryFileFor(botId);
+  const raw = await readText(file, '');
+  if (!raw) return [];
+  const nl = raw.includes('\r\n') ? '\r\n' : '\n';
+  const removed = [];
+  const kept = raw.split(/\r?\n/).filter((line) => {
+    const m = line.match(/^\s*-\s+(?:\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s*\|\s*)?(.+)$/);
+    if (!m || m[1].startsWith('<!--') || !m[1].includes(needle)) return true;
+    removed.push(m[1].trim());
+    return false;
+  });
+  if (removed.length) await writeTextAtomic(file, kept.join(nl));
+  return removed;
+}
+
 /** Replace the whole file. Used by the "edit memory" path in the UI/API. */
 export async function writeMemory(botId, text) {
   const file = memoryFileFor(botId);

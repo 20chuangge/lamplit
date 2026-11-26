@@ -24,6 +24,8 @@ export const ROWS = [
   { what: '手机：点「发送」，你说过「必须发出去」', call: ['phone', { action: 'tap', target: '发送' }], said: '必须发出去', ask: { careful: false, standard: false, auto: false } },
   { what: '给你看要发的草稿，你没说过发', call: ['post_draft', { channel: '小红书', title: '标题', body: '正文' }], ask: { careful: true, standard: true, auto: true } },
   { what: '手机：点「发布笔记」，你刚在草稿卡上点了允许', call: ['phone', { action: 'tap', target: '发布笔记' }], before: ['post_draft', { channel: '小红书', title: '标题', body: '正文' }], ask: { careful: false, standard: false, auto: false } },
+  { what: '手机：点「发布」，这件事你刚允许过「定时发布」', call: ['phone', { action: 'tap', target: '发布' }], before: ['phone', { action: 'tap', target: '定时发布' }], ask: { careful: false, standard: false, auto: false } },
+  { what: '手机：点「立即支付」，这件事你刚允许过「发布」', call: ['phone', { action: 'tap', target: '立即支付' }], before: ['phone', { action: 'tap', target: '发布笔记' }], ask: { careful: true, standard: true, auto: true } },
   { what: '手机：点「立即支付」，你说过「发」', call: ['phone', { action: 'tap', target: '立即支付' }], said: '发', ask: { careful: true, standard: true, auto: true } },
   { what: '手机：点「删除」，你说过「发」', call: ['phone', { action: 'tap', target: '删除' }], said: '发', ask: { careful: true, standard: true, auto: true } },
   { what: '手机：点「同意并继续」', call: ['phone', { action: 'tap', target: '同意并继续' }], ask: { careful: true, standard: true, auto: true } },

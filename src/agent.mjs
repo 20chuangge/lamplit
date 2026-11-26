@@ -4421,6 +4421,11 @@ export class AgentRuntime {
       // that publish or send it on the phone do not ask again. 11-25: one note asked three times, the draft and
       // then 「定时发布」 and 「发布」 on the phone.
       if (name === 'post_draft' && resolution.decision === 'approved') this.grantChain(ctx.chainId, bot.id, { keys: ['go:publish', 'go:send'], label: '你看过草稿并点了允许' });
+      // The same for a yes on a publish or send tap on the phone (1.5.74): one piece of work asks once. 11-25: a
+      // note asked twice with no draft shown - switching 「定时发布」 on, then the button that submits it.
+      if (name === 'phone' && riskInfo.alwaysAsk && ['publish', 'send'].includes(riskInfo.phoneKind) && resolution.decision === 'approved') {
+        this.grantChain(ctx.chainId, bot.id, { keys: ['go:publish', 'go:send'], label: '这件事你已经点过一次允许' });
+      }
       // The human's edits to the draft (1.5.45): what goes out is what they left in the boxes.
       const edits = draft && resolution.decision === 'approved' ? resolution.approval?.edits : null;
       if (edits) {
@@ -4451,6 +4456,14 @@ export class AgentRuntime {
         ...(chainAllowed ? { chainAllowed: true, chainScope: chainOffer } : {}),
       });
 
+      // In a group's work the answered card stays in the group too (1.5.74): the card was drawn there while it
+      // waited, and was gone when the human left the group and came back.
+      if (ctx.group?.id) {
+        await this.recordGroupMessage(ctx.group.id, {
+          kind: 'approval', from: bot.id, name, turnId, approvalId: resolution.approval?.id || request?.id || '',
+          risk: verdict.risk, reason: verdict.reason, decision: resolution.decision, note: resolution.note || '', args: truncateJson(askArgs, 1500),
+        });
+      }
       // Keep the decision in the transcript, so a reloaded page still shows what
       // was asked and what the human said.
       await this.record(bot.id, {

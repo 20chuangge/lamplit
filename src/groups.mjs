@@ -38,7 +38,9 @@ export const GROUP_MAX_MEMBERS = 6;
 
 /** Message kinds the transcript (and the UI) understands. */
 // 'handoff' (1.2.164): one bot giving another a piece of the group's work, {from, to, text}.
-export const GROUP_MESSAGE_KINDS = ['user', 'assistant', 'tool', 'status', 'plan', 'handoff'];
+// 'approval' (1.5.74): a member's card the human answered, kept so the group still shows it after a reload.
+export const GROUP_MESSAGE_KINDS = ['user', 'assistant', 'tool', 'approval', 'status', 'plan', 'handoff'];
+const APPROVAL_FIELDS = ['approvalId', 'risk', 'reason', 'decision', 'note', 'args'];
 
 const PREVIEW_MAX_CHARS = 120;
 // Same widening strategy as the sidebar preview for bots: only a small tail is
@@ -331,6 +333,7 @@ export async function appendGroupMessage(groupId, record = {}) {
     ...(record.turnId ? { turnId: String(record.turnId) } : {}),
     ...(record.planId ? { planId: String(record.planId) } : {}),
     ...(record.to ? { to: String(record.to) } : {}),
+    ...(kind === 'approval' ? Object.fromEntries(APPROVAL_FIELDS.filter((k) => record[k] !== undefined && record[k] !== null).map((k) => [k, String(record[k]).slice(0, 2000)])) : {}),
   };
   await appendJsonl(groupMessagesFile(groupId), message);
   return message;
@@ -348,6 +351,7 @@ export function publicGroupMessage(message) {
     ...(message.status !== undefined ? { status: message.status } : {}),
     ...(message.planId ? { planId: message.planId } : {}),
     ...(message.to ? { to: message.to } : {}),
+    ...(message.kind === 'approval' ? Object.fromEntries(APPROVAL_FIELDS.filter((k) => message[k] !== undefined).map((k) => [k, message[k]])) : {}),
   };
 }
 

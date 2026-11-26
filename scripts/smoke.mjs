@@ -320,6 +320,7 @@ async function main() {
     await stage('1.5.71: a repeat needs the same screen, half-written work on the phone is kept, causes are facts', async () => (await import('./smoke-fix-1571.mjs')).fix1571Checks({ check, toolsMod, readText }));
     await stage('1.5.72: a group works together - give and let go, the member reports itself, what the human says reaches the member at work', async () => (await import('./smoke-group-1572.mjs')).letGoChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.72: one table of when a step asks, going on from half-written work, a wrong memory entry taken out', async () => (await import('./smoke-fix-1572.mjs')).fix1572Checks({ check, toolsMod, readText }));
+    await stage('1.5.74: one piece of work asks once, an answered card stays in the group', async () => (await import('./smoke-fix-1574.mjs')).fix1574Checks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: one rule for every bot - existing, new, on another machine', async () => (await import('./smoke-group-1567.mjs')).allBotsChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: bots are told which shell runs their commands; a bash command on Windows is caught before it runs', async () => (await import('./smoke-group-1567.mjs')).shellChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.67: the read guard is off unless the human turns it on', async () => (await import('./smoke-group-1567.mjs')).readGuardDefaultChecks({ check, toolsMod, groupsMod, readText }));

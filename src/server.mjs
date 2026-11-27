@@ -510,6 +510,7 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     getApp: () => refs.app,
     getPeers: () => refs.peers || null,
     machineName: () => selfMachineName(),
+    balanceNote: () => refs.app?.balanceWatch?.note() || '',
     // The main assistant's 「你的机器」 (1.5.45): each machine, whether it answers, what it is good for, its bots.
     machineBrief: async () => {
       if (!refs.roster || !refs.peers?.list().length) return [];
@@ -692,6 +693,12 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
   state.feishu = createFeishu({ ...feishuBase, file: path.join(P.dataDir, 'feishu.json') });
   listBots().then((b) => { state.botsCache = b; }).catch(() => {});
   bus.subscribe((ev) => { if (ev.type === 'roster.changed') listBots().then((b) => { state.botsCache = b; }).catch(() => {}); });
+  // 1.5.76: the balance is looked at after work, not only when the human opens the checkup.
+  state.balanceWatch = createBalanceWatch({
+    read: () => readLowBalance(state),
+    onLow: (text) => { bus.emit({ type: 'balance.low', text }); void audit({ kind: 'balance.low', text }).catch(() => {}); },
+  });
+  bus.subscribe((ev) => { if (ev.type === 'turn.end' && !ev.aside) state.balanceWatch.check().catch(() => {}); });
   await state.feishu.load();
   refs.feishu = state.feishu;
 
@@ -2925,6 +2932,68 @@ async function deepseekBalance(baseUrl, apiKey) {
   const info = (json.balance_infos || []).find((b) => b.currency === 'CNY') || (json.balance_infos || [])[0] || null;
   return { available: Boolean(json.is_available), amount: info ? Number(info.total_balance) : null, currency: info?.currency || 'CNY' };
 }
+/**
+ * The line for a balance about to run out, or '' (1.5.76). On 11-27 the account ran dry in the middle of a
+ * change on the phone: the bot stopped with 「余额不足」 and never reported. The reading was there, but only
+ * when the human opened the checkup.
+ */
+export function lowBalanceText(b, verdict = null) {
+  if (!b) return '';
+  const left = b.amount != null ? `¥${Number(b.amount).toFixed(2)}` : '';
+  if (!b.available) return `DeepSeek 账户不能用了${left ? `（余额 ${left}）` : ''}：充值之前机器人做不了事。`;
+  if (verdict?.state === 'bad') return verdict.text;
+  if (b.amount != null && b.amount < 2) return `DeepSeek 余额只剩 ${left}，随时可能用完：用完后机器人会停在半路。`;
+  return '';
+}
+
+/**
+ * Looks at the balance now and then (after a turn, at most every gapMs) and tells once when it turns low:
+ * onLow(text) the moment it does, note() for the next turn the human starts (again after remindMs while it
+ * stays low). A top-up clears it.
+ */
+export function createBalanceWatch({ read, onLow = () => {}, now = Date.now, gapMs = 15 * 60 * 1000, remindMs = 6 * 3600 * 1000 }) {
+  let last = -Infinity;
+  let low = '';
+  let alerted = false;
+  let saidAt = -Infinity;
+  let busy = false;
+  return {
+    async check(force = false) {
+      if (busy || (!force && now() - last < gapMs)) return low;
+      busy = true;
+      last = now();
+      try {
+        const text = String((await read()) || '');
+        if (text && !alerted) { alerted = true; try { onLow(text); } catch { /* optional */ } }
+        if (!text) { alerted = false; saidAt = -Infinity; }
+        low = text;
+      } catch { /* the balance API is optional: what was known stays */ } finally { busy = false; }
+      return low;
+    },
+    note() {
+      if (!low || now() - saidAt < remindMs) return '';
+      saidAt = now();
+      return low;
+    },
+    get low() { return low; },
+  };
+}
+
+/** This machine's own reading, as the checkup makes it. Only a real DeepSeek account is asked. */
+async function readLowBalance(state) {
+  const provider = settingsModule.effectiveProvider ? settingsModule.effectiveProvider(state.settings, state.apiKey) : (state.apiKey ? state.settings.provider : 'mock');
+  const key = String(state.apiKey || '');
+  if (provider === 'mock' || !/^sk-[A-Za-z0-9]{24,}$/.test(key)) return '';
+  const base = String(state.settings.baseUrl || '');
+  if (!(/deepseek/i.test(provider) && !base) && !/^https:\/\/api\.deepseek\.com(\/|$)/i.test(base)) return '';
+  const b = await deepseekBalance(state.settings.baseUrl, state.apiKey);
+  const cny = b.currency === 'CNY' ? b.amount : null;
+  const byBalance = cny != null ? balancePace(noteBalance(cny)) : null;
+  const ledgerPace = spendRate(recentRecords(await readUsageRecords(), 7), readUsageSettings()).perDay;
+  const verdict = cny == null ? null : byBalance ? balanceVerdict(cny, byBalance.perDay, 'balance', ledgerPace) : balanceVerdict(cny, ledgerPace);
+  return lowBalanceText(b, verdict);
+}
+
 export function checkupItem(id, title, state, text, action = null) {
   return { id, title, state, text, ...(action ? { action } : {}) };
 }

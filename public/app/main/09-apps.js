@@ -733,6 +733,8 @@ function auditLine(r) {
       return { icon: '🔐', text: '保险箱删了一条', tag: '保险箱' };
     case 'desktop.takeover':
       return { icon: '🖥', text: who ? `接管了 ${who} 的桌面` : '接管了桌面', tag: r.mode === 'view' ? '只能看' : '能看能控', note: r.from ? `来自 ${r.from}` : '' };
+    case 'balance.low':
+      return { icon: '💰', text: String(r.text || '模型账户余额快用完了'), tag: '成本', bad: true };
     case 'usage.alert': {
       const symbol = r.currency === 'USD' ? '$' : '¥';
       return { icon: '💰', text: `今日估算 ${symbol}${(Number(r.cost) || 0).toFixed(2)} 超过提醒线 ${symbol}${(Number(r.limit) || 0).toFixed(2)}`, tag: '成本', bad: true };

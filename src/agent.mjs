@@ -795,8 +795,18 @@ export function humanPartOf(text) {
   const t = String(text || '');
   const parts = [];
   if (/扫码|登录|登陆|接管/.test(t)) parts.push('要登录时会弹「接管屏幕」请你扫码');
-  if (/post_draft|草稿|确认|拍板|过目|发布前|发之前|点「?发布/.test(t)) parts.push('发出去之前会先把草稿给你确认');
+  // 1.5.76: 「改完必须回读确认」 in a brief read as a draft for the human - there was none, the phone asked.
+  if (/post_draft|草稿|拍板|过目/.test(t)) parts.push('发出去之前会先把草稿给你确认');
+  else if (/发布|定时|发送|发出去|发之前|提交/.test(t)) parts.push('发出去之前会问你一次（你说过「发」就不问）');
   return parts.length ? `中间${parts.join('，')}。` : '中间要你定的事会在这里问你。';
+}
+
+/** For a turn the human started: the low balance, to be said first (1.5.76). */
+export function lowBalanceNote(runtime, { unattended = false, depth = 0, fromBotId = null } = {}) {
+  if (unattended || depth || fromBotId || !runtime?.balanceNote) return '';
+  let text = '';
+  try { text = String(runtime.balanceNote() || ''); } catch { text = ''; }
+  return text ? `\n\n（系统：${text}开始做之前，先用一句话把这件事原样告诉用户——余额用完时你会停在半路；然后照常做。）` : '';
 }
 
 /** How the coordinator's wake-up begins: who reported. */
@@ -944,7 +954,9 @@ export function isStopWords(text) {
 }
 
 export class AgentRuntime {
-  constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers, machineName, machineBrief }) {
+  constructor({ config, registry, model, bots, groups, memory, skills, approvals, bus, getApp, getPeers, machineName, machineBrief, balanceNote }) {
+    // 1.5.76: the model account about to run out, as one line (or '') - said before work starts, not found out half way.
+    this.balanceNote = typeof balanceNote === 'function' ? balanceNote : null;
     this.config = config;
     this.registry = registry;
     this.model = model;
@@ -2302,7 +2314,7 @@ export class AgentRuntime {
       const messages = [
         { role: 'system', content: systemPrompt },
         ...history,
-        { role: 'user', content: String(text) + (hiddenNote ? `\n\n${hiddenNote}` : '')
+        { role: 'user', content: String(text) + (hiddenNote ? `\n\n${hiddenNote}` : '') + lowBalanceNote(this, { unattended, depth, fromBotId })
           + (stoppedByHuman ? '\n\n（系统：你手上的任务已经按用户的话停止了，不会再自动接着做。用一句话确认已经停下，说清做到了哪一步、留下了什么；不要再调用工具。）' : '') },
       ];
 
@@ -2448,6 +2460,8 @@ export class AgentRuntime {
           status = 'failed';
           // Said so the human knows what to do (1.5.30); the provider's words go to the log.
           summary = `模型出错了：${explainModelError(err).text}`;
+          // 1.5.76: in the middle of work it says where it stopped.
+          if (steps > 0) summary += ` 手上这件事停在了半路（已经做了 ${steps} 步），恢复后跟我说一声，我接着做。`;
           console.error(`[agent] model error (${bot.id}): ${String(err.message).slice(0, 300)}`);
           this.bus.emit({ type: 'error', ...baseEvent, message: summary });
           break;
@@ -3482,6 +3496,8 @@ export class AgentRuntime {
       await this.recordGroupMessage(group.id, { kind: 'assistant', from: member.id, text: said.length > 6000 ? `${said.slice(0, 6000)}…` : said, turnId: result?.turnId });
     }
     if (waiting || result?.status === 'cancelled') return;
+    // The model itself failed (no balance, the provider down): the coordinator would only fail the same way and say it again (1.5.76).
+    if (result?.status === 'failed' && /^模型出错了：/.test(said)) return;
     // Cut off by the step limit, it goes on by itself: the coordinator hears when that turn ends.
     if (result?.status === 'max_steps' || result?.notDone) { (this.owedReports = this.owedReports || new Map()).set(member.id, { group, lead, member }); return; }
     // Not for ever (a model that keeps handing the same thing round): eight in a row without a word from the human.

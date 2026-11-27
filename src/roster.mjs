@@ -35,7 +35,7 @@ export function cleanBotId(raw) {
 }
 
 /** Events that belong to the machine over there, not to the chat on screen here. */
-const NOT_PASSED = new Set(['ui.command', 'settings.changed', 'roster.changed', 'feishu.changed', 'attention.changed', 'usage.alert', 'inbox.changed']);
+const NOT_PASSED = new Set(['ui.command', 'settings.changed', 'roster.changed', 'feishu.changed', 'attention.changed', 'usage.alert', 'balance.low', 'inbox.changed']);
 
 /**
  * One event from that machine's stream as this window sees it: only the

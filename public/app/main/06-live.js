@@ -295,6 +295,10 @@ function handleEvent(ev) {
     if (section === 'routines') loadRoutines().catch(() => {});
     return;
   }
+  if (ev.type === 'balance.low') {
+    toast(String(ev.text || '模型账户余额快用完了。'), true);
+    return;
+  }
   if (ev.type === 'usage.alert') {
     const symbol = ev.currency === 'USD' ? '$' : '¥';
     toast(`今日估算 ${symbol}${(Number(ev.cost) || 0).toFixed(2)} 已超过提醒线 ${symbol}${(Number(ev.limit) || 0).toFixed(2)}`, true);

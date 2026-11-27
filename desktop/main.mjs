@@ -435,9 +435,10 @@ async function pairWith(url, code) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code: String(code) }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(15000),
     });
-    if (!res.ok) return false;
+    // 1.5.77: said in the log - a refused code left no trace, and a far machine needs more than 5 s.
+    if (!res.ok) { bootLog(`pair ${url} refused: HTTP ${res.status}`); return false; }
     // Named after the port since 1.5.63, plain from older hubs: kept under the name the hub gave.
     const login = loginFromSetCookie(res.headers.get('set-cookie') || '');
     if (!login) return false;

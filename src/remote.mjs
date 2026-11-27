@@ -420,15 +420,31 @@ export { execStream as _execStream };
  * code, then PUTs the settings; the key travels once, over the LAN, to the
  * hub that will use it.
  */
-async function shareModel(hubUrl, pairCode, model, voice = null, vision = null) {
-  const pair = await fetch(`${hubUrl}/api/pair`, {
+/**
+ * A typed code is spent once (SEC-15): the hub makes a new one the moment this pairs. The install then held
+ * a dead code - the desktop app's own pairing with it was refused, without a word, and the human landed on
+ * 「连接你的 Lamplit」 for a machine they had just given the password of (1.5.77). So whoever pairs with the
+ * install's code reads the hub's next one right away and hands it on: onCode(next).
+ */
+export async function pairForSetup(hubUrl, pairCode, onCode = null, fetchImpl = fetch) {
+  const pair = await fetchImpl(`${hubUrl}/api/pair`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ code: pairCode }),
+    body: JSON.stringify({ code: pairCode, deviceName: '添加机器时的设置同步' }),
     signal: AbortSignal.timeout(15000),
   });
   if (!pair.ok) throw new Error(`pair HTTP ${pair.status}`);
   const cookie = (pair.headers.get('set-cookie') || '').split(';')[0];
+  try {
+    const now = await fetchImpl(`${hubUrl}/api/pairing`, { headers: { cookie, accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+    const next = now.ok ? String((await now.json())?.code || '') : '';
+    if (/^\d{6,10}$/.test(next) && typeof onCode === 'function') onCode(next);
+  } catch { /* the settings still go over; the page then shows that pairing is left to do */ }
+  return cookie;
+}
+
+async function shareModel(hubUrl, pairCode, model, voice = null, vision = null, onCode = null) {
+  const cookie = await pairForSetup(hubUrl, pairCode, onCode);
   const res = await fetch(`${hubUrl}/api/settings`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', cookie },
@@ -457,15 +473,8 @@ async function shareModel(hubUrl, pairCode, model, voice = null, vision = null) 
 }
 
 /** The relay settings to a freshly installed Windows hub, like shareModel (第 2 步). */
-async function shareRelay(hubUrl, pairCode, settings) {
-  const pair = await fetch(`${hubUrl}/api/pair`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ code: pairCode }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!pair.ok) throw new Error(`pair HTTP ${pair.status}`);
-  const cookie = (pair.headers.get('set-cookie') || '').split(';')[0];
+async function shareRelay(hubUrl, pairCode, settings, onCode = null) {
+  const cookie = await pairForSetup(hubUrl, pairCode, onCode);
   const res = await fetch(`${hubUrl}/api/relay-link`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', cookie },
@@ -978,7 +987,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
       if (model) {
         setProgress(job, '把模型设置同步过去…');
         try {
-          await shareModel(job.reachUrl, job.pairCode, model, voiceToShare(), visionToShare());
+          await shareModel(job.reachUrl, job.pairCode, model, voiceToShare(), visionToShare(), (next) => { job.pairCode = next; });
           job.modelShared = true;
         } catch (err) {
           job.warning = job.warning || `装好了，但模型设置没同步过去（${err.message}）；切过去后在「设置 → 模型」里填一下。`;
@@ -1003,7 +1012,7 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         if (!windows) {
           joined = await joinHubOverSsh(client, { sudoPrefix, password, isRoot }, settings).catch((err) => `error:${err.message}`);
         } else if (reachable) {
-          joined = await shareRelay(job.reachUrl, job.pairCode, settings).then(() => 'ok', (err) => `error:${err.message}`);
+          joined = await shareRelay(job.reachUrl, job.pairCode, settings, (next) => { job.pairCode = next; }).then(() => 'ok', (err) => `error:${err.message}`);
         }
         job.relayJoined = joined === 'ok';
         if (/^error:/.test(joined)) job.log.push(`relay: ${joined}`);

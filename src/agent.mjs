@@ -690,10 +690,16 @@ export function todayLine(timeZone = '', at = new Date()) {
   return `Today is ${day(0)}${timeZone ? ` (${timeZone})` : ''}; 明天 = ${day(1)}, 后天 = ${day(2)}. A day the human names (今天, 明天, 后天, 周五, 下周一) is counted from today - never from the dates of earlier work in the history. For the time of day, look it up.`;
 }
 
+/** Words of a request, whatever mark ends the line: can you, please, change this to that, do not. */
+const ORDER_AS_QUESTION = /能不能|可不可以|能否|可否|行不行|好不好|要不|帮我|帮忙|麻烦|请你|请把|改成|换成|改到|换到|不要|别再|先别|(?:可以|能|能够|是否可以)(?!了吗).{1,24}吗|把.{1,30}(?:改|换|删|加|调|停|取消|去掉|挪|移|提前|推迟)/;
+
 /** The human is asking, not telling (1.5.75): 「发了吗」 on a running board was answered 「好，把新要求告诉了发布」. */
 export function isAsking(text) {
   const s = String(text || '').trim();
   if (!s || s.length > 60) return false;
+  // 1.5.77: an order worded as a question (「能不能把标题改短点？」「可以换一张图吗」) is not one - it goes the
+  // old way, where the coordinator may change the board. In doubt it is not a question: the old way can still just answer.
+  if (ORDER_AS_QUESTION.test(s)) return false;
   return /[?？]$/.test(s) || /(吗|了没有?|怎么样了?|如何了?|到哪了|到哪一步了?|多久|几点)[。！!~～\s]*$/.test(s);
 }
 export function gatherBase() {

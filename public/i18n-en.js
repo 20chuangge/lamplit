@@ -1670,6 +1670,8 @@ window.DESK_I18N_EN = {
   "今日估算 {0}{1} 超过提醒线 {2}{3}": "Today's estimate {0}{1} is over the alert line {2}{3}",
   "模型账户余额快用完了。": "The model account is about to run out of balance.",
   "模型账户余额快用完了": "The model account is about to run out of balance",
+  "没能自动配对，切过去时填这个配对码：": "Could not pair automatically - enter this pairing code when you switch to it: ",
+  "添加机器时的设置同步": "Settings sync when the machine was added",
   "成本设置：{0} 个模型单价{1}": "Cost settings: prices for {0} model(s){1}",
   "，每日提醒 {0}": ", daily alert {0}",
   "{0} + {1} 未设单价": "{0} + {1} unpriced",

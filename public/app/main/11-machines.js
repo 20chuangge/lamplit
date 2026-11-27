@@ -1228,7 +1228,7 @@ async function startRemoteProvision(options) {
     note.hidden = false;
     const secs = (ms) => (ms >= 60000 ? `${Math.floor(ms / 60000)} 分 ${Math.round((ms % 60000) / 1000)} 秒` : `${Math.max(1, Math.round(ms / 1000))} 秒`);
     note.innerHTML = `<div style="margin-bottom:6px">地址：<b>${escapeHtml(job.hubUrl)}</b>`
-      + (job.pairCode && !paired ? ` · 配对码 <b>${escapeHtml(job.pairCode)}</b>` : '')
+      + (job.pairCode && !paired ? ` · ${escapeHtml('没能自动配对，切过去时填这个配对码：')}<b>${escapeHtml(job.pairCode)}</b>` : '')
       + '</div>'
       + (job.desktopPending ? `<div style="margin-bottom:6px">${escapeHtml('机器人的桌面和浏览器在那台机器上后台继续安装（通常 3–8 分钟），装好后「电脑」面板自动可用；现在就可以先让机器人干活。')}</div>` : '')
       // Where the time went, so a slow install can be explained.

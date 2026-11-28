@@ -699,6 +699,23 @@ export async function createAssistant({ port = DEFAULT_PORT, host = HOST } = {})
     onLow: (text) => { bus.emit({ type: 'balance.low', text }); void audit({ kind: 'balance.low', text }).catch(() => {}); },
   });
   bus.subscribe((ev) => { if (ev.type === 'turn.end' && !ev.aside) state.balanceWatch.check().catch(() => {}); });
+  // 1.5.79: memory and disk, read every 5 minutes; told once when it turns low.
+  let memLowBefore = false;
+  state.resourceWatch = createBalanceWatch({
+    gapMs: 4 * 60 * 1000,
+    read: async () => {
+      const load = machineLoad();
+      let disk = {};
+      try { const st = fs.statfsSync(P.dataDir); disk = { diskFreeGB: (st.bavail * st.bsize) / 1073741824, diskTotalGB: (st.blocks * st.bsize) / 1073741824 }; } catch { /* no reading: memory only */ }
+      const out = lowResourceText({ ...load, ...disk }, memLowBefore);
+      memLowBefore = out.memLow;
+      return out.text;
+    },
+    onLow: (text) => { bus.emit({ type: 'machine.low', text }); void audit({ kind: 'machine.low', text }).catch(() => {}); },
+  });
+  setInterval(() => state.resourceWatch.check().catch(() => {}), 5 * 60 * 1000).unref();
+  // What this machine has to say about itself, for the pages that show it from another machine.
+  state.machineNotices = () => [state.balanceWatch?.low, state.resourceWatch?.low].filter(Boolean).map((text) => String(text).slice(0, 300));
   await state.feishu.load();
   refs.feishu = state.feishu;
 
@@ -1985,7 +2002,8 @@ route('GET', /^\/api\/update$/, async (_req, _res, { query }) => {
 //   GET  /api/attention        -> {items:{"bot:<id>"|"group:<id>": {working, needsYou, unread}}, needsYou, unread, working}
 //   POST /api/attention/seen   {key}   the human is looking at that chat
 
-route('GET', /^\/api\/attention$/, async (_req, _res, { state }) => state.attention.snapshot());
+// notices (1.5.79): this machine's own warnings (balance, memory, disk) - the roster carries them to the page that shows every machine.
+route('GET', /^\/api\/attention$/, async (_req, _res, { state }) => ({ ...state.attention.snapshot(), notices: state.machineNotices?.() || [] }));
 
 route('POST', /^\/api\/attention\/seen$/, async (_req, _res, { body, state }) => {
   if (!state.attention.seen(body?.key)) throw httpError(400, 'BAD_KEY', 'key must be bot:<id> or group:<id>');
@@ -2979,6 +2997,19 @@ export function createBalanceWatch({ read, onLow = () => {}, now = Date.now, gap
   };
 }
 
+/**
+ * The line for a machine running out of room (1.5.79), or ''. Memory counts when it was low on two readings
+ * in a row (one busy moment is not a shortage); the disk under the workspace when under 2 GB or 3 %.
+ */
+export function lowResourceText({ memFreeMB, memTotalMB, diskFreeGB = null, diskTotalGB = null } = {}, lowBefore = false) {
+  const memLow = Number.isFinite(memFreeMB) && Number.isFinite(memTotalMB) && memFreeMB < Math.max(300, memTotalMB * 0.05);
+  const diskLow = Number.isFinite(diskFreeGB) && (diskFreeGB < 2 || (Number.isFinite(diskTotalGB) && diskTotalGB > 0 && diskFreeGB / diskTotalGB < 0.03));
+  const parts = [];
+  if (memLow && lowBefore) parts.push(`内存快用完了（剩 ${memFreeMB} MB）`);
+  if (diskLow) parts.push(`磁盘快满了（剩 ${Number(diskFreeGB).toFixed(1)} GB）`);
+  return { text: parts.length ? `${parts.join('，')}：机器人会变慢甚至做到一半停下，关掉不用的程序或清一些文件。` : '', memLow };
+}
+
 /** This machine's own reading, as the checkup makes it. Only a real DeepSeek account is asked. */
 async function readLowBalance(state) {
   const provider = settingsModule.effectiveProvider ? settingsModule.effectiveProvider(state.settings, state.apiKey) : (state.apiKey ? state.settings.provider : 'mock');
@@ -3485,7 +3516,7 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
   const bot = await getBot(params.id);
   if (!bot) throw httpError(404, 'BOT_NOT_FOUND', `no bot with id "${params.id}"`);
   const records = await readJsonl(sessionFile(bot.id));
-  const limit = Math.min(Number(query.get('limit')) || 200, 1000);
+  const limit = Math.min(Number(query.get('limit')) || 200, CHAT_LINES_MAX);
   // `limit` lines of the conversation, with the steps between them (1.5.68): the last 200 records of a
   // long task were all steps, and the chat opened empty.
   const items = chatWindow(records, limit, { keepStep: drawnStep }).map((record, index) => toMessageItem(record, index));
@@ -3498,6 +3529,9 @@ route('GET', /^\/api\/bots\/(?<id>[^/]+)\/messages$/, async (_req, _res, { param
   // 「这一轮改了 N 个文件 · 撤销」 is drawn from them, and it was missing by default.
   return query.get('compact') === '1' ? compactChat(items) : items;
 });
+
+/** How many lines of one chat a page may ask for (1.5.79: 「加载更早的消息」; the file on the machine keeps them all). */
+export const CHAT_LINES_MAX = 5000;
 
 /** The members of a group with a turn in progress, one line each (a turn at work before a chat-only one). */
 export function groupWorking(active, memberIds, names = new Map(), now = Date.now()) {
@@ -4119,7 +4153,7 @@ route('GET', /^\/api\/groups\/(?<id>[^/]+)\/working$/, async (_req, _res, { para
 route('GET', /^\/api\/groups\/(?<id>[^/]+)\/messages$/, async (_req, _res, { params, query }) => {
   const group = await groups.getGroup(params.id);
   if (!group) throw httpError(404, 'GROUP_NOT_FOUND', `no group with id "${params.id}"`);
-  const limit = Math.min(Number(query.get('limit')) || 200, 1000);
+  const limit = Math.min(Number(query.get('limit')) || 200, CHAT_LINES_MAX);
   // Lines of the conversation, not records: a member's long task does not push them out (1.5.68).
   const messages = chatWindow(await groups.readGroupMessages(group.id, { limit: 0 }), limit);
   // A member deleted since keeps its name in the history (1.5.41), not its id.
@@ -5365,7 +5399,7 @@ route('PUT', /^\/api\/peers\/(?<machine>[^/]+)\/briefing$/, async (req, _res, { 
 
 route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/bots\/(?<id>[^/]+)\/messages$/, async (req, _res, { params, state, query }) => {
   const { peer, botId } = remoteTarget(req, state, params);
-  const limit = Math.min(Number(query.get('limit')) || 200, 1000);
+  const limit = Math.min(Number(query.get('limit')) || 200, CHAT_LINES_MAX);
   try {
     return await passOn(state, peer, 'GET', `/api/bots/${encodeURIComponent(botId)}/messages?limit=${limit}${query.get('compact') === '1' ? '&compact=1' : ''}`, { timeoutMs: 20000 });
   } catch (err) { throw peerFailure(err, peer); }
@@ -5612,7 +5646,7 @@ function remoteGroupTarget(req, state, params) {
 }
 route('GET', /^\/api\/peers\/(?<machine>[^/]+)\/groups\/(?<gid>[^/]+)\/messages$/, async (req, _res, { params, state, query }) => {
   const { peer, groupId } = remoteGroupTarget(req, state, params);
-  const limit = Math.min(Number(query.get('limit')) || 200, 1000);
+  const limit = Math.min(Number(query.get('limit')) || 200, CHAT_LINES_MAX);
   try {
     return await passOn(state, peer, 'GET', `/api/groups/${encodeURIComponent(groupId)}/messages?limit=${limit}`, { timeoutMs: 20000 });
   } catch (err) { throw peerFailure(err, peer); }

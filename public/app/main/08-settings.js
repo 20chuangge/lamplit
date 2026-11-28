@@ -1343,10 +1343,16 @@ window.deskNotificationClick = async (tag) => {
 };
 
 /** Take over full-window right away, with "done" one click away. */
-async function popupTakeover() {
+async function popupTakeover(botId = '', asked = false) {
+  // 1.5.79: in a group the card's button opened the coordinator's screen - 选题 had asked, 主理人's came up.
+  if (botId && isGroupMode() && groupMembers(groupById(state.groupId) || {}).some((b) => b.id === botId) && pcTargetBotId() !== botId) {
+    state.pcPinned = botId;
+    renderPcWho();
+    try { await loadComputer(); } catch { /* the viewer says what is wrong */ }
+  }
   openPanel('computer');
   await togglePanelMax(true);
-  await openDesktopViewer();
+  await openDesktopViewer({ asked });
   syncDoneButton();
 }
 

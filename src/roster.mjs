@@ -35,7 +35,7 @@ export function cleanBotId(raw) {
 }
 
 /** Events that belong to the machine over there, not to the chat on screen here. */
-const NOT_PASSED = new Set(['ui.command', 'settings.changed', 'roster.changed', 'feishu.changed', 'attention.changed', 'usage.alert', 'balance.low', 'inbox.changed']);
+const NOT_PASSED = new Set(['ui.command', 'settings.changed', 'roster.changed', 'feishu.changed', 'attention.changed', 'usage.alert', 'balance.low', 'machine.low', 'inbox.changed']);
 
 /**
  * One event from that machine's stream as this window sees it: only the
@@ -82,6 +82,17 @@ export function safeAvatar(raw, machine, botId) {
 /** How long a machine's answer is kept: 15 s; 3 s while something there works or waits (1.5.62). */
 export const ROSTER_KEEP_MS = 15000;
 export const ROSTER_QUICK_MS = 3000;
+/**
+ * One missed answer is not "off" (1.5.79). A machine at work is asked every 3 s and given 5 s to answer; one
+ * slow answer marked it 离线 and wiped its bots' status until the next ask - 「执行任务时云服务器上的 bot 有时连接
+ * 不上，很快自己恢复」. It stays as it was last seen until the misses span this long.
+ */
+export const ROSTER_GRACE_MS = 25000;
+/** After a miss: the row to show - the last good one (within the grace), or off. */
+export function rowAfterMiss(last, now = Date.now(), graceMs = ROSTER_GRACE_MS) {
+  if (last?.online && Number.isFinite(last.okAt) && now - last.okAt < graceMs) return { ...last, at: now, misses: (last.misses || 0) + 1 };
+  return null;
+}
 /** Something on that machine is under way or waits for the human: worth asking again soon. */
 export function rosterBusy(row) {
   return Boolean(row?.online) && Object.values(row?.attention || {}).some((i) => i && (i.working || i.needsYou || i.asking));
@@ -167,14 +178,22 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
         if (m[1] === 'bot' ? bots.some((b) => b.id === m[2]) : groups.some((g) => g.id === m[2])) attention[`${m[1]}:${m[2]}@${name}`] = item;
       }
       const now = Date.now();
-      const row = { at: now, online: true, bots, groups, attention, ms, seenAt: now };
+      // That machine's own warnings (1.5.79): a low balance or no room left over there is said here too.
+      const notices = (Array.isArray(att?.notices) ? att.notices : []).slice(0, 4).map((t) => String(t).slice(0, 300)).filter(Boolean);
+      const row = { at: now, online: true, bots, groups, attention, ms, seenAt: now, okAt: now, notices };
+      if (ms > 3000) console.warn(`[roster] 「${name}」 answered in ${ms} ms`);
       live.set(name, row);
       const slim = { bots: bots.map(slimBot), groups: groups.map(({ preview, ...g }) => g) };
       // When it was last seen is kept too (「离线 · 上次在线 …」 after a restart), written at most every 10 minutes.
       const { seenAt: seenBefore = 0, ...knownBefore } = known[name] || {};
       if (JSON.stringify(knownBefore) !== JSON.stringify(slim) || now - seenBefore > 10 * 60 * 1000) { known[name] = { ...slim, seenAt: now }; void saveKnown(); }
       return row;
-    } catch {
+    } catch (err) {
+      // Only a slow answer gets the grace: a machine that refuses the connection is off now.
+      const slow = /timeout|timed out|aborted/i.test(String(err?.message || err));
+      const kept = slow ? rowAfterMiss(live.get(name)) : null;
+      console.warn(`[roster] 「${name}」 did not answer (${String(err?.message || err).slice(0, 120)})${kept ? `; miss ${kept.misses}, shown as it was` : '; shown as off'}`);
+      if (kept) { live.set(name, kept); return kept; }
       const was = live.get(name) || known[name] || {};
       // Their last lines stay (1.5.43 test: its bots dropped out of 「最近」 while it was off).
       const seenAt = live.get(name)?.seenAt || known[name]?.seenAt || 0;
@@ -206,7 +225,7 @@ export function createRoster({ peers, bus = null, cacheFile, outboxFile, readUpl
       // How this machine reaches it now (the way its last answer came, and how long that took), or when it was last seen (1.5.61, the machine menu).
       const way = row.online ? peers.way?.(machine) || null : null;
       const reach = row.online ? { ...(way ? { way } : {}), ...(row.ms ? { ms: row.ms } : {}) } : { ...(row.seenAt ? { seenAt: new Date(row.seenAt).toISOString() } : {}) };
-      return { machine, online: Boolean(row.online), bots: row.bots, groups: row.groups || [], attention: row.attention || {}, ...reach, ...(queued ? { queued } : {}) };
+      return { machine, online: Boolean(row.online), bots: row.bots, groups: row.groups || [], attention: row.attention || {}, ...(row.notices?.length ? { notices: row.notices } : {}), ...reach, ...(queued ? { queued } : {}) };
     });
     // A machine that is back gets what waited for it.
     if (out.some((m) => m.online && m.queued)) void flush().catch(() => {});

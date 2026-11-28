@@ -14,7 +14,7 @@ async function loadMessages() {
   let messages;
   try {
     // Steps hidden: their long output stays on the machine. A bot on another machine: read from there (1.5.42).
-    messages = await api(`${isRemoteId(botId) ? remoteApi(botId, '/') : `/api/bots/${botId}/`}messages?limit=200${state.showProcess ? '' : '&compact=1'}`);
+    messages = await api(`${isRemoteId(botId) ? remoteApi(botId, '/') : `/api/bots/${botId}/`}messages?limit=${chatLimit(`bot:${botId}`)}${state.showProcess ? '' : '&compact=1'}`);
   } catch (err) {
     if (err.status === 401 || (isRemoteId(botId) && remoteChatFailed(botId, err, cached))) return; // 1.5.42: its machine is off
     if (state.botId === botId && !isGroupMode()) toast(`无法加载对话：${err.message}`, true);
@@ -1850,7 +1850,7 @@ function takeoverCard(item) {
   const row = el('div', 'btn-row');
   const go = el('button', 'btn primary', '接管屏幕');
   go.type = 'button';
-  go.addEventListener('click', () => popupTakeover());
+  go.addEventListener('click', () => popupTakeover(item.from || '', true)); // 1.5.79: the one that asked, no second question
   const done = el('button', 'btn', '我弄好了，继续');
   done.type = 'button';
   done.addEventListener('click', async () => {

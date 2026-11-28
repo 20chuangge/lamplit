@@ -299,6 +299,10 @@ function handleEvent(ev) {
     toast(String(ev.text || '模型账户余额快用完了。'), true);
     return;
   }
+  if (ev.type === 'machine.low') {
+    toast(String(ev.text || '这台机器的内存或磁盘快用完了。'), true);
+    return;
+  }
   if (ev.type === 'usage.alert') {
     const symbol = ev.currency === 'USD' ? '$' : '¥';
     toast(`今日估算 ${symbol}${(Number(ev.cost) || 0).toFixed(2)} 已超过提醒线 ${symbol}${(Number(ev.limit) || 0).toFixed(2)}`, true);
@@ -1515,6 +1519,71 @@ function openFileViewer(src, name, downloadUrl, view = 'frame', localPath = '') 
     });
   }
   box.classList.add('show');
+}
+
+/* --- 更早的消息 (1.5.79) ---------------------------------------------------
+ * A chat opened on its last 200 lines and nothing led further back: 「聊天记录为什么不全」. The machine keeps
+ * every line. Scrolled to the top, a button asks for 300 more (the same list, longer - no gap to stitch),
+ * up to 5000; what is on screen stays where it is.
+ */
+const CHAT_LINES = 200;
+const CHAT_LINES_STEP = 300;
+const CHAT_LINES_CAP = 5000;
+const chatLines = new Map(); // chat key -> lines asked for
+const earlierDone = new Set(); // chat keys with nothing further back
+function chatLimit(key) { return chatLines.get(key) || CHAT_LINES; }
+function shownCount() { return ((isGroupMode() ? state.groupMessages : state.messages) || []).length; }
+function syncEarlierButton() {
+  const btn = $('earlier-btn');
+  if (!btn) return;
+  const key = currentChatKey();
+  btn.hidden = !(key && !btn.disabled && messagesEl.scrollTop < 80 && shownCount() >= 30 && chatLimit(key) < CHAT_LINES_CAP && !earlierDone.has(key));
+}
+async function loadEarlier() {
+  const key = currentChatKey();
+  const btn = $('earlier-btn');
+  if (!key || !btn || btn.disabled) return;
+  const had = shownCount();
+  // The line at the top of the view, counted from the end (the end of the list does not change), and where it sits.
+  const rows = () => [...messagesEl.querySelectorAll(':scope > .row')];
+  const edge = () => messagesEl.getBoundingClientRect().top;
+  const was = rows();
+  const at = was.findIndex((el) => el.getBoundingClientRect().bottom > edge() + 1);
+  const fromEnd = at >= 0 ? was.length - at : 0;
+  const offset = at >= 0 ? was[at].getBoundingClientRect().top - edge() : 0;
+  btn.disabled = true;
+  btn.textContent = '正在加载…';
+  chatLines.set(key, Math.min(CHAT_LINES_CAP, chatLimit(key) + CHAT_LINES_STEP));
+  try { await loadMessages(); } finally { btn.disabled = false; btn.textContent = '加载更早的消息'; }
+  if (currentChatKey() !== key) return syncEarlierButton();
+  if (shownCount() <= had) { earlierDone.add(key); toast('没有更早的消息了'); }
+  // Where the human was reading stays under their eyes (the list was drawn again, longer at the top).
+  const keep = () => {
+    const now = rows();
+    const el = fromEnd ? now[now.length - fromEnd] : null;
+    if (el) messagesEl.scrollTop += el.getBoundingClientRect().top - edge() - offset;
+  };
+  keep();
+  requestAnimationFrame(() => { keep(); syncEarlierButton(); });
+  setTimeout(() => { if (currentChatKey() === key) { keep(); syncEarlierButton(); } }, 350); // after pictures and the page's own scrolling settle
+}
+messagesEl.addEventListener('scroll', syncEarlierButton, { passive: true });
+$('earlier-btn')?.addEventListener('click', () => { loadEarlier().catch((err) => toast(`没能加载更早的消息：${err.message}`, true)); });
+
+/** Other machines' own warnings (a low balance, no memory or disk left), from the roster: each said once (1.5.79). */
+const machineNoticesSaid = new Set();
+function showMachineNotices(machines) {
+  for (const m of Array.isArray(machines) ? machines : []) {
+    for (const text of Array.isArray(m?.notices) ? m.notices : []) {
+      const key = `${m.machine}\n${text}`;
+      if (machineNoticesSaid.has(key)) continue;
+      machineNoticesSaid.add(key);
+      toast(`「${m.machine}」${text}`, true);
+    }
+  }
+  // Gone and back again later: said again.
+  const live = new Set((Array.isArray(machines) ? machines : []).flatMap((m) => (m?.notices || []).map((text) => `${m.machine}\n${text}`)));
+  for (const key of machineNoticesSaid) if (!live.has(key) && (machines || []).some((m) => m.online && key.startsWith(`${m.machine}\n`))) machineNoticesSaid.delete(key);
 }
 
 /* --- 通话模式 (1.5.22) ------------------------------------------------------

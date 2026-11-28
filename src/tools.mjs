@@ -2185,6 +2185,13 @@ export function createRegistry(deps) {
       const queued = Boolean(runtime.botBusy?.(target.id));
       await runtime.mirrorHandoff?.({ fromId: ctx.bot.id, toId: target.id, text: args?.text, group: ctx.group });
       const board = await runtime.boardHandoff?.({ ctx, target, text: String(args?.text || '') }).catch(() => null);
+      // 1.5.79: the coordinator of a group passing work on in its own group turn - the member's words are the
+      // group's message, as with bot_message (1.5.72). 11-28: 主理人 used bot_pass for 「给 D21 设定时」; 发布 did it
+      // and reported (11-30 is a Monday, no topic went in) only in its own chat - the group heard nothing.
+      if (board?.turnId && ctx.group && ctx.groupTurn && ctx.group.coordinatorId === ctx.bot.id && typeof runtime.letGo === 'function') {
+        runtime.letGo({ ctx, target, text: String(args?.text || ''), turnId: board.turnId, chain: [ctx.bot.id], budget: ctx.handoffBudget || { left: MAX_HANDOFFS } });
+        return { passed: true, to: target.name, queued, note: `${target.name} ${queued ? 'starts this as soon as it is free' : 'has started on it'} and reports in the group under its own name when done. Say nothing more about it now.` };
+      }
       // Not awaited: the teammate's turn runs on its own (after its current one).
       Promise.resolve(runtime.runTurn({
         botId: target.id,

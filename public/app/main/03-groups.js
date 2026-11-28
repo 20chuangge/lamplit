@@ -343,7 +343,7 @@ async function loadGroupMessages() {
   const cached = chatCacheGet(cacheKey);
   if (cached && messagesEl.dataset.shown !== `group:${groupId}`) { state.groupMessages = cached; renderMessages(); } // not again when on screen (1.5.63)
   try {
-    const items = await api(isRemoteId(groupId) ? remoteGroupApi(groupId, '/messages?limit=200') : `/api/groups/${encodeURIComponent(groupId)}/messages?limit=200`);
+    const items = await api(isRemoteId(groupId) ? remoteGroupApi(groupId, `/messages?limit=${chatLimit(cacheKey)}`) : `/api/groups/${encodeURIComponent(groupId)}/messages?limit=${chatLimit(cacheKey)}`);
     if (state.groupId !== groupId) return;
     const fresh = Array.isArray(items) ? items : (items && items.messages) || [];
     if (!chatCachePut(cacheKey, fresh) && cached && cached.length === fresh.length) return;
@@ -1186,6 +1186,7 @@ async function loadRoster({ fresh = false, quick = false } = {}) {
   if (!$('machine-menu')?.hidden && !$('machine-menu').contains(document.activeElement)) renderMachineMenu(); // its route lines, while it is open (not under the keys)
   const prevAttention = state.peerAttention || {};
   state.peerAttention = Object.assign({}, ...state.peerRoster.map((m) => m.attention || {}));
+  showMachineNotices(state.peerRoster);
   noteActivity(prevAttention, state.peerAttention, 'peers'); // the other machines' chats too (1.5.61)
   loadRosterOrder(); // the sidebar's order, the same on every device (1.5.61)
   if (state.peerRoster.some((m) => m.queued)) await loadOutbox({ render: false });

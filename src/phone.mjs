@@ -46,6 +46,22 @@ export const appLabel = (pkg) => APP_NAMES[pkg] || pkg || '';
  * publishing, agreeing and deleting can be let through per bot and app once
  * the human said so on a card (phone_allow).
  */
+/**
+ * Is enter in this box a search (1.5.79)? The box says so itself (its id, hint or label) - or, when it says
+ * nothing (小红书: the hint is gone once something is typed, and typing a search word asked the human as if it
+ * were a message), the row it sits in does: a 「搜索」 button beside it and no 「发送」 there.
+ */
+export function isSearchBox(box, nodes = []) {
+  if (!box) return false;
+  if (/search|搜索|查找|搜一搜|query/i.test(`${box.id} ${box.desc} ${box.text}`)) return true;
+  if (!Array.isArray(box.bounds)) return false;
+  const [, top, , bottom] = box.bounds;
+  const row = nodes.filter((n) => n !== box && !n.editable && Number.isFinite(n.y) && n.y >= top - 30 && n.y <= bottom + 30);
+  const says = (n) => String(n.text || n.desc || '').trim();
+  if (row.some((n) => /^(发送|发布|评论|回复|send|post|reply)$/i.test(says(n)))) return false;
+  return row.some((n) => /^(搜索|搜一搜|search)$/i.test(says(n)));
+}
+
 export function phoneStepKind(words) {
   const w = String(words || '');
   if (/支付|付款|转账|买单|购买|下单|提交订单|充值|\b(pay|buy|purchase|confirm payment)\b/i.test(w)) return 'pay';
@@ -687,7 +703,7 @@ export function createPhone({ adb, exec = runAdb, workspaceDir, tmpDir = () => h
       const serial = await pick(args.device);
       const ui = await readUi(serial);
       const box = ui.nodes.find((n) => n.focused && n.editable) || null;
-      return { app: ui.app, box, search: Boolean(box && SEARCH_BOX.test(`${box.id} ${box.desc} ${box.text}`)) };
+      return { app: ui.app, box, search: isSearchBox(box, ui.nodes) };
     } catch {
       return { app: '', box: null, search: false };
     }

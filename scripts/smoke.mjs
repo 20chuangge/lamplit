@@ -325,6 +325,7 @@ async function main() {
     await stage('1.5.76: a low balance is said before work starts, a model error says where it stopped, the hand-off line', async () => (await import('./smoke-fix-1576.mjs')).fix1576Checks({ check, readText }));
     await stage('1.5.77: an order worded as a question is not a question about progress; a machine just added is paired without a code', async () => (await import('./smoke-fix-1577.mjs')).fix1577Checks({ check, readText }));
     await stage('1.5.78: a server on the internet is not talked to in the clear', async () => (await import('./smoke-fix-1578.mjs')).fix1578Checks({ check, readText }));
+    await stage('1.5.79: the right screen to take over, a search on the phone, one question from a waiting board, a missed answer is not off, further back in a chat', async () => (await import('./smoke-fix-1579.mjs')).fix1579Checks({ check, readText }));
     await stage('1.5.67: one rule for every bot - existing, new, on another machine', async () => (await import('./smoke-group-1567.mjs')).allBotsChecks({ check, toolsMod, groupsMod, readText }));
     await stage('1.5.67: bots are told which shell runs their commands; a bash command on Windows is caught before it runs', async () => (await import('./smoke-group-1567.mjs')).shellChecks({ check, toolsMod, groupsMod }));
     await stage('1.5.67: the read guard is off unless the human turns it on', async () => (await import('./smoke-group-1567.mjs')).readGuardDefaultChecks({ check, toolsMod, groupsMod, readText }));
@@ -4134,7 +4135,7 @@ async function scenarioMcp({ home, toolsMod }) {
       c.args.path === 'a.md' && /…（共 5000 字）$/.test(c.args.content) && c.output.cut === true && c.output.length > 9000 && c.output.preview.length === 1500
       && small.output.waiting === true && user.text.length === 5000 && full.status === 200 && compact.status === 200 && Array.isArray(compact.json)
       && !compact.json.some((m) => m.role === 'tool' && !['request_takeover', 'request_login'].includes(m.name) && !m.output?.undo && !m.afterCard) /* 1.5.58: the step after an answered card stays, slim */ && srcSrv.includes(".filter((m) => m.role !== 'tool' || ACTION_CARD_TOOLS.has(m.name) || m.output?.undo")
-      && pg.includes("messages?limit=200${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
+      && pg.includes("messages?limit=${chatLimit(`bot:${botId}`)}${state.showProcess ? '' : '&compact=1'}") && pg.includes('if (state.showProcess && !isGroupMode()) loadMessages();')
       && pg.includes('selectBot(dest.id, { keepHome: true })') && pg.includes('await Promise.allSettled([loadSettings(), loadVoice(), loadGroups(), primeAttention()]);')); // 1.5.63: what each chat is doing, alongside
   }
   // Two gaps found after release: a stale sync login made the other machines skip this computer; task_finish summaries were not checked.

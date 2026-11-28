@@ -1388,10 +1388,11 @@ function desktopTakeover() {
 
 /** Start controlling the desktop. With a live preview mounted this only
  *  lifts the shield, so there is no reconnect and no black frame. */
-async function openDesktopViewer() {
-  // Another machine's screen (1.5.42): the mouse and keyboard would work that computer. Ask first.
+async function openDesktopViewer({ asked = false } = {}) {
+  // Another machine's screen (1.5.42): the mouse and keyboard would work that computer. Ask first -
+  // unless the bot itself asked for the takeover (1.5.79): it is waiting, there is nothing to interrupt.
   const far = remoteOf(pcTargetBotId());
-  if (far && !(await askConfirm({ title: `接管「${far.machine}」的屏幕？`, text: `接管后，你的鼠标和键盘会操作「${far.machine}」那台电脑。助手正在做的事可能会被你打断。`, confirmLabel: '接管' }))) return;
+  if (far && !asked && !(await askConfirm({ title: `接管「${far.machine}」的屏幕？`, text: `接管后，你的鼠标和键盘会操作「${far.machine}」那台电脑。助手正在做的事可能会被你打断。`, confirmLabel: '接管' }))) return;
   api('/api/audit/takeover', { method: 'POST', body: { botId: pcTargetBotId(), mode: state.policy?.takeover === 'view' ? 'view' : 'control' } }).catch(() => {});
   if (!state.computer?.desktop?.url) {
     try { await loadComputer(); } catch { /* the viewer can still ask for a password */ }

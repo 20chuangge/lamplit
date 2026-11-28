@@ -533,10 +533,10 @@ export async function chatScrollChecks({ check, readText }) {
   const st = { botId: 'chief', showProcess: false, messages: [{ role: 'user', text: 'a' }] };
   const shown = { dataset: { shown: 'bot:chief', chat: 'chief' }, firstChild: {} };
   // eslint-disable-next-line no-new-func
-  const load = new Function('state', 'messagesEl', 'isGroupMode', 'loadGroupMessages', 'chatCacheGet', 'chatCachePut', 'remoteChatOnScreen', 'renderMessages', 'api', 'isRemoteId', 'remoteApi', 'remoteChatFailed', 'toast',
+  const load = new Function('state', 'messagesEl', 'isGroupMode', 'loadGroupMessages', 'chatCacheGet', 'chatCachePut', 'remoteChatOnScreen', 'renderMessages', 'api', 'isRemoteId', 'remoteApi', 'remoteChatFailed', 'toast', 'chatLimit',
     `${fnSource(chat, 'loadMessages')}; return loadMessages;`)(
     st, shown, () => false, () => {}, () => [{ role: 'user', text: 'a' }], () => true, () => false, () => { draws += 1; },
-    async () => [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }], () => false, () => '', () => false, () => {},
+    async () => [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }], () => false, () => '', () => false, () => {}, () => 200, // 1.5.79: how many lines this chat asks for
   );
   await load();
   const onScreen = draws;

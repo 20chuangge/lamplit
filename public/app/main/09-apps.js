@@ -733,6 +733,8 @@ function auditLine(r) {
       return { icon: '🔐', text: '保险箱删了一条', tag: '保险箱' };
     case 'desktop.takeover':
       return { icon: '🖥', text: who ? `接管了 ${who} 的桌面` : '接管了桌面', tag: r.mode === 'view' ? '只能看' : '能看能控', note: r.from ? `来自 ${r.from}` : '' };
+    case 'machine.low':
+      return { icon: '🖥', text: String(r.text || '这台机器的内存或磁盘快用完了'), tag: '机器', bad: true };
     case 'balance.low':
       return { icon: '💰', text: String(r.text || '模型账户余额快用完了'), tag: '成本', bad: true };
     case 'usage.alert': {

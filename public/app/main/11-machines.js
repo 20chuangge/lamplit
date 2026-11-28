@@ -653,6 +653,28 @@ function updatePublicHint() {
   if (pub) $('vnc-ts').open = true;
 }
 
+/** The host of the last 「只在家里用」 warning: a second click with the same choice goes on. */
+let openWayAck = '';
+const OPEN_WAY_WARNING = '这是一台公网上的服务器。选「只在家里用」的话，这台电脑和它之间不加密：登录凭证和聊天内容在网上是明文。已经帮你改选「自建中转」（加密）；也可以选 Tailscale。确实要不加密直接连，就改回「只在家里用」再点一次。';
+
+/** An address out on the internet: a public IPv4, or a name with a dot that is not a home name (.local, .lan, .home). */
+function onTheInternet(host) {
+  const h = String(host || '').trim().toLowerCase();
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (m) {
+    const [a, b] = [Number(m[1]), Number(m[2])];
+    if (m.slice(1).some((x) => Number(x) > 255)) return false;
+    if (a === 10 || a === 127 || a === 0 || a >= 224) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;
+    if (a === 169 && b === 254) return false;
+    return true;
+  }
+  if (!h.includes('.') || h.includes(':')) return false;
+  return !/\.(local|lan|home|internal|localdomain)$/.test(h);
+}
+
 function parseTargetAddress(raw) {
   const text = String(raw || '').trim();
   if (!text) return null;
@@ -1092,6 +1114,13 @@ function saveMachineFromModal() {
   if (!password) return fail('还需要那台机器的 SSH 密码，才能自动配置。');
   const reach = outsideChoice(); // 只在家里用 / Tailscale / 自建中转 (1.5.43)
   if (reach.error) return fail(reach.error);
+  // 1.5.78: a server on the internet added as 「只在家里用」 was talked to in the clear, and nothing said so.
+  if (reach.options?.outside === 'home' && onTheInternet(address.host) && openWayAck !== address.host) {
+    openWayAck = address.host;
+    const relay = document.querySelector('input[name="vnc-outside"][value="relay"]');
+    if (relay && !relay.disabled) { relay.checked = true; relay.dispatchEvent(new Event('change', { bubbles: true })); }
+    return fail(OPEN_WAY_WARNING);
+  }
 
   note.hidden = true;
   startRemoteProvision({

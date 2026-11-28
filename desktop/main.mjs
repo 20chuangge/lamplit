@@ -23,7 +23,7 @@ import readline from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pickDataDir } from './datadir.mjs';
 import { textMenuTemplate } from './textmenu.mjs';
-import { senderKind, mayUse, isProgramFile, firewallVerdict, firewallPlan, parseNetcheck, pushUpdateAddress, loginCookieNames, loginFromSetCookie, copiedLoginName } from './guard.mjs';
+import { senderKind, mayUse, isProgramFile, firewallVerdict, firewallPlan, parseNetcheck, pushUpdateAddress, loginCookieNames, loginFromSetCookie, copiedLoginName, openInternetAddress } from './guard.mjs';
 import { readSecretJson } from './sealed.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -328,7 +328,9 @@ async function reachMachine(url) {
 
 async function findRoute(url) {
   // DESK_FORCE_TAILNET=1 acts as if the LAN were unreachable (testing away-from-home at home).
-  if (process.env.DESK_FORCE_TAILNET !== '1' && await probeHub(url)) return url;
+  // 1.5.78: a server on the internet over plain http - the encrypted ways (Tailscale, the relay) come first.
+  const open = openInternetAddress(url);
+  if (!open && process.env.DESK_FORCE_TAILNET !== '1' && await probeHub(url)) return url;
   const alt = readMachines().find((m) => m.url === url)?.tailnetUrl;
   if (alt && await probeHub(alt)) {
     await tailnetDirect();
@@ -350,11 +352,17 @@ async function findRoute(url) {
       await copyLogin(from, door, cookieName);
       if (await doorAccepts(door)) { loggedIn = true; break; }
     }
-    bootLog(`${url} unreachable, using the relay (${door})${loggedIn ? '' : '; no login it accepts'}`);
+    bootLog(`${url} ${open ? 'is on the internet' : 'unreachable'}, using the relay (${door})${loggedIn ? '' : '; no login it accepts'}`);
     return door;
+  }
+  // No encrypted way answers: its own address, in the clear - said once per start.
+  if (open && process.env.DESK_FORCE_TAILNET !== '1' && await probeHub(url)) {
+    if (!openSaid.has(url)) { openSaid.add(url); bootLog(`${url} is on the internet with no Tailscale or relay: talking to it in the clear`); }
+    return url;
   }
   return '';
 }
+const openSaid = new Set();
 
 /** The pairing token this app holds for an address: its own cookie name first, then the plain one (1.5.63). */
 async function loginToken(u) {

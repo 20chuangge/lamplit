@@ -51,6 +51,7 @@ const TUNNEL_SCRIPT = path.join(HERE, '..', 'hub', 'relay-linux.sh');
 const TUNNEL_PROGRAM = path.join(HERE, '..', 'hub', 'relay', 'relay.mjs');
 // The Lamplit on a server joins the relay (第 2 步): hub/relay-hub-join.sh, root, settings in a file.
 const TUNNEL_JOIN_SCRIPT = path.join(HERE, '..', 'hub', 'relay-hub-join.sh');
+const SETTINGS_PUSH_SCRIPT = path.join(HERE, '..', 'hub', 'hub-settings-push.sh');
 export const TUNNEL_PORT = 34443;
 
 /**
@@ -91,6 +92,44 @@ async function joinHubOverSsh(client, { sudoPrefix = '', password = '', isRoot =
   } finally {
     await execStream(client, `rm -f ${body} ${script}`, { timeoutMs: 15000 }).catch(() => {});
   }
+}
+
+/**
+ * The model, voice and vision settings to the Lamplit on a Linux server, over the open SSH session (1.5.78),
+ * the way the relay settings go: a file only root reads, hub/hub-settings-push.sh hands each to that Lamplit on
+ * 127.0.0.1 with its local key. Before, they went by HTTP to the server's address - for a server on the
+ * internet the model key crossed it in the clear - and that used up the pairing code (1.5.77).
+ * -> 'ok' | 'none' | 'error:<why>'
+ */
+async function pushSettingsOverSsh(client, { sudoPrefix = '', password = '', isRoot = true }, items) {
+  const id = crypto.randomBytes(6).toString('hex');
+  const body = `/tmp/lamplit-settings-${id}.json`;
+  const script = `/tmp/lamplit-settings-${id}.sh`;
+  const text = JSON.stringify(items);
+  const put = await execStream(client, `umask 077; cat > ${body} && test -s ${body}`, { stdin: text, endInput: true, timeoutMs: 15000 })
+    .catch((err) => ({ code: 1, output: err.message }));
+  if (put.code !== 0) return 'error:没能把设置交给那台服务器';
+  try {
+    await uploadFile(client, SETTINGS_PUSH_SCRIPT, script);
+    const files = [
+      { at: script, name: 'hub-settings-push.sh', sha256: await sha256OfFile(SETTINGS_PUSH_SCRIPT) },
+      { at: body, name: 'settings.json', sha256: sha256Text(text) },
+    ];
+    const command = rootRunCommand(files, (d) => `/bin/bash ${d}/hub-settings-push.sh ${d}/settings.json`, { drop: [body] });
+    const ran = await execStream(client, `${sudoPrefix}${command}`, { stdin: isRoot ? '' : `${password}\n`, timeoutMs: 120000 });
+    return (/^DESK_HUB_SETTINGS=(.*)$/m.exec(ran.output)?.[1] || '').trim() || `error:exit ${ran.code}`;
+  } finally {
+    await execStream(client, `rm -f ${body} ${script}`, { timeoutMs: 15000 }).catch(() => {});
+  }
+}
+
+/** What goes over, in order: [{path, body}] for the model, then voice and vision when this computer has them. */
+export function settingsItems(model, voice = null, vision = null) {
+  return [
+    ...(model ? [{ path: '/api/settings', body: model }] : []),
+    ...(voice ? [{ path: '/api/voice', body: voice }] : []),
+    ...(vision ? [{ path: '/api/vision', body: vision }] : []),
+  ];
 }
 
 /** A public IPv4 address (not private, loopback or Tailscale's 100.64/10): what a relay must be reached on. */
@@ -983,7 +1022,15 @@ export function createProvisioner({ modelToShare = () => null, voiceToShare = ()
         if (!job.reachUrl) await new Promise((resolve) => setTimeout(resolve, 1500));
       }
       const reachable = Boolean(job.reachUrl);
-      const model = reachable ? modelToShare() : null;
+      // Linux: over this SSH session (1.5.78) - also when this computer cannot reach it, and without the pairing code.
+      const overSsh = !windows ? modelToShare() : null;
+      if (overSsh) {
+        setProgress(job, '把模型设置同步过去…');
+        const pushed = await pushSettingsOverSsh(client, { sudoPrefix, password, isRoot }, settingsItems(overSsh, voiceToShare(), visionToShare())).catch((err) => `error:${err.message}`);
+        if (pushed === 'ok') job.modelShared = true;
+        else job.warning = job.warning || `装好了，但模型设置没同步过去（${String(pushed).replace(/^error:/, '')}）；切过去后在「设置 → 模型」里填一下。`;
+      }
+      const model = reachable && windows ? modelToShare() : null;
       if (model) {
         setProgress(job, '把模型设置同步过去…');
         try {

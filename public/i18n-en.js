@@ -1672,6 +1672,7 @@ window.DESK_I18N_EN = {
   "模型账户余额快用完了": "The model account is about to run out of balance",
   "没能自动配对，切过去时填这个配对码：": "Could not pair automatically - enter this pairing code when you switch to it: ",
   "添加机器时的设置同步": "Settings sync when the machine was added",
+  "这是一台公网上的服务器。选「只在家里用」的话，这台电脑和它之间不加密：登录凭证和聊天内容在网上是明文。已经帮你改选「自建中转」（加密）；也可以选 Tailscale。确实要不加密直接连，就改回「只在家里用」再点一次。": "This server is on the public internet. With \"Home only\", the link between this computer and it is not encrypted: the login and your chats cross the internet in the clear. \"Own relay\" (encrypted) has been picked for you; Tailscale works too. To connect without encryption anyway, switch back to \"Home only\" and click once more.",
   "成本设置：{0} 个模型单价{1}": "Cost settings: prices for {0} model(s){1}",
   "，每日提醒 {0}": ", daily alert {0}",
   "{0} + {1} 未设单价": "{0} + {1} unpriced",

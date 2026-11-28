@@ -145,6 +145,23 @@ export function isLoginCookieName(name) {
   return /^desk_session(?:_\d{1,5})?$/.test(String(name || ''));
 }
 
+/**
+ * A machine's own address that is plain http to a public IPv4 (1.5.78): what goes there crosses the internet
+ * in the clear, so its Tailscale address and the relay are tried first.
+ */
+export function openInternetAddress(url) {
+  const m = /^http:\/\/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::\d+)?(?:\/|$)/.exec(String(url || ''));
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (m.slice(1).some((x) => Number(x) > 255)) return false;
+  if (a === 10 || a === 127 || a === 0 || a >= 224) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  if (a === 169 && b === 254) return false;
+  return true;
+}
+
 /** The login in a POST /api/pair answer's Set-Cookie (either name): {name, value} or null. */
 export function loginFromSetCookie(header) {
   const m = /(?:^|[\s,;])(desk_session(?:_\d{1,5})?)=([^;,\s]+)/.exec(String(header || ''));
